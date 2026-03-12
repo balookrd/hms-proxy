@@ -1,0 +1,289 @@
+package io.github.mmalykhin.hmsproxy;
+
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
+import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
+import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
+import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetTableResult;
+import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesResult;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+final class RoutingMetaStoreHandler implements InvocationHandler {
+  private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
+  private static final List<String> DB_STRING_METHODS = List.of(
+      "get_database",
+      "drop_database",
+      "alter_database",
+      "get_all_tables",
+      "get_tables",
+      "get_tables_by_type",
+      "get_materialized_views_for_rewriting",
+      "get_table",
+      "get_table_objects_by_name",
+      "truncate_table",
+      "drop_table",
+      "drop_table_with_environment_context",
+      "get_fields",
+      "get_fields_with_environment_context",
+      "get_schema",
+      "get_schema_with_environment_context",
+      "get_table_names_by_filter"
+  );
+
+  private final ProxyConfig config;
+  private final CatalogRouter router;
+  private final long aliveSince;
+
+  RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router) {
+    this.config = config;
+    this.router = router;
+    this.aliveSince = System.currentTimeMillis() / 1000L;
+  }
+
+  @SuppressWarnings("unchecked")
+  static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler) {
+    return (T) Proxy.newProxyInstance(
+        interfaceClass.getClassLoader(),
+        new Class<?>[] {interfaceClass},
+        handler);
+  }
+
+  @Override
+  public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    String name = method.getName();
+    if (method.getDeclaringClass() == Object.class) {
+      return method.invoke(this, args);
+    }
+
+    return switch (name) {
+      case "getName" -> config.server().name();
+      case "getVersion" -> "hms-proxy/0.1.0";
+      case "aliveSince" -> aliveSince;
+      case "reinitialize", "shutdown" -> null;
+      case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
+      case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
+      case "get_catalog" -> handleGetCatalog(args);
+      case "create_catalog", "alter_catalog", "drop_catalog" ->
+          throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
+      case "get_all_databases" -> handleGetAllDatabases(method);
+      case "get_databases" -> handleGetDatabases(method, args);
+      case "get_table_meta" -> handleGetTableMeta(method, args);
+      case "get_table_req" -> handleGetTableReq(method, args);
+      case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
+      default -> routeByNamespaceOrFail(method, args);
+    };
+  }
+
+  private Object handleGetCatalog(Object[] args) throws NoSuchObjectException {
+    GetCatalogRequest request = (GetCatalogRequest) args[0];
+    if (!config.catalogs().containsKey(request.getName())) {
+      throw new NoSuchObjectException("Unknown catalog: " + request.getName());
+    }
+    GetCatalogResponse response = new GetCatalogResponse();
+    response.setCatalog(router.requireBackend(request.getName()).catalog());
+    return response;
+  }
+
+  private Object handleGetAllDatabases(Method method) throws Throwable {
+    List<String> databases = new ArrayList<>();
+    for (CatalogBackend backend : router.backends()) {
+      @SuppressWarnings("unchecked")
+      List<String> backendDatabases = (List<String>) invokeBackend(backend, method, null);
+      for (String database : backendDatabases) {
+        databases.add(router.externalDatabaseName(backend.name(), database));
+      }
+    }
+    return databases;
+  }
+
+  private Object handleGetDatabases(Method method, Object[] args) throws Throwable {
+    String pattern = (String) args[0];
+    if (router.resolvePattern(pattern).isPresent()) {
+      CatalogRouter.ResolvedNamespace namespace = router.resolvePattern(pattern).orElseThrow();
+      @SuppressWarnings("unchecked")
+      List<String> backendDatabases =
+          (List<String>) invokeBackend(namespace.backend(), method, new Object[] {namespace.backendDbName()});
+      return backendDatabases.stream()
+          .map(db -> router.externalDatabaseName(namespace.catalogName(), db))
+          .toList();
+    }
+
+    List<String> databases = new ArrayList<>();
+    for (CatalogBackend backend : router.backends()) {
+      @SuppressWarnings("unchecked")
+      List<String> backendDatabases =
+          (List<String>) invokeBackend(backend, method, new Object[] {pattern});
+      for (String database : backendDatabases) {
+        databases.add(router.externalDatabaseName(backend.name(), database));
+      }
+    }
+    return databases;
+  }
+
+  private Object handleGetTableMeta(Method method, Object[] args) throws Throwable {
+    String dbPattern = (String) args[0];
+    String tablePattern = (String) args[1];
+    @SuppressWarnings("unchecked")
+    List<String> tableTypes = (List<String>) args[2];
+
+    if (router.resolvePattern(dbPattern).isPresent()) {
+      CatalogRouter.ResolvedNamespace namespace = router.resolvePattern(dbPattern).orElseThrow();
+      @SuppressWarnings("unchecked")
+      List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
+          namespace.backend(), method, new Object[] {namespace.backendDbName(), tablePattern, tableTypes});
+      return backendResults.stream()
+          .map(result -> NamespaceTranslator.externalizeTableMeta(result, namespace))
+          .toList();
+    }
+
+    List<TableMeta> results = new ArrayList<>();
+    for (CatalogBackend backend : router.backends()) {
+      @SuppressWarnings("unchecked")
+      List<TableMeta> backendResults =
+          (List<TableMeta>) invokeBackend(backend, method, new Object[] {dbPattern, tablePattern, tableTypes});
+      CatalogRouter.ResolvedNamespace namespace = router.resolveCatalog(backend.name(), "");
+      for (TableMeta result : backendResults) {
+        results.add(NamespaceTranslator.externalizeTableMeta(
+            result,
+            router.resolveCatalog(backend.name(), result.getDbName())));
+      }
+    }
+    return results;
+  }
+
+  private Object handleGetTableReq(Method method, Object[] args) throws Throwable {
+    GetTableRequest request = (GetTableRequest) args[0];
+    CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    GetTableRequest routedRequest = (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace);
+    Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
+    return NamespaceTranslator.externalizeResult(result, namespace);
+  }
+
+  private Object handleGetTablesReq(Method method, Object[] args) throws Throwable {
+    GetTablesRequest request = (GetTablesRequest) args[0];
+    CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    GetTablesRequest routedRequest = (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace);
+    Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
+    return NamespaceTranslator.externalizeResult(result, namespace);
+  }
+
+  private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
+    String methodName = method.getName();
+    if (args == null || args.length == 0) {
+      return invokeGlobal(method, args);
+    }
+
+    if (DB_STRING_METHODS.contains(methodName) && args[0] instanceof String dbName) {
+      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+      Object[] routedArgs = internalizeDbStringArguments(args, namespace);
+      Object result = invokeBackend(namespace.backend(), method, routedArgs);
+      return NamespaceTranslator.externalizeResult(result, namespace);
+    }
+
+    Object firstArgument = args[0];
+    if (hasDbName(firstArgument)) {
+      String dbName = readStringProperty(firstArgument, "getDbName");
+      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+      Object[] routedArgs = internalizeObjectArguments(args, namespace);
+      Object result = invokeBackend(namespace.backend(), method, routedArgs);
+      return NamespaceTranslator.externalizeResult(result, namespace);
+    }
+    if (firstArgument instanceof String catalogName
+        && ("get_current_notificationEventId".equals(methodName) || "flushCache".equals(methodName))) {
+      return invokeGlobal(method, args);
+    }
+
+    if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
+      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+      Object[] routedArgs = internalizeDbStringArguments(args, namespace);
+      Object result = invokeBackend(namespace.backend(), method, routedArgs);
+      return NamespaceTranslator.externalizeResult(result, namespace);
+    }
+
+    return invokeGlobal(method, args);
+  }
+
+  private Object invokeGlobal(Method method, Object[] args) throws Throwable {
+    if (!router.singleCatalog()) {
+      throw metaException("Operation " + method.getName()
+          + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");
+    }
+    return invokeBackend(router.defaultBackend(), method, args);
+  }
+
+  private Object[] internalizeDbStringArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {
+    Object[] routedArgs = Arrays.copyOf(args, args.length);
+    routedArgs[0] = namespace.backendDbName();
+    for (int index = 1; index < routedArgs.length; index++) {
+      routedArgs[index] = NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
+    }
+    return routedArgs;
+  }
+
+  private Object[] internalizeObjectArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {
+    Object[] routedArgs = Arrays.copyOf(args, args.length);
+    for (int index = 0; index < routedArgs.length; index++) {
+      routedArgs[index] = NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
+    }
+    return routedArgs;
+  }
+
+  private CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)
+      throws MetaException {
+    if (catName != null && !catName.isBlank()) {
+      return router.resolveCatalog(catName, dbName);
+    }
+    return router.resolveDatabase(dbName);
+  }
+
+  private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
+    try {
+      LOG.debug("Routing {} to catalog {}", method.getName(), backend.name());
+      return method.invoke(backend.thriftClient(), args);
+    } catch (InvocationTargetException e) {
+      throw e.getCause();
+    }
+  }
+
+  private static boolean hasDbName(Object argument) {
+    if (argument == null) {
+      return false;
+    }
+    try {
+      argument.getClass().getMethod("getDbName");
+      return true;
+    } catch (NoSuchMethodException e) {
+      return false;
+    }
+  }
+
+  private static String readStringProperty(Object argument, String getterName) {
+    try {
+      return (String) argument.getClass().getMethod(getterName).invoke(argument);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(
+          "Unable to read property " + getterName + " from " + argument.getClass().getName(), e);
+    }
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object enumConstant(Class<?> enumType, String constantName) {
+    return Enum.valueOf((Class<? extends Enum>) enumType.asSubclass(Enum.class), constantName);
+  }
+
+  private static MetaException metaException(String message) {
+    return new MetaException(message);
+  }
+}
