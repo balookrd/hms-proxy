@@ -110,13 +110,13 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   private Object handleGetDatabases(Method method, Object[] args) throws Throwable {
     String pattern = (String) args[0];
-    if (router.resolvePattern(pattern).isPresent()) {
-      CatalogRouter.ResolvedNamespace namespace = router.resolvePattern(pattern).orElseThrow();
+    CatalogRouter.ResolvedNamespace resolved = router.resolvePattern(pattern).orElse(null);
+    if (resolved != null) {
       @SuppressWarnings("unchecked")
       List<String> backendDatabases =
-          (List<String>) invokeBackend(namespace.backend(), method, new Object[] {namespace.backendDbName()});
+          (List<String>) invokeBackend(resolved.backend(), method, new Object[] {resolved.backendDbName()});
       return backendDatabases.stream()
-          .map(db -> router.externalDatabaseName(namespace.catalogName(), db))
+          .map(db -> router.externalDatabaseName(resolved.catalogName(), db))
           .toList();
     }
 
@@ -138,13 +138,13 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     @SuppressWarnings("unchecked")
     List<String> tableTypes = (List<String>) args[2];
 
-    if (router.resolvePattern(dbPattern).isPresent()) {
-      CatalogRouter.ResolvedNamespace namespace = router.resolvePattern(dbPattern).orElseThrow();
+    CatalogRouter.ResolvedNamespace resolved = router.resolvePattern(dbPattern).orElse(null);
+    if (resolved != null) {
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
-          namespace.backend(), method, new Object[] {namespace.backendDbName(), tablePattern, tableTypes});
+          resolved.backend(), method, new Object[] {resolved.backendDbName(), tablePattern, tableTypes});
       return backendResults.stream()
-          .map(result -> NamespaceTranslator.externalizeTableMeta(result, namespace))
+          .map(result -> NamespaceTranslator.externalizeTableMeta(result, resolved))
           .toList();
     }
 
@@ -153,7 +153,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults =
           (List<TableMeta>) invokeBackend(backend, method, new Object[] {dbPattern, tablePattern, tableTypes});
-      CatalogRouter.ResolvedNamespace namespace = router.resolveCatalog(backend.name(), "");
       for (TableMeta result : backendResults) {
         results.add(NamespaceTranslator.externalizeTableMeta(
             result,

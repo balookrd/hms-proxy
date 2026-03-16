@@ -21,12 +21,26 @@ public final class ProxyConfigLoader {
       properties.load(input);
     }
 
+    int port = getInt(properties, "server.port", 9083);
+    if (port < 1 || port > 65535) {
+      throw new IllegalArgumentException("server.port must be between 1 and 65535, got: " + port);
+    }
+    int minWorkerThreads = getInt(properties, "server.min-worker-threads", 16);
+    if (minWorkerThreads < 1) {
+      throw new IllegalArgumentException("server.min-worker-threads must be >= 1, got: " + minWorkerThreads);
+    }
+    int maxWorkerThreads = getInt(properties, "server.max-worker-threads", 256);
+    if (maxWorkerThreads < minWorkerThreads) {
+      throw new IllegalArgumentException(
+          "server.max-worker-threads (" + maxWorkerThreads
+              + ") must be >= server.min-worker-threads (" + minWorkerThreads + ")");
+    }
     ProxyConfig.ServerConfig server = new ProxyConfig.ServerConfig(
         get(properties, "server.name", "hms-proxy"),
         get(properties, "server.bind-host", "0.0.0.0"),
-        getInt(properties, "server.port", 9083),
-        getInt(properties, "server.min-worker-threads", 16),
-        getInt(properties, "server.max-worker-threads", 256));
+        port,
+        minWorkerThreads,
+        maxWorkerThreads);
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -76,6 +90,9 @@ public final class ProxyConfigLoader {
     if (security.kerberosEnabled()) {
       requireNonBlank(serverPrincipal, "security.server-principal");
       requireNonBlank(keytab, "security.keytab");
+      if (!Files.isReadable(Path.of(keytab))) {
+        throw new IllegalArgumentException("Keytab file not found or not readable: " + keytab);
+      }
       if (clientPrincipal == null) {
         clientPrincipal = serverPrincipal;
         security = new ProxyConfig.SecurityConfig(securityMode, serverPrincipal, clientPrincipal, keytab);
@@ -106,7 +123,14 @@ public final class ProxyConfigLoader {
 
   private static int getInt(Properties properties, String key, int defaultValue) {
     String value = trimToNull(properties.getProperty(key));
-    return value == null ? defaultValue : Integer.parseInt(value);
+    if (value == null) {
+      return defaultValue;
+    }
+    try {
+      return Integer.parseInt(value);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid integer value for property " + key + ": " + value, e);
+    }
   }
 
   private static String trimToNull(String value) {
