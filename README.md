@@ -51,8 +51,71 @@ Point HiveServer2 `hive.metastore.uris` to this proxy instead of a single backen
 For multi-catalog deployments, prefer Hive versions and clients that preserve catalog fields.
 If your clients are older, use `catalog.db.table` naming consistently.
 
-## Kerberos
+## Security
 
-With `security.mode=KERBEROS`, the proxy starts a SASL-protected Thrift listener and logs in
-using the configured keytab. Backend HMS connections can also use Kerberos by passing the usual
-Hive settings via `catalog.<name>.conf.*`.
+### Without Kerberos
+
+The default mode. No keytab or principals required:
+
+```properties
+server.port=9083
+security.mode=NONE
+
+catalogs=warehouse
+catalog.warehouse.conf.hive.metastore.uris=thrift://hms-backend:9083
+routing.default-catalog=warehouse
+```
+
+### With Kerberos
+
+Security is configured in two independent parts: the front door (clients → proxy) and the
+backend connections (proxy → HMS).
+
+**Front door** — proxy listens with SASL:
+
+```properties
+security.mode=KERBEROS
+security.server-principal=hive/_HOST@REALM.COM
+security.keytab=/etc/security/keytabs/hms-proxy.keytab
+
+# Optional: principal used when connecting to backends.
+# Defaults to server-principal if not set.
+security.client-principal=hive/_HOST@REALM.COM
+```
+
+`security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
+The keytab must exist and be readable — the proxy will fail to start otherwise.
+`_HOST` is replaced with the machine's FQDN at runtime (standard Hadoop behaviour).
+
+**Backend connections** — configured per catalog via `catalog.<name>.conf.*`:
+
+```properties
+catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
+catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+```
+
+Front and backend security are independent: you can run the front door without Kerberos and
+still connect to Kerberos-protected backends, or vice versa.
+
+**Full example:**
+
+```properties
+server.port=9083
+server.bind-host=0.0.0.0
+
+security.mode=KERBEROS
+security.server-principal=hive/_HOST@REALM.COM
+security.keytab=/etc/security/keytabs/hms-proxy.keytab
+
+catalogs=catalog1,catalog2
+routing.default-catalog=catalog1
+
+catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
+catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+
+catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
+catalog.catalog2.conf.hive.metastore.sasl.enabled=true
+catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+```
