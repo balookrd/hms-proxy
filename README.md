@@ -44,7 +44,7 @@ java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.prope
 ## Debug logging
 
 Detailed debug tracing for the proxy package is enabled by default through the bundled
-`hms-proxy-log4j2.properties` config, which the application forces at startup.
+`log4j.properties` config.
 Each client call gets a `requestId`, and the logs include:
 
 - incoming HMS request method and arguments
@@ -55,9 +55,7 @@ Each client call gets a `requestId`, and the logs include:
 
 If the logs are too noisy, override the level at startup, for example:
 
-```bash
-java -Dlog4j2.logger.hmsproxy.level=info ...
-```
+Override it with a custom `log4j.properties` if needed.
 
 ## HiveServer2
 
