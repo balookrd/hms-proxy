@@ -7,6 +7,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
@@ -22,6 +23,8 @@ import org.slf4j.LoggerFactory;
 
 final class RoutingMetaStoreHandler implements InvocationHandler {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
+  private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
+  private static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
   private static final List<String> DB_STRING_METHODS = List.of(
       "get_database",
       "drop_database",
@@ -67,23 +70,40 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       return method.invoke(this, args);
     }
 
-    return switch (name) {
-      case "getName" -> config.server().name();
-      case "getVersion" -> "hms-proxy/0.1.0";
-      case "aliveSince" -> aliveSince;
-      case "reinitialize", "shutdown" -> null;
-      case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
-      case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
-      case "get_catalog" -> handleGetCatalog(args);
-      case "create_catalog", "alter_catalog", "drop_catalog" ->
-          throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
-      case "get_all_databases" -> handleGetAllDatabases(method);
-      case "get_databases" -> handleGetDatabases(method, args);
-      case "get_table_meta" -> handleGetTableMeta(method, args);
-      case "get_table_req" -> handleGetTableReq(method, args);
-      case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
-      default -> routeByNamespaceOrFail(method, args);
-    };
+    long requestId = REQUEST_SEQUENCE.incrementAndGet();
+    long startedAt = System.nanoTime();
+    REQUEST_ID.set(requestId);
+    LOG.debug("requestId={} incoming method={} args={}",
+        requestId, name, DebugLogUtil.formatArgs(args));
+
+    try {
+      Object result = switch (name) {
+        case "getName" -> config.server().name();
+        case "getVersion" -> "hms-proxy/0.1.0";
+        case "aliveSince" -> aliveSince;
+        case "reinitialize", "shutdown" -> null;
+        case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
+        case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
+        case "get_catalog" -> handleGetCatalog(args);
+        case "create_catalog", "alter_catalog", "drop_catalog" ->
+            throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
+        case "get_all_databases" -> handleGetAllDatabases(method);
+        case "get_databases" -> handleGetDatabases(method, args);
+        case "get_table_meta" -> handleGetTableMeta(method, args);
+        case "get_table_req" -> handleGetTableReq(method, args);
+        case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
+        default -> routeByNamespaceOrFail(method, args);
+      };
+      LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
+          requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+      return result;
+    } catch (Throwable throwable) {
+      LOG.debug("requestId={} client-error method={} elapsedMs={} error={}",
+          requestId, name, elapsedMillis(startedAt), throwable.toString(), throwable);
+      throw throwable;
+    } finally {
+      REQUEST_ID.remove();
+    }
   }
 
   private Object handleGetCatalog(Object[] args) throws NoSuchObjectException {
@@ -248,12 +268,31 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
+    long startedAt = System.nanoTime();
+    Long requestId = currentRequestId();
     try {
-      LOG.debug("Routing {} to catalog {}", method.getName(), backend.name());
-      return method.invoke(backend.thriftClient(), args);
+      LOG.debug("requestId={} proxy-call catalog={} method={} args={}",
+          requestId, backend.name(), method.getName(), DebugLogUtil.formatArgs(args));
+      Object result = method.invoke(backend.thriftClient(), args);
+      LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
+          requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
+          DebugLogUtil.formatValue(result));
+      return result;
     } catch (InvocationTargetException e) {
-      throw e.getCause();
+      Throwable cause = e.getCause();
+      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
+          requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
+      throw cause;
     }
+  }
+
+  private static long currentRequestId() {
+    Long requestId = REQUEST_ID.get();
+    return requestId == null ? -1L : requestId;
+  }
+
+  private static long elapsedMillis(long startedAt) {
+    return (System.nanoTime() - startedAt) / 1_000_000L;
   }
 
   private static boolean hasDbName(Object argument) {

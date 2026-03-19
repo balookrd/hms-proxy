@@ -29,14 +29,10 @@ mvn -o package
 ## Run
 
 ```bash
-java -cp "/opt/hms-proxy/lib/*:/opt/hms-proxy/hms-proxy-0.1.0-SNAPSHOT.jar" \
-  io.github.mmalykhin.hmsproxy.HmsProxyApplication \
-  /etc/hms-proxy/hms-proxy.properties
+java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
 ```
 
-`mvn package` in this repository produces a thin application jar. In production, package the
-runtime dependencies next to the jar or build a container image that adds the Maven runtime
-classpath explicitly.
+`mvn package` produces both a regular jar and a runnable fat jar with classifier `fat`.
 
 ## Routing model
 
@@ -44,6 +40,23 @@ classpath explicitly.
 - Legacy HMS clients can use database names like `catalog1.sales`
 - `get_all_databases()` returns prefixed names like `catalog1.sales`
 - table objects returned to legacy callers are rewritten back to external names
+
+## Debug logging
+
+Detailed debug tracing for the proxy package is enabled by default through `slf4j-simple`.
+Each client call gets a `requestId`, and the logs include:
+
+- incoming HMS request method and arguments
+- selected backend catalog
+- proxied thrift method and rewritten arguments
+- backend response or backend error
+- final client response or client-visible error
+
+If the logs are too noisy, override the level at startup, for example:
+
+```bash
+java -Dorg.slf4j.simpleLogger.log.io.github.mmalykhin.hmsproxy=info ...
+```
 
 ## HiveServer2
 
