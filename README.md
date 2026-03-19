@@ -43,7 +43,8 @@ java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.prope
 
 ## Debug logging
 
-Detailed debug tracing for the proxy package is enabled by default through Log4j2.
+Detailed debug tracing for the proxy package is enabled by default through the bundled
+`hms-proxy-log4j2.properties` config, which the application forces at startup.
 Each client call gets a `requestId`, and the logs include:
 
 - incoming HMS request method and arguments
