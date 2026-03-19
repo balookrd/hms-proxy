@@ -7,12 +7,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class HmsProxyApplication {
-  private static final Logger LOG = LoggerFactory.getLogger(HmsProxyApplication.class);
-
   private HmsProxyApplication() {
   }
 
   public static void main(String[] args) throws Exception {
+    LoggingBootstrap.initialize();
+    Logger log = LoggerFactory.getLogger(HmsProxyApplication.class);
+
     if (args.length != 1) {
       System.err.println("Usage: java -jar hms-proxy.jar <config.properties>");
       System.exit(64);
@@ -27,16 +28,16 @@ public final class HmsProxyApplication {
       ThriftHiveMetastore.Iface proxy =
           RoutingMetaStoreHandler.newProxy(ThriftHiveMetastore.Iface.class, handler);
       MetastoreThriftServer server = new MetastoreThriftServer(config, proxy);
-      installShutdownHook(server);
-      LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
+      installShutdownHook(server, log);
+      log.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
           config.server().bindHost(), config.server().port());
       server.serve();
     }
   }
 
-  private static void installShutdownHook(MetastoreThriftServer server) {
+  private static void installShutdownHook(MetastoreThriftServer server, Logger log) {
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-      LOG.info("Shutdown requested, stopping HMS proxy");
+      log.info("Shutdown requested, stopping HMS proxy");
       server.stop();
     }, "hms-proxy-shutdown"));
   }
