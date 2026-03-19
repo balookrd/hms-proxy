@@ -13,6 +13,7 @@
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <hive.version>3.1.3</hive.version>
+    <hadoop.mapreduce.version>2.6.5</hadoop.mapreduce.version>
     <junit.version>4.13.2</junit.version>
     <slf4j.version>1.7.36</slf4j.version>
   </properties>
@@ -46,6 +47,21 @@
           <groupId>jdk.tools</groupId>
           <artifactId>jdk.tools</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-slf4j-impl</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-mapreduce-client-core</artifactId>
+      <version>${hadoop.mapreduce.version}</version>
+      <exclusions>
         <exclusion>
           <groupId>org.slf4j</groupId>
           <artifactId>slf4j-log4j12</artifactId>
