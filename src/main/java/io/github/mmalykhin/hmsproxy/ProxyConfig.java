@@ -27,7 +27,8 @@ public record ProxyConfig(
       String serverPrincipal,
       String clientPrincipal,
       String keytab,
-      String clientKeytab
+      String clientKeytab,
+      boolean impersonationEnabled
   ) {
     public boolean kerberosEnabled() {
       return mode == SecurityMode.KERBEROS;

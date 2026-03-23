@@ -7,6 +7,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
@@ -18,6 +19,7 @@ import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,7 +90,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "getVersion" -> "hms-proxy/0.1.0";
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
-        case "set_ugi" -> List.of();
+        case "set_ugi" -> handleSetUgi(method, args);
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -298,12 +300,17 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
     long startedAt = System.nanoTime();
     Long requestId = currentRequestId();
+    ImpersonationContext impersonation = currentImpersonation().orElse(null);
     try {
       if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-call catalog={} method={} args={}",
-            requestId, backend.name(), method.getName(), DebugLogUtil.formatArgs(args));
+        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
+            requestId,
+            backend.name(),
+            method.getName(),
+            impersonation == null ? "-" : impersonation.userName(),
+            DebugLogUtil.formatArgs(args));
       }
-      Object result = backend.invoke(method, args);
+      Object result = backend.invoke(method, args, impersonation);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
             requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
@@ -354,5 +361,43 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   private static MetaException metaException(String message) {
     return new MetaException(message);
+  }
+
+  private Object handleSetUgi(Method method, Object[] args) throws Throwable {
+    if (!config.security().impersonationEnabled()) {
+      return invokeGlobal(method, args);
+    }
+
+    ImpersonationContext impersonation = currentImpersonation().orElseThrow(() ->
+        metaException("Kerberos caller identity is unavailable for impersonation"));
+
+    if (args != null && args.length > 0 && args[0] instanceof String requestedUser
+        && !requestedUser.isBlank()
+        && !requestedUser.equals(impersonation.userName())) {
+      LOG.warn("requestId={} ignoring client-requested set_ugi user '{}' and using authenticated user '{}'",
+          currentRequestId(), requestedUser, impersonation.userName());
+    }
+
+    return invokeGlobal(method, new Object[] {impersonation.userName(), impersonation.groupNames()});
+  }
+
+  private Optional<ImpersonationContext> currentImpersonation() throws MetaException {
+    if (!config.security().impersonationEnabled()) {
+      return Optional.empty();
+    }
+
+    try {
+      UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
+      String userName = currentUser.getShortUserName();
+      if (userName == null || userName.isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(new ImpersonationContext(userName, List.of(currentUser.getGroupNames())));
+    } catch (Exception e) {
+      throw metaException("Unable to resolve authenticated caller for impersonation: " + e.getMessage());
+    }
+  }
+
+  record ImpersonationContext(String userName, List<String> groupNames) {
   }
 }
