@@ -26,10 +26,19 @@ public record ProxyConfig(
       SecurityMode mode,
       String serverPrincipal,
       String clientPrincipal,
-      String keytab
+      String keytab,
+      String clientKeytab
   ) {
     public boolean kerberosEnabled() {
       return mode == SecurityMode.KERBEROS;
+    }
+
+    public String outboundPrincipal() {
+      return clientPrincipal != null ? clientPrincipal : serverPrincipal;
+    }
+
+    public String outboundKeytab() {
+      return clientKeytab != null ? clientKeytab : keytab;
     }
   }
 

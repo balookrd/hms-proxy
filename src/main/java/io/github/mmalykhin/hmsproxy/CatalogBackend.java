@@ -1,14 +1,21 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.lang.reflect.Field;
+import java.security.PrivilegedExceptionAction;
 import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class CatalogBackend implements AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
+
   private final ProxyConfig.CatalogConfig config;
   private final HiveMetaStoreClient client;
   private final ThriftHiveMetastore.Iface thriftClient;
@@ -29,12 +36,13 @@ final class CatalogBackend implements AutoCloseable {
   static CatalogBackend open(ProxyConfig proxyConfig, ProxyConfig.CatalogConfig catalogConfig)
       throws MetaException {
     HiveConf conf = new HiveConf();
-    conf.set("hadoop.security.authentication", proxyConfig.security().mode().hadoopAuthValue());
+    boolean backendKerberosEnabled = backendKerberosEnabled(catalogConfig);
+    conf.set("hadoop.security.authentication", backendKerberosEnabled ? "kerberos" : "simple");
     for (Map.Entry<String, String> entry : catalogConfig.hiveConf().entrySet()) {
       conf.set(entry.getKey(), entry.getValue());
     }
 
-    HiveMetaStoreClient client = new HiveMetaStoreClient(conf);
+    HiveMetaStoreClient client = openClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
     ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
     Catalog catalog = new Catalog();
     catalog.setName(catalogConfig.name());
@@ -58,6 +66,40 @@ final class CatalogBackend implements AutoCloseable {
   @Override
   public void close() {
     client.close();
+  }
+
+  private static HiveMetaStoreClient openClient(
+      ProxyConfig proxyConfig,
+      ProxyConfig.CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled
+  ) throws MetaException {
+    if (!backendKerberosEnabled) {
+      return new HiveMetaStoreClient(conf);
+    }
+
+    ProxyConfig.SecurityConfig security = proxyConfig.security();
+    String principal = security.outboundPrincipal();
+    String keytab = security.outboundKeytab();
+    LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
+        catalogConfig.name(), principal, keytab);
+
+    Configuration securityConf = new Configuration(false);
+    securityConf.set("hadoop.security.authentication", "kerberos");
+    UserGroupInformation.setConfiguration(securityConf);
+
+    try {
+      UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
+      return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+    } catch (Exception e) {
+      MetaException metaException = new MetaException(
+          "Unable to open backend metastore client for catalog "
+              + catalogConfig.name()
+              + " with Kerberos principal "
+              + principal);
+      metaException.initCause(e);
+      throw metaException;
+    }
   }
 
   // HiveMetaStoreClient implements IMetaStoreClient (high-level API), not ThriftHiveMetastore.Iface
@@ -84,5 +126,9 @@ final class CatalogBackend implements AutoCloseable {
       metaException.initCause(e);
       throw metaException;
     }
+  }
+
+  private static boolean backendKerberosEnabled(ProxyConfig.CatalogConfig catalogConfig) {
+    return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
   }
 }
