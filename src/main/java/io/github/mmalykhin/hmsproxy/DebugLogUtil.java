@@ -14,14 +14,22 @@ final class DebugLogUtil {
   }
 
   static String formatArgs(Object[] args) {
-    if (args == null || args.length == 0) {
-      return "[]";
+    try {
+      if (args == null || args.length == 0) {
+        return "[]";
+      }
+      return formatValue(args);
+    } catch (Throwable error) {
+      return "<debug-format-error args " + error.getClass().getSimpleName() + ": " + error.getMessage() + ">";
     }
-    return formatValue(args);
   }
 
   static String formatValue(Object value) {
-    return truncate(render(value, 0));
+    try {
+      return truncate(render(value, 0));
+    } catch (Throwable error) {
+      return "<debug-format-error value " + error.getClass().getSimpleName() + ": " + error.getMessage() + ">";
+    }
   }
 
   private static String render(Object value, int depth) {
