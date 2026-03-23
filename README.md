@@ -34,6 +34,16 @@ java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.prope
 
 `mvn package` produces both a regular jar and a runnable fat jar with classifier `fat`.
 
+For Java 17+ with Hadoop 2.x Kerberos libraries, start with:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -Djava.security.krb5.conf=/etc/krb5.conf \
+  -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+```
+
 ## Routing model
 
 - Catalog-aware HMS clients can send `catName=dbCatalog, dbName=sales`
@@ -56,6 +66,8 @@ Each client call gets a `requestId`, and the logs include:
 If the logs are too noisy, override the level at startup, for example:
 
 Override it with a custom `log4j.properties` if needed.
+The proxy also bootstraps the bundled `log4j.properties` at runtime if no appenders are configured,
+so a plain `java -jar ...` launch still gets console logs.
 
 ## HiveServer2
 
