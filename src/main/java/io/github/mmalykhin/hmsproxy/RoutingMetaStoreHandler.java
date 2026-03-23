@@ -76,8 +76,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     long requestId = REQUEST_SEQUENCE.incrementAndGet();
     long startedAt = System.nanoTime();
     REQUEST_ID.set(requestId);
-    LOG.debug("requestId={} incoming method={} args={}",
-        requestId, name, DebugLogUtil.formatArgs(args));
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("requestId={} incoming method={} args={}",
+          requestId, name, DebugLogUtil.formatArgs(args));
+    }
 
     try {
       Object result = switch (name) {
@@ -97,8 +99,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
         default -> routeByNamespaceOrFail(method, args);
       };
-      LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
-          requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
+            requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+      }
       return result;
     } catch (Throwable throwable) {
       LOG.debug("requestId={} client-error method={} elapsedMs={} error={}",
@@ -277,12 +281,16 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     long startedAt = System.nanoTime();
     Long requestId = currentRequestId();
     try {
-      LOG.debug("requestId={} proxy-call catalog={} method={} args={}",
-          requestId, backend.name(), method.getName(), DebugLogUtil.formatArgs(args));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-call catalog={} method={} args={}",
+            requestId, backend.name(), method.getName(), DebugLogUtil.formatArgs(args));
+      }
       Object result = method.invoke(backend.thriftClient(), args);
-      LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
-          requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
-          DebugLogUtil.formatValue(result));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
+            requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
+            DebugLogUtil.formatValue(result));
+      }
       return result;
     } catch (InvocationTargetException e) {
       Throwable cause = e.getCause();
