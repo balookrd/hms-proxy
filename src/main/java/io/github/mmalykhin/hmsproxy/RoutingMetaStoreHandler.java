@@ -44,6 +44,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       "get_schema_with_environment_context",
       "get_table_names_by_filter"
   );
+  private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
+      "set_ugi"
+  );
 
   private final ProxyConfig config;
   private final CatalogRouter router;
@@ -235,6 +238,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
+    if (DEFAULT_BACKEND_GLOBAL_METHODS.contains(method.getName())) {
+      return invokeBackend(router.defaultBackend(), method, args);
+    }
     if (!router.singleCatalog()) {
       throw metaException("Operation " + method.getName()
           + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");

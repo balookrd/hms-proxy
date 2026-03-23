@@ -55,11 +55,7 @@ final class CatalogRouter implements AutoCloseable {
       }
     }
 
-    if (singleCatalog()) {
-      return resolveCatalog(config.defaultCatalog(), dbName);
-    }
-
-    throw metaException("Database reference must be catalog-qualified, expected catalog.db: " + dbName);
+    return resolveCatalog(config.defaultCatalog(), dbName);
   }
 
   Optional<ResolvedNamespace> resolvePattern(String dbPattern) {

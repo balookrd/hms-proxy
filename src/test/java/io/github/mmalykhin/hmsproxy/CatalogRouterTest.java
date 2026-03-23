@@ -53,15 +53,14 @@ public class CatalogRouterTest {
   }
 
   @Test
-  public void rejectsUnprefixedDatabaseInMultiCatalog() {
+  public void resolvesUnprefixedDatabaseToDefaultCatalogInMultiCatalog() throws Exception {
     CatalogRouter router = routerFor(TWO_CATALOG_CONFIG);
 
-    try {
-      router.resolveDatabase("sales");
-      Assert.fail("Expected MetaException for unqualified db name in multi-catalog mode");
-    } catch (MetaException e) {
-      Assert.assertTrue(e.getMessage().contains("catalog-qualified"));
-    }
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("sales");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("sales", namespace.backendDbName());
+    Assert.assertEquals("catalog1.sales", namespace.externalDbName());
   }
 
   @Test
