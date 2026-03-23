@@ -1,6 +1,8 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.security.PrivilegedExceptionAction;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
@@ -10,24 +12,34 @@ import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
 
+  private final ProxyConfig proxyConfig;
   private final ProxyConfig.CatalogConfig config;
-  private final HiveMetaStoreClient client;
-  private final ThriftHiveMetastore.Iface thriftClient;
+  private final HiveConf hiveConf;
+  private final boolean backendKerberosEnabled;
+  private HiveMetaStoreClient client;
+  private ThriftHiveMetastore.Iface thriftClient;
   private final Catalog catalog;
 
   private CatalogBackend(
+      ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig config,
+      HiveConf hiveConf,
+      boolean backendKerberosEnabled,
       HiveMetaStoreClient client,
       ThriftHiveMetastore.Iface thriftClient,
       Catalog catalog
   ) {
+    this.proxyConfig = proxyConfig;
     this.config = config;
+    this.hiveConf = hiveConf;
+    this.backendKerberosEnabled = backendKerberosEnabled;
     this.client = client;
     this.thriftClient = thriftClient;
     this.catalog = catalog;
@@ -48,7 +60,7 @@ final class CatalogBackend implements AutoCloseable {
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
     catalog.setLocationUri(catalogConfig.locationUri());
-    return new CatalogBackend(catalogConfig, client, thriftClient, catalog);
+    return new CatalogBackend(proxyConfig, catalogConfig, conf, backendKerberosEnabled, client, thriftClient, catalog);
   }
 
   String name() {
@@ -63,8 +75,27 @@ final class CatalogBackend implements AutoCloseable {
     return thriftClient;
   }
 
+  synchronized Object invoke(Method method, Object[] args) throws Throwable {
+    try {
+      return method.invoke(thriftClient, args);
+    } catch (InvocationTargetException e) {
+      Throwable cause = e.getCause();
+      if (!isTransportFailure(cause)) {
+        throw cause;
+      }
+      LOG.warn("Backend catalog '{}' transport failed in method {}, reconnecting once",
+          config.name(), method.getName(), cause);
+      reconnect();
+      try {
+        return method.invoke(thriftClient, args);
+      } catch (InvocationTargetException retryError) {
+        throw retryError.getCause();
+      }
+    }
+  }
+
   @Override
-  public void close() {
+  public synchronized void close() {
     client.close();
   }
 
@@ -130,5 +161,16 @@ final class CatalogBackend implements AutoCloseable {
 
   private static boolean backendKerberosEnabled(ProxyConfig.CatalogConfig catalogConfig) {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
+  }
+
+  private synchronized void reconnect() throws MetaException {
+    client.close();
+    client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
+    thriftClient = extractThriftClient(client);
+  }
+
+  private static boolean isTransportFailure(Throwable throwable) {
+    return throwable instanceof TTransportException
+        || throwable instanceof org.apache.thrift.TApplicationException;
   }
 }

@@ -88,6 +88,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "getVersion" -> "hms-proxy/0.1.0";
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
+        case "set_ugi" -> List.of();
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -302,15 +303,14 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         LOG.debug("requestId={} proxy-call catalog={} method={} args={}",
             requestId, backend.name(), method.getName(), DebugLogUtil.formatArgs(args));
       }
-      Object result = method.invoke(backend.thriftClient(), args);
+      Object result = backend.invoke(method, args);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
             requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
             DebugLogUtil.formatValue(result));
       }
       return result;
-    } catch (InvocationTargetException e) {
-      Throwable cause = e.getCause();
+    } catch (Throwable cause) {
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
       throw cause;
