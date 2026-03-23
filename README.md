@@ -93,6 +93,10 @@ security.keytab=/etc/security/keytabs/hms-proxy.keytab
 # Optional: principal used when connecting to backends.
 # Defaults to server-principal if not set.
 security.client-principal=hive/_HOST@REALM.COM
+
+# Optional: dedicated keytab used when connecting to backend metastores.
+# Defaults to security.keytab if not set.
+security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 ```
 
 `security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
@@ -107,8 +111,13 @@ catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
 
+When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
+connections using `security.client-principal` and `security.client-keytab`. If those are omitted,
+it falls back to `security.server-principal` and `security.keytab`.
+
 Front and backend security are independent: you can run the front door without Kerberos and
-still connect to Kerberos-protected backends, or vice versa.
+still connect to Kerberos-protected backends, or vice versa. In that case, set
+`security.mode=NONE` and provide `security.client-principal` plus `security.client-keytab`.
 
 **Full example:**
 
@@ -119,6 +128,8 @@ server.bind-host=0.0.0.0
 security.mode=KERBEROS
 security.server-principal=hive/_HOST@REALM.COM
 security.keytab=/etc/security/keytabs/hms-proxy.keytab
+security.client-principal=hive/_HOST@REALM.COM
+security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 
 catalogs=catalog1,catalog2
 routing.default-catalog=catalog1

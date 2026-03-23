@@ -142,4 +142,77 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void defaultsClientCredentialsToServerCredentialsForKerberizedBackends() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+    try {
+      Files.writeString(file, """
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=%s
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+          """.formatted(keytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals("hive/_HOST@EXAMPLE.COM", config.security().clientPrincipal());
+      Assert.assertEquals(keytab.toString(), config.security().clientKeytab());
+      Assert.assertEquals("hive/_HOST@EXAMPLE.COM", config.security().outboundPrincipal());
+      Assert.assertEquals(keytab.toString(), config.security().outboundKeytab());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
+    }
+  }
+
+  @Test
+  public void allowsDedicatedBackendKeytabWhenFrontDoorIsSimple() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path clientKeytab = Files.createTempFile("hms-proxy-client", ".keytab");
+    try {
+      Files.writeString(file, """
+          security.mode=NONE
+          security.client-principal=hive-metastore/_HOST@EXAMPLE.COM
+          security.client-keytab=%s
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+          """.formatted(clientKeytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals("hive-metastore/_HOST@EXAMPLE.COM", config.security().outboundPrincipal());
+      Assert.assertEquals(clientKeytab.toString(), config.security().outboundKeytab());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(clientKeytab);
+    }
+  }
+
+  @Test
+  public void rejectsMissingClientKeytabForKerberizedBackend() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          security.mode=NONE
+          security.client-principal=hive-metastore/_HOST@EXAMPLE.COM
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for missing security.client-keytab");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("security.client-keytab"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

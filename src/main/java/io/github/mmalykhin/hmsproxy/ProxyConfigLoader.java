@@ -47,8 +47,7 @@ public final class ProxyConfigLoader {
     String serverPrincipal = trimToNull(properties.getProperty("security.server-principal"));
     String clientPrincipal = trimToNull(properties.getProperty("security.client-principal"));
     String keytab = trimToNull(properties.getProperty("security.keytab"));
-    ProxyConfig.SecurityConfig security =
-        new ProxyConfig.SecurityConfig(securityMode, serverPrincipal, clientPrincipal, keytab);
+    String clientKeytab = trimToNull(properties.getProperty("security.client-keytab"));
 
     String catalogsValue = require(properties, "catalogs");
     Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
@@ -87,18 +86,27 @@ public final class ProxyConfigLoader {
           "Unknown routing.default-catalog: " + defaultCatalog);
     }
 
-    if (security.kerberosEnabled()) {
-      requireNonBlank(serverPrincipal, "security.server-principal");
-      requireNonBlank(keytab, "security.keytab");
-      if (!Files.isReadable(Path.of(keytab))) {
-        throw new IllegalArgumentException("Keytab file not found or not readable: " + keytab);
-      }
-      if (clientPrincipal == null) {
-        clientPrincipal = serverPrincipal;
-        security = new ProxyConfig.SecurityConfig(securityMode, serverPrincipal, clientPrincipal, keytab);
-      }
+    if (clientPrincipal == null && serverPrincipal != null) {
+      clientPrincipal = serverPrincipal;
+    }
+    if (clientKeytab == null && keytab != null) {
+      clientKeytab = keytab;
     }
 
+    if (securityMode == ProxyConfig.SecurityMode.KERBEROS) {
+      requireNonBlank(serverPrincipal, "security.server-principal");
+      requireNonBlank(keytab, "security.keytab");
+      requireReadableFile(keytab, "security.keytab");
+    }
+
+    if (catalogs.values().stream().anyMatch(catalog -> backendKerberosEnabled(catalog.hiveConf()))) {
+      requireNonBlank(clientPrincipal, "security.client-principal");
+      requireNonBlank(clientKeytab, "security.client-keytab");
+      requireReadableFile(clientKeytab, "security.client-keytab");
+    }
+
+    ProxyConfig.SecurityConfig security =
+        new ProxyConfig.SecurityConfig(securityMode, serverPrincipal, clientPrincipal, keytab, clientKeytab);
     return new ProxyConfig(server, security, defaultCatalog, catalogs);
   }
 
@@ -145,5 +153,16 @@ public final class ProxyConfigLoader {
     if (trimToNull(value) == null) {
       throw new IllegalArgumentException("Missing required property: " + name);
     }
+  }
+
+  private static void requireReadableFile(String path, String propertyName) {
+    if (!Files.isReadable(Path.of(path))) {
+      throw new IllegalArgumentException(
+          "File not found or not readable for " + propertyName + ": " + path);
+    }
+  }
+
+  private static boolean backendKerberosEnabled(Map<String, String> hiveConf) {
+    return Boolean.parseBoolean(trimToNull(hiveConf.get("hive.metastore.sasl.enabled")));
   }
 }
