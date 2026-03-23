@@ -18,6 +18,7 @@ import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
+import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,9 +106,25 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable throwable) {
+      long elapsedMs = elapsedMillis(startedAt);
       LOG.debug("requestId={} client-error method={} elapsedMs={} error={}",
-          requestId, name, elapsedMillis(startedAt), throwable.toString(), throwable);
-      throw throwable;
+          requestId, name, elapsedMs, throwable.toString(), throwable);
+      if (throwable instanceof TException) {
+        throw throwable;
+      }
+      if (throwable instanceof RuntimeException) {
+        LOG.error("requestId={} unexpected runtime error in method={} elapsedMs={}",
+            requestId, name, elapsedMs, throwable);
+        throw throwable;
+      }
+
+      LOG.error("requestId={} unexpected checked error in method={} elapsedMs={}",
+          requestId, name, elapsedMs, throwable);
+      MetaException metaException =
+          metaException("Proxy internal error in " + name + ": " + throwable.getClass().getSimpleName()
+              + (throwable.getMessage() == null ? "" : " - " + throwable.getMessage()));
+      metaException.initCause(throwable);
+      throw metaException;
     } finally {
       REQUEST_ID.remove();
     }
