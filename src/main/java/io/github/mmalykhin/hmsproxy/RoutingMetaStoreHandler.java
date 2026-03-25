@@ -488,7 +488,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       case "get_principals_in_role" -> new GetPrincipalsInRoleResponse(Collections.emptyList());
       case "get_role_grants_for_principal" -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList());
       case "get_privilege_set" -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of());
-      case "get_delegation_token" -> "";
+      case "get_delegation_token" -> null;
       case "get_open_txns" -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0));
       case "get_open_txns_info" -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList());
       case "show_locks" -> new ShowLocksResponse(Collections.emptyList());
