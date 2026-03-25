@@ -1,5 +1,8 @@
 package io.github.mmalykhin.hmsproxy;
 
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.thrift.TApplicationException;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -31,6 +34,22 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void refreshPrivilegesUsesContextRoutingButHasCompatibilityFallback() {
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("refresh_privileges"));
+  }
+
+  @Test
+  public void compatibilityFallbackAppliesToBackendMetaAndTransportFailures() {
+    Assert.assertTrue(RoutingMetaStoreHandler.shouldUseCompatibilityFallback(
+        "get_next_notification", new MetaException("not allowed")));
+    Assert.assertTrue(RoutingMetaStoreHandler.shouldUseCompatibilityFallback(
+        "refresh_privileges", new TTransportException()));
+    Assert.assertTrue(RoutingMetaStoreHandler.shouldUseCompatibilityFallback(
+        "show_compact", new TApplicationException("unsupported")));
+  }
+
+  @Test
+  public void nonCompatibilityMethodsDoNotSilentlyFallback() {
+    Assert.assertFalse(RoutingMetaStoreHandler.shouldUseCompatibilityFallback(
+        "create_role", new MetaException("boom")));
   }
 
   @Test
