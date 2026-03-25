@@ -339,8 +339,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
-      if (isCompatibilityFallbackMethod(method.getName())
-          && (cause instanceof TApplicationException || cause instanceof TTransportException)) {
+      if (shouldUseCompatibilityFallback(method.getName(), cause)) {
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
         return compatibilityFallback(method.getName());
@@ -460,6 +459,15 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
               "get_runtime_stats" -> true;
           default -> false;
         };
+  }
+
+  static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
+    if (!isCompatibilityFallbackMethod(methodName)) {
+      return false;
+    }
+    return cause instanceof TApplicationException
+        || cause instanceof TTransportException
+        || cause instanceof MetaException;
   }
 
   private static Object compatibilityFallback(String methodName) {
