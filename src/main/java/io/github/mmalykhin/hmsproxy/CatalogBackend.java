@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.PrivilegedExceptionAction;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
@@ -19,11 +20,13 @@ import org.slf4j.LoggerFactory;
 
 final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
+  private static final int MAX_IMPERSONATION_CLIENTS = 128;
 
   private final ProxyConfig proxyConfig;
   private final ProxyConfig.CatalogConfig config;
   private final HiveConf hiveConf;
   private final boolean backendKerberosEnabled;
+  private final Map<String, ImpersonationClient> impersonationClients = new LinkedHashMap<>(16, 0.75f, true);
   private HiveMetaStoreClient client;
   private ThriftHiveMetastore.Iface thriftClient;
   private final Catalog catalog;
@@ -108,28 +111,16 @@ final class CatalogBackend implements AutoCloseable {
       Object[] args,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
-    HiveMetaStoreClient impersonatingClient = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
-    try {
-      ThriftHiveMetastore.Iface impersonatingThriftClient = extractThriftClient(impersonatingClient);
-      List<String> backendGroups = impersonatingThriftClient.set_ugi(
-          impersonation.userName(),
-          impersonation.groupNames());
-      if ("set_ugi".equals(method.getName())) {
-        return backendGroups;
-      }
-      try {
-        return method.invoke(impersonatingThriftClient, args);
-      } catch (InvocationTargetException e) {
-        throw e.getCause();
-      }
-    } finally {
-      impersonatingClient.close();
-    }
+    return impersonationClient(impersonation).invoke(method, args);
   }
 
   @Override
   public synchronized void close() {
     client.close();
+    for (ImpersonationClient impersonationClient : impersonationClients.values()) {
+      impersonationClient.closeQuietly();
+    }
+    impersonationClients.clear();
   }
 
   private static HiveMetaStoreClient openClient(
@@ -202,8 +193,109 @@ final class CatalogBackend implements AutoCloseable {
     thriftClient = extractThriftClient(client);
   }
 
+  private synchronized ImpersonationClient impersonationClient(
+      RoutingMetaStoreHandler.ImpersonationContext impersonation
+  ) throws MetaException {
+    ImpersonationClient client = impersonationClients.get(impersonation.userName());
+    if (client != null) {
+      return client;
+    }
+
+    client = new ImpersonationClient(impersonation.userName(), impersonation.groupNames());
+    impersonationClients.put(impersonation.userName(), client);
+    evictOldImpersonationClientsIfNeeded();
+    return client;
+  }
+
+  private void evictOldImpersonationClientsIfNeeded() {
+    while (impersonationClients.size() > MAX_IMPERSONATION_CLIENTS) {
+      String eldestUser = impersonationClients.keySet().iterator().next();
+      ImpersonationClient evicted = impersonationClients.remove(eldestUser);
+      if (evicted != null) {
+        LOG.info("Evicting cached impersonation client for user '{}' in catalog '{}'",
+            eldestUser, config.name());
+        evicted.closeQuietly();
+      }
+    }
+  }
+
   private static boolean isTransportFailure(Throwable throwable) {
     return throwable instanceof TTransportException
         || throwable instanceof org.apache.thrift.TApplicationException;
+  }
+
+  private final class ImpersonationClient implements AutoCloseable {
+    private final String userName;
+    private final List<String> groupNames;
+    private HiveMetaStoreClient client;
+    private ThriftHiveMetastore.Iface thriftClient;
+
+    private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
+      this.userName = userName;
+      this.groupNames = List.copyOf(groupNames);
+      open();
+    }
+
+    synchronized Object invoke(Method method, Object[] args) throws Throwable {
+      try {
+        if ("set_ugi".equals(method.getName())) {
+          return List.copyOf(groupNames);
+        }
+        return method.invoke(thriftClient, args);
+      } catch (InvocationTargetException e) {
+        Throwable cause = e.getCause();
+        if (!isTransportFailure(cause)) {
+          throw cause;
+        }
+        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
+            config.name(), userName, method.getName(), cause);
+        reconnect();
+        try {
+          if ("set_ugi".equals(method.getName())) {
+            return List.copyOf(groupNames);
+          }
+          return method.invoke(thriftClient, args);
+        } catch (InvocationTargetException retryError) {
+          throw retryError.getCause();
+        }
+      }
+    }
+
+    @Override
+    public synchronized void close() {
+      client.close();
+    }
+
+    private void closeQuietly() {
+      try {
+        close();
+      } catch (RuntimeException e) {
+        LOG.warn("Failed to close cached impersonation client for user '{}' in catalog '{}'",
+            userName, config.name(), e);
+      }
+    }
+
+    private void open() throws MetaException {
+      client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
+      try {
+        thriftClient = extractThriftClient(client);
+        thriftClient.set_ugi(userName, groupNames);
+        LOG.debug("Opened cached impersonation client for user '{}' in catalog '{}'", userName, config.name());
+      } catch (Exception e) {
+        client.close();
+        MetaException metaException = new MetaException(
+            "Unable to open impersonating backend metastore client for catalog "
+                + config.name()
+                + " and user "
+                + userName);
+        metaException.initCause(e);
+        throw metaException;
+      }
+    }
+
+    private synchronized void reconnect() throws MetaException {
+      close();
+      open();
+    }
   }
 }

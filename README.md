@@ -128,9 +128,9 @@ security.impersonation-enabled=true
 ```
 
 When enabled, the proxy derives the caller identity from the inbound Kerberos/SASL session and
-opens a dedicated backend HMS client per request, issuing `set_ugi()` with that user before the
-actual metastore RPC. This avoids leaking one user's identity into another user's request on the
-shared backend client pool.
+keeps a separate cached backend HMS client per user and per catalog, issuing `set_ugi()` once when
+that cached client is opened. This avoids leaking one user's identity into another user's requests
+while also avoiding a full backend reconnect on every RPC.
 
 This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
 calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
