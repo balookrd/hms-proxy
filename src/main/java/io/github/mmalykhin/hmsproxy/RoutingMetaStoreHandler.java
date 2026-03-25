@@ -48,7 +48,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       "get_table_names_by_filter"
   );
   private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
-      "set_ugi"
+      "set_ugi",
+      "get_all_functions"
   );
 
   private final ProxyConfig config;
@@ -262,7 +263,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
-    if (DEFAULT_BACKEND_GLOBAL_METHODS.contains(method.getName())) {
+    if (isDefaultBackendGlobalMethod(method.getName())) {
       return invokeBackend(router.defaultBackend(), method, args);
     }
     if (!router.singleCatalog()) {
@@ -399,5 +400,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   record ImpersonationContext(String userName, List<String> groupNames) {
+  }
+
+  static boolean isDefaultBackendGlobalMethod(String methodName) {
+    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
   }
 }
