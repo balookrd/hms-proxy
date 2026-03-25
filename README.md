@@ -16,7 +16,7 @@ requests to multiple backend metastores by catalog.
 
 - catalog definitions are managed in the proxy config, not via `create_catalog` or `drop_catalog`
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
-- session-level compatibility calls such as `set_ugi` and `get_all_functions` are also routed to `routing.default-catalog`
+- session-level compatibility calls such as `set_ugi`, `get_all_functions`, and `get_current_notificationEventId` are also routed to `routing.default-catalog`
 - other operations without clear catalog context are rejected when more than one catalog is configured
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
 - Hive ACID, locks, tokens, and other truly global metastore operations need careful validation
