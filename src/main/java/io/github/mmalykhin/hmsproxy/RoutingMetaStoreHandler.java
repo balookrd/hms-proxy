@@ -6,12 +6,16 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
+import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
+import org.apache.hadoop.hive.metastore.api.NotificationEventsCountResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
@@ -20,6 +24,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.thrift.TApplicationException;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -321,6 +326,11 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
+      if (cause instanceof TApplicationException && isNotificationCompatibilityMethod(method.getName())) {
+        LOG.warn("requestId={} backend catalog={} does not support notification method {}, returning compatibility fallback",
+            requestId, backend.name(), method.getName(), cause);
+        return notificationCompatibilityFallback(method.getName());
+      }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
       throw cause;
@@ -407,5 +417,20 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   static boolean isDefaultBackendGlobalMethod(String methodName) {
     return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
         || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
+  }
+
+  private static boolean isNotificationCompatibilityMethod(String methodName) {
+    return "get_current_notificationEventId".equals(methodName)
+        || "get_next_notification".equals(methodName)
+        || "get_notification_events_count".equals(methodName);
+  }
+
+  private static Object notificationCompatibilityFallback(String methodName) {
+    return switch (methodName) {
+      case "get_current_notificationEventId" -> new CurrentNotificationEventId(0L);
+      case "get_next_notification" -> new NotificationEventResponse(Collections.emptyList());
+      case "get_notification_events_count" -> new NotificationEventsCountResponse(0L);
+      default -> throw new IllegalArgumentException("Unsupported notification compatibility fallback: " + methodName);
+    };
   }
 }
