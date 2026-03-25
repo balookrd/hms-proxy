@@ -22,6 +22,13 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void notificationMethodsHaveCompatibilityFallbacks() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_current_notificationEventId"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_next_notification"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_notification_events_count"));
+  }
+
+  @Test
   public void unrelatedGlobalMethodStillRequiresExplicitHandling() {
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("create_role"));
   }
