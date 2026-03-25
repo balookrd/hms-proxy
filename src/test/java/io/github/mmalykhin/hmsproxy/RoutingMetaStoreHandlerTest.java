@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy;
 
+import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -50,6 +51,16 @@ public class RoutingMetaStoreHandlerTest {
   public void nonCompatibilityMethodsDoNotSilentlyFallback() {
     Assert.assertFalse(RoutingMetaStoreHandler.shouldUseCompatibilityFallback(
         "create_role", new MetaException("boom")));
+  }
+
+  @Test
+  public void delegationTokenFallbackIsNullInsteadOfEmptyString() throws Exception {
+    Method method = RoutingMetaStoreHandler.class.getDeclaredMethod("compatibilityFallback", String.class);
+    method.setAccessible(true);
+
+    Object token = method.invoke(null, "get_delegation_token");
+
+    Assert.assertNull(token);
   }
 
   @Test
