@@ -48,6 +48,8 @@ public final class ProxyConfigLoader {
     String clientPrincipal = trimToNull(properties.getProperty("security.client-principal"));
     String keytab = trimToNull(properties.getProperty("security.keytab"));
     String clientKeytab = trimToNull(properties.getProperty("security.client-keytab"));
+    boolean impersonationEnabled =
+        Boolean.parseBoolean(get(properties, "security.impersonation-enabled", "false"));
 
     String catalogsValue = require(properties, "catalogs");
     Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
@@ -99,14 +101,25 @@ public final class ProxyConfigLoader {
       requireReadableFile(keytab, "security.keytab");
     }
 
+    if (impersonationEnabled && securityMode != ProxyConfig.SecurityMode.KERBEROS) {
+      throw new IllegalArgumentException(
+          "security.impersonation-enabled requires security.mode=KERBEROS "
+              + "so the proxy can derive the caller identity from SASL");
+    }
+
     if (catalogs.values().stream().anyMatch(catalog -> backendKerberosEnabled(catalog.hiveConf()))) {
       requireNonBlank(clientPrincipal, "security.client-principal");
       requireNonBlank(clientKeytab, "security.client-keytab");
       requireReadableFile(clientKeytab, "security.client-keytab");
     }
 
-    ProxyConfig.SecurityConfig security =
-        new ProxyConfig.SecurityConfig(securityMode, serverPrincipal, clientPrincipal, keytab, clientKeytab);
+    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
+        securityMode,
+        serverPrincipal,
+        clientPrincipal,
+        keytab,
+        clientKeytab,
+        impersonationEnabled);
     return new ProxyConfig(server, security, defaultCatalog, catalogs);
   }
 

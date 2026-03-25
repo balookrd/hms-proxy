@@ -215,4 +215,49 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsImpersonationFlag() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+    try {
+      Files.writeString(file, """
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=%s
+          security.impersonation-enabled=true
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """.formatted(keytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.security().impersonationEnabled());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
+    }
+  }
+
+  @Test
+  public void rejectsImpersonationWithoutKerberosFrontDoor() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          security.mode=NONE
+          security.impersonation-enabled=true
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for impersonation without Kerberos");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("impersonation"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

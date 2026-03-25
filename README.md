@@ -10,6 +10,7 @@ requests to multiple backend metastores by catalog.
 - routing by legacy database names in `catalog.db` form for older clients
 - static catalog registry, so one proxy can front tables stored in different storage systems
 - optional Kerberos/SASL on the front door
+- optional impersonation of the authenticated Kerberos caller on backend HMS requests
 
 ## Important scope notes
 
@@ -116,6 +117,24 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 `security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
 The keytab must exist and be readable — the proxy will fail to start otherwise.
 `_HOST` is replaced with the machine's FQDN at runtime (standard Hadoop behaviour).
+
+### Kerberos impersonation
+
+If you want backend HMS calls to execute as the authenticated front-door Kerberos user instead of
+the proxy service principal, enable:
+
+```properties
+security.impersonation-enabled=true
+```
+
+When enabled, the proxy derives the caller identity from the inbound Kerberos/SASL session and
+opens a dedicated backend HMS client per request, issuing `set_ugi()` with that user before the
+actual metastore RPC. This avoids leaking one user's identity into another user's request on the
+shared backend client pool.
+
+This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
+calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
+caller instead.
 
 **Backend connections** — configured per catalog via `catalog.<name>.conf.*`:
 

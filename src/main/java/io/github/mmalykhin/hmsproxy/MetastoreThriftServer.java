@@ -35,7 +35,7 @@ final class MetastoreThriftServer {
       HadoopThriftAuthBridge.Server saslServer = bridge.createServer(
           config.security().keytab(),
           config.security().serverPrincipal(),
-          config.security().clientPrincipal());
+          frontDoorClientPrincipal(config.security()));
       transportFactory = saslServer.createTransportFactory(bridge.getHadoopSaslProperties(securityConf));
       processor = saslServer.wrapProcessor(processor);
       LOG.info("Kerberos/SASL enabled with principal {}", config.security().serverPrincipal());
@@ -48,6 +48,12 @@ final class MetastoreThriftServer {
         .minWorkerThreads(config.server().minWorkerThreads())
         .maxWorkerThreads(config.server().maxWorkerThreads());
     this.server = new TThreadPoolServer(args);
+  }
+
+  static String frontDoorClientPrincipal(ProxyConfig.SecurityConfig security) {
+    // Hive's thrift bridge uses this principal to validate inbound Kerberos/SASL clients for the
+    // proxy listener itself. Backend credentials are configured separately via client-principal.
+    return security.serverPrincipal();
   }
 
   void serve() {
