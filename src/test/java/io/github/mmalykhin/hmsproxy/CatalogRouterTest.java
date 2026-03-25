@@ -10,7 +10,7 @@ import org.junit.Test;
 public class CatalogRouterTest {
   private static final ProxyConfig TWO_CATALOG_CONFIG = new ProxyConfig(
       new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null),
+      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false),
       "catalog1",
       Map.of(
           "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", Map.of("hive.metastore.uris", "thrift://one")),
@@ -18,7 +18,7 @@ public class CatalogRouterTest {
 
   private static final ProxyConfig ONE_CATALOG_CONFIG = new ProxyConfig(
       new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null),
+      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false),
       "catalog1",
       Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", Map.of("hive.metastore.uris", "thrift://one"))));
 

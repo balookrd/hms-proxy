@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.PrivilegedExceptionAction;
+import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -75,7 +76,15 @@ final class CatalogBackend implements AutoCloseable {
     return thriftClient;
   }
 
-  synchronized Object invoke(Method method, Object[] args) throws Throwable {
+  Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+      throws Throwable {
+    if (impersonation != null) {
+      return invokeWithImpersonation(method, args, impersonation);
+    }
+    return invokeSharedClient(method, args);
+  }
+
+  private synchronized Object invokeSharedClient(Method method, Object[] args) throws Throwable {
     try {
       return method.invoke(thriftClient, args);
     } catch (InvocationTargetException e) {
@@ -91,6 +100,30 @@ final class CatalogBackend implements AutoCloseable {
       } catch (InvocationTargetException retryError) {
         throw retryError.getCause();
       }
+    }
+  }
+
+  private Object invokeWithImpersonation(
+      Method method,
+      Object[] args,
+      RoutingMetaStoreHandler.ImpersonationContext impersonation
+  ) throws Throwable {
+    HiveMetaStoreClient impersonatingClient = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
+    try {
+      ThriftHiveMetastore.Iface impersonatingThriftClient = extractThriftClient(impersonatingClient);
+      List<String> backendGroups = impersonatingThriftClient.set_ugi(
+          impersonation.userName(),
+          impersonation.groupNames());
+      if ("set_ugi".equals(method.getName())) {
+        return backendGroups;
+      }
+      try {
+        return method.invoke(impersonatingThriftClient, args);
+      } catch (InvocationTargetException e) {
+        throw e.getCause();
+      }
+    } finally {
+      impersonatingClient.close();
     }
   }
 
