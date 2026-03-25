@@ -49,7 +49,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   );
   private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
       "set_ugi",
-      "get_all_functions"
+      "get_all_functions",
+      "get_current_notificationEventId"
   );
 
   private final ProxyConfig config;
