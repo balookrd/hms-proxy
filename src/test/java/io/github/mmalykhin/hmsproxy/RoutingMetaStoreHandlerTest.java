@@ -15,7 +15,14 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void globalReadOnlyMethodsUseDefaultBackendCompatibilityPath() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_resource_plans"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_compact"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("list_roles"));
+  }
+
+  @Test
   public void unrelatedGlobalMethodStillRequiresExplicitHandling() {
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_tables"));
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("create_role"));
   }
 }

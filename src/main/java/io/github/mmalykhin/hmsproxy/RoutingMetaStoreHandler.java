@@ -50,7 +50,13 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
       "set_ugi",
       "get_all_functions",
-      "get_current_notificationEventId"
+      "get_current_notificationEventId",
+      "flushCache"
+  );
+  private static final List<String> DEFAULT_BACKEND_GLOBAL_PREFIXES = List.of(
+      "get_",
+      "show_",
+      "list_"
   );
 
   private final ProxyConfig config;
@@ -248,11 +254,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
       return NamespaceTranslator.externalizeResult(result, namespace);
     }
-    if (firstArgument instanceof String catalogName
-        && ("get_current_notificationEventId".equals(methodName) || "flushCache".equals(methodName))) {
-      return invokeGlobal(method, args);
-    }
-
     if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
       Object[] routedArgs = internalizeDbStringArguments(args, namespace);
@@ -404,6 +405,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   static boolean isDefaultBackendGlobalMethod(String methodName) {
-    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
+    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
+        || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
   }
 }
