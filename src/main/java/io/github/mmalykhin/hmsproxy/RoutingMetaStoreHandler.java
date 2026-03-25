@@ -38,6 +38,7 @@ import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.TException;
+import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -338,8 +339,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
-      if (cause instanceof TApplicationException && isCompatibilityFallbackMethod(method.getName())) {
-        LOG.warn("requestId={} backend catalog={} does not support compatibility method {}, returning fallback",
+      if (isCompatibilityFallbackMethod(method.getName())
+          && (cause instanceof TApplicationException || cause instanceof TTransportException)) {
+        LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
         return compatibilityFallback(method.getName());
       }
