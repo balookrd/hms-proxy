@@ -4,12 +4,14 @@ import java.net.InetSocketAddress;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
+import org.apache.hadoop.security.SaslRpcServer;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.TServerSocket;
+import org.apache.thrift.transport.TSaslServerTransport;
 import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,9 +38,12 @@ final class MetastoreThriftServer {
           config.security().keytab(),
           config.security().serverPrincipal(),
           frontDoorClientPrincipal(config.security()));
-      transportFactory = saslServer.createTransportFactory(bridge.getHadoopSaslProperties(securityConf));
+      transportFactory = createKerberosOnlyTransportFactory(
+          saslServer,
+          bridge.getHadoopSaslProperties(securityConf));
       processor = saslServer.wrapProcessor(processor);
       LOG.info("Kerberos/SASL enabled with principal {}", config.security().serverPrincipal());
+      LOG.info("Front door delegation-token DIGEST auth is disabled; Kerberos SASL is required");
     }
 
     TThreadPoolServer.Args args = new TThreadPoolServer.Args(serverSocket)
@@ -54,6 +59,26 @@ final class MetastoreThriftServer {
     // Hive's thrift bridge uses this principal to validate inbound Kerberos/SASL clients for the
     // proxy listener itself. Backend credentials are configured separately via client-principal.
     return security.serverPrincipal();
+  }
+
+  private static TTransportFactory createKerberosOnlyTransportFactory(
+      HadoopThriftAuthBridge.Server saslServer,
+      java.util.Map<String, String> saslProperties
+  ) throws Exception {
+    String serverUser = UserGroupInformation.getLoginUser().getUserName();
+    String[] principalParts = SaslRpcServer.splitKerberosName(serverUser);
+    if (principalParts.length != 3) {
+      throw new IllegalStateException("Kerberos principal should have 3 parts: " + serverUser);
+    }
+
+    TSaslServerTransport.Factory factory = new TSaslServerTransport.Factory();
+    factory.addServerDefinition(
+        SaslRpcServer.AuthMethod.KERBEROS.getMechanismName(),
+        principalParts[0],
+        principalParts[1],
+        saslProperties,
+        new SaslRpcServer.SaslGssCallbackHandler());
+    return saslServer.wrapTransportFactory(factory);
   }
 
   void serve() {
