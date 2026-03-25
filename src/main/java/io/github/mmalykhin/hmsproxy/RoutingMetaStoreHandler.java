@@ -4,25 +4,37 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
-import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
-import org.apache.hadoop.hive.metastore.api.NotificationEventsCountResponse;
+import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
+import org.apache.hadoop.hive.metastore.api.GetOpenTxnsResponse;
+import org.apache.hadoop.hive.metastore.api.GetPrincipalsInRoleResponse;
+import org.apache.hadoop.hive.metastore.api.GetRoleGrantsForPrincipalResponse;
+import org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
+import org.apache.hadoop.hive.metastore.api.NotificationEventsCountResponse;
+import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
+import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
+import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
+import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
+import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.TException;
@@ -326,10 +338,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
-      if (cause instanceof TApplicationException && isNotificationCompatibilityMethod(method.getName())) {
-        LOG.warn("requestId={} backend catalog={} does not support notification method {}, returning compatibility fallback",
+      if (cause instanceof TApplicationException && isCompatibilityFallbackMethod(method.getName())) {
+        LOG.warn("requestId={} backend catalog={} does not support compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
-        return notificationCompatibilityFallback(method.getName());
+        return compatibilityFallback(method.getName());
       }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
@@ -425,12 +437,59 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         || "get_notification_events_count".equals(methodName);
   }
 
-  private static Object notificationCompatibilityFallback(String methodName) {
+  private static boolean isCompatibilityFallbackMethod(String methodName) {
+    return isNotificationCompatibilityMethod(methodName)
+        || switch (methodName) {
+          case "refresh_privileges",
+              "get_role_names",
+              "get_principals_in_role",
+              "get_role_grants_for_principal",
+              "get_privilege_set",
+              "list_privileges",
+              "get_delegation_token",
+              "get_all_token_identifiers",
+              "get_master_keys",
+              "get_open_txns",
+              "get_open_txns_info",
+              "show_locks",
+              "show_compact",
+              "get_active_resource_plan",
+              "get_all_resource_plans",
+              "get_runtime_stats" -> true;
+          default -> false;
+        };
+  }
+
+  private static Object compatibilityFallback(String methodName) {
     return switch (methodName) {
       case "get_current_notificationEventId" -> new CurrentNotificationEventId(0L);
       case "get_next_notification" -> new NotificationEventResponse(Collections.emptyList());
       case "get_notification_events_count" -> new NotificationEventsCountResponse(0L);
-      default -> throw new IllegalArgumentException("Unsupported notification compatibility fallback: " + methodName);
+      case "refresh_privileges" -> {
+        GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
+        response.setSuccess(true);
+        yield response;
+      }
+      case "get_role_names",
+          "list_privileges",
+          "get_all_token_identifiers",
+          "get_master_keys",
+          "get_runtime_stats" -> Collections.emptyList();
+      case "get_principals_in_role" -> new GetPrincipalsInRoleResponse(Collections.emptyList());
+      case "get_role_grants_for_principal" -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList());
+      case "get_privilege_set" -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of());
+      case "get_delegation_token" -> "";
+      case "get_open_txns" -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0));
+      case "get_open_txns_info" -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList());
+      case "show_locks" -> new ShowLocksResponse(Collections.emptyList());
+      case "show_compact" -> new ShowCompactResponse(Collections.emptyList());
+      case "get_active_resource_plan" -> new WMGetActiveResourcePlanResponse();
+      case "get_all_resource_plans" -> {
+        WMGetAllResourcePlanResponse response = new WMGetAllResourcePlanResponse();
+        response.setResourcePlans(Collections.emptyList());
+        yield response;
+      }
+      default -> throw new IllegalArgumentException("Unsupported compatibility fallback: " + methodName);
     };
   }
 }
