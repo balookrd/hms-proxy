@@ -26,10 +26,11 @@ public final class HmsProxyApplication {
     try {
       ProxyConfig config = ProxyConfigLoader.load(Path.of(args[0]));
       try (CatalogRouter router = CatalogRouter.open(config)) {
-        RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router);
+        FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
+        RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, frontDoorSecurity);
         ThriftHiveMetastore.Iface proxy =
             RoutingMetaStoreHandler.newProxy(ThriftHiveMetastore.Iface.class, handler);
-        MetastoreThriftServer server = new MetastoreThriftServer(config, proxy);
+        MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server);
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
             config.server().bindHost(), config.server().port());
