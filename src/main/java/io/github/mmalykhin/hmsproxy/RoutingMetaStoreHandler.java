@@ -79,11 +79,13 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   private final ProxyConfig config;
   private final CatalogRouter router;
+  private final FrontDoorSecurity frontDoorSecurity;
   private final long aliveSince;
 
-  RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router) {
+  RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
     this.config = config;
     this.router = router;
+    this.frontDoorSecurity = frontDoorSecurity;
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -117,6 +119,12 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
         case "set_ugi" -> handleSetUgi(method, args);
+        case "get_delegation_token" -> handleGetDelegationToken(args);
+        case "renew_delegation_token" -> handleRenewDelegationToken(args);
+        case "cancel_delegation_token" -> {
+          handleCancelDelegationToken(args);
+          yield null;
+        }
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -405,6 +413,29 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     }
 
     return invokeGlobal(method, new Object[] {impersonation.userName(), impersonation.groupNames()});
+  }
+
+  private String handleGetDelegationToken(Object[] args) throws Exception {
+    if (frontDoorSecurity == null) {
+      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
+    }
+    String owner = (String) args[0];
+    String renewer = (String) args[1];
+    return frontDoorSecurity.issueDelegationToken(owner, renewer);
+  }
+
+  private long handleRenewDelegationToken(Object[] args) throws Exception {
+    if (frontDoorSecurity == null) {
+      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
+    }
+    return frontDoorSecurity.renewDelegationToken((String) args[0]);
+  }
+
+  private void handleCancelDelegationToken(Object[] args) throws Exception {
+    if (frontDoorSecurity == null) {
+      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
+    }
+    frontDoorSecurity.cancelDelegationToken((String) args[0]);
   }
 
   private Optional<ImpersonationContext> currentImpersonation() throws MetaException {
