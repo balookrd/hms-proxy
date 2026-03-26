@@ -234,6 +234,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.security().impersonationEnabled());
+      Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
     } finally {
       Files.deleteIfExists(file);
       Files.deleteIfExists(keytab);
@@ -254,6 +255,83 @@ public class ProxyConfigLoaderTest {
       try {
         ProxyConfigLoader.load(file);
         Assert.fail("Expected IllegalArgumentException for impersonation without Kerberos");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("impersonation"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void catalogLevelImpersonationOverrideCanDisableSingleBackend() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+    try {
+      Files.writeString(file, """
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=%s
+          security.impersonation-enabled=true
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.impersonation-enabled=false
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          """.formatted(keytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
+      Assert.assertFalse(config.catalogs().get("catalog2").impersonationEnabled());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
+    }
+  }
+
+  @Test
+  public void catalogLevelImpersonationOverrideCanEnableSingleBackend() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+    try {
+      Files.writeString(file, """
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=%s
+          security.impersonation-enabled=false
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.impersonation-enabled=true
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          """.formatted(keytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertFalse(config.catalogs().get("catalog1").impersonationEnabled());
+      Assert.assertTrue(config.catalogs().get("catalog2").impersonationEnabled());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
+    }
+  }
+
+  @Test
+  public void rejectsCatalogLevelImpersonationWithoutKerberosFrontDoor() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          security.mode=NONE
+          security.impersonation-enabled=false
+          catalogs=catalog1
+          catalog.catalog1.impersonation-enabled=true
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for catalog-level impersonation without Kerberos");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("impersonation"));
       }

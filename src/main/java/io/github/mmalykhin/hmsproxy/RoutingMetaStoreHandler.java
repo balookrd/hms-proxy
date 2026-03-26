@@ -365,7 +365,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Object handleSetUgi(Method method, Object[] args) throws Throwable {
-    if (!config.security().impersonationEnabled()) {
+    if (!router.defaultBackend().impersonationEnabled()) {
       return invokeGlobal(method, args);
     }
 
@@ -383,7 +383,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Optional<ImpersonationContext> currentImpersonation() throws MetaException {
-    if (!config.security().impersonationEnabled()) {
+    if (config.catalogs().values().stream().noneMatch(ProxyConfig.CatalogConfig::impersonationEnabled)) {
       return Optional.empty();
     }
 

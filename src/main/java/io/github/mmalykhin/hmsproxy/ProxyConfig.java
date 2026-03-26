@@ -48,6 +48,7 @@ public record ProxyConfig(
       String name,
       String description,
       String locationUri,
+      boolean impersonationEnabled,
       Map<String, String> hiveConf
   ) {
     public CatalogConfig {
