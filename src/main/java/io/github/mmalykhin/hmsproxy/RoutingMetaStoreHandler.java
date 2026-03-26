@@ -449,6 +449,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       if (userName == null || userName.isBlank()) {
         return Optional.empty();
       }
+      if (isServicePrincipalUser(userName, config.security())) {
+        return Optional.empty();
+      }
       return Optional.of(new ImpersonationContext(userName, List.of(currentUser.getGroupNames())));
     } catch (Exception e) {
       throw metaException("Unable to resolve authenticated caller for impersonation: " + e.getMessage());
@@ -461,6 +464,29 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   static boolean isDefaultBackendGlobalMethod(String methodName) {
     return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
         || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
+  }
+
+  static String shortUserName(String principalOrUser) {
+    if (principalOrUser == null || principalOrUser.isBlank()) {
+      return principalOrUser;
+    }
+    int slash = principalOrUser.indexOf('/');
+    int at = principalOrUser.indexOf('@');
+    int end = principalOrUser.length();
+    if (slash >= 0) {
+      end = Math.min(end, slash);
+    }
+    if (at >= 0) {
+      end = Math.min(end, at);
+    }
+    return principalOrUser.substring(0, end);
+  }
+
+  static boolean isServicePrincipalUser(String userName, ProxyConfig.SecurityConfig security) {
+    if (userName == null || security == null) {
+      return false;
+    }
+    return userName.equals(shortUserName(security.serverPrincipal()));
   }
 
   private static boolean isNotificationCompatibilityMethod(String methodName) {

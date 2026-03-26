@@ -70,4 +70,19 @@ public class RoutingMetaStoreHandlerTest {
   public void unrelatedGlobalMethodStillRequiresExplicitHandling() {
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("create_role"));
   }
+
+  @Test
+  public void servicePrincipalTrafficDoesNotTriggerBackendImpersonation() {
+    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
+        ProxyConfig.SecurityMode.KERBEROS,
+        "hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
+        "proxy-client/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
+        "/etc/security/keytabs/hive.service.keytab",
+        "/etc/security/keytabs/hive.client.keytab",
+        true);
+
+    Assert.assertTrue(RoutingMetaStoreHandler.isServicePrincipalUser("hive", security));
+    Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("alice", security));
+    Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("proxy-client", security));
+  }
 }
