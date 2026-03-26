@@ -177,4 +177,15 @@ public class CatalogRouterTest {
     Assert.assertEquals("default", namespace.backendDbName());
     Assert.assertEquals("catalog1__default", namespace.externalDbName());
   }
+
+  @Test
+  public void resolvesDoublePrefixedExternalDatabaseNameForCompatibility() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("catalog2.catalog2__default");
+
+    Assert.assertEquals("catalog2", namespace.catalogName());
+    Assert.assertEquals("default", namespace.backendDbName());
+    Assert.assertEquals("catalog2__default", namespace.externalDbName());
+  }
 }

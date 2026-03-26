@@ -115,13 +115,21 @@ final class CatalogRouter implements AutoCloseable {
 
     int dot = dbName.indexOf('.');
     if (dot > 0) {
-      String prefixedCatalog = dbName.substring(0, dot);
       String remainder = dbName.substring(dot + 1);
+      if (looksLikeExternalDbName(remainder)) {
+        return remainder;
+      }
+      String prefixedCatalog = dbName.substring(0, dot);
       if (!remainder.isBlank() && !backends.containsKey(prefixedCatalog)) {
         return remainder;
       }
     }
     return dbName;
+  }
+
+  private boolean looksLikeExternalDbName(String dbName) {
+    int separator = dbName.indexOf(config.catalogDbSeparator());
+    return separator > 0 && backends.containsKey(dbName.substring(0, separator));
   }
 
   MetaException metaException(String message) {
