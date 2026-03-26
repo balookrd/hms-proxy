@@ -164,7 +164,14 @@ final class NamespaceTranslator {
     try {
       Field metadataField = thriftValue.getClass().getField("metaDataMap");
       Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
-      return new ArrayList<>((java.util.Set<TFieldIdEnum>) metadata.keySet());
+      List<TFieldIdEnum> fieldIds = new ArrayList<>();
+      for (Object fieldId : metadata.keySet()) {
+        TFieldIdEnum typedFieldId = (TFieldIdEnum) fieldId;
+        if (isThriftFieldSet(thriftValue, typedFieldId)) {
+          fieldIds.add(typedFieldId);
+        }
+      }
+      return fieldIds;
     } catch (NoSuchFieldException | IllegalAccessException e) {
       throw new IllegalStateException(
           "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
@@ -179,6 +186,11 @@ final class NamespaceTranslator {
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static void setThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId, Object value) {
     ((TBase) thriftValue).setFieldValue(fieldId, value);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static boolean isThriftFieldSet(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
+    return ((TBase) thriftValue).isSet(fieldId);
   }
 
   static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
