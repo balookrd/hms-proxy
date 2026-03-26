@@ -34,6 +34,12 @@ public final class HmsProxyApplication {
         installShutdownHook(server);
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
             config.server().bindHost(), config.server().port());
+        LOG.info("Routing config: defaultCatalog='{}', catalogDbSeparator='{}', catalogs={}",
+            config.defaultCatalog(), config.catalogDbSeparator(), config.catalogNames());
+        for (String catalogName : config.catalogNames()) {
+          LOG.info("Catalog '{}' external DB example: {}",
+              catalogName, router.externalDatabaseName(catalogName, "default"));
+        }
         server.serve();
       }
     } catch (Exception e) {
