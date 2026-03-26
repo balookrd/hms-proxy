@@ -289,6 +289,14 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     if (catName != null && !catName.isBlank()) {
       Optional<CatalogRouter.ResolvedNamespace> explicitNamespace = router.resolveCatalogIfKnown(catName, dbName);
       if (explicitNamespace.isPresent()) {
+        CatalogRouter.ResolvedNamespace resolvedByDb = router.resolvePattern(dbName).orElse(null);
+        if (resolvedByDb != null) {
+          if (!resolvedByDb.catalogName().equals(catName)) {
+            throw metaException("Request has conflicting catalog and database namespace: catName='"
+                + catName + "', dbName='" + dbName + "'");
+          }
+          return resolvedByDb;
+        }
         return explicitNamespace.get();
       }
       if (LOG.isDebugEnabled()) {
