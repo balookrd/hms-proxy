@@ -1,6 +1,11 @@
 package io.github.mmalykhin.hmsproxy;
 
+import java.util.List;
+import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
+import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
@@ -79,5 +84,49 @@ public class NamespaceTranslatorTest {
     Assert.assertEquals("sales", routed.getDbName());
     Assert.assertNull(routed.getCatName());
     Assert.assertEquals("events", routed.getTableName());
+  }
+
+  @Test
+  public void internalizeStatsRequestRewritesNestedColumnStatisticsNamespace() {
+    ColumnStatisticsDesc statsDesc = new ColumnStatisticsDesc(true, "@hive#catalog1__sales", "events");
+    statsDesc.setCatName("hive");
+
+    ColumnStatistics statistics = new ColumnStatistics();
+    statistics.setStatsDesc(statsDesc);
+    statistics.setStatsObj(List.of());
+
+    SetPartitionsStatsRequest request = new SetPartitionsStatsRequest();
+    request.setColStats(List.of(statistics));
+    request.setNeedMerge(false);
+
+    SetPartitionsStatsRequest routed =
+        (SetPartitionsStatsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getColStats().get(0).getStatsDesc().getDbName());
+    Assert.assertNull(routed.getColStats().get(0).getStatsDesc().getCatName());
+    Assert.assertEquals("events", routed.getColStats().get(0).getStatsDesc().getTableName());
+  }
+
+  @Test
+  public void extractDbNameReadsNestedStatsRequestNamespace() {
+    ColumnStatisticsDesc statsDesc = new ColumnStatisticsDesc(true, "@hive#catalog1__sales", "events");
+    statsDesc.setCatName("hive");
+
+    ColumnStatistics statistics = new ColumnStatistics();
+    statistics.setStatsDesc(statsDesc);
+    statistics.setStatsObj(List.of());
+
+    SetPartitionsStatsRequest request = new SetPartitionsStatsRequest();
+    request.setColStats(List.of(statistics));
+
+    Assert.assertEquals("@hive#catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
+  public void extractDbNameReadsDatabaseNameForCreateDatabaseStyleRequests() {
+    Database database = new Database();
+    database.setName("catalog1__sales");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(database));
   }
 }

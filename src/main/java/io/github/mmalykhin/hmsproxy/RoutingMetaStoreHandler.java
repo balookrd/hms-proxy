@@ -240,9 +240,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     }
 
     Object firstArgument = args[0];
-    if (hasDbName(firstArgument)) {
-      String dbName = readStringProperty(firstArgument, "getDbName");
-      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+    String extractedDbName = NamespaceTranslator.extractDbName(firstArgument);
+    if (extractedDbName != null) {
+      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(extractedDbName);
       Object[] routedArgs = internalizeObjectArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
       return NamespaceTranslator.externalizeResult(result, namespace);
@@ -365,27 +365,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   private static long elapsedMillis(long startedAt) {
     return (System.nanoTime() - startedAt) / 1_000_000L;
-  }
-
-  private static boolean hasDbName(Object argument) {
-    if (argument == null) {
-      return false;
-    }
-    try {
-      argument.getClass().getMethod("getDbName");
-      return true;
-    } catch (NoSuchMethodException e) {
-      return false;
-    }
-  }
-
-  private static String readStringProperty(Object argument, String getterName) {
-    try {
-      return (String) argument.getClass().getMethod(getterName).invoke(argument);
-    } catch (ReflectiveOperationException e) {
-      throw new IllegalStateException(
-          "Unable to read property " + getterName + " from " + argument.getClass().getName(), e);
-    }
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
