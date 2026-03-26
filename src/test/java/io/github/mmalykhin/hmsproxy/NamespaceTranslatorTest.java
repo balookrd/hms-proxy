@@ -94,6 +94,13 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void internalizeStringArgumentRewritesAtCatalogDatabaseAlias() {
+    Assert.assertEquals("sales", NamespaceTranslator.internalizeStringArgument("@hive#catalog1__sales", NAMESPACE));
+    Assert.assertEquals("sales", NamespaceTranslator.internalizeStringArgument("catalog1__sales", NAMESPACE));
+    Assert.assertEquals("events", NamespaceTranslator.internalizeStringArgument("events", NAMESPACE));
+  }
+
+  @Test
   public void internalizeStatsRequestRewritesNestedColumnStatisticsNamespace() {
     ColumnStatisticsDesc statsDesc = new ColumnStatisticsDesc(true, "@hive#catalog1__sales", "events");
     statsDesc.setCatName("hive");

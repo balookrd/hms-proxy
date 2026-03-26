@@ -30,6 +30,13 @@ final class NamespaceTranslator {
     return transform(value, namespace, Direction.INTERNALIZE);
   }
 
+  static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
+    if (value == null) {
+      return null;
+    }
+    return matchesExternalDatabaseAlias(value, namespace.externalDbName()) ? namespace.backendDbName() : value;
+  }
+
   static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
     return (Table) externalizeResult(table, namespace);
   }

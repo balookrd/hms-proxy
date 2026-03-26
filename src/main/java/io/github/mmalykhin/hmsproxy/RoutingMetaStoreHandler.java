@@ -295,7 +295,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private Object[] internalizeObjectArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {
     Object[] routedArgs = Arrays.copyOf(args, args.length);
     for (int index = 0; index < routedArgs.length; index++) {
-      routedArgs[index] = NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
+      routedArgs[index] = routedArgs[index] instanceof String dbName
+          ? NamespaceTranslator.internalizeStringArgument(dbName, namespace)
+          : NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
     }
     return routedArgs;
   }
