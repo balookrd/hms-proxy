@@ -50,31 +50,39 @@ final class CatalogRouter implements AutoCloseable {
   }
 
   ResolvedNamespace resolveDatabase(String dbName) throws MetaException {
-    if (dbName == null || dbName.isBlank()) {
-      return resolveCatalog(config.defaultCatalog(), dbName);
+    String normalizedDbName = normalizeExternalDbName(dbName);
+    if (normalizedDbName == null || normalizedDbName.isBlank()) {
+      return resolveCatalog(config.defaultCatalog(), normalizedDbName);
     }
 
-    int separator = dbName.indexOf(config.catalogDbSeparator());
+    int separator = normalizedDbName.indexOf(config.catalogDbSeparator());
     if (separator > 0) {
-      String catalog = dbName.substring(0, separator);
+      String catalog = normalizedDbName.substring(0, separator);
       if (backends.containsKey(catalog)) {
-        return resolveCatalog(catalog, dbName.substring(separator + config.catalogDbSeparator().length()), dbName);
+        return resolveCatalog(
+            catalog,
+            normalizedDbName.substring(separator + config.catalogDbSeparator().length()),
+            normalizedDbName);
       }
     }
 
-    return resolveCatalog(config.defaultCatalog(), dbName);
+    return resolveCatalog(config.defaultCatalog(), normalizedDbName);
   }
 
   Optional<ResolvedNamespace> resolvePattern(String dbPattern) {
-    if (dbPattern == null || dbPattern.isBlank()) {
+    String normalizedDbPattern = normalizeExternalDbName(dbPattern);
+    if (normalizedDbPattern == null || normalizedDbPattern.isBlank()) {
       return Optional.empty();
     }
-    int separator = dbPattern.indexOf(config.catalogDbSeparator());
+    int separator = normalizedDbPattern.indexOf(config.catalogDbSeparator());
     if (separator > 0) {
-      String catalog = dbPattern.substring(0, separator);
+      String catalog = normalizedDbPattern.substring(0, separator);
       if (backends.containsKey(catalog)) {
         return Optional.of(
-            resolveCatalog(catalog, dbPattern.substring(separator + config.catalogDbSeparator().length()), dbPattern));
+            resolveCatalog(
+                catalog,
+                normalizedDbPattern.substring(separator + config.catalogDbSeparator().length()),
+                normalizedDbPattern));
       }
     }
     return Optional.empty();
@@ -94,6 +102,26 @@ final class CatalogRouter implements AutoCloseable {
       return catalog;
     }
     return catalog + config.catalogDbSeparator() + backendDbName;
+  }
+
+  private String normalizeExternalDbName(String dbName) {
+    if (dbName == null || dbName.isBlank()) {
+      return dbName;
+    }
+    int separator = dbName.indexOf(config.catalogDbSeparator());
+    if (separator > 0 && backends.containsKey(dbName.substring(0, separator))) {
+      return dbName;
+    }
+
+    int dot = dbName.indexOf('.');
+    if (dot > 0) {
+      String prefixedCatalog = dbName.substring(0, dot);
+      String remainder = dbName.substring(dot + 1);
+      if (!remainder.isBlank() && !backends.containsKey(prefixedCatalog)) {
+        return remainder;
+      }
+    }
+    return dbName;
   }
 
   MetaException metaException(String message) {
