@@ -7,7 +7,7 @@ requests to multiple backend metastores by catalog.
 
 - one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients
 - routing by explicit `catName` in newer HMS requests
-- routing by legacy database names in `catalog.db` form for older clients
+- routing by legacy database names in `catalog<separator>db` form for older clients
 - static catalog registry, so one proxy can front tables stored in different storage systems
 - optional Kerberos/SASL on the front door
 - optional impersonation of the authenticated Kerberos caller on backend HMS requests
@@ -58,6 +58,15 @@ java \
 - `get_all_databases()` returns prefixed names like `catalog1.sales`
 - table objects returned to legacy callers are rewritten back to external names
 
+The catalog/database separator is configurable:
+
+```properties
+# Optional, defaults to "."
+routing.catalog-db-separator=__
+```
+
+With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
+
 ## Debug logging
 
 Detailed debug tracing for the proxy package is enabled by default through the bundled
@@ -80,7 +89,8 @@ so a plain `java -jar ...` launch still gets console logs.
 
 Point HiveServer2 `hive.metastore.uris` to this proxy instead of a single backend HMS.
 For multi-catalog deployments, prefer Hive versions and clients that preserve catalog fields.
-If your clients are older, use `catalog.db.table` naming consistently.
+If your clients are older, use `catalog<separator>db.table` naming consistently, with
+`<separator>` taken from `routing.catalog-db-separator`.
 
 ## Security
 

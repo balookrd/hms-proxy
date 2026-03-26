@@ -6,6 +6,7 @@ import java.util.Map;
 public record ProxyConfig(
     ServerConfig server,
     SecurityConfig security,
+    String catalogDbSeparator,
     String defaultCatalog,
     Map<String, CatalogConfig> catalogs
 ) {

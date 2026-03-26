@@ -21,6 +21,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(9088, config.server().port());
+      Assert.assertEquals(".", config.catalogDbSeparator());
       Assert.assertEquals("catalog1", config.defaultCatalog());
       Assert.assertEquals(2, config.catalogs().size());
       Assert.assertEquals("thrift://hms2:9083",
@@ -255,6 +256,45 @@ public class ProxyConfigLoaderTest {
         Assert.fail("Expected IllegalArgumentException for impersonation without Kerberos");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("impersonation"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsCustomCatalogDbSeparator() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          routing.catalog-db-separator=__
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals("__", config.catalogDbSeparator());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsBlankCatalogDbSeparator() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          routing.catalog-db-separator=
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for blank routing.catalog-db-separator");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("routing.catalog-db-separator"));
       }
     } finally {
       Files.deleteIfExists(file);

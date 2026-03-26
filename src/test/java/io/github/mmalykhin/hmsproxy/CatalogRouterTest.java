@@ -11,6 +11,7 @@ public class CatalogRouterTest {
   private static final ProxyConfig TWO_CATALOG_CONFIG = new ProxyConfig(
       new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
       new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false),
+      ".",
       "catalog1",
       Map.of(
           "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", Map.of("hive.metastore.uris", "thrift://one")),
@@ -19,8 +20,18 @@ public class CatalogRouterTest {
   private static final ProxyConfig ONE_CATALOG_CONFIG = new ProxyConfig(
       new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
       new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false),
+      ".",
       "catalog1",
       Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", Map.of("hive.metastore.uris", "thrift://one"))));
+
+  private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = new ProxyConfig(
+      new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false),
+      "__",
+      "catalog1",
+      Map.of(
+          "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", Map.of("hive.metastore.uris", "thrift://one")),
+          "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", Map.of("hive.metastore.uris", "thrift://two"))));
 
   private static CatalogRouter routerFor(ProxyConfig config) {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
@@ -117,5 +128,23 @@ public class CatalogRouterTest {
     } catch (IllegalArgumentException e) {
       Assert.assertTrue(e.getMessage().contains("nonexistent"));
     }
+  }
+
+  @Test
+  public void resolvesDatabaseUsingConfiguredSeparator() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("catalog2__sales");
+
+    Assert.assertEquals("catalog2", namespace.catalogName());
+    Assert.assertEquals("sales", namespace.backendDbName());
+    Assert.assertEquals("catalog2__sales", namespace.externalDbName());
+  }
+
+  @Test
+  public void externalDatabaseNameUsesConfiguredSeparator() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Assert.assertEquals("catalog1__sales", router.externalDatabaseName("catalog1", "sales"));
   }
 }
