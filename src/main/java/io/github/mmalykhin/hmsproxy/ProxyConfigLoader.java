@@ -57,6 +57,14 @@ public final class ProxyConfigLoader {
     String clientKeytab = trimToNull(properties.getProperty("security.client-keytab"));
     boolean impersonationEnabled =
         Boolean.parseBoolean(get(properties, "security.impersonation-enabled", "false"));
+    Map<String, String> frontDoorConf = properties.stringPropertyNames().stream()
+        .filter(name -> name.startsWith("security.front-door-conf."))
+        .sorted()
+        .collect(Collectors.toMap(
+            name -> name.substring("security.front-door-conf.".length()),
+            properties::getProperty,
+            (left, right) -> right,
+            LinkedHashMap::new));
 
     String catalogsValue = require(properties, "catalogs");
     Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
@@ -130,7 +138,8 @@ public final class ProxyConfigLoader {
         clientPrincipal,
         keytab,
         clientKeytab,
-        impersonationEnabled);
+        impersonationEnabled,
+        frontDoorConf);
     return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs);
   }
 

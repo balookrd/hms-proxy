@@ -17,9 +17,9 @@ final class LoggingBootstrap {
     URL config = LoggingBootstrap.class.getClassLoader().getResource("log4j.properties");
     if (config != null) {
       PropertyConfigurator.configure(config);
-      return;
     }
-
-    BasicConfigurator.configure();
+    if (!LogManager.getRootLogger().getAllAppenders().hasMoreElements()) {
+      BasicConfigurator.configure();
+    }
   }
 }

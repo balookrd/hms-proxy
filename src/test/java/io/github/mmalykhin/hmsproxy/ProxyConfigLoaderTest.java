@@ -235,9 +235,66 @@ public class ProxyConfigLoaderTest {
 
       Assert.assertTrue(config.security().impersonationEnabled());
       Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
+      Assert.assertTrue(config.security().frontDoorConf().isEmpty());
     } finally {
       Files.deleteIfExists(file);
       Files.deleteIfExists(keytab);
+    }
+  }
+
+  @Test
+  public void loadsFrontDoorHiveConfOverrides() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=/tmp/ignored-in-this-test.keytab
+          security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
+          security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181
+          security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for unreadable keytab");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("security.keytab"));
+      }
+
+      Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+      try {
+        Files.writeString(file, """
+            security.mode=KERBEROS
+            security.server-principal=hive/_HOST@EXAMPLE.COM
+            security.keytab=%s
+            security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
+            security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181
+            security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+            catalogs=catalog1
+            catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+            """.formatted(keytab));
+
+        ProxyConfig config = ProxyConfigLoader.load(file);
+
+        Assert.assertEquals(
+            "org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore",
+            config.security().frontDoorConf().get("hive.cluster.delegation.token.store.class"));
+        Assert.assertEquals(
+            "zk1:2181,zk2:2181",
+            config.security().frontDoorConf().get(
+                "hive.cluster.delegation.token.store.zookeeper.connectString"));
+        Assert.assertEquals(
+            "/hms-proxy-delegation-tokens",
+            config.security().frontDoorConf().get(
+                "hive.cluster.delegation.token.store.zookeeper.znode"));
+      } finally {
+        Files.deleteIfExists(keytab);
+      }
+    } finally {
+      Files.deleteIfExists(file);
     }
   }
 

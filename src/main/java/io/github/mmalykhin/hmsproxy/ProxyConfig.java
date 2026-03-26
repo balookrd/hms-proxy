@@ -29,8 +29,13 @@ public record ProxyConfig(
       String clientPrincipal,
       String keytab,
       String clientKeytab,
-      boolean impersonationEnabled
+      boolean impersonationEnabled,
+      Map<String, String> frontDoorConf
   ) {
+    public SecurityConfig {
+      frontDoorConf = Map.copyOf(frontDoorConf);
+    }
+
     public boolean kerberosEnabled() {
       return mode == SecurityMode.KERBEROS;
     }
