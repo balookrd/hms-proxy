@@ -1,12 +1,14 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
 import org.apache.hadoop.hive.metastore.api.GetOpenTxnsResponse;
@@ -21,12 +23,15 @@ import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
 import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
 import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
+import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 
 final class MetastoreCompatibility {
   private static final String FRONT_DOOR_TOKEN_ERROR =
       "Delegation tokens require Kerberos/SASL on the proxy front door";
+  private static final Pattern BACKEND_VISIBLE_CONFIG_PATTERN =
+      Pattern.compile("(hive|hdfs|mapred|metastore).*");
   private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
       "set_ugi",
       "get_all_functions",
@@ -81,6 +86,40 @@ final class MetastoreCompatibility {
     return Optional.of(FALLBACKS.get(methodName).get());
   }
 
+  static Optional<String> compatibleConfigValue(
+      String requestedName,
+      String defaultValue,
+      Map<String, String> hiveConf
+  ) {
+    if (requestedName == null) {
+      return Optional.ofNullable(defaultValue);
+    }
+    if (BACKEND_VISIBLE_CONFIG_PATTERN.matcher(requestedName).matches()) {
+      return Optional.empty();
+    }
+
+    CompatibleConfigKey compatibleKey = resolveCompatibleConfigKey(requestedName).orElse(null);
+    if (compatibleKey == null) {
+      return Optional.empty();
+    }
+
+    String configuredValue = hiveConf.get(requestedName);
+    if (configuredValue != null) {
+      return Optional.of(configuredValue);
+    }
+    configuredValue = hiveConf.get(compatibleKey.metastoreName());
+    if (configuredValue != null) {
+      return Optional.of(configuredValue);
+    }
+    configuredValue = hiveConf.get(compatibleKey.hiveName());
+    if (configuredValue != null) {
+      return Optional.of(configuredValue);
+    }
+
+    String fallbackValue = defaultValue != null ? defaultValue : compatibleKey.defaultValue();
+    return Optional.of(fallbackValue == null ? "" : fallbackValue);
+  }
+
   private static Map<String, LocalMethodHandler> buildLocalHandlers() {
     Map<String, LocalMethodHandler> handlers = new LinkedHashMap<>();
     handlers.put("get_delegation_token", (args, frontDoorSecurity) ->
@@ -132,8 +171,34 @@ final class MetastoreCompatibility {
     return frontDoorSecurity;
   }
 
+  private static Optional<CompatibleConfigKey> resolveCompatibleConfigKey(String requestedName) {
+    List<CompatibleConfigKey> suffixMatches = new ArrayList<>();
+    for (MetastoreConf.ConfVars confVar : MetastoreConf.ConfVars.values()) {
+      CompatibleConfigKey candidate = new CompatibleConfigKey(
+          confVar.getVarname(),
+          confVar.getHiveName(),
+          defaultValueAsString(confVar.getDefaultVal()));
+      if (requestedName.equals(candidate.metastoreName()) || requestedName.equals(candidate.hiveName())) {
+        return Optional.of(candidate);
+      }
+      if (candidate.metastoreName().endsWith("." + requestedName)
+          || candidate.hiveName().endsWith("." + requestedName)) {
+        suffixMatches.add(candidate);
+      }
+    }
+
+    return suffixMatches.size() == 1 ? Optional.of(suffixMatches.get(0)) : Optional.empty();
+  }
+
+  private static String defaultValueAsString(Object defaultValue) {
+    return defaultValue == null ? null : String.valueOf(defaultValue);
+  }
+
   @FunctionalInterface
   private interface LocalMethodHandler {
     Object handle(Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception;
+  }
+
+  private record CompatibleConfigKey(String metastoreName, String hiveName, String defaultValue) {
   }
 }

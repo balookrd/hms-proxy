@@ -94,6 +94,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
+        case "get_config_value" -> handleGetConfigValue(method, args);
         case "create_catalog", "alter_catalog", "drop_catalog" ->
             throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
         case "get_all_databases" -> handleGetAllDatabases(method);
@@ -263,6 +264,23 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     if (!router.singleCatalog()) {
       throw metaException("Operation " + method.getName()
           + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");
+    }
+    return invokeBackend(router.defaultBackend(), method, args);
+  }
+
+  private Object handleGetConfigValue(Method method, Object[] args) throws Throwable {
+    String requestedName = args != null && args.length > 0 ? (String) args[0] : null;
+    String defaultValue = args != null && args.length > 1 ? (String) args[1] : null;
+    Optional<String> compatibilityValue = MetastoreCompatibility.compatibleConfigValue(
+        requestedName,
+        defaultValue,
+        config.catalogs().get(config.defaultCatalog()).hiveConf());
+    if (compatibilityValue.isPresent()) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} returning compatibility config value for key '{}'",
+            currentRequestId(), requestedName);
+      }
+      return compatibilityValue.get();
     }
     return invokeBackend(router.defaultBackend(), method, args);
   }
