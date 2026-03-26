@@ -57,6 +57,8 @@ java \
 - Legacy HMS clients can use database names like `catalog1.sales`
 - `get_all_databases()` returns prefixed names like `catalog1.sales`
 - table objects returned to legacy callers are rewritten back to external names
+- if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
+  to `dbName`/default-catalog routing for compatibility
 
 The catalog/database separator is configurable:
 
