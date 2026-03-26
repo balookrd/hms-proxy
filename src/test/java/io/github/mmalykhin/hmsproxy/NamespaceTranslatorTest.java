@@ -66,4 +66,18 @@ public class NamespaceTranslatorTest {
     Assert.assertNull(routed.getCatName());
     Assert.assertEquals("events", routed.getTableName());
   }
+
+  @Test
+  public void internalizeTableClearsDefaultCatalogWhenDatabaseUsesAtCatalogAlias() {
+    Table table = new Table();
+    table.setCatName("hive");
+    table.setDbName("@hive#catalog1__sales");
+    table.setTableName("events");
+
+    Table routed = (Table) NamespaceTranslator.internalizeArgument(table, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertNull(routed.getCatName());
+    Assert.assertEquals("events", routed.getTableName());
+  }
 }

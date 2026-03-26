@@ -179,7 +179,19 @@ final class NamespaceTranslator {
     if (originalDbName == null || originalDbName.isBlank() || externalDbName == null || externalDbName.isBlank()) {
       return false;
     }
-    return originalDbName.equals(externalDbName) || originalDbName.endsWith("." + externalDbName);
+    String normalizedDbName = normalizeCompatibilityDbName(originalDbName);
+    return normalizedDbName.equals(externalDbName) || normalizedDbName.endsWith("." + externalDbName);
+  }
+
+  private static String normalizeCompatibilityDbName(String dbName) {
+    if (dbName == null || dbName.isBlank()) {
+      return dbName;
+    }
+    int hash = dbName.indexOf('#');
+    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
+      return normalizeCompatibilityDbName(dbName.substring(hash + 1));
+    }
+    return dbName;
   }
 
   private static String readStringProperty(Object target, String getterName) {
