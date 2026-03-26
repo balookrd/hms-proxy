@@ -96,6 +96,24 @@ For multi-catalog deployments, prefer Hive versions and clients that preserve ca
 If your clients are older, use `catalog<separator>db.table` naming consistently, with
 `<separator>` taken from `routing.catalog-db-separator`.
 
+For Beeline/HS2 SQL workloads, a non-dot separator is usually easier to use than `.`.
+Recommended example:
+
+```properties
+routing.catalog-db-separator=__
+```
+
+Then a non-default catalog is used through the external database name:
+
+```sql
+USE catalog2__sales;
+SHOW TABLES IN catalog2__sales;
+SELECT * FROM `catalog2__sales`.orders LIMIT 10;
+```
+
+If you keep the default separator `.`, older Hive SQL clients can treat `catalog.db.table`
+ambiguously, so `__` is usually the safer choice.
+
 ## Security
 
 ### Without Kerberos
@@ -171,6 +189,18 @@ the proxy service principal.
 This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
 calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
 caller instead.
+
+If internal HiveServer2 traffic works as user `hive`, but your personal Kerberos user fails even
+with admin SQL privileges, that usually means backend impersonation is working as designed:
+
+- service traffic from `hive` is allowed to continue on the proxy service principal
+- real end users are sent to the backend through `set_ugi()` and therefore need backend Hadoop
+  proxy-user permission for `security.client-principal`
+- SQL admin rights in Hive do not replace Hadoop proxy-user authorization
+
+In that case either allow proxy-user impersonation on the backend HMS for the proxy outbound
+principal, or disable impersonation for that specific backend with
+`catalog.<name>.impersonation-enabled=false`.
 
 **Backend connections** — configured per catalog via `catalog.<name>.conf.*`:
 
