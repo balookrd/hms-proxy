@@ -159,6 +159,12 @@ When Kerberos is enabled on the front door, delegation-token methods
 are served locally by the proxy's own token manager instead of being forwarded
 to backend metastores.
 
+The proxy reads delegation-token store settings from the usual Hive configuration
+resources loaded by `HiveConf` such as `hive-site.xml` / `metastore-site.xml`.
+If no persistent token store is configured, Hive falls back to
+`org.apache.hadoop.hive.metastore.security.MemoryTokenStore`, and then a proxy
+restart invalidates existing HiveServer2 delegation tokens.
+
 ### Kerberos impersonation
 
 If you want backend HMS calls to execute as the authenticated front-door Kerberos user instead of
