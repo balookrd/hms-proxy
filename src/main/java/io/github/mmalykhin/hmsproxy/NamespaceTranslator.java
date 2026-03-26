@@ -1,144 +1,184 @@
 package io.github.mmalykhin.hmsproxy;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.Database;
-import org.apache.hadoop.hive.metastore.api.GetTableRequest;
-import org.apache.hadoop.hive.metastore.api.GetTableResult;
-import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
-import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.thrift.TBase;
+import org.apache.thrift.TFieldIdEnum;
 
 final class NamespaceTranslator {
+  private enum Direction {
+    EXTERNALIZE,
+    INTERNALIZE
+  }
+
   private NamespaceTranslator() {
   }
 
   static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    if (value == null) {
-      return null;
-    }
-    if (value instanceof Database database) {
-      Database copy = new Database(database);
-      copy.setName(namespace.externalDbName());
-      copy.setCatalogName(namespace.catalogName());
-      return copy;
-    }
-    if (value instanceof Table table) {
-      return externalizeTable(table, namespace);
-    }
-    if (value instanceof TableMeta tableMeta) {
-      return externalizeTableMeta(tableMeta, namespace);
-    }
-    if (value instanceof GetTableResult result) {
-      GetTableResult copy = new GetTableResult(result);
-      if (copy.isSetTable()) {
-        copy.setTable((Table) externalizeTable(copy.getTable(), namespace));
-      }
-      return copy;
-    }
-    if (value instanceof GetTablesResult result) {
-      GetTablesResult copy = new GetTablesResult(result);
-      if (copy.isSetTables()) {
-        List<Table> tables = new ArrayList<>();
-        for (Table table : result.getTables()) {
-          tables.add((Table) externalizeTable(table, namespace));
-        }
-        copy.setTables(tables);
-      }
-      return copy;
-    }
-    if (value instanceof List<?> list) {
-      List<Object> transformed = new ArrayList<>(list.size());
-      for (Object element : list) {
-        transformed.add(externalizeResult(element, namespace));
-      }
-      return transformed;
-    }
-    return trySetNamespace(copyIfThrift(value), namespace.externalDbName(), namespace.catalogName(), true);
+    return transform(value, namespace, Direction.EXTERNALIZE);
   }
 
   static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
+    return transform(value, namespace, Direction.INTERNALIZE);
+  }
+
+  static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
+    return (Table) externalizeResult(table, namespace);
+  }
+
+  static TableMeta externalizeTableMeta(TableMeta tableMeta, CatalogRouter.ResolvedNamespace namespace) {
+    return (TableMeta) externalizeResult(tableMeta, namespace);
+  }
+
+  static String extractDbName(Object value) {
     if (value == null) {
       return null;
     }
     if (value instanceof Database database) {
-      Database copy = new Database(database);
-      copy.setName(namespace.backendDbName());
-      copy.setCatalogName(internalCatalogName(database.getCatalogName(), database.getName(), namespace));
-      return copy;
+      return blankToNull(database.getName());
     }
-    if (value instanceof Table table) {
-      Table copy = new Table(table);
-      copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(table.getCatName(), table.getDbName(), namespace));
-      return copy;
+    String directDbName = blankToNull(readStringProperty(value, "getDbName"));
+    if (directDbName != null) {
+      return directDbName;
     }
-    if (value instanceof GetTableRequest request) {
-      GetTableRequest copy = new GetTableRequest(request);
-      copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(request.getCatName(), request.getDbName(), namespace));
-      return copy;
+    if (value instanceof List<?> list) {
+      for (Object element : list) {
+        String nestedDbName = extractDbName(element);
+        if (nestedDbName != null) {
+          return nestedDbName;
+        }
+      }
+      return null;
     }
-    if (value instanceof GetTablesRequest request) {
-      GetTablesRequest copy = new GetTablesRequest(request);
-      copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(request.getCatName(), request.getDbName(), namespace));
-      return copy;
+    if (value instanceof Map<?, ?> map) {
+      for (Object element : map.values()) {
+        String nestedDbName = extractDbName(element);
+        if (nestedDbName != null) {
+          return nestedDbName;
+        }
+      }
+      return null;
+    }
+    if (value instanceof TBase<?, ?> thriftValue) {
+      for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
+        String nestedDbName = extractDbName(getThriftFieldValue(thriftValue, fieldId));
+        if (nestedDbName != null) {
+          return nestedDbName;
+        }
+      }
+    }
+    return null;
+  }
+
+  private static Object transform(Object value, CatalogRouter.ResolvedNamespace namespace, Direction direction) {
+    if (value == null) {
+      return null;
+    }
+    if (isScalar(value)) {
+      return value;
     }
     if (value instanceof List<?> list) {
       List<Object> transformed = new ArrayList<>(list.size());
       for (Object element : list) {
-        transformed.add(internalizeArgument(element, namespace));
+        transformed.add(transform(element, namespace, direction));
       }
       return transformed;
     }
-    return trySetNamespace(copyIfThrift(value), namespace.backendDbName(), namespace.catalogName(), false);
-  }
-
-  static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
-    Table copy = new Table(table);
-    copy.setDbName(namespace.externalDbName());
-    copy.setCatName(namespace.catalogName());
-    return copy;
-  }
-
-  static TableMeta externalizeTableMeta(TableMeta tableMeta, CatalogRouter.ResolvedNamespace namespace) {
-    TableMeta copy = new TableMeta(tableMeta);
-    copy.setDbName(namespace.externalDbName());
-    copy.setCatName(namespace.catalogName());
-    return copy;
-  }
-
-  private static Object copyIfThrift(Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> transformed = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        transformed.put(entry.getKey(), transform(entry.getValue(), namespace, direction));
+      }
+      return transformed;
+    }
     if (value instanceof TBase<?, ?> thriftValue) {
-      return thriftValue.deepCopy();
+      TBase<?, ?> copy = thriftValue.deepCopy();
+      rewriteNestedFields(copy, namespace, direction);
+      return applyNamespace(copy, namespace, direction);
     }
     return value;
   }
 
-  private static Object trySetNamespace(Object value, String dbName, String catalogName, boolean externalizeDatabaseName) {
-    if (value == null) {
-      return null;
+  private static void rewriteNestedFields(
+      TBase<?, ?> thriftValue,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
+      Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
+      Object transformed = transform(fieldValue, namespace, direction);
+      if (transformed != fieldValue) {
+        setThriftFieldValue(thriftValue, fieldId, transformed);
+      }
+    }
+  }
+
+  private static Object applyNamespace(
+      Object value,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    if (value instanceof Database database) {
+      if (direction == Direction.EXTERNALIZE) {
+        database.setName(namespace.externalDbName());
+        database.setCatalogName(namespace.catalogName());
+      } else {
+        String originalName = database.getName();
+        database.setName(namespace.backendDbName());
+        database.setCatalogName(internalCatalogName(database.getCatalogName(), originalName, namespace));
+      }
+      return database;
     }
     String originalDbName = readStringProperty(value, "getDbName");
-    maybeInvoke(value, "setDbName", dbName);
-    if (externalizeDatabaseName) {
-      maybeInvoke(value, "setCatName", catalogName);
-      maybeInvoke(value, "setCatalogName", catalogName);
+    if (direction == Direction.EXTERNALIZE) {
+      maybeInvoke(value, "setDbName", namespace.externalDbName());
+      maybeInvoke(value, "setCatName", namespace.catalogName());
+      maybeInvoke(value, "setCatalogName", namespace.catalogName());
     } else {
       maybeInvoke(value, "setCatName",
-          internalCatalogName(readStringProperty(value, "getCatName"), originalDbName, catalogName, dbName));
+          internalCatalogName(readStringProperty(value, "getCatName"), originalDbName, namespace));
       maybeInvoke(value, "setCatalogName",
-          internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, catalogName, dbName));
-    }
-    if (externalizeDatabaseName && value instanceof Database database) {
-      database.setName(dbName);
+          internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, namespace));
+      maybeInvoke(value, "setDbName", namespace.backendDbName());
     }
     return value;
+  }
+
+  private static boolean isScalar(Object value) {
+    return value instanceof CharSequence
+        || value instanceof Number
+        || value instanceof Boolean
+        || value instanceof Enum<?>;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<TFieldIdEnum> thriftFieldIds(TBase<?, ?> thriftValue) {
+    try {
+      Field metadataField = thriftValue.getClass().getField("metaDataMap");
+      Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
+      return new ArrayList<>((java.util.Set<TFieldIdEnum>) metadata.keySet());
+    } catch (NoSuchFieldException | IllegalAccessException e) {
+      throw new IllegalStateException(
+          "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
+    }
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object getThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
+    return ((TBase) thriftValue).getFieldValue(fieldId);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static void setThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId, Object value) {
+    ((TBase) thriftValue).setFieldValue(fieldId, value);
   }
 
   static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
@@ -192,6 +232,10 @@ final class NamespaceTranslator {
       return normalizeCompatibilityDbName(dbName.substring(hash + 1));
     }
     return dbName;
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
   }
 
   private static String readStringProperty(Object target, String getterName) {
