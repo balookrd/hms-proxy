@@ -12,7 +12,8 @@ public class MetastoreThriftServerTest {
         "hive/backend-host.example.com@EXAMPLE.COM",
         "/tmp/proxy.keytab",
         "/tmp/backend.keytab",
-        false);
+        false,
+        java.util.Map.of());
 
     Assert.assertEquals(
         "hive/proxy-host.example.com@EXAMPLE.COM",
@@ -27,7 +28,8 @@ public class MetastoreThriftServerTest {
         "hive/backend-host.example.com@EXAMPLE.COM",
         "/tmp/proxy.keytab",
         "/tmp/backend.keytab",
-        false);
+        false,
+        java.util.Map.of());
 
     Assert.assertNotEquals(
         security.clientPrincipal(),

@@ -79,7 +79,8 @@ public class RoutingMetaStoreHandlerTest {
         "proxy-client/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
         "/etc/security/keytabs/hive.service.keytab",
         "/etc/security/keytabs/hive.client.keytab",
-        true);
+        true,
+        java.util.Map.of());
 
     Assert.assertTrue(RoutingMetaStoreHandler.isServicePrincipalUser("hive", security));
     Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("alice", security));
