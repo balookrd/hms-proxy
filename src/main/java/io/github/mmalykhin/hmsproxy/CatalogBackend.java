@@ -75,14 +75,22 @@ final class CatalogBackend implements AutoCloseable {
     return new Catalog(catalog);
   }
 
+  boolean impersonationEnabled() {
+    return config.impersonationEnabled();
+  }
+
   ThriftHiveMetastore.Iface thriftClient() {
     return thriftClient;
   }
 
   Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
-    if (impersonation != null) {
+    if (impersonation != null && config.impersonationEnabled()) {
       return invokeWithImpersonation(method, args, impersonation);
+    }
+    if (impersonation != null && LOG.isDebugEnabled()) {
+      LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
+          config.name(), impersonation.userName());
     }
     return invokeSharedClient(method, args);
   }

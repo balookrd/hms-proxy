@@ -151,6 +151,19 @@ keeps a separate cached backend HMS client per user and per catalog, issuing `se
 that cached client is opened. This avoids leaking one user's identity into another user's requests
 while also avoiding a full backend reconnect on every RPC.
 
+You can also override this per backend:
+
+```properties
+# Global default for catalogs that do not specify their own setting.
+security.impersonation-enabled=false
+
+catalog.catalog1.impersonation-enabled=true
+catalog.catalog2.impersonation-enabled=false
+```
+
+This lets you enable caller impersonation only for selected backends while leaving the others on
+the proxy service principal.
+
 This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
 calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
 caller instead.

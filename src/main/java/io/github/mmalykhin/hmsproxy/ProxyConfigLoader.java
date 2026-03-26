@@ -62,6 +62,8 @@ public final class ProxyConfigLoader {
     Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
     for (String catalogName : splitCsv(catalogsValue)) {
       String prefix = "catalog." + catalogName + ".";
+      boolean catalogImpersonationEnabled =
+          Boolean.parseBoolean(get(properties, prefix + "impersonation-enabled", Boolean.toString(impersonationEnabled)));
       Map<String, String> hiveConf = properties.stringPropertyNames().stream()
           .filter(name -> name.startsWith(prefix + "conf."))
           .sorted()
@@ -78,6 +80,7 @@ public final class ProxyConfigLoader {
           catalogName,
           get(properties, prefix + "description", catalogName),
           get(properties, prefix + "location-uri", "file:///warehouse/" + catalogName),
+          catalogImpersonationEnabled,
           hiveConf));
     }
 
@@ -108,10 +111,11 @@ public final class ProxyConfigLoader {
       requireReadableFile(keytab, "security.keytab");
     }
 
-    if (impersonationEnabled && securityMode != ProxyConfig.SecurityMode.KERBEROS) {
+    if (catalogs.values().stream().anyMatch(ProxyConfig.CatalogConfig::impersonationEnabled)
+        && securityMode != ProxyConfig.SecurityMode.KERBEROS) {
       throw new IllegalArgumentException(
-          "security.impersonation-enabled requires security.mode=KERBEROS "
-              + "so the proxy can derive the caller identity from SASL");
+          "security.impersonation-enabled and catalog.<name>.impersonation-enabled "
+              + "require security.mode=KERBEROS so the proxy can derive the caller identity from SASL");
     }
 
     if (catalogs.values().stream().anyMatch(catalog -> backendKerberosEnabled(catalog.hiveConf()))) {
