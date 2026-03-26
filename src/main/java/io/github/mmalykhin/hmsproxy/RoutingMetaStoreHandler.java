@@ -239,13 +239,11 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       return NamespaceTranslator.externalizeResult(result, namespace);
     }
 
-    Object firstArgument = args[0];
-    String extractedDbName = NamespaceTranslator.extractDbName(firstArgument);
-    if (extractedDbName != null) {
-      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(extractedDbName);
-      Object[] routedArgs = internalizeObjectArguments(args, namespace);
-      Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, namespace);
+    CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
+    if (extractedNamespace != null) {
+      Object[] routedArgs = internalizeObjectArguments(args, extractedNamespace);
+      Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
+      return NamespaceTranslator.externalizeResult(result, extractedNamespace);
     }
     if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
@@ -300,6 +298,25 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       routedArgs[index] = NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
     }
     return routedArgs;
+  }
+
+  private CatalogRouter.ResolvedNamespace findNamespaceInArgs(Object[] args) throws MetaException {
+    for (Object argument : args) {
+      String extractedDbName = NamespaceTranslator.extractDbName(argument);
+      if (extractedDbName != null) {
+        return router.resolveDatabase(extractedDbName);
+      }
+    }
+    for (Object argument : args) {
+      if (!(argument instanceof String candidate)) {
+        continue;
+      }
+      CatalogRouter.ResolvedNamespace explicitNamespace = router.resolvePattern(candidate).orElse(null);
+      if (explicitNamespace != null) {
+        return explicitNamespace;
+      }
+    }
+    return null;
   }
 
   private CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)

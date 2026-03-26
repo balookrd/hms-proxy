@@ -7,7 +7,11 @@ import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
+import org.apache.hadoop.hive.metastore.api.HiveObjectRef;
+import org.apache.hadoop.hive.metastore.api.HiveObjectType;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
+import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
@@ -165,5 +169,26 @@ public class NamespaceTranslatorTest {
     database.setName("catalog1__sales");
 
     Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(database));
+  }
+
+  @Test
+  public void internalizePrivilegeBagRewritesNestedHiveObjectReferences() {
+    HiveObjectRef hiveObjectRef = new HiveObjectRef();
+    hiveObjectRef.setObjectType(HiveObjectType.TABLE);
+    hiveObjectRef.setDbName("@hive#catalog1__sales");
+    hiveObjectRef.setObjectName("events");
+    hiveObjectRef.setCatName("hive");
+
+    HiveObjectPrivilege privilege = new HiveObjectPrivilege();
+    privilege.setHiveObject(hiveObjectRef);
+
+    PrivilegeBag privilegeBag = new PrivilegeBag();
+    privilegeBag.setPrivileges(List.of(privilege));
+
+    PrivilegeBag routed = (PrivilegeBag) NamespaceTranslator.internalizeArgument(privilegeBag, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getPrivileges().get(0).getHiveObject().getDbName());
+    Assert.assertNull(routed.getPrivileges().get(0).getHiveObject().getCatName());
+    Assert.assertEquals("events", routed.getPrivileges().get(0).getHiveObject().getObjectName());
   }
 }
