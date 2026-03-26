@@ -108,6 +108,10 @@ final class CatalogRouter implements AutoCloseable {
     if (dbName == null || dbName.isBlank()) {
       return dbName;
     }
+    int hash = dbName.indexOf('#');
+    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
+      return normalizeExternalDbName(dbName.substring(hash + 1));
+    }
     int separator = dbName.indexOf(config.catalogDbSeparator());
     if (separator > 0 && backends.containsKey(dbName.substring(0, separator))) {
       return dbName;

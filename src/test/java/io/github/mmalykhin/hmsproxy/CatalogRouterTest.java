@@ -188,4 +188,26 @@ public class CatalogRouterTest {
     Assert.assertEquals("default", namespace.backendDbName());
     Assert.assertEquals("catalog2__default", namespace.externalDbName());
   }
+
+  @Test
+  public void resolvesAtCatalogPrefixedExternalDatabaseNameForCompatibility() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("@hive#catalog2__default");
+
+    Assert.assertEquals("catalog2", namespace.catalogName());
+    Assert.assertEquals("default", namespace.backendDbName());
+    Assert.assertEquals("catalog2__default", namespace.externalDbName());
+  }
+
+  @Test
+  public void resolvesAtCatalogPrefixedDefaultDatabaseToDefaultCatalog() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("@hive#default");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("default", namespace.backendDbName());
+    Assert.assertEquals("catalog1__default", namespace.externalDbName());
+  }
 }
