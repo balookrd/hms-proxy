@@ -287,7 +287,14 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)
       throws MetaException {
     if (catName != null && !catName.isBlank()) {
-      return router.resolveCatalog(catName, dbName);
+      Optional<CatalogRouter.ResolvedNamespace> explicitNamespace = router.resolveCatalogIfKnown(catName, dbName);
+      if (explicitNamespace.isPresent()) {
+        return explicitNamespace.get();
+      }
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} ignoring unknown request catalog '{}' and resolving by dbName='{}'",
+            currentRequestId(), catName, dbName);
+      }
     }
     return router.resolveDatabase(dbName);
   }

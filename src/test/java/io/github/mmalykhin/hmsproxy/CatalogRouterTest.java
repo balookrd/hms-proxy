@@ -147,4 +147,12 @@ public class CatalogRouterTest {
 
     Assert.assertEquals("catalog1__sales", router.externalDatabaseName("catalog1", "sales"));
   }
+
+  @Test
+  public void resolveCatalogIfKnownReturnsPresentOnlyForConfiguredCatalogs() {
+    CatalogRouter router = routerFor(TWO_CATALOG_CONFIG);
+
+    Assert.assertTrue(router.resolveCatalogIfKnown("catalog2", "sales").isPresent());
+    Assert.assertFalse(router.resolveCatalogIfKnown("hive", "sales").isPresent());
+  }
 }

@@ -42,6 +42,13 @@ final class CatalogRouter implements AutoCloseable {
     return backends.get(catalog);
   }
 
+  Optional<ResolvedNamespace> resolveCatalogIfKnown(String catalog, String backendDbName) {
+    if (catalog == null || catalog.isBlank() || !backends.containsKey(catalog)) {
+      return Optional.empty();
+    }
+    return Optional.of(resolveCatalog(catalog, backendDbName));
+  }
+
   ResolvedNamespace resolveDatabase(String dbName) throws MetaException {
     if (dbName == null || dbName.isBlank()) {
       return resolveCatalog(config.defaultCatalog(), dbName);
