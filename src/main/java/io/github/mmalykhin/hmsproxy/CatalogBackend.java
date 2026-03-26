@@ -124,7 +124,7 @@ final class CatalogBackend implements AutoCloseable {
 
   @Override
   public synchronized void close() {
-    client.close();
+    closeQuietly(client, "shared backend metastore client");
     for (ImpersonationClient impersonationClient : impersonationClients.values()) {
       impersonationClient.closeQuietly();
     }
@@ -196,9 +196,20 @@ final class CatalogBackend implements AutoCloseable {
   }
 
   private synchronized void reconnect() throws MetaException {
-    client.close();
+    closeQuietly(client, "stale shared backend metastore client before reconnect");
     client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
     thriftClient = extractThriftClient(client);
+  }
+
+  static void closeQuietly(AutoCloseable closeable, String description) {
+    if (closeable == null) {
+      return;
+    }
+    try {
+      closeable.close();
+    } catch (Exception e) {
+      LOG.warn("Ignoring failure while closing {}", description, e);
+    }
   }
 
   private synchronized ImpersonationClient impersonationClient(
@@ -271,7 +282,7 @@ final class CatalogBackend implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-      client.close();
+      CatalogBackend.closeQuietly(client, "impersonation backend metastore client for user '" + userName + "'");
     }
 
     private void closeQuietly() {
@@ -290,7 +301,7 @@ final class CatalogBackend implements AutoCloseable {
         thriftClient.set_ugi(userName, groupNames);
         LOG.debug("Opened cached impersonation client for user '{}' in catalog '{}'", userName, config.name());
       } catch (Exception e) {
-        client.close();
+        CatalogBackend.closeQuietly(client, "failed impersonation backend metastore client for user '" + userName + "'");
         MetaException metaException = new MetaException(
             "Unable to open impersonating backend metastore client for catalog "
                 + config.name()

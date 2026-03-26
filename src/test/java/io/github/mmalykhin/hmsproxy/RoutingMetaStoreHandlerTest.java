@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy;
 
+import java.net.SocketException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -85,5 +86,36 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertTrue(RoutingMetaStoreHandler.isServicePrincipalUser("hive", security));
     Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("alice", security));
     Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("proxy-client", security));
+  }
+
+  @Test
+  public void catalogBackendCloseQuietlySuppressesSocketClosedFailures() {
+    CatalogBackend.closeQuietly(() -> {
+      throw new SocketException("Socket closed");
+    }, "test metastore client");
+  }
+
+  @Test
+  public void getConfigValueCompatibilityMapsShortMetastoreAlias() {
+    Assert.assertEquals("300", MetastoreCompatibility.compatibleConfigValue(
+        "batch.retrieve.max",
+        "50",
+        java.util.Map.of("metastore.batch.retrieve.max", "300")).orElse(null));
+  }
+
+  @Test
+  public void getConfigValueCompatibilityUsesClientDefaultWhenProxyConfigMissing() {
+    Assert.assertEquals("50", MetastoreCompatibility.compatibleConfigValue(
+        "batch.retrieve.max",
+        "50",
+        java.util.Map.of()).orElse(null));
+  }
+
+  @Test
+  public void getConfigValueCompatibilityDoesNotInterceptCanonicalMetastoreKeys() {
+    Assert.assertFalse(MetastoreCompatibility.compatibleConfigValue(
+        "metastore.batch.retrieve.max",
+        "50",
+        java.util.Map.of()).isPresent());
   }
 }
