@@ -68,25 +68,25 @@ final class NamespaceTranslator {
     if (value instanceof Database database) {
       Database copy = new Database(database);
       copy.setName(namespace.backendDbName());
-      copy.setCatalogName(internalCatalogName(database.getCatalogName(), namespace));
+      copy.setCatalogName(internalCatalogName(database.getCatalogName(), database.getName(), namespace));
       return copy;
     }
     if (value instanceof Table table) {
       Table copy = new Table(table);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(table.getCatName(), namespace));
+      copy.setCatName(internalCatalogName(table.getCatName(), table.getDbName(), namespace));
       return copy;
     }
     if (value instanceof GetTableRequest request) {
       GetTableRequest copy = new GetTableRequest(request);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(request.getCatName(), namespace));
+      copy.setCatName(internalCatalogName(request.getCatName(), request.getDbName(), namespace));
       return copy;
     }
     if (value instanceof GetTablesRequest request) {
       GetTablesRequest copy = new GetTablesRequest(request);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(internalCatalogName(request.getCatName(), namespace));
+      copy.setCatName(internalCatalogName(request.getCatName(), request.getDbName(), namespace));
       return copy;
     }
     if (value instanceof List<?> list) {
@@ -124,13 +124,16 @@ final class NamespaceTranslator {
     if (value == null) {
       return null;
     }
+    String originalDbName = readStringProperty(value, "getDbName");
     maybeInvoke(value, "setDbName", dbName);
     if (externalizeDatabaseName) {
       maybeInvoke(value, "setCatName", catalogName);
       maybeInvoke(value, "setCatalogName", catalogName);
     } else {
-      maybeInvoke(value, "setCatName", internalCatalogName(readStringProperty(value, "getCatName"), catalogName));
-      maybeInvoke(value, "setCatalogName", internalCatalogName(readStringProperty(value, "getCatalogName"), catalogName));
+      maybeInvoke(value, "setCatName",
+          internalCatalogName(readStringProperty(value, "getCatName"), originalDbName, catalogName, dbName));
+      maybeInvoke(value, "setCatalogName",
+          internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, catalogName, dbName));
     }
     if (externalizeDatabaseName && value instanceof Database database) {
       database.setName(dbName);
@@ -139,17 +142,44 @@ final class NamespaceTranslator {
   }
 
   static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
-    return internalCatalogName(requestCatalogName, namespace.catalogName());
+    return internalCatalogName(requestCatalogName, null, namespace);
+  }
+
+  static String internalCatalogName(
+      String requestCatalogName,
+      String originalDbName,
+      CatalogRouter.ResolvedNamespace namespace
+  ) {
+    return internalCatalogName(requestCatalogName, originalDbName, namespace.catalogName(), namespace.externalDbName());
   }
 
   static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
+    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null);
+  }
+
+  private static String internalCatalogName(
+      String requestCatalogName,
+      String originalDbName,
+      String proxyCatalogName,
+      String externalDbName
+  ) {
     if (requestCatalogName == null || requestCatalogName.isBlank()) {
       return null;
     }
     if (requestCatalogName.equals(proxyCatalogName)) {
       return null;
     }
+    if (matchesExternalDatabaseAlias(originalDbName, externalDbName)) {
+      return null;
+    }
     return requestCatalogName;
+  }
+
+  private static boolean matchesExternalDatabaseAlias(String originalDbName, String externalDbName) {
+    if (originalDbName == null || originalDbName.isBlank() || externalDbName == null || externalDbName.isBlank()) {
+      return false;
+    }
+    return originalDbName.equals(externalDbName) || originalDbName.endsWith("." + externalDbName);
   }
 
   private static String readStringProperty(Object target, String getterName) {
