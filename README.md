@@ -132,6 +132,11 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 The keytab must exist and be readable — the proxy will fail to start otherwise.
 `_HOST` is replaced with the machine's FQDN at runtime (standard Hadoop behaviour).
 
+When Kerberos is enabled on the front door, delegation-token methods
+(`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
+are served locally by the proxy's own token manager instead of being forwarded
+to backend metastores.
+
 ### Kerberos impersonation
 
 If you want backend HMS calls to execute as the authenticated front-door Kerberos user instead of

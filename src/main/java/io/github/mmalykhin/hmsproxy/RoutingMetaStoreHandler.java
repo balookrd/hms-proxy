@@ -4,41 +4,23 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
-import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
-import org.apache.hadoop.hive.metastore.api.GetOpenTxnsResponse;
-import org.apache.hadoop.hive.metastore.api.GetPrincipalsInRoleResponse;
-import org.apache.hadoop.hive.metastore.api.GetRoleGrantsForPrincipalResponse;
-import org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
-import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
-import org.apache.hadoop.hive.metastore.api.NotificationEventsCountResponse;
-import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
-import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
-import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
-import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
-import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.thrift.TApplicationException;
 import org.apache.thrift.TException;
-import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,18 +47,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       "get_schema_with_environment_context",
       "get_table_names_by_filter"
   );
-  private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
-      "set_ugi",
-      "get_all_functions",
-      "get_current_notificationEventId",
-      "flushCache"
-  );
-  private static final List<String> DEFAULT_BACKEND_GLOBAL_PREFIXES = List.of(
-      "get_",
-      "show_",
-      "list_"
-  );
-
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final FrontDoorSecurity frontDoorSecurity;
@@ -119,12 +89,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
         case "set_ugi" -> handleSetUgi(method, args);
-        case "get_delegation_token" -> handleGetDelegationToken(args);
-        case "renew_delegation_token" -> handleRenewDelegationToken(args);
-        case "cancel_delegation_token" -> {
-          handleCancelDelegationToken(args);
-          yield null;
-        }
+        case "get_delegation_token", "renew_delegation_token", "cancel_delegation_token" ->
+            MetastoreCompatibility.handleLocally(name, args, frontDoorSecurity);
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -291,7 +257,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
-    if (isDefaultBackendGlobalMethod(method.getName())) {
+    if (MetastoreCompatibility.routesToDefaultBackend(method.getName())) {
       return invokeBackend(router.defaultBackend(), method, args);
     }
     if (!router.singleCatalog()) {
@@ -347,10 +313,11 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
-      if (shouldUseCompatibilityFallback(method.getName(), cause)) {
+      Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(method.getName(), cause);
+      if (compatibilityFallback.isPresent()) {
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
-        return compatibilityFallback(method.getName());
+        return compatibilityFallback.get();
       }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
@@ -415,29 +382,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     return invokeGlobal(method, new Object[] {impersonation.userName(), impersonation.groupNames()});
   }
 
-  private String handleGetDelegationToken(Object[] args) throws Exception {
-    if (frontDoorSecurity == null) {
-      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
-    }
-    String owner = (String) args[0];
-    String renewer = (String) args[1];
-    return frontDoorSecurity.issueDelegationToken(owner, renewer);
-  }
-
-  private long handleRenewDelegationToken(Object[] args) throws Exception {
-    if (frontDoorSecurity == null) {
-      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
-    }
-    return frontDoorSecurity.renewDelegationToken((String) args[0]);
-  }
-
-  private void handleCancelDelegationToken(Object[] args) throws Exception {
-    if (frontDoorSecurity == null) {
-      throw metaException("Delegation tokens require Kerberos/SASL on the proxy front door");
-    }
-    frontDoorSecurity.cancelDelegationToken((String) args[0]);
-  }
-
   private Optional<ImpersonationContext> currentImpersonation() throws MetaException {
     if (!config.security().impersonationEnabled()) {
       return Optional.empty();
@@ -452,9 +396,19 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       if (isServicePrincipalUser(userName, config.security())) {
         return Optional.empty();
       }
-      return Optional.of(new ImpersonationContext(userName, List.of(currentUser.getGroupNames())));
+      return Optional.of(new ImpersonationContext(userName, resolveGroupNames(currentUser, userName)));
     } catch (Exception e) {
       throw metaException("Unable to resolve authenticated caller for impersonation: " + e.getMessage());
+    }
+  }
+
+  private List<String> resolveGroupNames(UserGroupInformation currentUser, String userName) {
+    try {
+      return List.of(currentUser.getGroupNames());
+    } catch (RuntimeException e) {
+      LOG.warn("requestId={} unable to resolve groups for authenticated user '{}', using empty group list",
+          currentRequestId(), userName, e);
+      return List.of();
     }
   }
 
@@ -462,8 +416,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   }
 
   static boolean isDefaultBackendGlobalMethod(String methodName) {
-    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
-        || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
+    return MetastoreCompatibility.routesToDefaultBackend(methodName);
   }
 
   static String shortUserName(String principalOrUser) {
@@ -489,72 +442,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     return userName.equals(shortUserName(security.serverPrincipal()));
   }
 
-  private static boolean isNotificationCompatibilityMethod(String methodName) {
-    return "get_current_notificationEventId".equals(methodName)
-        || "get_next_notification".equals(methodName)
-        || "get_notification_events_count".equals(methodName);
-  }
-
-  private static boolean isCompatibilityFallbackMethod(String methodName) {
-    return isNotificationCompatibilityMethod(methodName)
-        || switch (methodName) {
-          case "refresh_privileges",
-              "get_role_names",
-              "get_principals_in_role",
-              "get_role_grants_for_principal",
-              "get_privilege_set",
-              "list_privileges",
-              "get_all_token_identifiers",
-              "get_master_keys",
-              "get_open_txns",
-              "get_open_txns_info",
-              "show_locks",
-              "show_compact",
-              "get_active_resource_plan",
-              "get_all_resource_plans",
-              "get_runtime_stats" -> true;
-          default -> false;
-        };
-  }
-
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
-    if (!isCompatibilityFallbackMethod(methodName)) {
-      return false;
-    }
-    return cause instanceof TApplicationException
-        || cause instanceof TTransportException
-        || cause instanceof MetaException;
-  }
-
-  private static Object compatibilityFallback(String methodName) {
-    return switch (methodName) {
-      case "get_current_notificationEventId" -> new CurrentNotificationEventId(0L);
-      case "get_next_notification" -> new NotificationEventResponse(Collections.emptyList());
-      case "get_notification_events_count" -> new NotificationEventsCountResponse(0L);
-      case "refresh_privileges" -> {
-        GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
-        response.setSuccess(true);
-        yield response;
-      }
-      case "get_role_names",
-          "list_privileges",
-          "get_all_token_identifiers",
-          "get_master_keys",
-          "get_runtime_stats" -> Collections.emptyList();
-      case "get_principals_in_role" -> new GetPrincipalsInRoleResponse(Collections.emptyList());
-      case "get_role_grants_for_principal" -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList());
-      case "get_privilege_set" -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of());
-      case "get_open_txns" -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0));
-      case "get_open_txns_info" -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList());
-      case "show_locks" -> new ShowLocksResponse(Collections.emptyList());
-      case "show_compact" -> new ShowCompactResponse(Collections.emptyList());
-      case "get_active_resource_plan" -> new WMGetActiveResourcePlanResponse();
-      case "get_all_resource_plans" -> {
-        WMGetAllResourcePlanResponse response = new WMGetAllResourcePlanResponse();
-        response.setResourcePlans(Collections.emptyList());
-        yield response;
-      }
-      default -> throw new IllegalArgumentException("Unsupported compatibility fallback: " + methodName);
-    };
+    return MetastoreCompatibility.shouldUseFallback(methodName, cause);
   }
 }

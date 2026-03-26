@@ -1,0 +1,139 @@
+package io.github.mmalykhin.hmsproxy;
+
+import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Supplier;
+import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
+import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
+import org.apache.hadoop.hive.metastore.api.GetOpenTxnsResponse;
+import org.apache.hadoop.hive.metastore.api.GetPrincipalsInRoleResponse;
+import org.apache.hadoop.hive.metastore.api.GetRoleGrantsForPrincipalResponse;
+import org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeResponse;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
+import org.apache.hadoop.hive.metastore.api.NotificationEventsCountResponse;
+import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
+import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
+import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
+import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
+import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
+import org.apache.thrift.TApplicationException;
+import org.apache.thrift.transport.TTransportException;
+
+final class MetastoreCompatibility {
+  private static final String FRONT_DOOR_TOKEN_ERROR =
+      "Delegation tokens require Kerberos/SASL on the proxy front door";
+  private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
+      "set_ugi",
+      "get_all_functions",
+      "get_current_notificationEventId",
+      "flushCache"
+  );
+  private static final List<String> DEFAULT_BACKEND_GLOBAL_PREFIXES = List.of(
+      "get_",
+      "show_",
+      "list_"
+  );
+  private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
+  private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
+
+  private MetastoreCompatibility() {
+  }
+
+  static boolean routesToDefaultBackend(String methodName) {
+    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
+        || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
+  }
+
+  static boolean handlesLocally(String methodName) {
+    return LOCAL_HANDLERS.containsKey(methodName);
+  }
+
+  static Object handleLocally(String methodName, Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception {
+    LocalMethodHandler handler = LOCAL_HANDLERS.get(methodName);
+    if (handler == null) {
+      throw new IllegalArgumentException("Unsupported local compatibility method: " + methodName);
+    }
+    return handler.handle(args, frontDoorSecurity);
+  }
+
+  static boolean hasFallback(String methodName) {
+    return FALLBACKS.containsKey(methodName);
+  }
+
+  static boolean shouldUseFallback(String methodName, Throwable cause) {
+    if (!hasFallback(methodName)) {
+      return false;
+    }
+    return cause instanceof TApplicationException
+        || cause instanceof TTransportException
+        || cause instanceof MetaException;
+  }
+
+  static Optional<Object> fallback(String methodName, Throwable cause) {
+    if (!shouldUseFallback(methodName, cause)) {
+      return Optional.empty();
+    }
+    return Optional.of(FALLBACKS.get(methodName).get());
+  }
+
+  private static Map<String, LocalMethodHandler> buildLocalHandlers() {
+    Map<String, LocalMethodHandler> handlers = new LinkedHashMap<>();
+    handlers.put("get_delegation_token", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).issueDelegationToken((String) args[0], (String) args[1]));
+    handlers.put("renew_delegation_token", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).renewDelegationToken((String) args[0]));
+    handlers.put("cancel_delegation_token", (args, frontDoorSecurity) -> {
+      requireFrontDoorSecurity(frontDoorSecurity).cancelDelegationToken((String) args[0]);
+      return null;
+    });
+    return Map.copyOf(handlers);
+  }
+
+  private static Map<String, Supplier<Object>> buildFallbacks() {
+    Map<String, Supplier<Object>> fallbacks = new LinkedHashMap<>();
+    fallbacks.put("get_current_notificationEventId", () -> new CurrentNotificationEventId(0L));
+    fallbacks.put("get_next_notification", () -> new NotificationEventResponse(Collections.emptyList()));
+    fallbacks.put("get_notification_events_count", () -> new NotificationEventsCountResponse(0L));
+    fallbacks.put("refresh_privileges", () -> {
+      GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
+      response.setSuccess(true);
+      return response;
+    });
+    fallbacks.put("get_role_names", Collections::emptyList);
+    fallbacks.put("list_privileges", Collections::emptyList);
+    fallbacks.put("get_all_token_identifiers", Collections::emptyList);
+    fallbacks.put("get_master_keys", Collections::emptyList);
+    fallbacks.put("get_runtime_stats", Collections::emptyList);
+    fallbacks.put("get_principals_in_role", () -> new GetPrincipalsInRoleResponse(Collections.emptyList()));
+    fallbacks.put("get_role_grants_for_principal", () -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList()));
+    fallbacks.put("get_privilege_set", () -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of()));
+    fallbacks.put("get_open_txns", () -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0)));
+    fallbacks.put("get_open_txns_info", () -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList()));
+    fallbacks.put("show_locks", () -> new ShowLocksResponse(Collections.emptyList()));
+    fallbacks.put("show_compact", () -> new ShowCompactResponse(Collections.emptyList()));
+    fallbacks.put("get_active_resource_plan", WMGetActiveResourcePlanResponse::new);
+    fallbacks.put("get_all_resource_plans", () -> {
+      WMGetAllResourcePlanResponse response = new WMGetAllResourcePlanResponse();
+      response.setResourcePlans(Collections.emptyList());
+      return response;
+    });
+    return Map.copyOf(fallbacks);
+  }
+
+  private static FrontDoorSecurity requireFrontDoorSecurity(FrontDoorSecurity frontDoorSecurity) throws MetaException {
+    if (frontDoorSecurity == null) {
+      throw new MetaException(FRONT_DOOR_TOKEN_ERROR);
+    }
+    return frontDoorSecurity;
+  }
+
+  @FunctionalInterface
+  private interface LocalMethodHandler {
+    Object handle(Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception;
+  }
+}
