@@ -68,25 +68,25 @@ final class NamespaceTranslator {
     if (value instanceof Database database) {
       Database copy = new Database(database);
       copy.setName(namespace.backendDbName());
-      copy.setCatalogName(namespace.catalogName());
+      copy.setCatalogName(internalCatalogName(database.getCatalogName(), namespace));
       return copy;
     }
     if (value instanceof Table table) {
       Table copy = new Table(table);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(namespace.catalogName());
+      copy.setCatName(internalCatalogName(table.getCatName(), namespace));
       return copy;
     }
     if (value instanceof GetTableRequest request) {
       GetTableRequest copy = new GetTableRequest(request);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(namespace.catalogName());
+      copy.setCatName(internalCatalogName(request.getCatName(), namespace));
       return copy;
     }
     if (value instanceof GetTablesRequest request) {
       GetTablesRequest copy = new GetTablesRequest(request);
       copy.setDbName(namespace.backendDbName());
-      copy.setCatName(namespace.catalogName());
+      copy.setCatName(internalCatalogName(request.getCatName(), namespace));
       return copy;
     }
     if (value instanceof List<?> list) {
@@ -125,12 +125,43 @@ final class NamespaceTranslator {
       return null;
     }
     maybeInvoke(value, "setDbName", dbName);
-    maybeInvoke(value, "setCatName", catalogName);
-    maybeInvoke(value, "setCatalogName", catalogName);
+    if (externalizeDatabaseName) {
+      maybeInvoke(value, "setCatName", catalogName);
+      maybeInvoke(value, "setCatalogName", catalogName);
+    } else {
+      maybeInvoke(value, "setCatName", internalCatalogName(readStringProperty(value, "getCatName"), catalogName));
+      maybeInvoke(value, "setCatalogName", internalCatalogName(readStringProperty(value, "getCatalogName"), catalogName));
+    }
     if (externalizeDatabaseName && value instanceof Database database) {
       database.setName(dbName);
     }
     return value;
+  }
+
+  static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
+    return internalCatalogName(requestCatalogName, namespace.catalogName());
+  }
+
+  static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
+    if (requestCatalogName == null || requestCatalogName.isBlank()) {
+      return null;
+    }
+    if (requestCatalogName.equals(proxyCatalogName)) {
+      return null;
+    }
+    return requestCatalogName;
+  }
+
+  private static String readStringProperty(Object target, String getterName) {
+    try {
+      Method method = target.getClass().getMethod(getterName);
+      return (String) method.invoke(target);
+    } catch (NoSuchMethodException ignored) {
+      return null;
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
+    }
   }
 
   private static void maybeInvoke(Object target, String methodName, String argument) {

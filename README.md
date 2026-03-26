@@ -59,6 +59,8 @@ java \
 - table objects returned to legacy callers are rewritten back to external names
 - if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
   to `dbName`/default-catalog routing for compatibility
+- proxy catalog ids are used for external routing, but are not forced into backend `catName`
+  fields, so a backend can keep using its own local catalog name such as `hive`
 
 The catalog/database separator is configurable:
 
