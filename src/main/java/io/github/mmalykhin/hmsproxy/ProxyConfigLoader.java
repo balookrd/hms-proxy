@@ -41,6 +41,13 @@ public final class ProxyConfigLoader {
         port,
         minWorkerThreads,
         maxWorkerThreads);
+    String catalogDbSeparator = trimToNull(properties.getProperty("routing.catalog-db-separator"));
+    if (properties.containsKey("routing.catalog-db-separator") && catalogDbSeparator == null) {
+      throw new IllegalArgumentException("routing.catalog-db-separator must not be blank");
+    }
+    if (catalogDbSeparator == null) {
+      catalogDbSeparator = ".";
+    }
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -120,7 +127,7 @@ public final class ProxyConfigLoader {
         keytab,
         clientKeytab,
         impersonationEnabled);
-    return new ProxyConfig(server, security, defaultCatalog, catalogs);
+    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs);
   }
 
   private static String[] splitCsv(String value) {
