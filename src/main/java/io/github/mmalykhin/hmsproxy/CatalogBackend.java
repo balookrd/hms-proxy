@@ -295,7 +295,14 @@ final class CatalogBackend implements AutoCloseable {
             "Unable to open impersonating backend metastore client for catalog "
                 + config.name()
                 + " and user "
-                + userName);
+                + userName
+                + ". Backend HMS must allow proxy-user impersonation for outbound principal "
+                + proxyConfig.security().outboundPrincipal()
+                + " (for example via hadoop.proxyuser."
+                + RoutingMetaStoreHandler.shortUserName(proxyConfig.security().outboundPrincipal())
+                + ".*), or impersonation must be disabled for this backend via catalog."
+                + config.name()
+                + ".impersonation-enabled=false");
         metaException.initCause(e);
         throw metaException;
       }
