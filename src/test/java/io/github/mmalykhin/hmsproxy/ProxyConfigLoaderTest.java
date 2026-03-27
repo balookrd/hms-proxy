@@ -435,4 +435,22 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsCompatibilityFlagForPreservingBackendCatalogName() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          compatibility.preserve-backend-catalog-name=true
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.compatibility().preserveBackendCatalogName());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

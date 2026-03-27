@@ -200,7 +200,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
           resolved.backend(), method, new Object[] {resolved.backendDbName(), tablePattern, tableTypes});
       return backendResults.stream()
-          .map(result -> NamespaceTranslator.externalizeTableMeta(result, resolved))
+          .map(result -> NamespaceTranslator.externalizeTableMeta(result, resolved, preserveBackendCatalogName()))
           .toList();
     }
 
@@ -212,7 +212,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       for (TableMeta result : backendResults) {
         results.add(NamespaceTranslator.externalizeTableMeta(
             result,
-            router.resolveCatalog(backend.name(), result.getDbName())));
+            router.resolveCatalog(backend.name(), result.getDbName()),
+            preserveBackendCatalogName()));
       }
     }
     return results;
@@ -223,7 +224,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
     GetTableRequest routedRequest = (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace);
     Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
-    return NamespaceTranslator.externalizeResult(result, namespace);
+    return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
   private Object handleGetTablesReq(Method method, Object[] args) throws Throwable {
@@ -231,7 +232,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
     GetTablesRequest routedRequest = (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace);
     Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
-    return NamespaceTranslator.externalizeResult(result, namespace);
+    return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
@@ -244,20 +245,20 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
       Object[] routedArgs = internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, namespace);
+      return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
     }
 
     CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
     if (extractedNamespace != null) {
       Object[] routedArgs = internalizeObjectArguments(args, extractedNamespace);
       Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, extractedNamespace);
+      return NamespaceTranslator.externalizeResult(result, extractedNamespace, preserveBackendCatalogName());
     }
     if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
       Object[] routedArgs = internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, namespace);
+      return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
     }
 
     return invokeGlobal(method, args);
@@ -416,6 +417,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   private static long elapsedMillis(long startedAt) {
     return (System.nanoTime() - startedAt) / 1_000_000L;
+  }
+
+  private boolean preserveBackendCatalogName() {
+    return config.compatibility().preserveBackendCatalogName();
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})

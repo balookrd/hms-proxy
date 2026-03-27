@@ -48,6 +48,8 @@ public final class ProxyConfigLoader {
     if (catalogDbSeparator == null) {
       catalogDbSeparator = ".";
     }
+    boolean preserveBackendCatalogName =
+        Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -140,7 +142,9 @@ public final class ProxyConfigLoader {
         clientKeytab,
         impersonationEnabled,
         frontDoorConf);
-    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs);
+    ProxyConfig.CompatibilityConfig compatibility =
+        new ProxyConfig.CompatibilityConfig(preserveBackendCatalogName);
+    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, compatibility);
   }
 
   private static String[] splitCsv(String value) {
