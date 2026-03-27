@@ -14,10 +14,13 @@ import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.HiveObjectRef;
 import org.apache.hadoop.hive.metastore.api.HiveObjectType;
+import org.apache.hadoop.hive.metastore.api.ForeignKeysRequest;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
+import org.apache.hadoop.hive.metastore.api.NotNullConstraintsRequest;
 import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
@@ -223,6 +226,16 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void extractDbNameReadsSnakeCaseConstraintRequestNamespace() {
+    PrimaryKeysRequest request = new PrimaryKeysRequest();
+    request.setDb_name("catalog1__sales");
+    request.setTbl_name("events");
+    request.setCatName("hive");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
   public void extractDbNameReadsDatabaseNameForCreateDatabaseStyleRequests() {
     Database database = new Database();
     database.setName("catalog1__sales");
@@ -262,6 +275,37 @@ public class NamespaceTranslatorTest {
 
     Assert.assertEquals(List.of("sales.events"), routed.getFullTableNames());
     Assert.assertEquals("txns", routed.getValidTxnList());
+  }
+
+  @Test
+  public void internalizeSnakeCaseConstraintRequestRewritesDbName() {
+    NotNullConstraintsRequest request = new NotNullConstraintsRequest();
+    request.setCatName("hive");
+    request.setDb_name("@hive#catalog1__sales");
+    request.setTbl_name("events");
+
+    NotNullConstraintsRequest routed =
+        (NotNullConstraintsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDb_name());
+    Assert.assertNull(routed.getCatName());
+    Assert.assertEquals("events", routed.getTbl_name());
+  }
+
+  @Test
+  public void internalizeForeignKeysRequestRewritesAllDbNameFields() {
+    ForeignKeysRequest request = new ForeignKeysRequest();
+    request.setCatName("hive");
+    request.setParent_db_name("@hive#catalog1__sales");
+    request.setParent_tbl_name("parent_events");
+    request.setForeign_db_name("@hive#catalog1__sales");
+    request.setForeign_tbl_name("events");
+
+    ForeignKeysRequest routed = (ForeignKeysRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getParent_db_name());
+    Assert.assertEquals("sales", routed.getForeign_db_name());
+    Assert.assertEquals("hive", routed.getCatName());
   }
 
   @Test

@@ -89,7 +89,11 @@ final class NamespaceTranslator {
     }
     if (value instanceof TBase<?, ?> thriftValue) {
       for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
-        String nestedDbName = extractDbName(getThriftFieldValue(thriftValue, fieldId));
+        Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
+        String nestedDbName = extractDbNameFromField(fieldId, fieldValue);
+        if (nestedDbName == null) {
+          nestedDbName = extractDbName(fieldValue);
+        }
         if (nestedDbName != null) {
           return nestedDbName;
         }
@@ -134,11 +138,35 @@ final class NamespaceTranslator {
   ) {
     for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
       Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
-      Object transformed = transform(fieldValue, namespace, direction);
+      Object transformed = transformThriftField(fieldId, fieldValue, namespace, direction);
       if (transformed != fieldValue) {
         setThriftFieldValue(thriftValue, fieldId, transformed);
       }
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Object transformThriftField(
+      TFieldIdEnum fieldId,
+      Object fieldValue,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    String normalizedFieldName = normalizeFieldName(fieldId.getFieldName());
+    if (fieldValue instanceof String stringValue) {
+      if (looksLikeDbNameField(fieldId.getFieldName()) && !normalizedFieldName.equals("dbname")) {
+        return transformDbNameString(stringValue, namespace, direction);
+      }
+      if (looksLikeFullTableNameField(fieldId.getFieldName()) && !normalizedFieldName.equals("fulltablename")) {
+        return transformFullTableName(stringValue, namespace, direction);
+      }
+    }
+    if (fieldValue instanceof List<?> listValue
+        && looksLikeFullTableNamesField(fieldId.getFieldName())
+        && !normalizedFieldName.equals("fulltablenames")) {
+      return transformFullTableNames((List<String>) listValue, namespace, direction);
+    }
+    return transform(fieldValue, namespace, direction);
   }
 
   private static Object applyNamespace(
@@ -163,6 +191,7 @@ final class NamespaceTranslator {
     if (direction == Direction.EXTERNALIZE) {
       maybeInvoke(value, "setDbName", namespace.externalDbName());
       maybeInvoke(value, "setDbname", namespace.externalDbName());
+      maybeInvoke(value, "setDb_name", namespace.externalDbName());
       rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
       rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
       maybeInvoke(value, "setCatName", namespace.catalogName());
@@ -174,6 +203,7 @@ final class NamespaceTranslator {
           internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, namespace));
       maybeInvoke(value, "setDbName", namespace.backendDbName());
       maybeInvoke(value, "setDbname", namespace.backendDbName());
+      maybeInvoke(value, "setDb_name", namespace.backendDbName());
       rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
       rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
     }
@@ -275,15 +305,16 @@ final class NamespaceTranslator {
   }
 
   private static String readDbNameProperty(Object value) {
-    return blankToNull(readStringProperty(value, "getDbName", "getDbname"));
+    return blankToNull(readStringProperty(value, "getDbName", "getDbname", "getDb_name"));
   }
 
   private static String readFullTableNameProperty(Object value) {
-    return blankToNull(readStringProperty(value, "getFullTableName"));
+    return blankToNull(readStringProperty(value, "getFullTableName", "getFull_table_name"));
   }
 
   private static List<String> readFullTableNamesProperty(Object value) {
-    return readStringListProperty(value, "getFullTableNames");
+    List<String> fullTableNames = readStringListProperty(value, "getFullTableNames");
+    return fullTableNames != null ? fullTableNames : readStringListProperty(value, "getFull_table_names");
   }
 
   private static String extractDbNameFromFullTableName(String fullTableName) {
@@ -323,6 +354,24 @@ final class NamespaceTranslator {
     return rewrittenDbName + "." + tableName;
   }
 
+  private static String transformDbNameString(
+      String dbName,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    if (dbName == null) {
+      return null;
+    }
+    return switch (direction) {
+      case EXTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.backendDbName())
+          ? namespace.externalDbName()
+          : dbName;
+      case INTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.externalDbName())
+          ? namespace.backendDbName()
+          : dbName;
+    };
+  }
+
   private static List<String> transformFullTableNames(
       List<String> fullTableNames,
       CatalogRouter.ResolvedNamespace namespace,
@@ -343,6 +392,52 @@ final class NamespaceTranslator {
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
+  }
+
+  private static String extractDbNameFromField(TFieldIdEnum fieldId, Object fieldValue) {
+    if (fieldValue == null) {
+      return null;
+    }
+    String fieldName = fieldId.getFieldName();
+    if (fieldValue instanceof String stringValue) {
+      if (looksLikeDbNameField(fieldName)) {
+        return blankToNull(stringValue);
+      }
+      if (looksLikeFullTableNameField(fieldName)) {
+        return extractDbNameFromFullTableName(stringValue);
+      }
+    }
+    if (fieldValue instanceof List<?> listValue && looksLikeFullTableNamesField(fieldName)) {
+      for (Object element : listValue) {
+        if (element instanceof String stringValue) {
+          String extractedDbName = extractDbNameFromFullTableName(stringValue);
+          if (extractedDbName != null) {
+            return extractedDbName;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private static boolean looksLikeDbNameField(String fieldName) {
+    String normalizedFieldName = normalizeFieldName(fieldName);
+    return normalizedFieldName.equals("dbname") || normalizedFieldName.endsWith("dbname");
+  }
+
+  private static boolean looksLikeFullTableNameField(String fieldName) {
+    return normalizeFieldName(fieldName).endsWith("fulltablename");
+  }
+
+  private static boolean looksLikeFullTableNamesField(String fieldName) {
+    return normalizeFieldName(fieldName).endsWith("fulltablenames");
+  }
+
+  private static String normalizeFieldName(String fieldName) {
+    if (fieldName == null) {
+      return "";
+    }
+    return fieldName.replace("_", "").toLowerCase();
   }
 
   private static String readStringProperty(Object target, String... getterNames) {
