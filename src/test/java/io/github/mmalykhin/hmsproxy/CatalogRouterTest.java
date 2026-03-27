@@ -60,7 +60,7 @@ public class CatalogRouterTest {
 
     Assert.assertEquals("catalog1", namespace.catalogName());
     Assert.assertEquals("sales", namespace.backendDbName());
-    Assert.assertEquals("catalog1.sales", namespace.externalDbName());
+    Assert.assertEquals("sales", namespace.externalDbName());
   }
 
   @Test
@@ -71,7 +71,7 @@ public class CatalogRouterTest {
 
     Assert.assertEquals("catalog1", namespace.catalogName());
     Assert.assertEquals("sales", namespace.backendDbName());
-    Assert.assertEquals("catalog1.sales", namespace.externalDbName());
+    Assert.assertEquals("sales", namespace.externalDbName());
   }
 
   @Test
@@ -107,9 +107,9 @@ public class CatalogRouterTest {
   public void externalDatabaseNameCombinesCatalogAndDb() {
     CatalogRouter router = routerFor(ONE_CATALOG_CONFIG);
 
-    Assert.assertEquals("catalog1.sales", router.externalDatabaseName("catalog1", "sales"));
-    Assert.assertEquals("catalog1", router.externalDatabaseName("catalog1", ""));
-    Assert.assertEquals("catalog1", router.externalDatabaseName("catalog1", null));
+    Assert.assertEquals("sales", router.externalDatabaseName("catalog1", "sales"));
+    Assert.assertEquals("", router.externalDatabaseName("catalog1", ""));
+    Assert.assertNull(router.externalDatabaseName("catalog1", null));
   }
 
   @Test
@@ -145,7 +145,8 @@ public class CatalogRouterTest {
   public void externalDatabaseNameUsesConfiguredSeparator() {
     CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
 
-    Assert.assertEquals("catalog1__sales", router.externalDatabaseName("catalog1", "sales"));
+    Assert.assertEquals("sales", router.externalDatabaseName("catalog1", "sales"));
+    Assert.assertEquals("catalog2__sales", router.externalDatabaseName("catalog2", "sales"));
   }
 
   @Test
@@ -175,7 +176,7 @@ public class CatalogRouterTest {
 
     Assert.assertEquals("catalog1", namespace.catalogName());
     Assert.assertEquals("default", namespace.backendDbName());
-    Assert.assertEquals("catalog1__default", namespace.externalDbName());
+    Assert.assertEquals("default", namespace.externalDbName());
   }
 
   @Test
@@ -208,6 +209,40 @@ public class CatalogRouterTest {
 
     Assert.assertEquals("catalog1", namespace.catalogName());
     Assert.assertEquals("default", namespace.backendDbName());
+    Assert.assertEquals("default", namespace.externalDbName());
+  }
+
+  @Test
+  public void resolvesDefaultCatalogPrefixedDatabaseNameAsLiteralName() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("catalog1__sales");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("sales", namespace.backendDbName());
+    Assert.assertEquals("catalog1__sales", namespace.externalDbName());
+  }
+
+  @Test
+  public void resolvesHivePrefixedDefaultCatalogPrefixedDatabaseNameForCompatibility() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("hive.catalog1__default");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("default", namespace.backendDbName());
     Assert.assertEquals("catalog1__default", namespace.externalDbName());
+  }
+
+  @Test
+  public void resolvePatternRoutesDefaultCatalogPrefixToMatchingCatalog() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Optional<CatalogRouter.ResolvedNamespace> result = router.resolvePattern("catalog1__*");
+
+    Assert.assertTrue(result.isPresent());
+    Assert.assertEquals("catalog1", result.get().catalogName());
+    Assert.assertEquals("*", result.get().backendDbName());
+    Assert.assertEquals("catalog1__*", result.get().externalDbName());
   }
 }
