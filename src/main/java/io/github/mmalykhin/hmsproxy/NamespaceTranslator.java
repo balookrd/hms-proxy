@@ -23,11 +23,19 @@ final class NamespaceTranslator {
   }
 
   static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    return transform(value, namespace, Direction.EXTERNALIZE);
+    return externalizeResult(value, namespace, false);
+  }
+
+  static Object externalizeResult(
+      Object value,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return transform(value, namespace, Direction.EXTERNALIZE, preserveBackendCatalogName);
   }
 
   static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    return transform(value, namespace, Direction.INTERNALIZE);
+    return transform(value, namespace, Direction.INTERNALIZE, false);
   }
 
   static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
@@ -38,11 +46,27 @@ final class NamespaceTranslator {
   }
 
   static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
-    return (Table) externalizeResult(table, namespace);
+    return externalizeTable(table, namespace, false);
+  }
+
+  static Table externalizeTable(
+      Table table,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return (Table) externalizeResult(table, namespace, preserveBackendCatalogName);
   }
 
   static TableMeta externalizeTableMeta(TableMeta tableMeta, CatalogRouter.ResolvedNamespace namespace) {
-    return (TableMeta) externalizeResult(tableMeta, namespace);
+    return externalizeTableMeta(tableMeta, namespace, false);
+  }
+
+  static TableMeta externalizeTableMeta(
+      TableMeta tableMeta,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return (TableMeta) externalizeResult(tableMeta, namespace, preserveBackendCatalogName);
   }
 
   static String extractDbName(Object value) {
@@ -102,7 +126,12 @@ final class NamespaceTranslator {
     return null;
   }
 
-  private static Object transform(Object value, CatalogRouter.ResolvedNamespace namespace, Direction direction) {
+  private static Object transform(
+      Object value,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction,
+      boolean preserveBackendCatalogName
+  ) {
     if (value == null) {
       return null;
     }
@@ -112,21 +141,21 @@ final class NamespaceTranslator {
     if (value instanceof List<?> list) {
       List<Object> transformed = new ArrayList<>(list.size());
       for (Object element : list) {
-        transformed.add(transform(element, namespace, direction));
+        transformed.add(transform(element, namespace, direction, preserveBackendCatalogName));
       }
       return transformed;
     }
     if (value instanceof Map<?, ?> map) {
       Map<Object, Object> transformed = new LinkedHashMap<>();
       for (Map.Entry<?, ?> entry : map.entrySet()) {
-        transformed.put(entry.getKey(), transform(entry.getValue(), namespace, direction));
+        transformed.put(entry.getKey(), transform(entry.getValue(), namespace, direction, preserveBackendCatalogName));
       }
       return transformed;
     }
     if (value instanceof TBase<?, ?> thriftValue) {
       TBase<?, ?> copy = thriftValue.deepCopy();
-      rewriteNestedFields(copy, namespace, direction);
-      return applyNamespace(copy, namespace, direction);
+      rewriteNestedFields(copy, namespace, direction, preserveBackendCatalogName);
+      return applyNamespace(copy, namespace, direction, preserveBackendCatalogName);
     }
     return value;
   }
@@ -134,11 +163,12 @@ final class NamespaceTranslator {
   private static void rewriteNestedFields(
       TBase<?, ?> thriftValue,
       CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
+      Direction direction,
+      boolean preserveBackendCatalogName
   ) {
     for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
       Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
-      Object transformed = transformThriftField(fieldId, fieldValue, namespace, direction);
+      Object transformed = transformThriftField(fieldId, fieldValue, namespace, direction, preserveBackendCatalogName);
       if (transformed != fieldValue) {
         setThriftFieldValue(thriftValue, fieldId, transformed);
       }
@@ -150,7 +180,8 @@ final class NamespaceTranslator {
       TFieldIdEnum fieldId,
       Object fieldValue,
       CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
+      Direction direction,
+      boolean preserveBackendCatalogName
   ) {
     String normalizedFieldName = normalizeFieldName(fieldId.getFieldName());
     if (fieldValue instanceof String stringValue) {
@@ -166,18 +197,21 @@ final class NamespaceTranslator {
         && !normalizedFieldName.equals("fulltablenames")) {
       return transformFullTableNames((List<String>) listValue, namespace, direction);
     }
-    return transform(fieldValue, namespace, direction);
+    return transform(fieldValue, namespace, direction, preserveBackendCatalogName);
   }
 
   private static Object applyNamespace(
       Object value,
       CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
+      Direction direction,
+      boolean preserveBackendCatalogName
   ) {
     if (value instanceof Database database) {
       if (direction == Direction.EXTERNALIZE) {
         database.setName(namespace.externalDbName());
-        database.setCatalogName(namespace.catalogName());
+        if (!preserveBackendCatalogName) {
+          database.setCatalogName(namespace.catalogName());
+        }
       } else {
         String originalName = database.getName();
         database.setName(namespace.backendDbName());
@@ -194,8 +228,10 @@ final class NamespaceTranslator {
       maybeInvoke(value, "setDb_name", namespace.externalDbName());
       rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
       rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
-      maybeInvoke(value, "setCatName", namespace.catalogName());
-      maybeInvoke(value, "setCatalogName", namespace.catalogName());
+      if (!preserveBackendCatalogName) {
+        maybeInvoke(value, "setCatName", namespace.catalogName());
+        maybeInvoke(value, "setCatalogName", namespace.catalogName());
+      }
     } else {
       maybeInvoke(value, "setCatName",
           internalCatalogName(readStringProperty(value, "getCatName"), originalDbName, namespace));

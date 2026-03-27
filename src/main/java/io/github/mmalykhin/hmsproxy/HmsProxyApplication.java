@@ -36,6 +36,8 @@ public final class HmsProxyApplication {
             config.server().bindHost(), config.server().port());
         LOG.info("Routing config: defaultCatalog='{}', catalogDbSeparator='{}', catalogs={}",
             config.defaultCatalog(), config.catalogDbSeparator(), config.catalogNames());
+        LOG.info("Compatibility config: preserveBackendCatalogName={}",
+            config.compatibility().preserveBackendCatalogName());
         for (String catalogName : config.catalogNames()) {
           LOG.info("Catalog '{}' external DB example: {}",
               catalogName, router.externalDatabaseName(catalogName, "default"));

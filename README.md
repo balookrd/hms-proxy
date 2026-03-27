@@ -59,8 +59,10 @@ java \
 - table objects returned to legacy callers are rewritten back to external names
 - if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
   to `dbName`/default-catalog routing for compatibility
-- proxy catalog ids are used for external routing, but are not forced into backend `catName`
-  fields, so a backend can keep using its own local catalog name such as `hive`
+- by default, externalized HMS objects use proxy catalog ids in `catName`/`catalogName`
+- for older HiveServer2 flows, you can enable `compatibility.preserve-backend-catalog-name=true`
+  so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
+  still uses the proxy namespace like `catalog2__default`
 
 The catalog/database separator is configurable:
 
@@ -102,6 +104,16 @@ Recommended example:
 ```properties
 routing.catalog-db-separator=__
 ```
+
+If HiveServer2 metadata writes behave differently through the proxy than directly against the
+backend HMS, try enabling:
+
+```properties
+compatibility.preserve-backend-catalog-name=true
+```
+
+This keeps `catName`/`catalogName` from the backend, typically `hive`, while still routing by the
+externalized `dbName`.
 
 Then a non-default catalog is used through the external database name:
 

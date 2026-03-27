@@ -140,6 +140,29 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void externalizeTablePreservesBackendCatalogNameInCompatibilityMode() {
+    Table table = table("sales", "events", "MANAGED_TABLE", "/warehouse/sales.db/events");
+    table.setCatName("hive");
+
+    Table routed = NamespaceTranslator.externalizeTable(table, NAMESPACE, true);
+
+    Assert.assertEquals("catalog1__sales", routed.getDbName());
+    Assert.assertEquals("hive", routed.getCatName());
+  }
+
+  @Test
+  public void externalizeDatabasePreservesBackendCatalogNameInCompatibilityMode() {
+    Database database = new Database();
+    database.setName("sales");
+    database.setCatalogName("hive");
+
+    Database routed = (Database) NamespaceTranslator.externalizeResult(database, NAMESPACE, true);
+
+    Assert.assertEquals("catalog1__sales", routed.getName());
+    Assert.assertEquals("hive", routed.getCatalogName());
+  }
+
+  @Test
   public void internalizeStringArgumentRewritesAtCatalogDatabaseAlias() {
     Assert.assertEquals("sales", NamespaceTranslator.internalizeStringArgument("@hive#catalog1__sales", NAMESPACE));
     Assert.assertEquals("sales", NamespaceTranslator.internalizeStringArgument("catalog1__sales", NAMESPACE));

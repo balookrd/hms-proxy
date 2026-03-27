@@ -8,10 +8,22 @@ public record ProxyConfig(
     SecurityConfig security,
     String catalogDbSeparator,
     String defaultCatalog,
-    Map<String, CatalogConfig> catalogs
+    Map<String, CatalogConfig> catalogs,
+    CompatibilityConfig compatibility
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
+    compatibility = compatibility == null ? new CompatibilityConfig(false) : compatibility;
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new CompatibilityConfig(false));
   }
 
   public record ServerConfig(
@@ -59,6 +71,11 @@ public record ProxyConfig(
     public CatalogConfig {
       hiveConf = Map.copyOf(hiveConf);
     }
+  }
+
+  public record CompatibilityConfig(
+      boolean preserveBackendCatalogName
+  ) {
   }
 
   public enum SecurityMode {
