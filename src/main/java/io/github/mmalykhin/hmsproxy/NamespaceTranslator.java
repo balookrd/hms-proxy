@@ -37,7 +37,15 @@ final class NamespaceTranslator {
   }
 
   static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    return transform(value, namespace, Direction.INTERNALIZE, false);
+    return internalizeArgument(value, namespace, false);
+  }
+
+  static Object internalizeArgument(
+      Object value,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return transform(value, namespace, Direction.INTERNALIZE, preserveBackendCatalogName);
   }
 
   static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
@@ -217,7 +225,8 @@ final class NamespaceTranslator {
       } else {
         String originalName = database.getName();
         database.setName(namespace.backendDbName());
-        database.setCatalogName(internalCatalogName(database.getCatalogName(), originalName, namespace));
+        database.setCatalogName(
+            internalCatalogName(database.getCatalogName(), originalName, namespace, preserveBackendCatalogName));
       }
       return database;
     }
@@ -236,14 +245,21 @@ final class NamespaceTranslator {
       }
     } else {
       maybeInvoke(value, "setCatName",
-          internalCatalogNameForField(value, "catName", readStringProperty(value, "getCatName"), originalDbName, namespace));
+          internalCatalogNameForField(
+              value,
+              "catName",
+              readStringProperty(value, "getCatName"),
+              originalDbName,
+              namespace,
+              preserveBackendCatalogName));
       maybeInvoke(value, "setCatalogName",
           internalCatalogNameForField(
               value,
               "catalogName",
               readStringProperty(value, "getCatalogName"),
               originalDbName,
-              namespace));
+              namespace,
+              preserveBackendCatalogName));
       maybeInvoke(value, "setDbName", namespace.backendDbName());
       maybeInvoke(value, "setDbname", namespace.backendDbName());
       maybeInvoke(value, "setDb_name", namespace.backendDbName());
@@ -303,18 +319,33 @@ final class NamespaceTranslator {
       String originalDbName,
       CatalogRouter.ResolvedNamespace namespace
   ) {
-    return internalCatalogName(requestCatalogName, originalDbName, namespace.catalogName(), namespace.externalDbName());
+    return internalCatalogName(requestCatalogName, originalDbName, namespace, false);
+  }
+
+  static String internalCatalogName(
+      String requestCatalogName,
+      String originalDbName,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return internalCatalogName(
+        requestCatalogName,
+        originalDbName,
+        namespace.catalogName(),
+        namespace.externalDbName(),
+        preserveBackendCatalogName);
   }
 
   static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
-    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null);
+    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null, false);
   }
 
   private static String internalCatalogName(
       String requestCatalogName,
       String originalDbName,
       String proxyCatalogName,
-      String externalDbName
+      String externalDbName,
+      boolean preserveBackendCatalogName
   ) {
     if (requestCatalogName == null || requestCatalogName.isBlank()) {
       return null;
@@ -323,7 +354,7 @@ final class NamespaceTranslator {
       return null;
     }
     if (matchesExternalDatabaseAlias(originalDbName, externalDbName)) {
-      return null;
+      return preserveBackendCatalogName ? requestCatalogName : null;
     }
     return requestCatalogName;
   }
@@ -488,9 +519,14 @@ final class NamespaceTranslator {
       String fieldName,
       String requestCatalogName,
       String originalDbName,
-      CatalogRouter.ResolvedNamespace namespace
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
   ) {
-    String translated = internalCatalogName(requestCatalogName, originalDbName, namespace);
+    String translated = internalCatalogName(
+        requestCatalogName,
+        originalDbName,
+        namespace,
+        preserveBackendCatalogName);
     if (translated == null && hasRequiredThriftField(target, fieldName)) {
       return requestCatalogName;
     }
