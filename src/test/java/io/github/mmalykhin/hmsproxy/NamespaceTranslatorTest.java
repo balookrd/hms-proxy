@@ -1,11 +1,13 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsData;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
@@ -15,8 +17,10 @@ import org.apache.hadoop.hive.metastore.api.HiveObjectType;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
+import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableValidWriteIds;
 import org.junit.Assert;
@@ -96,6 +100,40 @@ public class NamespaceTranslatorTest {
     Assert.assertEquals("sales", routed.getDbName());
     Assert.assertNull(routed.getCatName());
     Assert.assertEquals("events", routed.getTableName());
+  }
+
+  @Test
+  public void externalizeExternalTablePreservesExternalLocationAndType() {
+    Table table = table("sales", "clicks", "EXTERNAL_TABLE", "s3://warehouse/sales/clicks");
+    table.setParameters(Map.of("EXTERNAL", "TRUE"));
+
+    Table routed = NamespaceTranslator.externalizeTable(table, NAMESPACE);
+
+    Assert.assertEquals("catalog1__sales", routed.getDbName());
+    Assert.assertEquals("catalog1", routed.getCatName());
+    Assert.assertEquals("EXTERNAL_TABLE", routed.getTableType());
+    Assert.assertEquals("TRUE", routed.getParameters().get("EXTERNAL"));
+    Assert.assertEquals("s3://warehouse/sales/clicks", routed.getSd().getLocation());
+  }
+
+  @Test
+  public void externalizeAcidManagedTablePreservesTransactionalMetadata() {
+    Table table = table("sales", "events", "MANAGED_TABLE", "/warehouse/sales.db/events");
+    table.setCatName("hive");
+    table.setParameters(Map.of(
+        "transactional", "true",
+        "transactional_properties", "default"));
+    table.setPartitionKeys(List.of(new FieldSchema("dt", "string", null)));
+
+    Table routed = NamespaceTranslator.externalizeTable(table, NAMESPACE);
+
+    Assert.assertEquals("catalog1__sales", routed.getDbName());
+    Assert.assertEquals("catalog1", routed.getCatName());
+    Assert.assertEquals("MANAGED_TABLE", routed.getTableType());
+    Assert.assertEquals("true", routed.getParameters().get("transactional"));
+    Assert.assertEquals("default", routed.getParameters().get("transactional_properties"));
+    Assert.assertEquals("/warehouse/sales.db/events", routed.getSd().getLocation());
+    Assert.assertEquals("dt", routed.getPartitionKeys().get(0).getName());
   }
 
   @Test
@@ -258,5 +296,59 @@ public class NamespaceTranslatorTest {
 
     Assert.assertEquals("sales", routed.getComponent().get(0).getDbname());
     Assert.assertEquals("events", routed.getComponent().get(0).getTablename());
+  }
+
+  @Test
+  public void externalizePartitionPreservesLocationAndValuesForPartitionedTable() {
+    Partition partition = new Partition();
+    partition.setCatName("hive");
+    partition.setDbName("sales");
+    partition.setTableName("events");
+    partition.setValues(List.of("2026-03-27"));
+    partition.setSd(storageDescriptor("/warehouse/sales.db/events/dt=2026-03-27"));
+    partition.setParameters(Map.of("numFiles", "3"));
+
+    Partition routed = (Partition) NamespaceTranslator.externalizeResult(partition, NAMESPACE);
+
+    Assert.assertEquals("catalog1__sales", routed.getDbName());
+    Assert.assertEquals("catalog1", routed.getCatName());
+    Assert.assertEquals(List.of("2026-03-27"), routed.getValues());
+    Assert.assertEquals("/warehouse/sales.db/events/dt=2026-03-27", routed.getSd().getLocation());
+    Assert.assertEquals("3", routed.getParameters().get("numFiles"));
+  }
+
+  @Test
+  public void internalizePartitionPreservesLocationAndValuesForPartitionedTable() {
+    Partition partition = new Partition();
+    partition.setCatName("hive");
+    partition.setDbName("@hive#catalog1__sales");
+    partition.setTableName("events");
+    partition.setValues(List.of("2026-03-27"));
+    partition.setSd(storageDescriptor("/warehouse/sales.db/events/dt=2026-03-27"));
+    partition.setParameters(Map.of("numFiles", "3"));
+
+    Partition routed = (Partition) NamespaceTranslator.internalizeArgument(partition, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertNull(routed.getCatName());
+    Assert.assertEquals(List.of("2026-03-27"), routed.getValues());
+    Assert.assertEquals("/warehouse/sales.db/events/dt=2026-03-27", routed.getSd().getLocation());
+    Assert.assertEquals("3", routed.getParameters().get("numFiles"));
+  }
+
+  private static Table table(String dbName, String tableName, String tableType, String location) {
+    Table table = new Table();
+    table.setDbName(dbName);
+    table.setTableName(tableName);
+    table.setTableType(tableType);
+    table.setSd(storageDescriptor(location));
+    return table;
+  }
+
+  private static StorageDescriptor storageDescriptor(String location) {
+    StorageDescriptor storageDescriptor = new StorageDescriptor();
+    storageDescriptor.setCols(List.of(new FieldSchema("id", "bigint", null)));
+    storageDescriptor.setLocation(location);
+    return storageDescriptor;
   }
 }
