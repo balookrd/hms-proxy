@@ -333,11 +333,12 @@ final class NamespaceTranslator {
         originalDbName,
         namespace.catalogName(),
         namespace.externalDbName(),
+        namespace.backendDbName(),
         preserveBackendCatalogName);
   }
 
   static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
-    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null, false);
+    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null, null, false);
   }
 
   private static String internalCatalogName(
@@ -345,6 +346,7 @@ final class NamespaceTranslator {
       String originalDbName,
       String proxyCatalogName,
       String externalDbName,
+      String backendDbName,
       boolean preserveBackendCatalogName
   ) {
     if (requestCatalogName == null || requestCatalogName.isBlank()) {
@@ -352,6 +354,9 @@ final class NamespaceTranslator {
     }
     if (requestCatalogName.equals(proxyCatalogName)) {
       return null;
+    }
+    if (externalDbName != null && externalDbName.equals(backendDbName)) {
+      return requestCatalogName;
     }
     if (matchesExternalDatabaseAlias(originalDbName, externalDbName)) {
       return preserveBackendCatalogName ? requestCatalogName : null;

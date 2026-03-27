@@ -1,6 +1,8 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.net.SocketException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -8,6 +10,23 @@ import org.junit.Assert;
 import org.junit.Test;
 
 public class RoutingMetaStoreHandlerTest {
+  private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = new ProxyConfig(
+      new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+      new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+      "__",
+      "catalog1",
+      Map.of(
+          "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false, Map.of("hive.metastore.uris", "thrift://one")),
+          "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", false, Map.of("hive.metastore.uris", "thrift://two"))));
+
+  private static CatalogRouter routerFor(ProxyConfig config) {
+    Map<String, CatalogBackend> backends = new LinkedHashMap<>();
+    for (String name : config.catalogs().keySet()) {
+      backends.put(name, null);
+    }
+    return new CatalogRouter(config, backends);
+  }
+
   @Test
   public void getAllFunctionsUsesDefaultBackendCompatibilityPath() {
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
@@ -117,6 +136,38 @@ public class RoutingMetaStoreHandlerTest {
         "metastore.batch.retrieve.max",
         "50",
         java.util.Map.of()).isPresent());
+  }
+
+  @Test
+  public void explicitDefaultCatalogLeavesUnprefixedDatabaseNameUntouched() throws Exception {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    java.lang.reflect.Method method =
+        RoutingMetaStoreHandler.class.getDeclaredMethod("resolveRequestNamespace", String.class, String.class);
+    method.setAccessible(true);
+
+    CatalogRouter.ResolvedNamespace namespace =
+        (CatalogRouter.ResolvedNamespace) method.invoke(handler, "catalog1", "sales");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("sales", namespace.backendDbName());
+    Assert.assertEquals("sales", namespace.externalDbName());
+  }
+
+  @Test
+  public void explicitCatalogPrefixStillRoutesUsingThatPrefix() throws Exception {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    java.lang.reflect.Method method =
+        RoutingMetaStoreHandler.class.getDeclaredMethod("resolveRequestNamespace", String.class, String.class);
+    method.setAccessible(true);
+
+    CatalogRouter.ResolvedNamespace namespace =
+        (CatalogRouter.ResolvedNamespace) method.invoke(handler, "catalog1", "catalog1__sales");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("sales", namespace.backendDbName());
+    Assert.assertEquals("catalog1__sales", namespace.externalDbName());
   }
 
 }

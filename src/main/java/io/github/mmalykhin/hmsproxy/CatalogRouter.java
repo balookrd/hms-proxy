@@ -55,15 +55,12 @@ final class CatalogRouter implements AutoCloseable {
       return resolveCatalog(config.defaultCatalog(), normalizedDbName);
     }
 
-    int separator = normalizedDbName.indexOf(config.catalogDbSeparator());
-    if (separator > 0) {
-      String catalog = normalizedDbName.substring(0, separator);
-      if (backends.containsKey(catalog)) {
-        return resolveCatalog(
-            catalog,
-            normalizedDbName.substring(separator + config.catalogDbSeparator().length()),
-            normalizedDbName);
-      }
+    String prefixedCatalog = prefixedCatalog(normalizedDbName);
+    if (prefixedCatalog != null) {
+      return resolveCatalog(
+          prefixedCatalog,
+          normalizedDbName.substring(prefixedCatalog.length() + config.catalogDbSeparator().length()),
+          normalizedDbName);
     }
 
     return resolveCatalog(config.defaultCatalog(), normalizedDbName);
@@ -74,16 +71,13 @@ final class CatalogRouter implements AutoCloseable {
     if (normalizedDbPattern == null || normalizedDbPattern.isBlank()) {
       return Optional.empty();
     }
-    int separator = normalizedDbPattern.indexOf(config.catalogDbSeparator());
-    if (separator > 0) {
-      String catalog = normalizedDbPattern.substring(0, separator);
-      if (backends.containsKey(catalog)) {
-        return Optional.of(
-            resolveCatalog(
-                catalog,
-                normalizedDbPattern.substring(separator + config.catalogDbSeparator().length()),
-                normalizedDbPattern));
-      }
+    String prefixedCatalog = prefixedCatalog(normalizedDbPattern);
+    if (prefixedCatalog != null) {
+      return Optional.of(
+          resolveCatalog(
+              prefixedCatalog,
+              normalizedDbPattern.substring(prefixedCatalog.length() + config.catalogDbSeparator().length()),
+              normalizedDbPattern));
     }
     return Optional.empty();
   }
@@ -99,9 +93,21 @@ final class CatalogRouter implements AutoCloseable {
 
   String externalDatabaseName(String catalog, String backendDbName) {
     if (backendDbName == null || backendDbName.isBlank()) {
-      return catalog;
+      return catalog.equals(config.defaultCatalog()) ? backendDbName : catalog;
+    }
+    if (catalog.equals(config.defaultCatalog())) {
+      return backendDbName;
     }
     return catalog + config.catalogDbSeparator() + backendDbName;
+  }
+
+  private String prefixedCatalog(String dbName) {
+    int separator = dbName.indexOf(config.catalogDbSeparator());
+    if (separator <= 0) {
+      return null;
+    }
+    String catalog = dbName.substring(0, separator);
+    return backends.containsKey(catalog) ? catalog : null;
   }
 
   private String normalizeExternalDbName(String dbName) {

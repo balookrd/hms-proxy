@@ -36,6 +36,12 @@ public class NamespaceTranslatorTest {
           "catalog1",
           "catalog1__sales",
           "sales");
+  private static final CatalogRouter.ResolvedNamespace DEFAULT_NAMESPACE =
+      new CatalogRouter.ResolvedNamespace(
+          null,
+          "catalog1",
+          "sales",
+          "sales");
 
   @Test
   public void internalizeClearsProxyCatalogAliasBeforeSendingToBackend() {
@@ -59,6 +65,19 @@ public class NamespaceTranslatorTest {
     request.setTblName("events");
 
     GetTableRequest routed = (GetTableRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("hive", routed.getCatName());
+  }
+
+  @Test
+  public void internalizePreservesNonProxyCatalogNameWhenDefaultCatalogUsesRawDatabaseName() {
+    GetTableRequest request = new GetTableRequest();
+    request.setCatName("hive");
+    request.setDbName("sales");
+    request.setTblName("events");
+
+    GetTableRequest routed = (GetTableRequest) NamespaceTranslator.internalizeArgument(request, DEFAULT_NAMESPACE);
 
     Assert.assertEquals("sales", routed.getDbName());
     Assert.assertEquals("hive", routed.getCatName());
