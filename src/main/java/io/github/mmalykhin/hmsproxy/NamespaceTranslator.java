@@ -52,9 +52,22 @@ final class NamespaceTranslator {
     if (value instanceof Database database) {
       return blankToNull(database.getName());
     }
-    String directDbName = blankToNull(readStringProperty(value, "getDbName"));
+    String directDbName = readDbNameProperty(value);
     if (directDbName != null) {
       return directDbName;
+    }
+    String fullTableName = readFullTableNameProperty(value);
+    if (fullTableName != null) {
+      return extractDbNameFromFullTableName(fullTableName);
+    }
+    List<String> fullTableNames = readFullTableNamesProperty(value);
+    if (fullTableNames != null) {
+      for (String candidate : fullTableNames) {
+        String extractedDbName = extractDbNameFromFullTableName(candidate);
+        if (extractedDbName != null) {
+          return extractedDbName;
+        }
+      }
     }
     if (value instanceof List<?> list) {
       for (Object element : list) {
@@ -144,9 +157,14 @@ final class NamespaceTranslator {
       }
       return database;
     }
-    String originalDbName = readStringProperty(value, "getDbName");
+    String originalDbName = readDbNameProperty(value);
+    String originalFullTableName = readFullTableNameProperty(value);
+    List<String> originalFullTableNames = readFullTableNamesProperty(value);
     if (direction == Direction.EXTERNALIZE) {
       maybeInvoke(value, "setDbName", namespace.externalDbName());
+      maybeInvoke(value, "setDbname", namespace.externalDbName());
+      rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
+      rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
       maybeInvoke(value, "setCatName", namespace.catalogName());
       maybeInvoke(value, "setCatalogName", namespace.catalogName());
     } else {
@@ -155,6 +173,9 @@ final class NamespaceTranslator {
       maybeInvoke(value, "setCatalogName",
           internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, namespace));
       maybeInvoke(value, "setDbName", namespace.backendDbName());
+      maybeInvoke(value, "setDbname", namespace.backendDbName());
+      rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
+      rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
     }
     return value;
   }
@@ -253,14 +274,101 @@ final class NamespaceTranslator {
     return dbName;
   }
 
+  private static String readDbNameProperty(Object value) {
+    return blankToNull(readStringProperty(value, "getDbName", "getDbname"));
+  }
+
+  private static String readFullTableNameProperty(Object value) {
+    return blankToNull(readStringProperty(value, "getFullTableName"));
+  }
+
+  private static List<String> readFullTableNamesProperty(Object value) {
+    return readStringListProperty(value, "getFullTableNames");
+  }
+
+  private static String extractDbNameFromFullTableName(String fullTableName) {
+    if (fullTableName == null || fullTableName.isBlank()) {
+      return null;
+    }
+    int separator = fullTableName.lastIndexOf('.');
+    if (separator <= 0) {
+      return null;
+    }
+    return blankToNull(fullTableName.substring(0, separator));
+  }
+
+  private static String transformFullTableName(
+      String fullTableName,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    if (fullTableName == null || fullTableName.isBlank()) {
+      return fullTableName;
+    }
+    int separator = fullTableName.lastIndexOf('.');
+    if (separator <= 0 || separator + 1 >= fullTableName.length()) {
+      return fullTableName;
+    }
+
+    String dbName = fullTableName.substring(0, separator);
+    String tableName = fullTableName.substring(separator + 1);
+    String rewrittenDbName = switch (direction) {
+      case EXTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.backendDbName())
+          ? namespace.externalDbName()
+          : dbName;
+      case INTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.externalDbName())
+          ? namespace.backendDbName()
+          : dbName;
+    };
+    return rewrittenDbName + "." + tableName;
+  }
+
+  private static List<String> transformFullTableNames(
+      List<String> fullTableNames,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    if (fullTableNames == null) {
+      return null;
+    }
+    if (fullTableNames.isEmpty()) {
+      return fullTableNames;
+    }
+    List<String> transformed = new ArrayList<>(fullTableNames.size());
+    for (String fullTableName : fullTableNames) {
+      transformed.add(transformFullTableName(fullTableName, namespace, direction));
+    }
+    return transformed;
+  }
+
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
   }
 
-  private static String readStringProperty(Object target, String getterName) {
+  private static String readStringProperty(Object target, String... getterNames) {
+    for (String getterName : getterNames) {
+      try {
+        Method method = target.getClass().getMethod(getterName);
+        return (String) method.invoke(target);
+      } catch (NoSuchMethodException ignored) {
+        // Try the next compatible getter.
+      } catch (IllegalAccessException | InvocationTargetException e) {
+        throw new IllegalStateException(
+            "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
+      }
+    }
+    return null;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<String> readStringListProperty(Object target, String getterName) {
     try {
       Method method = target.getClass().getMethod(getterName);
-      return (String) method.invoke(target);
+      Object value = method.invoke(target);
+      if (value == null) {
+        return null;
+      }
+      return (List<String>) value;
     } catch (NoSuchMethodException ignored) {
       return null;
     } catch (IllegalAccessException | InvocationTargetException e) {
@@ -278,6 +386,25 @@ final class NamespaceTranslator {
     } catch (IllegalAccessException | InvocationTargetException e) {
       throw new IllegalStateException(
           "Unable to invoke " + methodName + " on " + target.getClass().getName(), e);
+    }
+  }
+
+  private static void rewriteFullTableName(Object target, String value) {
+    maybeInvoke(target, "setFullTableName", value);
+  }
+
+  private static void rewriteFullTableNames(Object target, List<String> values) {
+    if (values == null) {
+      return;
+    }
+    try {
+      Method method = target.getClass().getMethod("setFullTableNames", List.class);
+      method.invoke(target, values);
+    } catch (NoSuchMethodException ignored) {
+      // Namespace propagation is best-effort for thrift DTOs with compatible setters.
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Unable to invoke setFullTableNames on " + target.getClass().getName(), e);
     }
   }
 }
