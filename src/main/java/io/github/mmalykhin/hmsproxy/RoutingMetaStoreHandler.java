@@ -222,7 +222,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private Object handleGetTableReq(Method method, Object[] args) throws Throwable {
     GetTableRequest request = (GetTableRequest) args[0];
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
-    GetTableRequest routedRequest = (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace);
+    GetTableRequest routedRequest =
+        (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
     Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
@@ -230,7 +231,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private Object handleGetTablesReq(Method method, Object[] args) throws Throwable {
     GetTablesRequest request = (GetTablesRequest) args[0];
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
-    GetTablesRequest routedRequest = (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace);
+    GetTablesRequest routedRequest =
+        (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
     Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
@@ -296,7 +298,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     Object[] routedArgs = Arrays.copyOf(args, args.length);
     routedArgs[0] = namespace.backendDbName();
     for (int index = 1; index < routedArgs.length; index++) {
-      routedArgs[index] = NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
+      routedArgs[index] = NamespaceTranslator.internalizeArgument(
+          routedArgs[index], namespace, preserveBackendCatalogName());
     }
     return routedArgs;
   }
@@ -306,7 +309,8 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     for (int index = 0; index < routedArgs.length; index++) {
       routedArgs[index] = routedArgs[index] instanceof String dbName
           ? NamespaceTranslator.internalizeStringArgument(dbName, namespace)
-          : NamespaceTranslator.internalizeArgument(routedArgs[index], namespace);
+          : NamespaceTranslator.internalizeArgument(
+              routedArgs[index], namespace, preserveBackendCatalogName());
     }
     return routedArgs;
   }

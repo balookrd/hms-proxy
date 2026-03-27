@@ -78,6 +78,20 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void internalizePreservesDefaultCatalogWhenDatabaseUsesProxyAliasInCompatibilityMode() {
+    GetTableRequest request = new GetTableRequest();
+    request.setCatName("hive");
+    request.setDbName("catalog1__sales");
+    request.setTblName("events");
+
+    GetTableRequest routed =
+        (GetTableRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE, true);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("hive", routed.getCatName());
+  }
+
+  @Test
   public void internalizeTableClearsDefaultCatalogWhenDatabaseUsesProxyAlias() {
     Table table = new Table();
     table.setCatName("hive");
@@ -88,6 +102,20 @@ public class NamespaceTranslatorTest {
 
     Assert.assertEquals("sales", routed.getDbName());
     Assert.assertNull(routed.getCatName());
+    Assert.assertEquals("events", routed.getTableName());
+  }
+
+  @Test
+  public void internalizeTablePreservesDefaultCatalogWhenDatabaseUsesProxyAliasInCompatibilityMode() {
+    Table table = new Table();
+    table.setCatName("hive");
+    table.setDbName("catalog1__sales");
+    table.setTableName("events");
+
+    Table routed = (Table) NamespaceTranslator.internalizeArgument(table, NAMESPACE, true);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("hive", routed.getCatName());
     Assert.assertEquals("events", routed.getTableName());
   }
 
@@ -187,6 +215,27 @@ public class NamespaceTranslatorTest {
 
     Assert.assertEquals("sales", routed.getColStats().get(0).getStatsDesc().getDbName());
     Assert.assertNull(routed.getColStats().get(0).getStatsDesc().getCatName());
+    Assert.assertEquals("events", routed.getColStats().get(0).getStatsDesc().getTableName());
+  }
+
+  @Test
+  public void internalizeStatsRequestPreservesDefaultCatalogInCompatibilityMode() {
+    ColumnStatisticsDesc statsDesc = new ColumnStatisticsDesc(true, "@hive#catalog1__sales", "events");
+    statsDesc.setCatName("hive");
+
+    ColumnStatistics statistics = new ColumnStatistics();
+    statistics.setStatsDesc(statsDesc);
+    statistics.setStatsObj(List.of());
+
+    SetPartitionsStatsRequest request = new SetPartitionsStatsRequest();
+    request.setColStats(List.of(statistics));
+    request.setNeedMerge(false);
+
+    SetPartitionsStatsRequest routed =
+        (SetPartitionsStatsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE, true);
+
+    Assert.assertEquals("sales", routed.getColStats().get(0).getStatsDesc().getDbName());
+    Assert.assertEquals("hive", routed.getColStats().get(0).getStatsDesc().getCatName());
     Assert.assertEquals("events", routed.getColStats().get(0).getStatsDesc().getTableName());
   }
 
