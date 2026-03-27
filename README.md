@@ -236,13 +236,25 @@ In that case either allow proxy-user impersonation on the backend HMS for the pr
 principal, or disable impersonation for that specific backend with
 `catalog.<name>.impersonation-enabled=false`.
 
-**Backend connections** — configured per catalog via `catalog.<name>.conf.*`:
+**Backend connections** — you can set shared defaults for all backend thrift clients via
+`backend.conf.*`, then override per catalog via `catalog.<name>.conf.*`:
+
+```properties
+backend.conf.hive.metastore.client.socket.timeout=45s
+backend.conf.hive.metastore.execute.setugi=true
+backend.conf.hive.metastore.uris=thrift://shared-hms.internal:9083
+```
+
+Per-catalog values win over shared backend defaults:
 
 ```properties
 catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
 catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
+
+This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
+the metastore URI and Kerberos settings.
 
 When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
 connections using `security.client-principal` and `security.client-keytab`. If those are omitted,

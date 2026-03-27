@@ -67,6 +67,14 @@ public final class ProxyConfigLoader {
             properties::getProperty,
             (left, right) -> right,
             LinkedHashMap::new));
+    Map<String, String> backendConf = properties.stringPropertyNames().stream()
+        .filter(name -> name.startsWith("backend.conf."))
+        .sorted()
+        .collect(Collectors.toMap(
+            name -> name.substring("backend.conf.".length()),
+            properties::getProperty,
+            (left, right) -> right,
+            LinkedHashMap::new));
 
     String catalogsValue = require(properties, "catalogs");
     Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
@@ -74,7 +82,7 @@ public final class ProxyConfigLoader {
       String prefix = "catalog." + catalogName + ".";
       boolean catalogImpersonationEnabled =
           Boolean.parseBoolean(get(properties, prefix + "impersonation-enabled", Boolean.toString(impersonationEnabled)));
-      Map<String, String> hiveConf = properties.stringPropertyNames().stream()
+      Map<String, String> hiveConfOverrides = properties.stringPropertyNames().stream()
           .filter(name -> name.startsWith(prefix + "conf."))
           .sorted()
           .collect(Collectors.toMap(
@@ -82,9 +90,12 @@ public final class ProxyConfigLoader {
               properties::getProperty,
               (left, right) -> right,
               LinkedHashMap::new));
+      Map<String, String> hiveConf = new LinkedHashMap<>(backendConf);
+      hiveConf.putAll(hiveConfOverrides);
       if (!hiveConf.containsKey("hive.metastore.uris")) {
         throw new IllegalArgumentException(
-            "Missing " + prefix + "conf.hive.metastore.uris for catalog " + catalogName);
+            "Missing backend.conf.hive.metastore.uris or " + prefix + "conf.hive.metastore.uris for catalog "
+                + catalogName);
       }
       catalogs.put(catalogName, new ProxyConfig.CatalogConfig(
           catalogName,
@@ -142,9 +153,10 @@ public final class ProxyConfigLoader {
         clientKeytab,
         impersonationEnabled,
         frontDoorConf);
+    ProxyConfig.BackendConfig backend = new ProxyConfig.BackendConfig(backendConf);
     ProxyConfig.CompatibilityConfig compatibility =
         new ProxyConfig.CompatibilityConfig(preserveBackendCatalogName);
-    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, compatibility);
+    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility);
   }
 
   private static String[] splitCsv(String value) {
