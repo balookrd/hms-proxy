@@ -311,7 +311,7 @@ public class NamespaceTranslatorTest {
         (NotNullConstraintsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
 
     Assert.assertEquals("sales", routed.getDb_name());
-    Assert.assertNull(routed.getCatName());
+    Assert.assertEquals("hive", routed.getCatName());
     Assert.assertEquals("events", routed.getTbl_name());
   }
 
