@@ -7,13 +7,18 @@ import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.HiveObjectRef;
 import org.apache.hadoop.hive.metastore.api.HiveObjectType;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableValidWriteIds;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -171,6 +176,15 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void extractDbNameReadsFullTableNamesNamespace() {
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest();
+    request.setFullTableNames(List.of("catalog1__sales.events"));
+    request.setValidTxnList("txns");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
   public void extractDbNameReadsDatabaseNameForCreateDatabaseStyleRequests() {
     Database database = new Database();
     database.setName("catalog1__sales");
@@ -197,5 +211,52 @@ public class NamespaceTranslatorTest {
     Assert.assertEquals("sales", routed.getPrivileges().get(0).getHiveObject().getDbName());
     Assert.assertNull(routed.getPrivileges().get(0).getHiveObject().getCatName());
     Assert.assertEquals("events", routed.getPrivileges().get(0).getHiveObject().getObjectName());
+  }
+
+  @Test
+  public void internalizeValidWriteIdsRequestRewritesFullTableNames() {
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest();
+    request.setFullTableNames(List.of("@hive#catalog1__sales.events"));
+    request.setValidTxnList("txns");
+
+    GetValidWriteIdsRequest routed =
+        (GetValidWriteIdsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals(List.of("sales.events"), routed.getFullTableNames());
+    Assert.assertEquals("txns", routed.getValidTxnList());
+  }
+
+  @Test
+  public void externalizeValidWriteIdsResponseRewritesFullTableName() {
+    TableValidWriteIds tableValidWriteIds = new TableValidWriteIds();
+    tableValidWriteIds.setFullTableName("hive.sales.events");
+    tableValidWriteIds.setWriteIdHighWaterMark(7L);
+    tableValidWriteIds.setInvalidWriteIds(List.of());
+    tableValidWriteIds.setAbortedBits(new byte[0]);
+
+    GetValidWriteIdsResponse response = new GetValidWriteIdsResponse();
+    response.setTblValidWriteIds(List.of(tableValidWriteIds));
+
+    GetValidWriteIdsResponse routed =
+        (GetValidWriteIdsResponse) NamespaceTranslator.externalizeResult(response, NAMESPACE);
+
+    Assert.assertEquals("catalog1__sales.events", routed.getTblValidWriteIds().get(0).getFullTableName());
+  }
+
+  @Test
+  public void internalizeLockRequestRewritesNestedDbname() {
+    LockComponent component = new LockComponent();
+    component.setDbname("@hive#catalog1__sales");
+    component.setTablename("events");
+
+    LockRequest request = new LockRequest();
+    request.setComponent(List.of(component));
+    request.setUser("alice");
+    request.setHostname("host");
+
+    LockRequest routed = (LockRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getComponent().get(0).getDbname());
+    Assert.assertEquals("events", routed.getComponent().get(0).getTablename());
   }
 }
