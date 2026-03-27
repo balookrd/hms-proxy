@@ -12,6 +12,8 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
+import org.apache.thrift.TFieldRequirementType;
+import org.apache.thrift.meta_data.FieldMetaData;
 
 final class NamespaceTranslator {
   private enum Direction {
@@ -234,9 +236,14 @@ final class NamespaceTranslator {
       }
     } else {
       maybeInvoke(value, "setCatName",
-          internalCatalogName(readStringProperty(value, "getCatName"), originalDbName, namespace));
+          internalCatalogNameForField(value, "catName", readStringProperty(value, "getCatName"), originalDbName, namespace));
       maybeInvoke(value, "setCatalogName",
-          internalCatalogName(readStringProperty(value, "getCatalogName"), originalDbName, namespace));
+          internalCatalogNameForField(
+              value,
+              "catalogName",
+              readStringProperty(value, "getCatalogName"),
+              originalDbName,
+              namespace));
       maybeInvoke(value, "setDbName", namespace.backendDbName());
       maybeInvoke(value, "setDbname", namespace.backendDbName());
       maybeInvoke(value, "setDb_name", namespace.backendDbName());
@@ -476,6 +483,20 @@ final class NamespaceTranslator {
     return fieldName.replace("_", "").toLowerCase();
   }
 
+  private static String internalCatalogNameForField(
+      Object target,
+      String fieldName,
+      String requestCatalogName,
+      String originalDbName,
+      CatalogRouter.ResolvedNamespace namespace
+  ) {
+    String translated = internalCatalogName(requestCatalogName, originalDbName, namespace);
+    if (translated == null && hasRequiredThriftField(target, fieldName)) {
+      return requestCatalogName;
+    }
+    return translated;
+  }
+
   private static String readStringProperty(Object target, String... getterNames) {
     for (String getterName : getterNames) {
       try {
@@ -489,6 +510,28 @@ final class NamespaceTranslator {
       }
     }
     return null;
+  }
+
+  private static boolean hasRequiredThriftField(Object target, String expectedFieldName) {
+    if (!(target instanceof TBase<?, ?> thriftValue)) {
+      return false;
+    }
+    try {
+      Field metadataField = thriftValue.getClass().getField("metaDataMap");
+      Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
+      for (Map.Entry<?, ?> entry : metadata.entrySet()) {
+        TFieldIdEnum fieldId = (TFieldIdEnum) entry.getKey();
+        if (!fieldId.getFieldName().equals(expectedFieldName)) {
+          continue;
+        }
+        FieldMetaData fieldMetaData = (FieldMetaData) entry.getValue();
+        return fieldMetaData.requirementType == TFieldRequirementType.REQUIRED;
+      }
+      return false;
+    } catch (NoSuchFieldException | IllegalAccessException e) {
+      throw new IllegalStateException(
+          "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
+    }
   }
 
   @SuppressWarnings("unchecked")
