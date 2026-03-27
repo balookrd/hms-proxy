@@ -32,6 +32,36 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsGlobalBackendHiveConfAndMergesCatalogOverrides() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          backend.conf.hive.metastore.uris=thrift://shared:9083
+          backend.conf.hive.metastore.client.socket.timeout=45s
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.conf.hive.metastore.connect.retries=7
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals("thrift://shared:9083", config.backend().hiveConf().get("hive.metastore.uris"));
+      Assert.assertEquals("45s", config.backend().hiveConf().get("hive.metastore.client.socket.timeout"));
+      Assert.assertEquals("thrift://hms1:9083",
+          config.catalogs().get("catalog1").hiveConf().get("hive.metastore.uris"));
+      Assert.assertEquals("thrift://shared:9083",
+          config.catalogs().get("catalog2").hiveConf().get("hive.metastore.uris"));
+      Assert.assertEquals("45s",
+          config.catalogs().get("catalog2").hiveConf().get("hive.metastore.client.socket.timeout"));
+      Assert.assertEquals("7",
+          config.catalogs().get("catalog2").hiveConf().get("hive.metastore.connect.retries"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void rejectsMissingRequiredProperty() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
@@ -122,6 +152,24 @@ public class ProxyConfigLoaderTest {
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("hive.metastore.uris"));
       }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void allowsGlobalBackendMetastoreUrisWithoutPerCatalogUris() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          backend.conf.hive.metastore.uris=thrift://shared:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals("thrift://shared:9083",
+          config.catalogs().get("catalog1").hiveConf().get("hive.metastore.uris"));
     } finally {
       Files.deleteIfExists(file);
     }

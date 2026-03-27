@@ -9,10 +9,12 @@ public record ProxyConfig(
     String catalogDbSeparator,
     String defaultCatalog,
     Map<String, CatalogConfig> catalogs,
+    BackendConfig backend,
     CompatibilityConfig compatibility
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
+    backend = backend == null ? new BackendConfig(Map.of()) : backend;
     compatibility = compatibility == null ? new CompatibilityConfig(false) : compatibility;
   }
 
@@ -23,7 +25,19 @@ public record ProxyConfig(
       String defaultCatalog,
       Map<String, CatalogConfig> catalogs
   ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new CompatibilityConfig(false));
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
+        new CompatibilityConfig(false));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      CompatibilityConfig compatibility
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility);
   }
 
   public record ServerConfig(
@@ -69,6 +83,14 @@ public record ProxyConfig(
       Map<String, String> hiveConf
   ) {
     public CatalogConfig {
+      hiveConf = Map.copyOf(hiveConf);
+    }
+  }
+
+  public record BackendConfig(
+      Map<String, String> hiveConf
+  ) {
+    public BackendConfig {
       hiveConf = Map.copyOf(hiveConf);
     }
   }
