@@ -81,6 +81,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       LOG.debug("requestId={} incoming method={} args={}",
           requestId, name, DebugLogUtil.formatArgs(args));
     }
+    if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
+      LOG.info("requestId={} trace stage=client-request method={} summary={}",
+          requestId, name, WriteTraceUtil.summarizeArgs(args));
+    }
 
     try {
       Object result = switch (name) {
@@ -107,6 +111,10 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
             requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+      }
+      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
+        LOG.info("requestId={} trace stage=client-response method={} elapsedMs={} summary={}",
+            requestId, name, elapsedMillis(startedAt), WriteTraceUtil.summarizeResult(result));
       }
       return result;
     } catch (Throwable throwable) {
@@ -357,11 +365,27 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
             impersonation == null ? "-" : impersonation.userName(),
             DebugLogUtil.formatArgs(args));
       }
+      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
+        LOG.info("requestId={} trace stage=backend-request catalog={} method={} impersonationUser={} summary={}",
+            requestId,
+            backend.name(),
+            method.getName(),
+            impersonation == null ? "-" : impersonation.userName(),
+            WriteTraceUtil.summarizeArgs(args));
+      }
       Object result = backend.invoke(method, args, impersonation);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
             requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
             DebugLogUtil.formatValue(result));
+      }
+      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
+        LOG.info("requestId={} trace stage=backend-response catalog={} method={} elapsedMs={} summary={}",
+            requestId,
+            backend.name(),
+            method.getName(),
+            elapsedMillis(startedAt),
+            WriteTraceUtil.summarizeResult(result));
       }
       return result;
     } catch (Throwable cause) {
@@ -370,6 +394,14 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
         return compatibilityFallback.get();
+      }
+      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
+        LOG.info("requestId={} trace stage=backend-error catalog={} method={} elapsedMs={} error={}",
+            requestId,
+            backend.name(),
+            method.getName(),
+            elapsedMillis(startedAt),
+            cause.toString());
       }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
