@@ -34,14 +34,17 @@ final class MetastoreCompatibility {
       Pattern.compile("(hive|hdfs|mapred|metastore).*");
   private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
       "set_ugi",
-      "get_all_functions",
       "get_current_notificationEventId",
+      "get_next_notification",
+      "get_notification_events_count",
+      "get_open_txns",
+      "get_open_txns_info",
+      "show_locks",
+      "show_compact",
+      "get_active_resource_plan",
+      "get_all_resource_plans",
+      "get_runtime_stats",
       "flushCache"
-  );
-  private static final List<String> DEFAULT_BACKEND_GLOBAL_PREFIXES = List.of(
-      "get_",
-      "show_",
-      "list_"
   );
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
@@ -50,8 +53,7 @@ final class MetastoreCompatibility {
   }
 
   static boolean routesToDefaultBackend(String methodName) {
-    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName)
-        || DEFAULT_BACKEND_GLOBAL_PREFIXES.stream().anyMatch(methodName::startsWith);
+    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
   }
 
   static boolean handlesLocally(String methodName) {
