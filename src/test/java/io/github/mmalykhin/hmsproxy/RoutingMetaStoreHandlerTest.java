@@ -116,6 +116,21 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void delegationTokenAuthorizationMessageMentionsFrontDoorProxyUserKeys() {
+    String message = FrontDoorSecurity.delegationTokenAuthorizationMessage(
+        "algaraev",
+        "algaraev",
+        "hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
+        "10.0.0.8");
+
+    Assert.assertTrue(message.contains("owner 'algaraev'"));
+    Assert.assertTrue(message.contains("authenticated as 'hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU'"));
+    Assert.assertTrue(message.contains("10.0.0.8"));
+    Assert.assertTrue(message.contains("security.front-door-conf.hadoop.proxyuser.hive.hosts"));
+    Assert.assertTrue(message.contains("security.front-door-conf.hadoop.proxyuser.hive.groups"));
+  }
+
+  @Test
   public void catalogBackendCloseQuietlySuppressesSocketClosedFailures() {
     CatalogBackend.closeQuietly(() -> {
       throw new SocketException("Socket closed");
