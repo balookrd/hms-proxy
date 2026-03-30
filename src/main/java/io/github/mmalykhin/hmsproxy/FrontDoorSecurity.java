@@ -6,10 +6,12 @@ import java.net.URL;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
 import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.transport.TTransportFactory;
@@ -156,8 +158,16 @@ final class FrontDoorSecurity implements AutoCloseable {
     return saslServer.wrapProcessor(processor);
   }
 
-  String issueDelegationToken(String owner, String renewer) throws IOException, InterruptedException {
-    return delegationTokenManager.getDelegationToken(owner, renewer, remoteAddress());
+  String issueDelegationToken(String owner, String renewer)
+      throws IOException, InterruptedException, MetaException {
+    try {
+      return delegationTokenManager.getDelegationToken(owner, renewer, remoteAddress());
+    } catch (AuthorizationException e) {
+      MetaException metaException = new MetaException(
+          delegationTokenAuthorizationMessage(owner, renewer, remoteUser(), remoteAddress()));
+      metaException.initCause(e);
+      throw metaException;
+    }
   }
 
   long renewDelegationToken(String token) throws IOException {
@@ -170,6 +180,39 @@ final class FrontDoorSecurity implements AutoCloseable {
 
   String remoteUser() {
     return saslServer.getRemoteUser();
+  }
+
+  static String delegationTokenAuthorizationMessage(
+      String owner,
+      String renewer,
+      String authenticatedUser,
+      String remoteAddress
+  ) {
+    String principal = trimToNull(authenticatedUser);
+    String proxyUser = RoutingMetaStoreHandler.shortUserName(principal);
+    if (proxyUser == null) {
+      proxyUser = "<service-user>";
+    }
+
+    StringBuilder message = new StringBuilder()
+        .append("Front-door get_delegation_token for owner '")
+        .append(owner)
+        .append("' and renewer '")
+        .append(renewer)
+        .append("' was authenticated as '")
+        .append(principal != null ? principal : "<unknown>")
+        .append("'");
+    if (remoteAddress != null) {
+      message.append(" from ").append(remoteAddress);
+    }
+    message.append(" and was rejected by Hadoop proxy-user authorization. ")
+        .append("The proxy serves delegation-token RPCs locally, so allow this service principal via ")
+        .append("security.front-door-conf.hadoop.proxyuser.")
+        .append(proxyUser)
+        .append(".hosts and security.front-door-conf.hadoop.proxyuser.")
+        .append(proxyUser)
+        .append(".groups (or load the same core-site.xml into the proxy process).");
+    return message.toString();
   }
 
   private String remoteAddress() {
