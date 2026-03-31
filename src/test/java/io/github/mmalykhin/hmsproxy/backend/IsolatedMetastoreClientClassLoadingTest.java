@@ -1,0 +1,48 @@
+package io.github.mmalykhin.hmsproxy;
+
+import java.net.URL;
+import org.apache.hadoop.conf.Configuration;
+import org.junit.Assert;
+import org.junit.Test;
+
+public class IsolatedMetastoreClientClassLoadingTest {
+  @Test
+  public void configurationResolvesFilterHookInIsolatedLoader() throws Exception {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()),
+        ".",
+        "catalog1",
+        java.util.Map.of("catalog1", new ProxyConfig.CatalogConfig(
+            "catalog1",
+            "c1",
+            "file:///c1",
+            false,
+            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+            "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
+            java.util.Map.of("hive.metastore.uris", "thrift://one"))));
+
+    java.nio.file.Path jar = MetastoreRuntimeJarResolver.resolveBackendJar(
+        config, config.catalogs().get("catalog1"), MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new URL[] {jar.toUri().toURL()},
+        IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
+    Class<?> implClass = Class.forName(
+        "org.apache.hadoop.hive.metastore.DefaultMetaStoreFilterHookImpl",
+        true,
+        classLoader);
+    Class<?> interfaceClass = Class.forName(
+        "org.apache.hadoop.hive.metastore.MetaStoreFilterHook",
+        true,
+        classLoader);
+    Configuration conf = new Configuration(false);
+    conf.setClassLoader(classLoader);
+
+    Class<?> resolved = conf.getClass(
+        "hive.metastore.filter.hook",
+        implClass.asSubclass(Object.class),
+        interfaceClass.asSubclass(Object.class));
+
+    Assert.assertEquals(implClass, resolved);
+  }
+}
