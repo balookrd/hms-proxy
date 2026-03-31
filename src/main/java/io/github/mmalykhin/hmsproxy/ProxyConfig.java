@@ -15,7 +15,9 @@ public record ProxyConfig(
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
     backend = backend == null ? new BackendConfig(Map.of()) : backend;
-    compatibility = compatibility == null ? new CompatibilityConfig(false) : compatibility;
+    compatibility = compatibility == null
+        ? new CompatibilityConfig(FrontendProfile.GNU_3_1_3, false)
+        : compatibility;
   }
 
   public ProxyConfig(
@@ -26,7 +28,7 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(false));
+        new CompatibilityConfig(FrontendProfile.GNU_3_1_3, false));
   }
 
   public ProxyConfig(
@@ -96,8 +98,36 @@ public record ProxyConfig(
   }
 
   public record CompatibilityConfig(
+      FrontendProfile frontendProfile,
+      String hortonworksStandaloneMetastoreJar,
       boolean preserveBackendCatalogName
   ) {
+    public CompatibilityConfig {
+      frontendProfile = frontendProfile == null ? FrontendProfile.GNU_3_1_3 : frontendProfile;
+    }
+
+    public CompatibilityConfig(FrontendProfile frontendProfile, boolean preserveBackendCatalogName) {
+      this(frontendProfile, null, preserveBackendCatalogName);
+    }
+
+    public CompatibilityConfig(boolean preserveBackendCatalogName) {
+      this(FrontendProfile.GNU_3_1_3, null, preserveBackendCatalogName);
+    }
+  }
+
+  public enum FrontendProfile {
+    GNU_3_1_3("3.1.3"),
+    HORTONWORKS_3_1_0_3_1_0_78("3.1.0.3.1.0.0-78");
+
+    private final String metastoreVersion;
+
+    FrontendProfile(String metastoreVersion) {
+      this.metastoreVersion = metastoreVersion;
+    }
+
+    public String metastoreVersion() {
+      return metastoreVersion;
+    }
   }
 
   public enum SecurityMode {

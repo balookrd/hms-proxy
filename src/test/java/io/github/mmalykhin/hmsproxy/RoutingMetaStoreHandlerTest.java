@@ -193,4 +193,25 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertEquals("catalog1__sales", namespace.externalDbName());
   }
 
+  @Test
+  public void getVersionUsesConfiguredFrontendProfile() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(
+            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
+            false));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, routerFor(config), null);
+    java.lang.reflect.Method method = org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class
+        .getMethod("getVersion");
+
+    Object version = handler.invoke(null, method, null);
+
+    Assert.assertEquals("3.1.0.3.1.0.0-78", version);
+  }
+
 }

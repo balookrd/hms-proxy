@@ -29,6 +29,8 @@ final class CatalogBackend implements AutoCloseable {
   private final Map<String, ImpersonationClient> impersonationClients = new LinkedHashMap<>(16, 0.75f, true);
   private HiveMetaStoreClient client;
   private ThriftHiveMetastore.Iface thriftClient;
+  private volatile String backendVersion;
+  private volatile MetastoreCompatibility.BackendProfile backendProfile;
   private final Catalog catalog;
 
   private CatalogBackend(
@@ -38,6 +40,8 @@ final class CatalogBackend implements AutoCloseable {
       boolean backendKerberosEnabled,
       HiveMetaStoreClient client,
       ThriftHiveMetastore.Iface thriftClient,
+      String backendVersion,
+      MetastoreCompatibility.BackendProfile backendProfile,
       Catalog catalog
   ) {
     this.proxyConfig = proxyConfig;
@@ -46,6 +50,8 @@ final class CatalogBackend implements AutoCloseable {
     this.backendKerberosEnabled = backendKerberosEnabled;
     this.client = client;
     this.thriftClient = thriftClient;
+    this.backendVersion = backendVersion;
+    this.backendProfile = backendProfile;
     this.catalog = catalog;
   }
 
@@ -60,11 +66,14 @@ final class CatalogBackend implements AutoCloseable {
 
     HiveMetaStoreClient client = openClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
     ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+    String backendVersion = detectBackendVersion(catalogConfig.name(), thriftClient);
+    MetastoreCompatibility.BackendProfile backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
     Catalog catalog = new Catalog();
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
     catalog.setLocationUri(catalogConfig.locationUri());
-    return new CatalogBackend(proxyConfig, catalogConfig, conf, backendKerberosEnabled, client, thriftClient, catalog);
+    return new CatalogBackend(
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, client, thriftClient, backendVersion, backendProfile, catalog);
   }
 
   String name() {
@@ -83,6 +92,27 @@ final class CatalogBackend implements AutoCloseable {
     return thriftClient;
   }
 
+  String backendVersion() {
+    return backendVersion;
+  }
+
+  MetastoreCompatibility.BackendProfile backendProfile() {
+    return backendProfile;
+  }
+
+  boolean usesLegacyRequestApi() {
+    return MetastoreCompatibility.usesLegacyRequestApi(backendProfile);
+  }
+
+  void rememberLegacyRequestApi() {
+    if (usesLegacyRequestApi()) {
+      return;
+    }
+    backendProfile = MetastoreCompatibility.BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
+    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode; version={}",
+        config.name(), backendVersion == null ? "unknown" : backendVersion);
+  }
+
   Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     if (impersonation != null && config.impersonationEnabled()) {
@@ -93,6 +123,16 @@ final class CatalogBackend implements AutoCloseable {
           config.name(), impersonation.userName());
     }
     return invokeSharedClient(method, args);
+  }
+
+  Object invokeByName(
+      String methodName,
+      Class<?>[] parameterTypes,
+      Object[] args,
+      RoutingMetaStoreHandler.ImpersonationContext impersonation
+  ) throws Throwable {
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes);
+    return invoke(method, args, impersonation);
   }
 
   private synchronized Object invokeSharedClient(Method method, Object[] args) throws Throwable {
@@ -195,10 +235,26 @@ final class CatalogBackend implements AutoCloseable {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
   }
 
+  private static String detectBackendVersion(String catalogName, ThriftHiveMetastore.Iface thriftClient) {
+    try {
+      String version = thriftClient.getVersion();
+      if (version != null && !version.isBlank()) {
+        LOG.info("Detected backend catalog '{}' metastore version {}", catalogName, version);
+      }
+      return version;
+    } catch (Exception e) {
+      LOG.debug("Unable to detect backend catalog '{}' metastore version via getVersion()",
+          catalogName, e);
+      return null;
+    }
+  }
+
   private synchronized void reconnect() throws MetaException {
     closeQuietly(client, "stale shared backend metastore client before reconnect");
     client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
     thriftClient = extractThriftClient(client);
+    backendVersion = detectBackendVersion(config.name(), thriftClient);
+    backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
   }
 
   static void closeQuietly(AutoCloseable closeable, String description) {

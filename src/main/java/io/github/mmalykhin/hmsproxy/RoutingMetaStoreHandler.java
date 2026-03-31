@@ -89,7 +89,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     try {
       Object result = switch (name) {
         case "getName" -> config.server().name();
-        case "getVersion" -> "hms-proxy/0.1.0";
+        case "getVersion" -> config.compatibility().frontendProfile().metastoreVersion();
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
         case "set_ugi" -> handleSetUgi(method, args);
@@ -222,18 +222,24 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
   private Object handleGetTableReq(Method method, Object[] args) throws Throwable {
     GetTableRequest request = (GetTableRequest) args[0];
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    CatalogBackend backend = namespace.backend();
     GetTableRequest routedRequest =
         (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
-    Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
+    Object result = backend.usesLegacyRequestApi()
+        ? invokeLegacyGetTable(backend, routedRequest)
+        : invokeBackend(backend, method, new Object[] {routedRequest});
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
   private Object handleGetTablesReq(Method method, Object[] args) throws Throwable {
     GetTablesRequest request = (GetTablesRequest) args[0];
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    CatalogBackend backend = namespace.backend();
     GetTablesRequest routedRequest =
         (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
-    Object result = invokeBackend(namespace.backend(), method, new Object[] {routedRequest});
+    Object result = backend.usesLegacyRequestApi()
+        ? invokeLegacyGetTables(backend, routedRequest)
+        : invokeBackend(backend, method, new Object[] {routedRequest});
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
@@ -394,6 +400,18 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
+      Optional<Object> downgradedResult = MetastoreCompatibility.downgradeRequest(
+          method.getName(),
+          args,
+          (legacyMethodName, parameterTypes, legacyArgs) ->
+              backend.invokeByName(legacyMethodName, parameterTypes, legacyArgs, impersonation),
+          cause);
+      if (downgradedResult.isPresent()) {
+        backend.rememberLegacyRequestApi();
+        LOG.warn("requestId={} backend catalog={} does not support {}, using legacy compatibility path",
+            requestId, backend.name(), method.getName(), cause);
+        return downgradedResult.get();
+      }
       Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(method.getName(), cause);
       if (compatibilityFallback.isPresent()) {
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
@@ -410,6 +428,63 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
+      throw cause;
+    }
+  }
+
+  private Object invokeLegacyGetTable(CatalogBackend backend, GetTableRequest request) throws Throwable {
+    return invokeBackendByName(
+        backend,
+        "get_table",
+        new Class<?>[] {String.class, String.class},
+        new Object[] {request.getDbName(), request.getTblName()},
+        new GetTableResultAdapter());
+  }
+
+  private Object invokeLegacyGetTables(CatalogBackend backend, GetTablesRequest request) throws Throwable {
+    return invokeBackendByName(
+        backend,
+        "get_table_objects_by_name",
+        new Class<?>[] {String.class, List.class},
+        new Object[] {request.getDbName(), request.getTblNames()},
+        new GetTablesResultAdapter());
+  }
+
+  private Object invokeBackendByName(
+      CatalogBackend backend,
+      String methodName,
+      Class<?>[] parameterTypes,
+      Object[] args,
+      LegacyResultAdapter adapter
+  ) throws Throwable {
+    long startedAt = System.nanoTime();
+    Long requestId = currentRequestId();
+    ImpersonationContext impersonation = currentImpersonation().orElse(null);
+    try {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
+            requestId,
+            backend.name(),
+            methodName,
+            impersonation == null ? "-" : impersonation.userName(),
+            DebugLogUtil.formatArgs(args));
+      }
+      Object result = backend.invokeByName(methodName, parameterTypes, args, impersonation);
+      Object adapted = adapter.adapt(result);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
+            requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(adapted));
+      }
+      return adapted;
+    } catch (Throwable cause) {
+      Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(methodName, cause);
+      if (compatibilityFallback.isPresent()) {
+        LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
+            requestId, backend.name(), methodName, cause);
+        return compatibilityFallback.get();
+      }
+      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
+          requestId, backend.name(), methodName, elapsedMillis(startedAt), cause.toString(), cause);
       throw cause;
     }
   }
@@ -516,5 +591,25 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
     return MetastoreCompatibility.shouldUseFallback(methodName, cause);
+  }
+
+  @FunctionalInterface
+  private interface LegacyResultAdapter {
+    Object adapt(Object result);
+  }
+
+  private static final class GetTableResultAdapter implements LegacyResultAdapter {
+    @Override
+    public Object adapt(Object result) {
+      return new GetTableResult((org.apache.hadoop.hive.metastore.api.Table) result);
+    }
+  }
+
+  private static final class GetTablesResultAdapter implements LegacyResultAdapter {
+    @SuppressWarnings("unchecked")
+    @Override
+    public Object adapt(Object result) {
+      return new GetTablesResult((List<org.apache.hadoop.hive.metastore.api.Table>) result);
+    }
   }
 }

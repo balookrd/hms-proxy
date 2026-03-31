@@ -25,7 +25,10 @@ final class MetastoreThriftServer {
   ) throws Exception {
     this.config = config;
     this.frontDoorSecurity = frontDoorSecurity;
-    TProcessor processor = new ThriftHiveMetastore.Processor<>(handler);
+    TProcessor processor = config.compatibility().frontendProfile()
+        == ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78
+        ? HortonworksFrontendBridge.createProcessor(config, handler)
+        : new ThriftHiveMetastore.Processor<>(handler);
     TServerSocket serverSocket = new TServerSocket(
         new InetSocketAddress(config.server().bindHost(), config.server().port()));
 
