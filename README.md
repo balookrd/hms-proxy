@@ -236,7 +236,8 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 
 `security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
 The keytab must exist and be readable — the proxy will fail to start otherwise.
-`_HOST` is replaced with the machine's FQDN at runtime (standard Hadoop behaviour).
+`_HOST` is replaced with the proxy machine's canonical hostname before Kerberos login. If your DNS
+canonical name differs from the keytab/KDC principal name, use the explicit FQDN instead.
 
 When Kerberos is enabled on the front door, delegation-token methods
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
