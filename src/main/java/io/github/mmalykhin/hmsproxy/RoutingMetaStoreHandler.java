@@ -296,6 +296,11 @@ final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFro
       return invokeBackend(router.defaultBackend(), method, args);
     }
     if (!router.singleCatalog()) {
+      if (MetastoreCompatibility.usesBackendLocalState(method.getName())) {
+        throw metaException("Operation " + method.getName()
+            + " uses backend-local txn/lock state and cannot be routed without explicit catalog context "
+            + "in multi-catalog mode");
+      }
       throw metaException("Operation " + method.getName()
           + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");
     }
@@ -611,5 +616,9 @@ final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFro
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
     return MetastoreCompatibility.shouldUseFallback(methodName, cause);
+  }
+
+  static boolean usesBackendLocalStateMethod(String methodName) {
+    return MetastoreCompatibility.usesBackendLocalState(methodName);
   }
 }

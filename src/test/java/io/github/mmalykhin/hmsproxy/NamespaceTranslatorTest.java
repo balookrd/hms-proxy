@@ -6,8 +6,11 @@ import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsData;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
+import org.apache.hadoop.hive.metastore.api.AllocateTableWriteIdsRequest;
+import org.apache.hadoop.hive.metastore.api.CompactionRequest;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.FireEventRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
@@ -22,7 +25,9 @@ import org.apache.hadoop.hive.metastore.api.NotNullConstraintsRequest;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
+import org.apache.hadoop.hive.metastore.api.ReplTblWriteIdStateRequest;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
+import org.apache.hadoop.hive.metastore.api.ShowLocksRequest;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableValidWriteIds;
@@ -317,6 +322,33 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void extractDbNameReadsCompactionRequestNamespace() {
+    CompactionRequest request = new CompactionRequest();
+    request.setDbname("catalog1__sales");
+    request.setTablename("events");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
+  public void extractDbNameReadsShowLocksRequestNamespace() {
+    ShowLocksRequest request = new ShowLocksRequest();
+    request.setDbname("catalog1__sales");
+    request.setTablename("events");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
+  public void extractDbNameReadsFireEventRequestNamespace() {
+    FireEventRequest request = new FireEventRequest();
+    request.setDbName("catalog1__sales");
+    request.setTableName("events");
+
+    Assert.assertEquals("catalog1__sales", NamespaceTranslator.extractDbName(request));
+  }
+
+  @Test
   public void extractDbNameReadsSnakeCaseConstraintRequestNamespace() {
     PrimaryKeysRequest request = new PrimaryKeysRequest();
     request.setDb_name("catalog1__sales");
@@ -366,6 +398,38 @@ public class NamespaceTranslatorTest {
 
     Assert.assertEquals(List.of("sales.events"), routed.getFullTableNames());
     Assert.assertEquals("txns", routed.getValidTxnList());
+  }
+
+  @Test
+  public void internalizeAllocateTableWriteIdsRequestRewritesDbName() {
+    AllocateTableWriteIdsRequest request = new AllocateTableWriteIdsRequest();
+    request.setDbName("@hive#catalog1__sales");
+    request.setTableName("events");
+    request.setTxnIds(List.of(1L, 2L));
+
+    AllocateTableWriteIdsRequest routed =
+        (AllocateTableWriteIdsRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("events", routed.getTableName());
+    Assert.assertEquals(List.of(1L, 2L), routed.getTxnIds());
+  }
+
+  @Test
+  public void internalizeReplTblWriteIdStateRequestRewritesDbName() {
+    ReplTblWriteIdStateRequest request = new ReplTblWriteIdStateRequest();
+    request.setDbName("@hive#catalog1__sales");
+    request.setTableName("events");
+    request.setValidWriteIdlist("1:2:3");
+    request.setUser("alice");
+    request.setHostName("host1");
+
+    ReplTblWriteIdStateRequest routed =
+        (ReplTblWriteIdStateRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("events", routed.getTableName());
+    Assert.assertEquals("1:2:3", routed.getValidWriteIdlist());
   }
 
   @Test
