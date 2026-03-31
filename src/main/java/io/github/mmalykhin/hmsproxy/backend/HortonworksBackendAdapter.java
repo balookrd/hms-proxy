@@ -10,12 +10,8 @@ import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 
 public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
-  HortonworksBackendAdapter(String backendVersion) {
-    super(backendVersion);
-  }
-
-  HortonworksBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
-    super(backendVersion, runtimeProfileOverride);
+  HortonworksBackendAdapter() {
+    super(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
   }
 
   @Override

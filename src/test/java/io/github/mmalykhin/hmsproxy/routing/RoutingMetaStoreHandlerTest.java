@@ -321,8 +321,8 @@ public class RoutingMetaStoreHandlerTest {
             null,
             false));
 
-    CatalogBackend apacheBackend = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter("3.1.3"),
-        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession("3.1.3")));
+    CatalogBackend apacheBackend = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession()));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", apacheBackend)));
     RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
 
@@ -394,7 +394,7 @@ public class RoutingMetaStoreHandlerTest {
     BackendInvocationSession session = sessionCtor.newInstance(null, null, isolatedClient);
 
     BackendAdapter adapter =
-        new TestBackendAdapter("3.1.0.3.1.0.0-78", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+        new TestBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
     return newBackend(proxyConfig, catalogConfig, adapter, newBackendRuntime(proxyConfig, catalogConfig, session));
   }
 
@@ -435,7 +435,7 @@ public class RoutingMetaStoreHandlerTest {
     return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, null, session);
   }
 
-  private static BackendInvocationSession newSession(String version) throws Exception {
+  private static BackendInvocationSession newSession() throws Exception {
     Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
         org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
         org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class,
@@ -446,17 +446,14 @@ public class RoutingMetaStoreHandlerTest {
             org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class.getClassLoader(),
             new Class<?>[] {org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class},
             (proxy, method, args) -> {
-              if ("getVersion".equals(method.getName())) {
-                return version;
-              }
               throw new UnsupportedOperationException(method.getName());
             });
     return ctor.newInstance(null, thriftClient, null);
   }
 
   private static final class TestBackendAdapter extends AbstractBackendAdapter {
-    private TestBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
-      super(backendVersion, runtimeProfileOverride);
+    private TestBackendAdapter(MetastoreRuntimeProfile runtimeProfile) {
+      super(runtimeProfile);
     }
 
     @Override

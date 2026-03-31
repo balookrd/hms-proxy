@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -15,7 +16,7 @@ public final class MetastoreRuntimeJarResolver {
         MetastoreRuntimeProfileResolver.forFrontendProfile(config.compatibility().frontendProfile());
     String configuredJar = config.compatibility().frontendStandaloneMetastoreJar();
     Path jarPath = configuredJar == null
-        ? Path.of(runtimeProfile.defaultStandaloneMetastoreJar())
+        ? resolveDefaultJar(runtimeProfile.defaultStandaloneMetastoreJar())
         : Path.of(configuredJar);
     if (!Files.isReadable(jarPath)) {
       throw new IllegalArgumentException(
@@ -35,7 +36,7 @@ public final class MetastoreRuntimeJarResolver {
         ? catalogConfig.backendStandaloneMetastoreJar()
         : config.compatibility().backendStandaloneMetastoreJar();
     Path jarPath = configuredJar == null
-        ? Path.of(runtimeProfile.defaultStandaloneMetastoreJar())
+        ? resolveDefaultJar(runtimeProfile.defaultStandaloneMetastoreJar())
         : Path.of(configuredJar);
     if (!Files.isReadable(jarPath)) {
       throw new IllegalArgumentException(
@@ -44,5 +45,16 @@ public final class MetastoreRuntimeJarResolver {
               + jarPath.toAbsolutePath());
     }
     return jarPath.toAbsolutePath().normalize();
+  }
+
+  static Path resolveDefaultJar(String relativePath) {
+    try {
+      URL location = MetastoreRuntimeJarResolver.class.getProtectionDomain().getCodeSource().getLocation();
+      Path appPath = Path.of(location.toURI());
+      Path base = Files.isDirectory(appPath) ? appPath : appPath.getParent();
+      return base.resolve(relativePath);
+    } catch (Exception e) {
+      return Path.of(relativePath);
+    }
   }
 }

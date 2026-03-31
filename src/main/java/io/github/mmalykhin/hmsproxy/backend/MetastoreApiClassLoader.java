@@ -4,8 +4,11 @@ import java.net.URL;
 import java.net.URLClassLoader;
 
 public final class MetastoreApiClassLoader extends URLClassLoader {
-  private static final String CHILD_FIRST_PREFIX = "org.apache.hadoop.hive.metastore.";
-  private static final String CHILD_FIRST_PREFIX_HADOOP_CONF = "org.apache.hadoop.conf.";
+  private static final String[] CHILD_FIRST_PREFIXES = {
+      "org.apache.hadoop.hive.metastore.",
+      "org.apache.hadoop.conf.",
+      "org.apache.hadoop.security.",
+  };
 
   public MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {
     super(urls, parent);
@@ -13,7 +16,7 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
 
   @Override
   protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-    if (!name.startsWith(CHILD_FIRST_PREFIX) && !name.startsWith(CHILD_FIRST_PREFIX_HADOOP_CONF)) {
+    if (!isChildFirst(name)) {
       return super.loadClass(name, resolve);
     }
 
@@ -29,5 +32,14 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
       resolveClass(loaded);
     }
     return loaded;
+  }
+
+  private static boolean isChildFirst(String name) {
+    for (String prefix : CHILD_FIRST_PREFIXES) {
+      if (name.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

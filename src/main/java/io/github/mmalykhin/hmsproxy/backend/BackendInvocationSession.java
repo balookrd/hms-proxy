@@ -158,9 +158,7 @@ public final class BackendInvocationSession implements AutoCloseable {
     LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
         catalogConfig.name(), runtimeProfile, principal, keytab);
 
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(securityConf);
+    configureKerberosAuthentication();
 
     try {
       UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
@@ -194,9 +192,7 @@ public final class BackendInvocationSession implements AutoCloseable {
     LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
         catalogConfig.name(), principal, keytab);
 
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(securityConf);
+    configureKerberosAuthentication();
 
     try {
       UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
@@ -210,6 +206,12 @@ public final class BackendInvocationSession implements AutoCloseable {
       metaException.initCause(e);
       throw metaException;
     }
+  }
+
+  private static synchronized void configureKerberosAuthentication() {
+    Configuration securityConf = new Configuration(false);
+    securityConf.set("hadoop.security.authentication", "kerberos");
+    UserGroupInformation.setConfiguration(securityConf);
   }
 
   private static ThriftHiveMetastore.Iface extractThriftClient(HiveMetaStoreClient client)

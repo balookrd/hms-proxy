@@ -2,26 +2,17 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.lang.reflect.Method;
 import java.util.Optional;
 
 public abstract class AbstractBackendAdapter implements BackendAdapter {
-  private volatile String backendVersion;
   private volatile MetastoreCompatibility.BackendProfile backendProfile;
   private volatile MetastoreRuntimeProfile runtimeProfile;
-  private final MetastoreRuntimeProfile runtimeProfileOverride;
 
-  protected AbstractBackendAdapter(String backendVersion) {
-    this(backendVersion, null);
-  }
-
-  protected AbstractBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
-    this.backendVersion = backendVersion;
-    this.backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
-    this.runtimeProfileOverride = runtimeProfileOverride;
-    this.runtimeProfile = resolveRuntimeProfile(backendVersion);
+  protected AbstractBackendAdapter(MetastoreRuntimeProfile runtimeProfile) {
+    this.runtimeProfile = runtimeProfile;
+    this.backendProfile = backendProfileFor(runtimeProfile);
   }
 
   @Override
@@ -60,14 +51,7 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
 
   @Override
   public String backendVersion() {
-    return backendVersion;
-  }
-
-  @Override
-  public void updateBackendVersion(String backendVersion) {
-    this.backendVersion = backendVersion;
-    this.backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
-    this.runtimeProfile = resolveRuntimeProfile(backendVersion);
+    return null;
   }
 
   protected boolean usesLegacyRequestApi() {
@@ -80,12 +64,12 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
     }
     backendProfile = MetastoreCompatibility.BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
     runtimeProfile = MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78;
-    backend.logLegacyRequestApiCompatibilitySwitch(backendVersion);
+    backend.logLegacyRequestApiCompatibilitySwitch();
   }
 
-  private MetastoreRuntimeProfile resolveRuntimeProfile(String backendVersion) {
-    return runtimeProfileOverride != null
-        ? runtimeProfileOverride
-        : MetastoreRuntimeProfileResolver.forBackendVersion(backendVersion);
+  private static MetastoreCompatibility.BackendProfile backendProfileFor(MetastoreRuntimeProfile runtimeProfile) {
+    return runtimeProfile == MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78
+        ? MetastoreCompatibility.BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS
+        : MetastoreCompatibility.BackendProfile.MODERN_REQUESTS;
   }
 }
