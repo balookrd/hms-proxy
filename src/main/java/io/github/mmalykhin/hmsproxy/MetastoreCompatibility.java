@@ -43,14 +43,6 @@ final class MetastoreCompatibility {
       "get_notification_events_count",
       "get_open_txns",
       "get_open_txns_info",
-      "show_locks",
-      "show_compact",
-      "get_active_resource_plan",
-      "get_all_resource_plans",
-      "get_runtime_stats",
-      "flushCache"
-  );
-  private static final List<String> BACKEND_LOCAL_STATE_METHODS = List.of(
       "open_txns",
       "commit_txn",
       "abort_txn",
@@ -58,7 +50,13 @@ final class MetastoreCompatibility {
       "check_lock",
       "unlock",
       "heartbeat",
-      "heartbeat_txn_range"
+      "heartbeat_txn_range",
+      "show_locks",
+      "show_compact",
+      "get_active_resource_plan",
+      "get_all_resource_plans",
+      "get_runtime_stats",
+      "flushCache"
   );
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
@@ -68,10 +66,6 @@ final class MetastoreCompatibility {
 
   static boolean routesToDefaultBackend(String methodName) {
     return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
-  }
-
-  static boolean usesBackendLocalState(String methodName) {
-    return BACKEND_LOCAL_STATE_METHODS.contains(methodName);
   }
 
   static boolean handlesLocally(String methodName) {

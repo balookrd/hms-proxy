@@ -9,11 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.Catalog;
-import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.OpenTxnRequest;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
@@ -101,29 +98,15 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
-  public void backendLocalTxnAndLockMethodsDoNotUseDefaultBackendPath() {
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("open_txns"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("commit_txn"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("abort_txn"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("abort_txns"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("check_lock"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("unlock"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("heartbeat"));
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("heartbeat_txn_range"));
-  }
-
-  @Test
-  public void backendLocalTxnAndLockMethodsAreClassifiedExplicitly() {
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("open_txns"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("commit_txn"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("abort_txn"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("abort_txns"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("check_lock"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("unlock"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("heartbeat"));
-    Assert.assertTrue(RoutingMetaStoreHandler.usesBackendLocalStateMethod("heartbeat_txn_range"));
-    Assert.assertFalse(RoutingMetaStoreHandler.usesBackendLocalStateMethod("compact"));
-    Assert.assertFalse(RoutingMetaStoreHandler.usesBackendLocalStateMethod("allocate_table_write_ids"));
+  public void backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("open_txns"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("commit_txn"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("abort_txn"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("abort_txns"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("check_lock"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("unlock"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("heartbeat"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("heartbeat_txn_range"));
   }
 
   @Test
@@ -253,36 +236,6 @@ public class RoutingMetaStoreHandlerTest {
     Object version = handler.invoke(null, method, null);
 
     Assert.assertEquals("3.1.0.3.1.0.0-78", version);
-  }
-
-  @Test
-  public void openTxnsWithoutCatalogContextFailsExplicitlyInMultiCatalogMode() throws Throwable {
-    RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
-    java.lang.reflect.Method method =
-        org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class.getMethod(
-            "open_txns", OpenTxnRequest.class);
-
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, method, new Object[] {new OpenTxnRequest()}));
-
-    Assert.assertTrue(error.getMessage().contains("backend-local txn/lock state"));
-  }
-
-  @Test
-  public void checkLockWithoutCatalogContextFailsExplicitlyInMultiCatalogMode() throws Throwable {
-    RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
-    java.lang.reflect.Method method =
-        org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class.getMethod(
-            "check_lock", CheckLockRequest.class);
-
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, method, new Object[] {new CheckLockRequest(7L)}));
-
-    Assert.assertTrue(error.getMessage().contains("backend-local txn/lock state"));
   }
 
   @Test
