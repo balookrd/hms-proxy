@@ -121,6 +121,10 @@ For isolated Hortonworks backend runtimes, you can also point the proxy to a bac
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
+For Hortonworks backend runtimes the proxy forces `hive.metastore.uri.selection=SEQUENTIAL`
+inside the isolated metastore client. This avoids a known HDP 3.1.0.x client bug in the
+random URI selection path when `HiveMetaStoreClient` resolves backend metastore URIs.
+
 For mixed deployments, backend runtime selection can be pinned per catalog instead of relying on
 `getVersion()` autodetection:
 

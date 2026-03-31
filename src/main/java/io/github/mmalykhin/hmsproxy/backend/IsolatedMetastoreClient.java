@@ -13,6 +13,8 @@ import org.apache.hadoop.conf.Configuration;
 public final class IsolatedMetastoreClient implements AutoCloseable {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final String HIVE_METASTORE_CLIENT_CLASS = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
+  private static final String HIVE_METASTORE_URI_SELECTION_KEY = "hive.metastore.uri.selection";
+  private static final String HIVE_METASTORE_URI_SELECTION_SEQUENTIAL = "SEQUENTIAL";
 
   private final Object client;
   private final IsolatedInvocationBridge bridge;
@@ -47,6 +49,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     for (Map.Entry<String, String> entry : conf) {
       set.invoke(isolatedConf, entry.getKey(), entry.getValue());
     }
+    applyHortonworksCompatibilityWorkarounds(isolatedConf, childConfigurationClass, runtimeProfile);
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
     Object client = withContextClassLoader(classLoader, () ->
         clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf));
@@ -90,6 +93,19 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     } finally {
       thread.setContextClassLoader(previous);
     }
+  }
+
+  static void applyHortonworksCompatibilityWorkarounds(
+      Object isolatedConf,
+      Class<?> childConfigurationClass,
+      MetastoreRuntimeProfile runtimeProfile
+  ) throws ReflectiveOperationException {
+    if (runtimeProfile != MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+      return;
+    }
+
+    Method set = childConfigurationClass.getMethod("set", String.class, String.class);
+    set.invoke(isolatedConf, HIVE_METASTORE_URI_SELECTION_KEY, HIVE_METASTORE_URI_SELECTION_SEQUENTIAL);
   }
 
   @FunctionalInterface
