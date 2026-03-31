@@ -28,8 +28,9 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
-  public void getAllFunctionsUsesDefaultBackendCompatibilityPath() {
-    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
+  public void onlyExplicitCompatibilityMethodsUseDefaultBackendPath() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("set_ugi"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("flushCache"));
   }
 
   @Test
@@ -38,10 +39,10 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
-  public void globalReadOnlyMethodsUseDefaultBackendCompatibilityPath() {
+  public void explicitlyListedOperationalMethodsUseDefaultBackendCompatibilityPath() {
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_resource_plans"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_compact"));
-    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("list_roles"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_locks"));
   }
 
   @Test
@@ -76,14 +77,21 @@ public class RoutingMetaStoreHandlerTest {
 
   @Test
   public void serviceReadMethodsUseDefaultBackendCompatibilityPath() {
-    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_role_names"));
-    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_token_identifiers"));
-    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_master_keys"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_open_txns"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_open_txns_info"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_locks"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_compact"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_active_resource_plan"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_runtime_stats"));
+  }
+
+  @Test
+  public void removedPrefixBasedMethodsNoLongerUseDefaultBackendPath() {
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_role_names"));
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_token_identifiers"));
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_master_keys"));
+    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("list_roles"));
   }
 
   @Test
@@ -105,6 +113,21 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertTrue(RoutingMetaStoreHandler.isServicePrincipalUser("hive", security));
     Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("alice", security));
     Assert.assertFalse(RoutingMetaStoreHandler.isServicePrincipalUser("proxy-client", security));
+  }
+
+  @Test
+  public void delegationTokenAuthorizationMessageMentionsFrontDoorProxyUserKeys() {
+    String message = FrontDoorSecurity.delegationTokenAuthorizationMessage(
+        "algaraev",
+        "algaraev",
+        "hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
+        "10.0.0.8");
+
+    Assert.assertTrue(message.contains("owner 'algaraev'"));
+    Assert.assertTrue(message.contains("authenticated as 'hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU'"));
+    Assert.assertTrue(message.contains("10.0.0.8"));
+    Assert.assertTrue(message.contains("security.front-door-conf.hadoop.proxyuser.hive.hosts"));
+    Assert.assertTrue(message.contains("security.front-door-conf.hadoop.proxyuser.hive.groups"));
   }
 
   @Test
