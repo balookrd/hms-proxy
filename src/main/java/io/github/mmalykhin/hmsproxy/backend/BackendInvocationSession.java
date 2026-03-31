@@ -80,13 +80,6 @@ public final class BackendInvocationSession implements AutoCloseable {
     }
   }
 
-  String getVersion() throws Throwable {
-    if (isolatedClient != null) {
-      return isolatedClient.getVersion();
-    }
-    return thriftClient.getVersion();
-  }
-
   void setUgi(String userName, List<String> groupNames) throws Throwable {
     if (isolatedClient != null) {
       isolatedClient.setUgi(userName, groupNames);

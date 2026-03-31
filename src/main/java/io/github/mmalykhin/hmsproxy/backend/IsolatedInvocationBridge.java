@@ -12,20 +12,19 @@ import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TBinaryProtocol;
 
 public final class IsolatedInvocationBridge {
+  private static final ThreadLocal<TSerializer> SERIALIZER =
+      ThreadLocal.withInitial(() -> new TSerializer(new TBinaryProtocol.Factory()));
+  private static final ThreadLocal<TDeserializer> DESERIALIZER =
+      ThreadLocal.withInitial(() -> new TDeserializer(new TBinaryProtocol.Factory()));
+
   private final ClassLoader classLoader;
   private final Object delegate;
   private final Class<?> ifaceClass;
-  private final TSerializer serializer = new TSerializer(new TBinaryProtocol.Factory());
-  private final TDeserializer deserializer = new TDeserializer(new TBinaryProtocol.Factory());
 
   public IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
     this.classLoader = classLoader;
     this.delegate = delegate;
     this.ifaceClass = ifaceClass;
-  }
-
-  String getVersion() throws Throwable {
-    return (String) invokeByName("getVersion", new Class<?>[0], new Object[0]);
   }
 
   void setUgi(String userName, List<String> groupNames) throws Throwable {
@@ -163,7 +162,7 @@ public final class IsolatedInvocationBridge {
     }
     Object[] converted = new Object[args.length];
     for (int index = 0; index < args.length; index++) {
-      converted[index] = convertValue(args[index], parameterTypes[index]);
+      converted[index] = convertValue(args[index], parameterTypes[index], classLoader);
     }
     return converted;
   }
@@ -172,10 +171,10 @@ public final class IsolatedInvocationBridge {
     if (returnType == void.class || result == null) {
       return null;
     }
-    return convertValue(result, returnType);
+    return convertValue(result, returnType, IsolatedInvocationBridge.class.getClassLoader());
   }
 
-  private Object convertValue(Object value, Class<?> targetType) throws Exception {
+  private Object convertValue(Object value, Class<?> targetType, ClassLoader collectionCL) throws Exception {
     if (value == null) {
       return null;
     }
@@ -191,7 +190,8 @@ public final class IsolatedInvocationBridge {
       return converted;
     }
     if (value instanceof List<?> || value instanceof Map<?, ?>) {
-      return convertDynamicValue(value, targetType.getClassLoader());
+      ClassLoader cl = targetType.getClassLoader() != null ? targetType.getClassLoader() : collectionCL;
+      return convertDynamicValue(value, cl);
     }
     if (targetType.isInstance(value)) {
       return value;
@@ -207,8 +207,8 @@ public final class IsolatedInvocationBridge {
       return value;
     }
     Object target = targetType.getConstructor().newInstance();
-    byte[] bytes = serializer.serialize((TBase<?, ?>) value);
-    deserializer.deserialize((TBase<?, ?>) target, bytes);
+    byte[] bytes = SERIALIZER.get().serialize((TBase<?, ?>) value);
+    DESERIALIZER.get().deserialize((TBase<?, ?>) target, bytes);
     return target;
   }
 

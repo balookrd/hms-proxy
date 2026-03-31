@@ -2,7 +2,6 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
-import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
@@ -20,12 +19,6 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       GetTableRequest request,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
-    if (!usesLegacyRequestApi()) {
-      Method method = org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class
-          .getMethod("get_table_req", GetTableRequest.class);
-      return invoke(backend, method, new Object[] {request}, impersonation);
-    }
-
     Object result = backend.invokeRawByName(
         "get_table",
         new Class<?>[] {String.class, String.class},
@@ -40,12 +33,6 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       GetTablesRequest request,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
-    if (!usesLegacyRequestApi()) {
-      Method method = org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class
-          .getMethod("get_table_objects_by_name_req", GetTablesRequest.class);
-      return invoke(backend, method, new Object[] {request}, impersonation);
-    }
-
     Object result = backend.invokeRawByName(
         "get_table_objects_by_name",
         new Class<?>[] {String.class, List.class},

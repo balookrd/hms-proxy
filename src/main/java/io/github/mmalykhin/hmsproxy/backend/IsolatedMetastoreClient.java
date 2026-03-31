@@ -69,10 +69,6 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     return new IsolatedMetastoreClient(client, new IsolatedInvocationBridge(classLoader, thriftClient, ifaceClass));
   }
 
-  String getVersion() throws Throwable {
-    return bridge.getVersion();
-  }
-
   void setUgi(String userName, List<String> groupNames) throws Throwable {
     bridge.setUgi(userName, groupNames);
   }
