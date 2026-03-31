@@ -10,6 +10,10 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
+import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetTableResult;
+import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
 import org.apache.hadoop.hive.metastore.api.GetOpenTxnsResponse;
 import org.apache.hadoop.hive.metastore.api.GetPrincipalsInRoleResponse;
@@ -86,6 +90,48 @@ final class MetastoreCompatibility {
       return Optional.empty();
     }
     return Optional.of(FALLBACKS.get(methodName).get());
+  }
+
+  static BackendProfile backendProfile(String backendVersion) {
+    if (backendVersion == null || backendVersion.isBlank()) {
+      return BackendProfile.UNKNOWN;
+    }
+    if (backendVersion.startsWith("3.1.0.")) {
+      return BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
+    }
+    return BackendProfile.MODERN_REQUESTS;
+  }
+
+  static boolean usesLegacyRequestApi(BackendProfile backendProfile) {
+    return backendProfile == BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
+  }
+
+  static Optional<String> legacyAlternative(String methodName, BackendProfile backendProfile) {
+    if (!usesLegacyRequestApi(backendProfile)) {
+      return Optional.empty();
+    }
+    return switch (methodName) {
+      case "get_table_req" -> Optional.of("get_table");
+      case "get_table_objects_by_name_req" -> Optional.of("get_table_objects_by_name");
+      default -> Optional.empty();
+    };
+  }
+
+  static Optional<Object> downgradeRequest(
+      String methodName,
+      Object[] args,
+      BackendInvoker backendInvoker,
+      Throwable cause
+  ) throws Throwable {
+    if (!(cause instanceof TApplicationException) || args == null || args.length != 1) {
+      return Optional.empty();
+    }
+
+    return switch (methodName) {
+      case "get_table_req" -> Optional.of(downgradeGetTableRequest(args[0], backendInvoker));
+      case "get_table_objects_by_name_req" -> Optional.of(downgradeGetTablesRequest(args[0], backendInvoker));
+      default -> Optional.empty();
+    };
   }
 
   static Optional<String> compatibleConfigValue(
@@ -196,9 +242,41 @@ final class MetastoreCompatibility {
     return defaultValue == null ? null : String.valueOf(defaultValue);
   }
 
+  private static GetTableResult downgradeGetTableRequest(Object arg, BackendInvoker backendInvoker)
+      throws Throwable {
+    GetTableRequest request = (GetTableRequest) arg;
+    Object result = backendInvoker.invoke(
+        "get_table",
+        new Class<?>[] {String.class, String.class},
+        new Object[] {request.getDbName(), request.getTblName()});
+    return new GetTableResult((org.apache.hadoop.hive.metastore.api.Table) result);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static GetTablesResult downgradeGetTablesRequest(Object arg, BackendInvoker backendInvoker)
+      throws Throwable {
+    GetTablesRequest request = (GetTablesRequest) arg;
+    Object result = backendInvoker.invoke(
+        "get_table_objects_by_name",
+        new Class<?>[] {String.class, List.class},
+        new Object[] {request.getDbName(), request.getTblNames()});
+    return new GetTablesResult((List<org.apache.hadoop.hive.metastore.api.Table>) result);
+  }
+
   @FunctionalInterface
   private interface LocalMethodHandler {
     Object handle(Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception;
+  }
+
+  @FunctionalInterface
+  interface BackendInvoker {
+    Object invoke(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable;
+  }
+
+  enum BackendProfile {
+    UNKNOWN,
+    MODERN_REQUESTS,
+    HORTONWORKS_3_1_0_LEGACY_REQUESTS
   }
 
   private record CompatibleConfigKey(String metastoreName, String hiveName, String defaultValue) {

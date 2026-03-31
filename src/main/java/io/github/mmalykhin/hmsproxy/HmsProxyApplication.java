@@ -36,8 +36,18 @@ public final class HmsProxyApplication {
             config.server().bindHost(), config.server().port());
         LOG.info("Routing config: defaultCatalog='{}', catalogDbSeparator='{}', catalogs={}",
             config.defaultCatalog(), config.catalogDbSeparator(), config.catalogNames());
-        LOG.info("Compatibility config: preserveBackendCatalogName={}",
+        LOG.info("Compatibility config: frontendProfile={}, frontendVersion={}, preserveBackendCatalogName={}",
+            config.compatibility().frontendProfile(),
+            config.compatibility().frontendProfile().metastoreVersion(),
             config.compatibility().preserveBackendCatalogName());
+        if (config.compatibility().frontendProfile()
+            == ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+          LOG.warn("Hortonworks frontend profile is enabled through the standalone-metastore jar {}. "
+                  + "Common GNU/HDP-overlapping thrift calls are bridged automatically, and selected "
+                  + "HDP-only request-wrapper methods are adapted to GNU equivalents. Some HDP-only "
+                  + "methods without a safe GNU mapping can still remain unsupported.",
+              config.compatibility().hortonworksStandaloneMetastoreJar());
+        }
         for (String catalogName : config.catalogNames()) {
           LOG.info("Catalog '{}' external DB example: {}",
               catalogName, router.externalDatabaseName(catalogName, "default"));

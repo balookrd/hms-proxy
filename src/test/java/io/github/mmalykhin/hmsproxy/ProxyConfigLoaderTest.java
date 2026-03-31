@@ -501,4 +501,28 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsFrontendCompatibilityProfile() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+          compatibility.hortonworks-standalone-metastore-jar=/tmp/hdp-standalone-metastore.jar
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
+          config.compatibility().frontendProfile());
+      Assert.assertEquals(
+          "/tmp/hdp-standalone-metastore.jar",
+          config.compatibility().hortonworksStandaloneMetastoreJar());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

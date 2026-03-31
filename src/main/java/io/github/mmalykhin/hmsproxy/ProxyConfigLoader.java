@@ -48,6 +48,10 @@ public final class ProxyConfigLoader {
     if (catalogDbSeparator == null) {
       catalogDbSeparator = ".";
     }
+    ProxyConfig.FrontendProfile frontendProfile = ProxyConfig.FrontendProfile.valueOf(
+        get(properties, "compatibility.frontend-profile", "GNU_3_1_3").trim().toUpperCase());
+    String hortonworksStandaloneMetastoreJar =
+        trimToNull(properties.getProperty("compatibility.hortonworks-standalone-metastore-jar"));
     boolean preserveBackendCatalogName =
         Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
 
@@ -155,7 +159,10 @@ public final class ProxyConfigLoader {
         frontDoorConf);
     ProxyConfig.BackendConfig backend = new ProxyConfig.BackendConfig(backendConf);
     ProxyConfig.CompatibilityConfig compatibility =
-        new ProxyConfig.CompatibilityConfig(preserveBackendCatalogName);
+        new ProxyConfig.CompatibilityConfig(
+            frontendProfile,
+            hortonworksStandaloneMetastoreJar,
+            preserveBackendCatalogName);
     return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility);
   }
 

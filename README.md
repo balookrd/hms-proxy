@@ -6,6 +6,12 @@ requests to multiple backend metastores by catalog.
 ## What it supports
 
 - one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients
+- GNU Hive Metastore `3.1.3` on the front door with compatibility downgrades for older backend RPCs
+- Hortonworks Hive Metastore `3.1.0.3.1.0.0-78` backends for read paths that still expect pre-`*_req` APIs
+- optional front-door identity switch so the proxy can present itself as Hortonworks
+  `3.1.0.3.1.0.0-78` instead of GNU `3.1.3`
+- optional Hortonworks front-door bridge through an HDP `standalone-metastore` jar for
+  HDP-only thrift request-wrapper methods
 - routing by explicit `catName` in newer HMS requests
 - routing by legacy database names in `catalog<separator>db` form for older clients
 - static catalog registry, so one proxy can front tables stored in different storage systems
@@ -22,6 +28,9 @@ requests to multiple backend metastores by catalog.
   (notifications, privilege refresh/introspection, token/key listings except delegation-token issuance,
   txn/lock/compaction status),
   the proxy returns an empty compatibility response instead of failing the caller
+- when a backend HMS does not implement newer GNU `3.1.3` request-wrapper RPCs such as
+  `get_table_req` or `get_table_objects_by_name_req`, the proxy automatically retries through
+  older legacy methods supported by Hortonworks `3.1.0.x`
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
 - Hive ACID, locks, tokens, and other truly global metastore operations need careful validation
   in your environment before turning them on behind a multi-catalog proxy
@@ -72,6 +81,41 @@ routing.catalog-db-separator=__
 ```
 
 With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
+
+You can also choose which HMS version the proxy advertises on the front door:
+
+```properties
+compatibility.frontend-profile=GNU_3_1_3
+```
+
+or for Hortonworks clients:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+```
+
+That changes the value returned by `getVersion()` while keeping the same proxy routing logic.
+
+For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+compatibility.hortonworks-standalone-metastore-jar=/opt/hms-proxy/hdp-hive/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+With that jar present, the proxy instantiates the Hortonworks thrift `Processor` in an isolated
+classloader and bridges overlapping RPCs to the internal GNU `3.1.3` handler automatically.
+Selected HDP-only methods are also adapted to GNU equivalents:
+
+- `truncate_table_req` -> `truncate_table`
+- `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
+- `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`
+- `rename_partition_req` -> `rename_partition`
+- `update_table_column_statistics_req` -> `set_aggr_stats_for`
+- `update_partition_column_statistics_req` -> `set_aggr_stats_for`
+
+Some HDP-only methods still do not have a safe GNU mapping, so they remain unsupported and fail
+explicitly rather than returning a misleading success response.
 
 ## Debug logging
 
