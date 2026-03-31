@@ -32,6 +32,7 @@ final class IsolatedMetastoreClient implements AutoCloseable {
         new URL[] {jarPath.toUri().toURL()},
         IsolatedMetastoreClient.class.getClassLoader());
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
+    conf.setClassLoader(classLoader);
     Object client = withContextClassLoader(classLoader, () ->
         clientClass.getConstructor(Configuration.class).newInstance(conf));
     Field clientField = clientClass.getDeclaredField("client");
