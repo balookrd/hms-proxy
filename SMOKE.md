@@ -116,6 +116,10 @@ select count(*) from some_table;
 
 Эти проверки лучше делать не только через Beeline, а ещё и прямым HMS thrift client, потому что `add_write_notification_log` не обязательно вызывается SQL-обёртками напрямую.
 
+Важно:
+- lifecycle RPC без `dbName`/`fullTableName` (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) теперь сознательно привязаны к `routing.default-catalog`
+- multi-catalog routing для ACID ожидается только там, где namespace можно извлечь из request payload
+
 Проверить для Hortonworks backend:
 - `open_txns`
 - `allocate_table_write_ids`
@@ -125,7 +129,8 @@ select count(*) from some_table;
 - `add_write_notification_log`
 
 Ожидание:
-- ACID/txn методы доходят до нужного backend
+- `open_txns` / `commit_txn` и другие id-only lifecycle RPC уходят в `routing.default-catalog`
+- request-based ACID методы (`allocate_table_write_ids`, `get_valid_write_ids`) маршрутизируются по payload
 - `add_write_notification_log` проходит только в каталог на Hortonworks backend
 - в логах proxy видны `trace stage=backend-request` / `backend-response` для `add_write_notification_log`
 

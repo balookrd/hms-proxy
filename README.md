@@ -23,6 +23,8 @@ requests to multiple backend metastores by catalog.
 - catalog definitions are managed in the proxy config, not via `create_catalog` or `drop_catalog`
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
 - session-level compatibility calls and other global read-only HMS operations without catalog context are routed to `routing.default-catalog`
+- ACID/txn/lock lifecycle RPCs that do not carry catalog or database context are also routed to
+  `routing.default-catalog`
 - global write operations without clear catalog context are rejected when more than one catalog is configured
 - when a backend HMS returns `TApplicationException` for selected read-only service APIs
   (notifications, privilege refresh/introspection, token/key listings except delegation-token issuance,
@@ -32,8 +34,10 @@ requests to multiple backend metastores by catalog.
   `get_table_req` or `get_table_objects_by_name_req`, the proxy automatically retries through
   older legacy methods supported by Hortonworks `3.1.0.x`
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
-- Hive ACID, locks, tokens, and other truly global metastore operations need careful validation
-  in your environment before turning them on behind a multi-catalog proxy
+- in practice this means ACID write lifecycle is supported only for the default catalog unless the
+  request payload itself carries routable namespace information such as `dbName` or `fullTableName`
+- Hive ACID, locks, tokens, and other truly global metastore operations still need careful
+  validation in your environment before turning them on behind a multi-catalog proxy
 
 ## Build
 
@@ -68,6 +72,12 @@ java \
 - table objects returned to legacy callers are rewritten back to external names
 - if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
   to `dbName`/default-catalog routing for compatibility
+- ACID requests that include routable namespace in the payload, for example
+  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
+  `add_dynamic_partitions`, `fire_listener_event`, or `repl_tbl_writeid_state`, are routed by that
+  payload
+- ACID/txn/lock lifecycle requests that only carry ids, for example `open_txns`, `commit_txn`,
+  `abort_txn`, `check_lock`, `unlock`, or `heartbeat`, are pinned to `routing.default-catalog`
 - by default, externalized HMS objects use proxy catalog ids in `catName`/`catalogName`
 - for older HiveServer2 flows, you can enable `compatibility.preserve-backend-catalog-name=true`
   so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
