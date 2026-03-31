@@ -1,0 +1,292 @@
+# HMS Proxy
+
+English documentation: [README.md](README.md), [SMOKE.md](SMOKE.md)
+
+Java proxy для Hive Metastore, который поднимает один внешний HMS Thrift endpoint и маршрутизирует
+запросы в несколько backend metastore по каталогу.
+
+## Что поддерживается
+
+- один production-facing HMS Thrift endpoint для HiveServer2 и прямых HMS API клиентов
+- Apache Hive Metastore `3.1.3` на фронте с compatibility downgrade для старых backend RPC
+- Hortonworks Hive Metastore `3.1.0.3.1.0.0-78` на backend
+- опциональная смена front-door identity, чтобы proxy представлялся как Hortonworks
+  `3.1.0.3.1.0.0-78`, а не Apache Hive Metastore `3.1.3`
+- опциональный Hortonworks frontend bridge через HDP `standalone-metastore` jar для
+  HDP-only thrift request-wrapper методов
+- routing по явному `catName` в новых HMS запросах
+- routing по legacy database name в формате `catalog<separator>db` для старых клиентов
+- статический набор каталогов в конфиге
+- опциональный Kerberos/SASL на фронте
+- опциональная impersonation аутентифицированного Kerberos пользователя на backend HMS
+
+## Важные ограничения
+
+- каталоги задаются только через конфиг proxy, а не через `create_catalog` / `drop_catalog`
+- legacy database references без префикса каталога идут в `routing.default-catalog`
+- session-level compatibility calls и другие global read-only операции без catalog context тоже
+  идут в `routing.default-catalog`
+- ACID/txn/lock lifecycle RPC без catalog/database context тоже идут в `routing.default-catalog`
+- global write operations без явного catalog context в multi-catalog режиме в общем случае
+  запрещаются
+- если backend HMS возвращает `TApplicationException` для части read-only service API
+  (notifications, privilege refresh/introspection, token/key listings кроме delegation-token issuance,
+  txn/lock/compaction status), proxy отдаёт empty compatibility response вместо ошибки
+- если backend HMS не поддерживает более новые Apache `3.1.3` request-wrapper RPC вроде
+  `get_table_req` или `get_table_objects_by_name_req`, proxy автоматически переключается
+  на legacy метод, совместимый с Hortonworks `3.1.0.x`
+- на практике это означает, что ACID write lifecycle полноценно поддерживается только для
+  `default-catalog`, если из payload нельзя извлечь namespace
+- request-based ACID методы, где в payload есть `dbName` или `fullTableName`, продолжают
+  маршрутизироваться по этому payload
+
+## Сборка
+
+```bash
+mvn -o test
+mvn -o package
+```
+
+## Запуск
+
+```bash
+java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+```
+
+`mvn package` создаёт обычный jar и runnable fat jar с classifier `fat`.
+
+Для Java 17+ с Hadoop 2.x Kerberos библиотеками запускай так:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -Djava.security.krb5.conf=/etc/krb5.conf \
+  -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+```
+
+## Модель маршрутизации
+
+- catalog-aware клиенты могут отправлять `catName=dbCatalog, dbName=sales`
+- legacy клиенты могут использовать database names вроде `catalog1.sales`
+- `get_all_databases()` возвращает префиксированные имена вроде `catalog1.sales`
+- table objects на выходе переписываются обратно во внешний namespace
+- если запрос несёт не-proxy `catName`, например стандартный Hive `hive`, proxy для
+  совместимости пытается маршрутизировать по `dbName` / `default-catalog`
+- по умолчанию externalized HMS objects используют proxy catalog ids в `catName`/`catalogName`
+- для старых HiveServer2 сценариев можно включить
+  `compatibility.preserve-backend-catalog-name=true`, чтобы во внешних объектах сохранялся
+  backend catalog name, например `hive`, а `dbName` при этом оставался proxy namespace
+
+Разделитель каталога и базы настраивается:
+
+```properties
+routing.catalog-db-separator=__
+```
+
+Тогда legacy names будут выглядеть как `catalog1__sales`, а не `catalog1.sales`.
+
+## Frontend profile и runtime jars
+
+Можно выбрать, какую версию HMS proxy объявляет наружу:
+
+```properties
+compatibility.frontend-profile=APACHE_3_1_3
+```
+
+или для Hortonworks клиентов:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+```
+
+Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+Для isolated Hortonworks backend runtime можно указать backend jar:
+
+```properties
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+Для mixed deployment runtime можно закрепить явно по каталогу:
+
+```properties
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+
+catalog.apache.runtime-profile=APACHE_3_1_3
+```
+
+С этим jar proxy поднимает Hortonworks thrift `Processor` в isolated classloader и автоматически
+бриджит общие RPC в внутренний Apache `3.1.3` handler. Поддержанные HDP-only методы:
+
+- `truncate_table_req` -> `truncate_table`
+- `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
+- `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`
+- `rename_partition_req` -> `rename_partition`
+- `update_table_column_statistics_req` -> `set_aggr_stats_for`
+- `update_partition_column_statistics_req` -> `set_aggr_stats_for`
+- `add_write_notification_log` -> прямой Hortonworks passthrough только в Hortonworks backend
+
+## ACID / txn / lock policy
+
+- request-based ACID методы с routable namespace в payload, например
+  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
+  `add_dynamic_partitions`, `fire_listener_event`, `repl_tbl_writeid_state`,
+  маршрутизируются по payload
+- id-only lifecycle методы, например `open_txns`, `commit_txn`, `abort_txn`,
+  `abort_txns`, `check_lock`, `unlock`, `heartbeat`, `heartbeat_txn_range`,
+  привязаны к `routing.default-catalog`
+- это осознанная модель: proxy не пытается быть distributed ACID coordinator между
+  несколькими backend metastore
+
+## Логирование
+
+Для пакета proxy по умолчанию включён подробный debug tracing через bundled `log4j.properties`.
+Каждый клиентский вызов получает `requestId`, а в логах есть:
+
+- входящий HMS method и аргументы
+- выбранный backend catalog
+- proxied thrift method и переписанные аргументы
+- backend response или backend error
+- итоговый client response или client-visible error
+
+Если логов слишком много, переопредели уровень через свой `log4j.properties`.
+
+## HiveServer2
+
+Укажи в HiveServer2 `hive.metastore.uris` на proxy вместо одного backend HMS.
+Для multi-catalog deployment лучше использовать Hive/клиентов, которые сохраняют catalog fields.
+
+Для Beeline/HS2 обычно удобнее separator `__`, чем `.`:
+
+```properties
+routing.catalog-db-separator=__
+```
+
+Если metadata writes через proxy ведут себя не так, как напрямую против backend HMS, можно
+попробовать:
+
+```properties
+compatibility.preserve-backend-catalog-name=true
+```
+
+Тогда `catName`/`catalogName` будет сохраняться с backend стороны, обычно это `hive`, а routing
+по-прежнему будет идти по externalized `dbName`.
+
+## Безопасность
+
+### Без Kerberos
+
+```properties
+server.port=9083
+security.mode=NONE
+
+catalogs=warehouse
+catalog.warehouse.conf.hive.metastore.uris=thrift://hms-backend:9083
+routing.default-catalog=warehouse
+```
+
+### С Kerberos
+
+Безопасность делится на две независимые части: front door (клиенты -> proxy) и backend
+connections (proxy -> HMS).
+
+**Front door**:
+
+```properties
+security.mode=KERBEROS
+security.server-principal=hive/_HOST@REALM.COM
+security.keytab=/etc/security/keytabs/hms-proxy.keytab
+security.client-principal=hive/_HOST@REALM.COM
+security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
+```
+
+`security.server-principal` и `security.keytab` обязательны при `security.mode=KERBEROS`.
+
+Когда Kerberos включён на фронте, delegation-token методы
+(`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
+обслуживаются локально самим proxy.
+
+Если HiveServer2 подключается как `hive/_HOST@REALM.COM` и запрашивает delegation token от имени
+пользователя, proxy тоже должен видеть `hadoop.proxyuser.hive.*` правила на своём фронте:
+
+```properties
+security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
+security.front-door-conf.hadoop.proxyuser.hive.groups=*
+```
+
+### Kerberos impersonation
+
+Если хочешь, чтобы backend HMS вызовы выполнялись от имени аутентифицированного пользователя, а не
+от service principal proxy:
+
+```properties
+security.impersonation-enabled=true
+```
+
+Или только для конкретных backend:
+
+```properties
+security.impersonation-enabled=false
+
+catalog.catalog1.impersonation-enabled=true
+catalog.catalog2.impersonation-enabled=false
+```
+
+Это требует:
+
+- `security.mode=KERBEROS` на фронте
+- proxy-user impersonation rules на backend HMS для `security.client-principal`
+
+Если backend HMS настроен на Kerberos/SASL:
+
+```properties
+catalog.catalog1.conf.hive.metastore.sasl.enabled=true
+catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+```
+
+Когда для любого backend включён `hive.metastore.sasl.enabled=true`, proxy открывает outbound HMS
+соединения под `security.client-principal` и `security.client-keytab`.
+
+## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
+
+```properties
+server.name=hms-proxy
+server.bind-host=0.0.0.0
+server.port=9083
+
+routing.default-catalog=hdp
+routing.catalog-db-separator=__
+
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+
+security.mode=KERBEROS
+security.server-principal=hive/_HOST@EXAMPLE.COM
+security.keytab=/etc/security/keytabs/hms-proxy.keytab
+security.client-principal=hive/_HOST@EXAMPLE.COM
+security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
+security.impersonation-enabled=true
+
+catalogs=hdp,apache
+
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+catalog.hdp.impersonation-enabled=true
+catalog.hdp.conf.hive.metastore.uris=thrift://hdp-hms.example.com:9083
+catalog.hdp.conf.hive.metastore.sasl.enabled=true
+catalog.hdp.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+
+catalog.apache.runtime-profile=APACHE_3_1_3
+catalog.apache.impersonation-enabled=true
+catalog.apache.conf.hive.metastore.uris=thrift://apache-hms.example.com:9083
+catalog.apache.conf.hive.metastore.sasl.enabled=true
+catalog.apache.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+```

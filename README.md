@@ -1,5 +1,7 @@
 # HMS Proxy
 
+Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
+
 Java proxy for Hive Metastore that exposes one external HMS Thrift endpoint and routes
 requests to multiple backend metastores by catalog.
 
