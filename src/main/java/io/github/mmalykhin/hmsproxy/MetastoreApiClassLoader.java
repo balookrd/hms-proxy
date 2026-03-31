@@ -5,6 +5,7 @@ import java.net.URLClassLoader;
 
 final class MetastoreApiClassLoader extends URLClassLoader {
   private static final String CHILD_FIRST_PREFIX = "org.apache.hadoop.hive.metastore.";
+  private static final String CHILD_FIRST_PREFIX_HADOOP_CONF = "org.apache.hadoop.conf.";
 
   MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {
     super(urls, parent);
@@ -12,7 +13,7 @@ final class MetastoreApiClassLoader extends URLClassLoader {
 
   @Override
   protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-    if (!name.startsWith(CHILD_FIRST_PREFIX)) {
+    if (!name.startsWith(CHILD_FIRST_PREFIX) && !name.startsWith(CHILD_FIRST_PREFIX_HADOOP_CONF)) {
       return super.loadClass(name, resolve);
     }
 

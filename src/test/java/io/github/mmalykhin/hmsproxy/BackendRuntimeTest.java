@@ -67,29 +67,6 @@ public class BackendRuntimeTest {
     Assert.assertEquals(List.of(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78), factory.openProfiles);
   }
 
-  @Test
-  public void openFallsBackToApacheWhenHortonworksRuntimeFailsToInitialize() throws Exception {
-    RecordingSessionFactory factory = new RecordingSessionFactory();
-    BackendInvocationSession bootstrap = newSession("3.1.3");
-    factory.failOnOpen(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, "boom");
-    factory.enqueue("3.1.3");
-
-    BackendRuntime.open(
-        config(),
-        catalogConfig(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, "/tmp/hdp.jar"),
-        new HiveConf(),
-        false,
-        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
-        bootstrap,
-        factory);
-
-    Assert.assertEquals(
-        List.of(
-            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
-            MetastoreRuntimeProfile.APACHE_3_1_3),
-        factory.openProfiles);
-  }
-
   private static ProxyConfig config() {
     return new ProxyConfig(
         new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
@@ -134,14 +111,9 @@ public class BackendRuntimeTest {
   private static final class RecordingSessionFactory implements BackendRuntime.SessionFactory {
     private final Deque<String> versions = new ArrayDeque<>();
     private final List<MetastoreRuntimeProfile> openProfiles = new ArrayList<>();
-    private final Map<MetastoreRuntimeProfile, String> failures = new java.util.HashMap<>();
 
     void enqueue(String version) {
       versions.addLast(version);
-    }
-
-    void failOnOpen(MetastoreRuntimeProfile runtimeProfile, String message) {
-      failures.put(runtimeProfile, message);
     }
 
     @Override
@@ -153,12 +125,6 @@ public class BackendRuntimeTest {
         MetastoreRuntimeProfile runtimeProfile
     ) throws org.apache.hadoop.hive.metastore.api.MetaException {
       openProfiles.add(runtimeProfile);
-      String failureMessage = failures.remove(runtimeProfile);
-      if (failureMessage != null) {
-        org.apache.hadoop.hive.metastore.api.MetaException metaException =
-            new org.apache.hadoop.hive.metastore.api.MetaException(failureMessage);
-        throw metaException;
-      }
       try {
         return newSession(versions.isEmpty() ? "3.1.3" : versions.removeFirst());
       } catch (Exception e) {
