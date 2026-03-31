@@ -3,7 +3,6 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.nio.file.Files;
-import java.net.URL;
 import org.apache.hadoop.conf.Configuration;
 import org.junit.Assume;
 import org.junit.Assert;
@@ -37,18 +36,25 @@ public class IsolatedMetastoreClientClassLoadingTest {
   }
 
   @Test
-  public void isolatedLoaderUsesParentHadoopClasses() throws Exception {
+  public void isolatedLoaderUsesChildHadoopClasses() throws Exception {
+    java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
+        .toAbsolutePath();
+    Assume.assumeTrue(Files.isReadable(jarFile));
+
     ClassLoader classLoader = new MetastoreApiClassLoader(
-        new URL[0],
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarFile),
         IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
 
-    Assert.assertSame(Configuration.class, Class.forName(
+    Assert.assertNotSame(Configuration.class, Class.forName(
         "org.apache.hadoop.conf.Configuration",
         true,
         classLoader));
-    Assert.assertSame(
+    Assert.assertNotSame(
         org.apache.hadoop.security.UserGroupInformation.class,
         Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader));
+    Assert.assertNotSame(
+        org.apache.hadoop.util.ReflectionUtils.class,
+        Class.forName("org.apache.hadoop.util.ReflectionUtils", true, classLoader));
   }
 
   @Test
@@ -74,7 +80,7 @@ public class IsolatedMetastoreClientClassLoadingTest {
     java.nio.file.Path jar = MetastoreRuntimeJarResolver.resolveBackendJar(
         config, config.catalogs().get("catalog1"), MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
     ClassLoader classLoader = new MetastoreApiClassLoader(
-        new URL[] {jar.toUri().toURL()},
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jar),
         IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
     Class<?> implClass = Class.forName(
         "org.apache.hadoop.hive.metastore.DefaultMetaStoreFilterHookImpl",
