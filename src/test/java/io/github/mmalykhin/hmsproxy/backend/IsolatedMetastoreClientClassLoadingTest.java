@@ -11,6 +11,32 @@ import org.junit.Test;
 
 public class IsolatedMetastoreClientClassLoadingTest {
   @Test
+  public void hortonworksRuntimeForcesSequentialUriSelection() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set("hive.metastore.uri.selection", "RANDOM");
+
+    IsolatedMetastoreClient.applyHortonworksCompatibilityWorkarounds(
+        conf,
+        Configuration.class,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+
+    Assert.assertEquals("SEQUENTIAL", conf.get("hive.metastore.uri.selection"));
+  }
+
+  @Test
+  public void apacheRuntimeLeavesUriSelectionUntouched() throws Exception {
+    Configuration conf = new Configuration(false);
+    conf.set("hive.metastore.uri.selection", "RANDOM");
+
+    IsolatedMetastoreClient.applyHortonworksCompatibilityWorkarounds(
+        conf,
+        Configuration.class,
+        MetastoreRuntimeProfile.APACHE_3_1_3);
+
+    Assert.assertEquals("RANDOM", conf.get("hive.metastore.uri.selection"));
+  }
+
+  @Test
   public void configurationResolvesFilterHookInIsolatedLoader() throws Exception {
     ProxyConfig config = new ProxyConfig(
         new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
