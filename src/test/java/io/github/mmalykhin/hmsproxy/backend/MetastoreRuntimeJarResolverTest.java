@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;

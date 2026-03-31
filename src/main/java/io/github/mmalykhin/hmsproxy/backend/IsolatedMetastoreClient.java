@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -8,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 
-final class IsolatedMetastoreClient implements AutoCloseable {
+public final class IsolatedMetastoreClient implements AutoCloseable {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final String HIVE_METASTORE_CLIENT_CLASS = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
 

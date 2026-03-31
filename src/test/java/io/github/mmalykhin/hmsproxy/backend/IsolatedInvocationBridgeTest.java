@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;

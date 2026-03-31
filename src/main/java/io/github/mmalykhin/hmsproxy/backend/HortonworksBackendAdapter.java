@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
@@ -7,7 +9,7 @@ import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 
-final class HortonworksBackendAdapter extends AbstractBackendAdapter {
+public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
   HortonworksBackendAdapter(String backendVersion) {
     super(backendVersion);
   }

@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.security;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import java.net.InetSocketAddress;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TProcessor;
@@ -11,14 +13,14 @@ import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class MetastoreThriftServer {
+public final class MetastoreThriftServer {
   private static final Logger LOG = LoggerFactory.getLogger(MetastoreThriftServer.class);
 
   private final ProxyConfig config;
   private final FrontDoorSecurity frontDoorSecurity;
   private final TServer server;
 
-  MetastoreThriftServer(
+  public MetastoreThriftServer(
       ProxyConfig config,
       ThriftHiveMetastore.Iface handler,
       FrontDoorSecurity frontDoorSecurity
@@ -46,17 +48,17 @@ final class MetastoreThriftServer {
     this.server = new TThreadPoolServer(args);
   }
 
-  static String frontDoorClientPrincipal(ProxyConfig.SecurityConfig security) {
+  public static String frontDoorClientPrincipal(ProxyConfig.SecurityConfig security) {
     // Hive's thrift bridge uses this principal to validate inbound Kerberos/SASL clients for the
     // proxy listener itself. Backend credentials are configured separately via client-principal.
     return security.serverPrincipal();
   }
 
-  void serve() {
+  public void serve() {
     server.serve();
   }
 
-  void stop() {
+  public void stop() {
     if (server.isServing()) {
       server.stop();
     }

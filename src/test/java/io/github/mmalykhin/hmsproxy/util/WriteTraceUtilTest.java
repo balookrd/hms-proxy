@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.util;
 
 import java.util.List;
 import java.util.Map;

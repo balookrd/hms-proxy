@@ -1,5 +1,9 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,7 +17,7 @@ import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class CatalogBackend implements AutoCloseable {
+public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
   private static final int MAX_IMPERSONATION_CLIENTS = 128;
 
@@ -41,7 +45,7 @@ final class CatalogBackend implements AutoCloseable {
     this.catalog = catalog;
   }
 
-  static CatalogBackend open(ProxyConfig proxyConfig, ProxyConfig.CatalogConfig catalogConfig)
+  public static CatalogBackend open(ProxyConfig proxyConfig, ProxyConfig.CatalogConfig catalogConfig)
       throws MetaException {
     HiveConf conf = new HiveConf();
     boolean backendKerberosEnabled = backendKerberosEnabled(catalogConfig);
@@ -66,54 +70,54 @@ final class CatalogBackend implements AutoCloseable {
     return new CatalogBackend(proxyConfig, catalogConfig, conf, adapter, runtime, catalog);
   }
 
-  String name() {
+  public String name() {
     return config.name();
   }
 
-  Catalog catalog() {
+  public Catalog catalog() {
     return new Catalog(catalog);
   }
 
-  boolean impersonationEnabled() {
+  public boolean impersonationEnabled() {
     return config.impersonationEnabled();
   }
 
-  String backendVersion() {
+  public String backendVersion() {
     return adapter.backendVersion();
   }
 
-  MetastoreCompatibility.BackendProfile backendProfile() {
+  public MetastoreCompatibility.BackendProfile backendProfile() {
     return adapter.backendProfile();
   }
 
-  MetastoreRuntimeProfile runtimeProfile() {
+  public MetastoreRuntimeProfile runtimeProfile() {
     return adapter.runtimeProfile();
   }
 
-  boolean usesLegacyRequestApi() {
+  public boolean usesLegacyRequestApi() {
     return MetastoreCompatibility.usesLegacyRequestApi(adapter.backendProfile());
   }
 
-  void rememberLegacyRequestApi() {
+  public void rememberLegacyRequestApi() {
     logLegacyRequestApiCompatibilitySwitch(adapter.backendVersion());
   }
 
-  Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invoke(this, method, args, impersonation);
   }
 
-  Object invokeGetTableReq(GetTableRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invokeGetTableReq(GetTableRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invokeGetTableReq(this, request, impersonation);
   }
 
-  Object invokeGetTablesReq(GetTablesRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invokeGetTablesReq(GetTablesRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invokeGetTablesReq(this, request, impersonation);
   }
 
-  Object invokeRaw(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invokeRaw(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     if (impersonation != null && config.impersonationEnabled()) {
       return invokeWithImpersonation(method, args, impersonation);
@@ -125,7 +129,7 @@ final class CatalogBackend implements AutoCloseable {
     return invokeSharedClient(method, args);
   }
 
-  Object invokeRawByName(
+  public Object invokeRawByName(
       String methodName,
       Class<?>[] parameterTypes,
       Object[] args,
@@ -152,7 +156,7 @@ final class CatalogBackend implements AutoCloseable {
     }
   }
 
-  void logLegacyRequestApiCompatibilitySwitch(String backendVersion) {
+  public void logLegacyRequestApiCompatibilitySwitch(String backendVersion) {
     LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode; version={}",
         config.name(), backendVersion == null ? "unknown" : backendVersion);
   }
@@ -193,7 +197,7 @@ final class CatalogBackend implements AutoCloseable {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
   }
 
-  static void closeQuietly(AutoCloseable closeable, String description) {
+  public static void closeQuietly(AutoCloseable closeable, String description) {
     if (closeable == null) {
       return;
     }

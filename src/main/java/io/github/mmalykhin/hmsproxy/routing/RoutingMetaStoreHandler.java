@@ -1,5 +1,13 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
+import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
+import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
+import io.github.mmalykhin.hmsproxy.util.WriteTraceUtil;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -22,7 +30,7 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension {
+public final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
   private static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
@@ -50,7 +58,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFro
   private final FrontDoorSecurity frontDoorSecurity;
   private final long aliveSince;
 
-  RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
+  public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
     this.config = config;
     this.router = router;
     this.frontDoorSecurity = frontDoorSecurity;
@@ -58,12 +66,12 @@ final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFro
   }
 
   @SuppressWarnings("unchecked")
-  static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler) {
+  public static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler) {
     return newProxy(interfaceClass, handler, new Class<?>[0]);
   }
 
   @SuppressWarnings("unchecked")
-  static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler, Class<?>... extraInterfaces) {
+  public static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler, Class<?>... extraInterfaces) {
     Class<?>[] interfaces = new Class<?>[1 + extraInterfaces.length];
     interfaces[0] = interfaceClass;
     System.arraycopy(extraInterfaces, 0, interfaces, 1, extraInterfaces.length);
@@ -579,14 +587,14 @@ final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFro
     }
   }
 
-  record ImpersonationContext(String userName, List<String> groupNames) {
+  public record ImpersonationContext(String userName, List<String> groupNames) {
   }
 
   static boolean isDefaultBackendGlobalMethod(String methodName) {
     return MetastoreCompatibility.routesToDefaultBackend(methodName);
   }
 
-  static String shortUserName(String principalOrUser) {
+  public static String shortUserName(String principalOrUser) {
     if (principalOrUser == null || principalOrUser.isBlank()) {
       return principalOrUser;
     }

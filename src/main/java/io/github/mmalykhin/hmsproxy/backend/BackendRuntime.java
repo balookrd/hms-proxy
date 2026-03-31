@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -7,7 +9,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class BackendRuntime implements AutoCloseable {
+public final class BackendRuntime implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRuntime.class);
   private static final SessionFactory DEFAULT_SESSION_FACTORY = new DefaultSessionFactory();
 
@@ -34,7 +36,7 @@ final class BackendRuntime implements AutoCloseable {
     this.sharedSession = sharedSession;
   }
 
-  static BootstrapState bootstrap(
+  public static BootstrapState bootstrap(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf hiveConf,
@@ -43,7 +45,7 @@ final class BackendRuntime implements AutoCloseable {
     return bootstrap(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, DEFAULT_SESSION_FACTORY);
   }
 
-  static BootstrapState bootstrap(
+  public static BootstrapState bootstrap(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf hiveConf,
@@ -56,7 +58,7 @@ final class BackendRuntime implements AutoCloseable {
     return new BootstrapState(bootstrapSession, backendVersion);
   }
 
-  static BackendRuntime open(
+  public static BackendRuntime open(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf hiveConf,
@@ -74,7 +76,7 @@ final class BackendRuntime implements AutoCloseable {
         DEFAULT_SESSION_FACTORY);
   }
 
-  static BackendRuntime open(
+  public static BackendRuntime open(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf hiveConf,
@@ -93,15 +95,15 @@ final class BackendRuntime implements AutoCloseable {
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory, sharedSession);
   }
 
-  synchronized Object invokeShared(Method method, Object[] args) throws Throwable {
+  public synchronized Object invokeShared(Method method, Object[] args) throws Throwable {
     return sharedSession.invoke(method, args);
   }
 
-  synchronized Object invokeSharedByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
+  public synchronized Object invokeSharedByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
     return sharedSession.invokeByName(methodName, parameterTypes, args);
   }
 
-  synchronized String reconnectShared(BackendAdapter adapter) throws MetaException {
+  public synchronized String reconnectShared(BackendAdapter adapter) throws MetaException {
     CatalogBackend.closeQuietly(sharedSession, "stale shared backend metastore session before reconnect");
     BootstrapState bootstrapState = bootstrap(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory);
     adapter.updateBackendVersion(bootstrapState.backendVersion());
@@ -115,7 +117,7 @@ final class BackendRuntime implements AutoCloseable {
     return adapter.backendVersion();
   }
 
-  BackendInvocationSession openImpersonationSession(
+  public BackendInvocationSession openImpersonationSession(
       MetastoreRuntimeProfile runtimeProfile,
       String userName,
       List<String> groupNames
@@ -142,10 +144,10 @@ final class BackendRuntime implements AutoCloseable {
     }
   }
 
-  record BootstrapState(BackendInvocationSession session, String backendVersion) {
+  public record BootstrapState(BackendInvocationSession session, String backendVersion) {
   }
 
-  interface SessionFactory {
+  public interface SessionFactory {
     BackendInvocationSession open(
         ProxyConfig proxyConfig,
         ProxyConfig.CatalogConfig catalogConfig,

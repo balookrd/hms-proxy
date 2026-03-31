@@ -1,5 +1,6 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.compatibility;
 
+import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,7 +32,7 @@ import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 
-final class MetastoreCompatibility {
+public final class MetastoreCompatibility {
   private static final String FRONT_DOOR_TOKEN_ERROR =
       "Delegation tokens require Kerberos/SASL on the proxy front door";
   private static final Pattern BACKEND_VISIBLE_CONFIG_PATTERN =
@@ -64,15 +65,15 @@ final class MetastoreCompatibility {
   private MetastoreCompatibility() {
   }
 
-  static boolean routesToDefaultBackend(String methodName) {
+  public static boolean routesToDefaultBackend(String methodName) {
     return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
   }
 
-  static boolean handlesLocally(String methodName) {
+  public static boolean handlesLocally(String methodName) {
     return LOCAL_HANDLERS.containsKey(methodName);
   }
 
-  static Object handleLocally(String methodName, Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception {
+  public static Object handleLocally(String methodName, Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception {
     LocalMethodHandler handler = LOCAL_HANDLERS.get(methodName);
     if (handler == null) {
       throw new IllegalArgumentException("Unsupported local compatibility method: " + methodName);
@@ -80,11 +81,11 @@ final class MetastoreCompatibility {
     return handler.handle(args, frontDoorSecurity);
   }
 
-  static boolean hasFallback(String methodName) {
+  public static boolean hasFallback(String methodName) {
     return FALLBACKS.containsKey(methodName);
   }
 
-  static boolean shouldUseFallback(String methodName, Throwable cause) {
+  public static boolean shouldUseFallback(String methodName, Throwable cause) {
     if (!hasFallback(methodName)) {
       return false;
     }
@@ -93,14 +94,14 @@ final class MetastoreCompatibility {
         || cause instanceof MetaException;
   }
 
-  static Optional<Object> fallback(String methodName, Throwable cause) {
+  public static Optional<Object> fallback(String methodName, Throwable cause) {
     if (!shouldUseFallback(methodName, cause)) {
       return Optional.empty();
     }
     return Optional.of(FALLBACKS.get(methodName).get());
   }
 
-  static BackendProfile backendProfile(String backendVersion) {
+  public static BackendProfile backendProfile(String backendVersion) {
     if (backendVersion == null || backendVersion.isBlank()) {
       return BackendProfile.UNKNOWN;
     }
@@ -110,11 +111,11 @@ final class MetastoreCompatibility {
     return BackendProfile.MODERN_REQUESTS;
   }
 
-  static boolean usesLegacyRequestApi(BackendProfile backendProfile) {
+  public static boolean usesLegacyRequestApi(BackendProfile backendProfile) {
     return backendProfile == BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
   }
 
-  static Optional<String> legacyAlternative(String methodName, BackendProfile backendProfile) {
+  public static Optional<String> legacyAlternative(String methodName, BackendProfile backendProfile) {
     if (!usesLegacyRequestApi(backendProfile)) {
       return Optional.empty();
     }
@@ -125,7 +126,7 @@ final class MetastoreCompatibility {
     };
   }
 
-  static Optional<Object> downgradeRequest(
+  public static Optional<Object> downgradeRequest(
       String methodName,
       Object[] args,
       BackendInvoker backendInvoker,
@@ -142,7 +143,7 @@ final class MetastoreCompatibility {
     };
   }
 
-  static Optional<String> compatibleConfigValue(
+  public static Optional<String> compatibleConfigValue(
       String requestedName,
       String defaultValue,
       Map<String, String> hiveConf
@@ -277,11 +278,11 @@ final class MetastoreCompatibility {
   }
 
   @FunctionalInterface
-  interface BackendInvoker {
+  public interface BackendInvoker {
     Object invoke(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable;
   }
 
-  enum BackendProfile {
+  public enum BackendProfile {
     UNKNOWN,
     MODERN_REQUESTS,
     HORTONWORKS_3_1_0_LEGACY_REQUESTS

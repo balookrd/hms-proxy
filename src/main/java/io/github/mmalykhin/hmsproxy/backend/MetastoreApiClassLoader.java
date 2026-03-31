@@ -1,13 +1,13 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
 import java.net.URL;
 import java.net.URLClassLoader;
 
-final class MetastoreApiClassLoader extends URLClassLoader {
+public final class MetastoreApiClassLoader extends URLClassLoader {
   private static final String CHILD_FIRST_PREFIX = "org.apache.hadoop.hive.metastore.";
   private static final String CHILD_FIRST_PREFIX_HADOOP_CONF = "org.apache.hadoop.conf.";
 
-  MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {
+  public MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {
     super(urls, parent);
   }
 

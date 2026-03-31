@@ -1,5 +1,12 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.app;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
+import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
+import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
+import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.nio.file.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
