@@ -208,6 +208,8 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 ```
 
 `security.server-principal` и `security.keytab` обязательны при `security.mode=KERBEROS`.
+`_HOST` разворачивается в каноническое имя хоста proxy перед Kerberos login. Если DNS-имя
+хоста не совпадает с principal в keytab/KDC, используй явный FQDN.
 
 Когда Kerberos включён на фронте, delegation-token методы
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)

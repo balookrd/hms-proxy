@@ -149,7 +149,7 @@ final class BackendInvocationSession implements AutoCloseable {
     }
 
     ProxyConfig.SecurityConfig security = proxyConfig.security();
-    String principal = security.outboundPrincipal();
+    String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
     LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
         catalogConfig.name(), runtimeProfile, principal, keytab);
@@ -185,7 +185,7 @@ final class BackendInvocationSession implements AutoCloseable {
     }
 
     ProxyConfig.SecurityConfig security = proxyConfig.security();
-    String principal = security.outboundPrincipal();
+    String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
     LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
         catalogConfig.name(), principal, keytab);

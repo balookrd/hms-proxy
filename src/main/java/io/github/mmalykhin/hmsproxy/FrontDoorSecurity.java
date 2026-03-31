@@ -64,8 +64,8 @@ final class FrontDoorSecurity implements AutoCloseable {
     HadoopThriftAuthBridge bridge = HadoopThriftAuthBridge.getBridge();
     HadoopThriftAuthBridge.Server saslServer = bridge.createServer(
         config.security().keytab(),
-        config.security().serverPrincipal(),
-        MetastoreThriftServer.frontDoorClientPrincipal(config.security()));
+        KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal()),
+        KerberosPrincipalUtil.resolveForLocalHost(MetastoreThriftServer.frontDoorClientPrincipal(config.security())));
 
     MetastoreDelegationTokenManager delegationTokenManager = new MetastoreDelegationTokenManager();
     delegationTokenManager.startDelegationTokenSecretManager(securityConf, null);
