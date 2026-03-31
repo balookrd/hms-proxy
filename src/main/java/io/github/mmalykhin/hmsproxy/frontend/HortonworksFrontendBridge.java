@@ -157,8 +157,7 @@ public final class HortonworksFrontendBridge {
       String dbName = (String) invokeNoArgs(request, "getDbName");
       String tableName = (String) invokeNoArgs(request, "getTableName");
       List<Partition> partitions =
-          (List<Partition>) convertDynamicValue(invokeNoArgs(request, "getPartitions"),
-              HortonworksFrontendBridge.class.getClassLoader());
+          (List<Partition>) convertDynamicValue(invokeNoArgs(request, "getPartitions"), hdpClassLoader);
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       if (environmentContext != null) {
@@ -237,7 +236,7 @@ public final class HortonworksFrontendBridge {
         return converted;
       }
       if (value instanceof List<?> || value instanceof Map<?, ?>) {
-        return convertDynamicValue(value, targetType.getClassLoader());
+        return convertDynamicValue(value, hdpClassLoader);
       }
       if (targetType.isInstance(value)) {
         return value;
