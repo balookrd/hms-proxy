@@ -171,6 +171,12 @@ When Kerberos is enabled on the front door, delegation-token methods
 are served locally by the proxy's own token manager instead of being forwarded
 to backend metastores.
 
+That also means proxy-user authorization for service principals such as HiveServer2 must be
+configured on the proxy front door itself, not only on backend HMS instances. If HiveServer2
+connects as `hive/_HOST@REALM.COM` and requests `get_delegation_token("alice", ...)`, the proxy
+must see matching `hadoop.proxyuser.hive.*` rules through `core-site.xml` or
+`security.front-door-conf.*` overrides.
+
 The proxy reads delegation-token store settings from the usual Hive configuration
 resources visible to the proxy process through `HiveConf`, typically `hive-site.xml`.
 You can also set them directly in `hms-proxy.properties` via
@@ -186,12 +192,17 @@ Example with ZooKeeper token storage configured directly in the proxy config:
 security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+# Allow HiveServer2's Kerberos principal to request end-user delegation tokens from the proxy.
+security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
+security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
 
 On startup the proxy logs which `HiveConf` resources it found and which front-door
 overrides were applied. If you see `Found configuration file null` from Hive or the
 proxy warns that it is using `MemoryTokenStore`, the process did not see a persistent
-delegation-token store config.
+delegation-token store config. If `get_delegation_token` fails with
+`User: hive/... is not allowed to impersonate alice`, the proxy is missing front-door
+`hadoop.proxyuser.<service>.hosts/groups` rules for that Kerberos caller.
 
 ### Kerberos impersonation
 
