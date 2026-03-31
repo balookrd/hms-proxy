@@ -6,8 +6,6 @@ import java.net.URLClassLoader;
 public final class MetastoreApiClassLoader extends URLClassLoader {
   private static final String[] CHILD_FIRST_PREFIXES = {
       "org.apache.hadoop.hive.metastore.",
-      "org.apache.hadoop.conf.",
-      "org.apache.hadoop.security.",
   };
 
   public MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {

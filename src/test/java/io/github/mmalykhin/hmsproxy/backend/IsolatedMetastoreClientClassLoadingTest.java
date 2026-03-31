@@ -37,6 +37,21 @@ public class IsolatedMetastoreClientClassLoadingTest {
   }
 
   @Test
+  public void isolatedLoaderUsesParentHadoopClasses() throws Exception {
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new URL[0],
+        IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
+
+    Assert.assertSame(Configuration.class, Class.forName(
+        "org.apache.hadoop.conf.Configuration",
+        true,
+        classLoader));
+    Assert.assertSame(
+        org.apache.hadoop.security.UserGroupInformation.class,
+        Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader));
+  }
+
+  @Test
   public void configurationResolvesFilterHookInIsolatedLoader() throws Exception {
     ProxyConfig config = new ProxyConfig(
         new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
