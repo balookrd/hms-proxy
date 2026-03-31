@@ -32,7 +32,8 @@ final class IsolatedMetastoreClient implements AutoCloseable {
         new URL[] {jarPath.toUri().toURL()},
         IsolatedMetastoreClient.class.getClassLoader());
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
-    Object client = clientClass.getConstructor(Configuration.class).newInstance(conf);
+    Object client = withContextClassLoader(classLoader, () ->
+        clientClass.getConstructor(Configuration.class).newInstance(conf));
     Field clientField = clientClass.getDeclaredField("client");
     clientField.setAccessible(true);
     Object thriftClient = clientField.get(client);
@@ -58,6 +59,25 @@ final class IsolatedMetastoreClient implements AutoCloseable {
 
   @Override
   public void close() throws Exception {
-    client.getClass().getMethod("close").invoke(client);
+    withContextClassLoader(client.getClass().getClassLoader(), () -> {
+      client.getClass().getMethod("close").invoke(client);
+      return null;
+    });
+  }
+
+  private static <T> T withContextClassLoader(ClassLoader classLoader, ThrowingSupplier<T> supplier) throws Exception {
+    Thread thread = Thread.currentThread();
+    ClassLoader previous = thread.getContextClassLoader();
+    thread.setContextClassLoader(classLoader);
+    try {
+      return supplier.get();
+    } finally {
+      thread.setContextClassLoader(previous);
+    }
+  }
+
+  @FunctionalInterface
+  private interface ThrowingSupplier<T> {
+    T get() throws Exception;
   }
 }

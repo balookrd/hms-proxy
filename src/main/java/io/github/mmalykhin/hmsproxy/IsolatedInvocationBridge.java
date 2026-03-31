@@ -36,7 +36,7 @@ final class IsolatedInvocationBridge {
     Method targetMethod = findMethod(method.getName(), method.getParameterTypes());
     Object[] convertedArgs = convertArguments(args, targetMethod.getParameterTypes());
     try {
-      Object result = targetMethod.invoke(delegate, convertedArgs);
+      Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
       return convertResult(result, method.getReturnType());
     } catch (InvocationTargetException e) {
       throw e.getCause();
@@ -47,10 +47,21 @@ final class IsolatedInvocationBridge {
     Method targetMethod = findMethod(methodName, parameterTypes);
     Object[] convertedArgs = convertArguments(args, targetMethod.getParameterTypes());
     try {
-      Object result = targetMethod.invoke(delegate, convertedArgs);
+      Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
       return convertDynamicValue(result, IsolatedInvocationBridge.class.getClassLoader());
     } catch (InvocationTargetException e) {
       throw e.getCause();
+    }
+  }
+
+  private <T> T withContextClassLoader(ThrowingSupplier<T> supplier) throws Exception {
+    Thread thread = Thread.currentThread();
+    ClassLoader previous = thread.getContextClassLoader();
+    thread.setContextClassLoader(classLoader);
+    try {
+      return supplier.get();
+    } finally {
+      thread.setContextClassLoader(previous);
     }
   }
 
@@ -248,5 +259,10 @@ final class IsolatedInvocationBridge {
     } catch (ClassNotFoundException e) {
       return null;
     }
+  }
+
+  @FunctionalInterface
+  private interface ThrowingSupplier<T> {
+    T get() throws Exception;
   }
 }
