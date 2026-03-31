@@ -1,9 +1,11 @@
 package io.github.mmalykhin.hmsproxy;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 
 final class IsolatedMetastoreClient implements AutoCloseable {
@@ -29,12 +31,23 @@ final class IsolatedMetastoreClient implements AutoCloseable {
   ) throws Exception {
     Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
     ClassLoader classLoader = new MetastoreApiClassLoader(
-        new URL[] {jarPath.toUri().toURL()},
+        new URL[] {
+            jarPath.toUri().toURL(),
+            Configuration.class.getProtectionDomain().getCodeSource().getLocation()
+        },
         IsolatedMetastoreClient.class.getClassLoader());
+    Class<?> childConfigurationClass = Class.forName("org.apache.hadoop.conf.Configuration", true, classLoader);
+    Object isolatedConf = withContextClassLoader(classLoader, () -> childConfigurationClass.getConstructor(boolean.class)
+        .newInstance(false));
+    Method setClassLoader = childConfigurationClass.getMethod("setClassLoader", ClassLoader.class);
+    setClassLoader.invoke(isolatedConf, classLoader);
+    Method set = childConfigurationClass.getMethod("set", String.class, String.class);
+    for (Map.Entry<String, String> entry : conf) {
+      set.invoke(isolatedConf, entry.getKey(), entry.getValue());
+    }
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
-    conf.setClassLoader(classLoader);
     Object client = withContextClassLoader(classLoader, () ->
-        clientClass.getConstructor(Configuration.class).newInstance(conf));
+        clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf));
     Field clientField = clientClass.getDeclaredField("client");
     clientField.setAccessible(true);
     Object thriftClient = clientField.get(client);

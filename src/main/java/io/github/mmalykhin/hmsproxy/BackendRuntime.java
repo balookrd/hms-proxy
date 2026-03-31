@@ -86,23 +86,8 @@ final class BackendRuntime implements AutoCloseable {
     BackendInvocationSession sharedSession = bootstrapSession;
     if (runtimeProfile != MetastoreRuntimeProfile.APACHE_3_1_3) {
       CatalogBackend.closeQuietly(bootstrapSession, "bootstrap Apache backend metastore session");
-      try {
-        sharedSession = sessionFactory.open(
-            proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
-      } catch (MetaException firstFailure) {
-        LOG.warn(
-            "Backend catalog '{}' failed to open runtime {}. Falling back to APACHE_3_1_3.",
-            catalogConfig.name(),
-            runtimeProfile,
-            firstFailure);
-        try {
-          sharedSession = sessionFactory.open(
-              proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, MetastoreRuntimeProfile.APACHE_3_1_3);
-        } catch (MetaException fallbackFailure) {
-          fallbackFailure.addSuppressed(firstFailure);
-          throw fallbackFailure;
-        }
-      }
+      sharedSession = sessionFactory.open(
+          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
     }
     return new BackendRuntime(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory, sharedSession);
