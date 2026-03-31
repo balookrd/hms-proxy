@@ -32,6 +32,4 @@ public interface BackendAdapter {
   MetastoreRuntimeProfile runtimeProfile();
 
   String backendVersion();
-
-  void updateBackendVersion(String backendVersion);
 }

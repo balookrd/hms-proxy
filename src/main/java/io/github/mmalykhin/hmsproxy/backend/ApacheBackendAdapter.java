@@ -7,12 +7,8 @@ import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 
 public final class ApacheBackendAdapter extends AbstractBackendAdapter {
-  public ApacheBackendAdapter(String backendVersion) {
-    super(backendVersion);
-  }
-
-  public ApacheBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
-    super(backendVersion, runtimeProfileOverride);
+  public ApacheBackendAdapter() {
+    super(MetastoreRuntimeProfile.APACHE_3_1_3);
   }
 
   @Override

@@ -54,15 +54,13 @@ public final class CatalogBackend implements AutoCloseable {
       conf.set(entry.getKey(), entry.getValue());
     }
 
-    BackendRuntime.BootstrapState bootstrapState =
-        BackendRuntime.bootstrap(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
-    String backendVersion = bootstrapState.backendVersion();
-    BackendAdapter adapter = BackendAdapterFactory.create(catalogConfig.runtimeProfile(), backendVersion);
-    adapter.updateBackendVersion(backendVersion);
+    MetastoreRuntimeProfile runtimeProfile = catalogConfig.runtimeProfile() != null
+        ? catalogConfig.runtimeProfile()
+        : MetastoreRuntimeProfile.APACHE_3_1_3;
+    BackendAdapter adapter = BackendAdapterFactory.create(runtimeProfile);
+    BackendRuntime runtime = BackendRuntime.open(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile);
     LOG.info("Backend catalog '{}' selected runtimeProfile={} compatibilityProfile={}",
         catalogConfig.name(), adapter.runtimeProfile(), adapter.backendProfile());
-    BackendRuntime runtime = BackendRuntime.open(
-        proxyConfig, catalogConfig, conf, backendKerberosEnabled, adapter.runtimeProfile(), bootstrapState.session());
     Catalog catalog = new Catalog();
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
@@ -99,7 +97,7 @@ public final class CatalogBackend implements AutoCloseable {
   }
 
   public void rememberLegacyRequestApi() {
-    logLegacyRequestApiCompatibilitySwitch(adapter.backendVersion());
+    logLegacyRequestApiCompatibilitySwitch();
   }
 
   public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
@@ -156,12 +154,11 @@ public final class CatalogBackend implements AutoCloseable {
     }
   }
 
-  public void logLegacyRequestApiCompatibilitySwitch(String backendVersion) {
-    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode; version={}",
-        config.name(), backendVersion == null ? "unknown" : backendVersion);
+  public void logLegacyRequestApiCompatibilitySwitch() {
+    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode", config.name());
   }
 
-  private synchronized Object invokeSharedClient(Method method, Object[] args) throws Throwable {
+  private Object invokeSharedClient(Method method, Object[] args) throws Throwable {
     try {
       return runtime.invokeShared(method, args);
     } catch (Throwable cause) {

@@ -74,11 +74,14 @@ public final class HortonworksFrontendBridge {
   }
 
   private static final class BridgeInvocationHandler implements InvocationHandler {
+    private static final ThreadLocal<TSerializer> SERIALIZER =
+        ThreadLocal.withInitial(() -> new TSerializer(new TBinaryProtocol.Factory()));
+    private static final ThreadLocal<TDeserializer> DESERIALIZER =
+        ThreadLocal.withInitial(() -> new TDeserializer(new TBinaryProtocol.Factory()));
+
     private final ClassLoader hdpClassLoader;
     private final ThriftHiveMetastore.Iface apacheHandler;
     private final HortonworksFrontendExtension extension;
-    private final TSerializer serializer = new TSerializer(new TBinaryProtocol.Factory());
-    private final TDeserializer deserializer = new TDeserializer(new TBinaryProtocol.Factory());
 
     private BridgeInvocationHandler(ClassLoader hdpClassLoader, ThriftHiveMetastore.Iface apacheHandler) {
       this.hdpClassLoader = hdpClassLoader;
@@ -256,8 +259,8 @@ public final class HortonworksFrontendBridge {
         return value;
       }
       Object target = targetType.getConstructor().newInstance();
-      byte[] bytes = serializer.serialize((TBase<?, ?>) value);
-      deserializer.deserialize((TBase<?, ?>) target, bytes);
+      byte[] bytes = SERIALIZER.get().serialize((TBase<?, ?>) value);
+      DESERIALIZER.get().deserialize((TBase<?, ?>) target, bytes);
       return target;
     }
 
