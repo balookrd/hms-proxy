@@ -47,7 +47,7 @@ public final class HortonworksFrontendBridge {
   static BridgeBundle createBridge(ProxyConfig config, ThriftHiveMetastore.Iface apacheHandler) throws Exception {
     Path jarPath = MetastoreRuntimeJarResolver.resolveFrontendJar(config);
     ClassLoader classLoader = new MetastoreApiClassLoader(
-        new java.net.URL[] {jarPath.toUri().toURL()},
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarPath),
         HortonworksFrontendBridge.class.getClassLoader());
     Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, classLoader);
     Object handlerProxy = Proxy.newProxyInstance(
