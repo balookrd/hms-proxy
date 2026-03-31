@@ -1,13 +1,16 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.frontend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TProcessor;
 
-final class FrontendProcessorFactory {
+public final class FrontendProcessorFactory {
   private FrontendProcessorFactory() {
   }
 
-  static TProcessor create(ProxyConfig config, ThriftHiveMetastore.Iface apacheHandler) throws Exception {
+  public static TProcessor create(ProxyConfig config, ThriftHiveMetastore.Iface apacheHandler) throws Exception {
     MetastoreRuntimeProfile runtimeProfile =
         MetastoreRuntimeProfileResolver.forFrontendProfile(config.compatibility().frontendProfile());
     return switch (runtimeProfile) {

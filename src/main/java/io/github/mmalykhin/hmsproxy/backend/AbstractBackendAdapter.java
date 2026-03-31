@@ -1,9 +1,13 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.lang.reflect.Method;
 import java.util.Optional;
 
-abstract class AbstractBackendAdapter implements BackendAdapter {
+public abstract class AbstractBackendAdapter implements BackendAdapter {
   private volatile String backendVersion;
   private volatile MetastoreCompatibility.BackendProfile backendProfile;
   private volatile MetastoreRuntimeProfile runtimeProfile;

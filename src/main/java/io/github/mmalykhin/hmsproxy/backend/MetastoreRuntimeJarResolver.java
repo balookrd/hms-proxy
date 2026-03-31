@@ -1,13 +1,16 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-final class MetastoreRuntimeJarResolver {
+public final class MetastoreRuntimeJarResolver {
   private MetastoreRuntimeJarResolver() {
   }
 
-  static Path resolveFrontendJar(ProxyConfig config) {
+  public static Path resolveFrontendJar(ProxyConfig config) {
     MetastoreRuntimeProfile runtimeProfile =
         MetastoreRuntimeProfileResolver.forFrontendProfile(config.compatibility().frontendProfile());
     String configuredJar = config.compatibility().frontendStandaloneMetastoreJar();
@@ -23,7 +26,7 @@ final class MetastoreRuntimeJarResolver {
     return jarPath.toAbsolutePath().normalize();
   }
 
-  static Path resolveBackendJar(
+  public static Path resolveBackendJar(
       ProxyConfig config,
       ProxyConfig.CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile

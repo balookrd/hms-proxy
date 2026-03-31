@@ -1,5 +1,6 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.config;
 
+import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import org.junit.Assert;
 import org.junit.Test;
 

@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.routing;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;

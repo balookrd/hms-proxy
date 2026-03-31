@@ -1,5 +1,5 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.frontend;
 
-interface HortonworksFrontendExtension {
+public interface HortonworksFrontendExtension {
   Object addWriteNotificationLog(Object request) throws Throwable;
 }

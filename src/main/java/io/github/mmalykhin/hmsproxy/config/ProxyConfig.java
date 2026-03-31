@@ -1,5 +1,6 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.config;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import java.util.List;
 import java.util.Map;
 
@@ -128,7 +129,7 @@ public record ProxyConfig(
       this.runtimeProfile = runtimeProfile;
     }
 
-    MetastoreRuntimeProfile runtimeProfile() {
+    public MetastoreRuntimeProfile runtimeProfile() {
       return runtimeProfile;
     }
 

@@ -1,5 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.security;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URL;
@@ -18,7 +20,7 @@ import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class FrontDoorSecurity implements AutoCloseable {
+public final class FrontDoorSecurity implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(FrontDoorSecurity.class);
   private static final String TOKEN_STORE_CLASS_KEY = "hive.cluster.delegation.token.store.class";
   private static final String FALLBACK_TOKEN_STORE_CLASS_KEY = "metastore.cluster.delegation.token.store.class";
@@ -49,7 +51,7 @@ final class FrontDoorSecurity implements AutoCloseable {
     this.delegationTokenManager = delegationTokenManager;
   }
 
-  static FrontDoorSecurity open(ProxyConfig config) throws Exception {
+  public static FrontDoorSecurity open(ProxyConfig config) throws Exception {
     if (!config.security().kerberosEnabled()) {
       return null;
     }
@@ -158,7 +160,7 @@ final class FrontDoorSecurity implements AutoCloseable {
     return saslServer.wrapProcessor(processor);
   }
 
-  String issueDelegationToken(String owner, String renewer)
+  public String issueDelegationToken(String owner, String renewer)
       throws IOException, InterruptedException, MetaException {
     try {
       return delegationTokenManager.getDelegationToken(owner, renewer, remoteAddress());
@@ -170,11 +172,11 @@ final class FrontDoorSecurity implements AutoCloseable {
     }
   }
 
-  long renewDelegationToken(String token) throws IOException {
+  public long renewDelegationToken(String token) throws IOException {
     return delegationTokenManager.renewDelegationToken(token);
   }
 
-  void cancelDelegationToken(String token) throws IOException {
+  public void cancelDelegationToken(String token) throws IOException {
     delegationTokenManager.cancelDelegationToken(token);
   }
 
@@ -182,7 +184,7 @@ final class FrontDoorSecurity implements AutoCloseable {
     return saslServer.getRemoteUser();
   }
 
-  static String delegationTokenAuthorizationMessage(
+  public static String delegationTokenAuthorizationMessage(
       String owner,
       String renewer,
       String authenticatedUser,

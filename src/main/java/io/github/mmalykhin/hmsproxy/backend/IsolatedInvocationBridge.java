@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -11,14 +11,14 @@ import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TBinaryProtocol;
 
-final class IsolatedInvocationBridge {
+public final class IsolatedInvocationBridge {
   private final ClassLoader classLoader;
   private final Object delegate;
   private final Class<?> ifaceClass;
   private final TSerializer serializer = new TSerializer(new TBinaryProtocol.Factory());
   private final TDeserializer deserializer = new TDeserializer(new TBinaryProtocol.Factory());
 
-  IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
+  public IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
     this.classLoader = classLoader;
     this.delegate = delegate;
     this.ifaceClass = ifaceClass;

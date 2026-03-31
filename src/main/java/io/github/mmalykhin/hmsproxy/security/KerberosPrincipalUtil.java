@@ -1,15 +1,15 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.security;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import org.apache.hadoop.security.SecurityUtil;
 
-final class KerberosPrincipalUtil {
+public final class KerberosPrincipalUtil {
   private KerberosPrincipalUtil() {
   }
 
-  static String resolveForLocalHost(String principal) {
+  public static String resolveForLocalHost(String principal) {
     if (principal == null || !principal.contains("_HOST")) {
       return principal;
     }
@@ -20,14 +20,14 @@ final class KerberosPrincipalUtil {
     }
   }
 
-  static String resolveForHost(String principal, String hostname) throws IOException {
+  public static String resolveForHost(String principal, String hostname) throws IOException {
     if (principal == null || !principal.contains("_HOST")) {
       return principal;
     }
     return SecurityUtil.getServerPrincipal(principal, hostname);
   }
 
-  static String localCanonicalHostname() {
+  public static String localCanonicalHostname() {
     try {
       return InetAddress.getLocalHost().getCanonicalHostName();
     } catch (UnknownHostException e) {

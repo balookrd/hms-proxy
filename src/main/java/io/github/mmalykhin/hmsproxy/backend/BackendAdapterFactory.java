@@ -1,4 +1,7 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
+
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 
 final class BackendAdapterFactory {
   private BackendAdapterFactory() {

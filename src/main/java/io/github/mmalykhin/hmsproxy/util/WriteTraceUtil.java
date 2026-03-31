@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.util;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -20,7 +20,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.TableValidWriteIds;
 
-final class WriteTraceUtil {
+public final class WriteTraceUtil {
   private static final Set<String> TRACE_METHODS = Set.of(
       "get_database",
       "get_table",
@@ -68,11 +68,11 @@ final class WriteTraceUtil {
   private WriteTraceUtil() {
   }
 
-  static boolean shouldTrace(String methodName) {
+  public static boolean shouldTrace(String methodName) {
     return TRACE_METHODS.contains(methodName);
   }
 
-  static String summarizeArgs(Object[] args) {
+  public static String summarizeArgs(Object[] args) {
     if (args == null || args.length == 0) {
       return "[]";
     }
@@ -83,7 +83,7 @@ final class WriteTraceUtil {
     return '[' + String.join(", ", parts) + ']';
   }
 
-  static String summarizeResult(Object value) {
+  public static String summarizeResult(Object value) {
     return summarizeValue(value);
   }
 

@@ -1,5 +1,6 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.config;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;

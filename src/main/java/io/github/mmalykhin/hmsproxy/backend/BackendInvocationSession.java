@@ -1,5 +1,9 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -14,7 +18,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class BackendInvocationSession implements AutoCloseable {
+public final class BackendInvocationSession implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendInvocationSession.class);
 
   private final HiveMetaStoreClient client;
@@ -31,7 +35,7 @@ final class BackendInvocationSession implements AutoCloseable {
     this.isolatedClient = isolatedClient;
   }
 
-  static BackendInvocationSession open(
+  public static BackendInvocationSession open(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf conf,
@@ -43,7 +47,7 @@ final class BackendInvocationSession implements AutoCloseable {
         : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
   }
 
-  static BackendInvocationSession openImpersonating(
+  public static BackendInvocationSession openImpersonating(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       HiveConf conf,

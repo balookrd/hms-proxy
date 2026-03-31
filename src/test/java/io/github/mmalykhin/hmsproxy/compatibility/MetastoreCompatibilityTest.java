@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.compatibility;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;

@@ -1,6 +1,6 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.compatibility;
 
-enum MetastoreRuntimeProfile {
+public enum MetastoreRuntimeProfile {
   APACHE_3_1_3("Apache Hive Metastore", "3.1.3", "hive-metastore/hive-standalone-metastore-3.1.3.jar"),
   HORTONWORKS_3_1_0_3_1_0_78(
       "Hortonworks Hive Metastore",
@@ -17,15 +17,15 @@ enum MetastoreRuntimeProfile {
     this.defaultStandaloneMetastoreJar = defaultStandaloneMetastoreJar;
   }
 
-  String displayName() {
+  public String displayName() {
     return displayName;
   }
 
-  String metastoreVersion() {
+  public String metastoreVersion() {
     return metastoreVersion;
   }
 
-  String defaultStandaloneMetastoreJar() {
+  public String defaultStandaloneMetastoreJar() {
     return defaultStandaloneMetastoreJar;
   }
 }

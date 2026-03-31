@@ -1,12 +1,14 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 
-final class CatalogRouter implements AutoCloseable {
+public final class CatalogRouter implements AutoCloseable {
   private final ProxyConfig config;
   private final Map<String, CatalogBackend> backends;
 
@@ -15,7 +17,7 @@ final class CatalogRouter implements AutoCloseable {
     this.backends = backends;
   }
 
-  static CatalogRouter open(ProxyConfig config) throws MetaException {
+  public static CatalogRouter open(ProxyConfig config) throws MetaException {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
     for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
       backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue()));
@@ -91,7 +93,7 @@ final class CatalogRouter implements AutoCloseable {
     return new ResolvedNamespace(requireBackend(catalog), catalog, externalDbName, backendDbName);
   }
 
-  String externalDatabaseName(String catalog, String backendDbName) {
+  public String externalDatabaseName(String catalog, String backendDbName) {
     if (backendDbName == null || backendDbName.isBlank()) {
       return catalog.equals(config.defaultCatalog()) ? backendDbName : catalog;
     }

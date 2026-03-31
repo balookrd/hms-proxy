@@ -1,15 +1,17 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 
-final class ApacheBackendAdapter extends AbstractBackendAdapter {
-  ApacheBackendAdapter(String backendVersion) {
+public final class ApacheBackendAdapter extends AbstractBackendAdapter {
+  public ApacheBackendAdapter(String backendVersion) {
     super(backendVersion);
   }
 
-  ApacheBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
+  public ApacheBackendAdapter(String backendVersion, MetastoreRuntimeProfile runtimeProfileOverride) {
     super(backendVersion, runtimeProfileOverride);
   }
 

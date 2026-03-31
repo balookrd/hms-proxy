@@ -1,11 +1,11 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.util;
 
 import java.lang.reflect.Array;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
 
-final class DebugLogUtil {
+public final class DebugLogUtil {
   private static final int MAX_ELEMENTS = 10;
   private static final int MAX_CHARS = 4_000;
   private static final int MAX_DEPTH = 3;
@@ -13,7 +13,7 @@ final class DebugLogUtil {
   private DebugLogUtil() {
   }
 
-  static String formatArgs(Object[] args) {
+  public static String formatArgs(Object[] args) {
     try {
       if (args == null || args.length == 0) {
         return "[]";
@@ -24,7 +24,7 @@ final class DebugLogUtil {
     }
   }
 
-  static String formatValue(Object value) {
+  public static String formatValue(Object value) {
     try {
       return truncate(render(value, 0));
     } catch (Throwable error) {

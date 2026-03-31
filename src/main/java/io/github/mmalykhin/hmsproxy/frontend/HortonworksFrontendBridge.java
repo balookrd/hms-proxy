@@ -1,5 +1,8 @@
-package io.github.mmalykhin.hmsproxy;
+package io.github.mmalykhin.hmsproxy.frontend;
 
+import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
+import io.github.mmalykhin.hmsproxy.backend.MetastoreRuntimeJarResolver;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -23,7 +26,7 @@ import org.apache.thrift.TProcessor;
 import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TBinaryProtocol;
 
-final class HortonworksFrontendBridge {
+public final class HortonworksFrontendBridge {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final Set<String> HDP_ONLY_METHODS = Set.of(
       "truncate_table_req",
