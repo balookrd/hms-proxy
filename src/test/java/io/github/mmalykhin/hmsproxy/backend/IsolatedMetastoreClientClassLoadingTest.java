@@ -2,8 +2,10 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import java.nio.file.Files;
 import java.net.URL;
 import org.apache.hadoop.conf.Configuration;
+import org.junit.Assume;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -23,6 +25,10 @@ public class IsolatedMetastoreClientClassLoadingTest {
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
             java.util.Map.of("hive.metastore.uris", "thrift://one"))));
+
+    java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
+        .toAbsolutePath();
+    Assume.assumeTrue(Files.isReadable(jarFile));
 
     java.nio.file.Path jar = MetastoreRuntimeJarResolver.resolveBackendJar(
         config, config.catalogs().get("catalog1"), MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
