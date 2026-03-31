@@ -92,14 +92,6 @@ public final class CatalogBackend implements AutoCloseable {
     return adapter.runtimeProfile();
   }
 
-  public boolean usesLegacyRequestApi() {
-    return MetastoreCompatibility.usesLegacyRequestApi(adapter.backendProfile());
-  }
-
-  public void rememberLegacyRequestApi() {
-    logLegacyRequestApiCompatibilitySwitch();
-  }
-
   public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invoke(this, method, args, impersonation);
@@ -152,10 +144,6 @@ public final class CatalogBackend implements AutoCloseable {
       runtime.reconnectShared(adapter);
       return runtime.invokeSharedByName(methodName, parameterTypes, args);
     }
-  }
-
-  public void logLegacyRequestApiCompatibilitySwitch() {
-    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode", config.name());
   }
 
   private Object invokeSharedClient(Method method, Object[] args) throws Throwable {

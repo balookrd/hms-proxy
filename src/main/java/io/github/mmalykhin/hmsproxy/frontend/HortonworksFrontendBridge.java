@@ -211,7 +211,8 @@ public final class HortonworksFrontendBridge {
       }
       Object[] converted = new Object[args.length];
       for (int index = 0; index < args.length; index++) {
-        converted[index] = convertValue(args[index], parameterTypes[index]);
+        converted[index] = convertValue(args[index], parameterTypes[index],
+            HortonworksFrontendBridge.class.getClassLoader());
       }
       return converted;
     }
@@ -220,10 +221,10 @@ public final class HortonworksFrontendBridge {
       if (returnType == void.class || result == null) {
         return null;
       }
-      return convertValue(result, returnType);
+      return convertValue(result, returnType, hdpClassLoader);
     }
 
-    private Object convertValue(Object value, Class<?> targetType) throws Exception {
+    private Object convertValue(Object value, Class<?> targetType, ClassLoader collectionCL) throws Exception {
       if (value == null) {
         return null;
       }
@@ -239,7 +240,8 @@ public final class HortonworksFrontendBridge {
         return converted;
       }
       if (value instanceof List<?> || value instanceof Map<?, ?>) {
-        return convertDynamicValue(value, hdpClassLoader);
+        ClassLoader cl = targetType.getClassLoader() != null ? targetType.getClassLoader() : collectionCL;
+        return convertDynamicValue(value, cl);
       }
       if (targetType.isInstance(value)) {
         return value;
@@ -251,7 +253,8 @@ public final class HortonworksFrontendBridge {
     }
 
     private Object convertIfPresent(Object value, Class<?> targetType) throws Exception {
-      return value == null ? null : convertValue(value, targetType);
+      return value == null ? null : convertValue(value, targetType,
+          HortonworksFrontendBridge.class.getClassLoader());
     }
 
     private Object convertTBase(Object value, Class<?> targetType) throws Exception {
