@@ -5,9 +5,6 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -27,7 +24,6 @@ import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TBinaryProtocol;
 
 final class HortonworksFrontendBridge {
-  private static final String DEFAULT_HDP_JAR = "hdp-hive/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar";
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final Set<String> HDP_ONLY_METHODS = Set.of(
       "truncate_table_req",
@@ -41,35 +37,28 @@ final class HortonworksFrontendBridge {
   private HortonworksFrontendBridge() {
   }
 
-  static TProcessor createProcessor(ProxyConfig config, ThriftHiveMetastore.Iface gnuHandler) throws Exception {
-    return createBridge(config, gnuHandler).processor();
+  static TProcessor createProcessor(ProxyConfig config, ThriftHiveMetastore.Iface apacheHandler) throws Exception {
+    return createBridge(config, apacheHandler).processor();
   }
 
-  static BridgeBundle createBridge(ProxyConfig config, ThriftHiveMetastore.Iface gnuHandler) throws Exception {
-    Path jarPath = resolveJarPath(config);
-    ClassLoader classLoader = new ChildFirstClassLoader(
-        new URL[] {jarPath.toUri().toURL()},
+  static BridgeBundle createBridge(ProxyConfig config, ThriftHiveMetastore.Iface apacheHandler) throws Exception {
+    Path jarPath = MetastoreRuntimeJarResolver.resolveFrontendJar(config);
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {jarPath.toUri().toURL()},
         HortonworksFrontendBridge.class.getClassLoader());
     Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, classLoader);
     Object handlerProxy = Proxy.newProxyInstance(
         classLoader,
         new Class<?>[] {ifaceClass},
-        new BridgeInvocationHandler(classLoader, gnuHandler));
+        new BridgeInvocationHandler(classLoader, apacheHandler));
     Class<?> processorClass = Class.forName(THRIFT_HMS_CLASS + "$Processor", true, classLoader);
     Constructor<?> constructor = processorClass.getConstructor(ifaceClass);
     TProcessor processor = (TProcessor) constructor.newInstance(handlerProxy);
     return new BridgeBundle(processor, handlerProxy, ifaceClass, classLoader, jarPath);
   }
 
-  private static Path resolveJarPath(ProxyConfig config) {
-    String configured = config.compatibility().hortonworksStandaloneMetastoreJar();
-    Path jarPath = configured == null ? Path.of(DEFAULT_HDP_JAR) : Path.of(configured);
-    if (!Files.isReadable(jarPath)) {
-      throw new IllegalArgumentException(
-          "Hortonworks frontend profile requires a readable standalone-metastore jar. "
-              + "Checked: " + jarPath.toAbsolutePath());
-    }
-    return jarPath.toAbsolutePath().normalize();
+  static Set<String> supportedHdpOnlyMethods() {
+    return Set.copyOf(HDP_ONLY_METHODS);
   }
 
   record BridgeBundle(
@@ -83,13 +72,17 @@ final class HortonworksFrontendBridge {
 
   private static final class BridgeInvocationHandler implements InvocationHandler {
     private final ClassLoader hdpClassLoader;
-    private final ThriftHiveMetastore.Iface gnuHandler;
+    private final ThriftHiveMetastore.Iface apacheHandler;
+    private final HortonworksFrontendExtension extension;
     private final TSerializer serializer = new TSerializer(new TBinaryProtocol.Factory());
     private final TDeserializer deserializer = new TDeserializer(new TBinaryProtocol.Factory());
 
-    private BridgeInvocationHandler(ClassLoader hdpClassLoader, ThriftHiveMetastore.Iface gnuHandler) {
+    private BridgeInvocationHandler(ClassLoader hdpClassLoader, ThriftHiveMetastore.Iface apacheHandler) {
       this.hdpClassLoader = hdpClassLoader;
-      this.gnuHandler = gnuHandler;
+      this.apacheHandler = apacheHandler;
+      this.extension = apacheHandler instanceof HortonworksFrontendExtension hortonworksExtension
+          ? hortonworksExtension
+          : null;
     }
 
     @Override
@@ -101,16 +94,16 @@ final class HortonworksFrontendBridge {
         return invokeHdpOnly(method, args);
       }
 
-      Method gnuMethod = findGnuMethod(method.getName(), method.getParameterCount());
-      if (gnuMethod == null) {
+      Method apacheMethod = findApacheMethod(method.getName(), method.getParameterCount());
+      if (apacheMethod == null) {
         throw new TApplicationException(
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hortonworks frontend method: " + method.getName());
       }
 
-      Object[] convertedArgs = convertArguments(args, gnuMethod.getParameterTypes());
+      Object[] convertedArgs = convertArguments(args, apacheMethod.getParameterTypes());
       try {
-        Object result = gnuMethod.invoke(gnuHandler, convertedArgs);
+        Object result = apacheMethod.invoke(apacheHandler, convertedArgs);
         return convertResult(result, method.getReturnType());
       } catch (InvocationTargetException e) {
         throw e.getCause();
@@ -127,9 +120,7 @@ final class HortonworksFrontendBridge {
         case "rename_partition_req" -> handleRenamePartitionReq(method, request);
         case "update_table_column_statistics_req", "update_partition_column_statistics_req" ->
             handleUpdateColumnStatisticsReq(method, request);
-        case "add_write_notification_log" -> throw new TApplicationException(
-            TApplicationException.UNKNOWN_METHOD,
-            "Hortonworks frontend method add_write_notification_log is not supported by the GNU bridge");
+        case "add_write_notification_log" -> handleAddWriteNotificationLog(method, request);
         default -> throw new TApplicationException(
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hortonworks frontend method: " + methodName);
@@ -137,7 +128,7 @@ final class HortonworksFrontendBridge {
     }
 
     private Object handleTruncateTableReq(Method method, Object request) throws Throwable {
-      gnuHandler.truncate_table(
+      apacheHandler.truncate_table(
           (String) invokeNoArgs(request, "getDbName"),
           (String) invokeNoArgs(request, "getTableName"),
           stringList(invokeNoArgs(request, "getPartNames")));
@@ -151,9 +142,9 @@ final class HortonworksFrontendBridge {
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       if (environmentContext != null) {
-        gnuHandler.alter_table_with_environment_context(dbName, tableName, table, environmentContext);
+        apacheHandler.alter_table_with_environment_context(dbName, tableName, table, environmentContext);
       } else {
-        gnuHandler.alter_table(dbName, tableName, table);
+        apacheHandler.alter_table(dbName, tableName, table);
       }
       return emptyResponse(method.getReturnType());
     }
@@ -168,15 +159,15 @@ final class HortonworksFrontendBridge {
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       if (environmentContext != null) {
-        gnuHandler.alter_partitions_with_environment_context(dbName, tableName, partitions, environmentContext);
+        apacheHandler.alter_partitions_with_environment_context(dbName, tableName, partitions, environmentContext);
       } else {
-        gnuHandler.alter_partitions(dbName, tableName, partitions);
+        apacheHandler.alter_partitions(dbName, tableName, partitions);
       }
       return emptyResponse(method.getReturnType());
     }
 
     private Object handleRenamePartitionReq(Method method, Object request) throws Throwable {
-      gnuHandler.rename_partition(
+      apacheHandler.rename_partition(
           (String) invokeNoArgs(request, "getDbName"),
           (String) invokeNoArgs(request, "getTableName"),
           stringList(invokeNoArgs(request, "getPartVals")),
@@ -185,12 +176,22 @@ final class HortonworksFrontendBridge {
     }
 
     private Object handleUpdateColumnStatisticsReq(Method method, Object request) throws Throwable {
-      boolean result = gnuHandler.set_aggr_stats_for(
+      boolean result = apacheHandler.set_aggr_stats_for(
           (SetPartitionsStatsRequest) convertTBase(request, SetPartitionsStatsRequest.class));
       return booleanResponse(method.getReturnType(), result);
     }
 
-    private Method findGnuMethod(String methodName, int argumentCount) {
+    private Object handleAddWriteNotificationLog(Method method, Object request) throws Throwable {
+      if (extension == null) {
+        throw new TApplicationException(
+            TApplicationException.UNKNOWN_METHOD,
+            "Hortonworks frontend method add_write_notification_log requires proxy extension support");
+      }
+      Object response = extension.addWriteNotificationLog(request);
+      return convertResult(response, method.getReturnType());
+    }
+
+    private Method findApacheMethod(String methodName, int argumentCount) {
       for (Method candidate : ThriftHiveMetastore.Iface.class.getMethods()) {
         if (candidate.getName().equals(methodName) && candidate.getParameterCount() == argumentCount) {
           return candidate;
@@ -332,31 +333,4 @@ final class HortonworksFrontendBridge {
     }
   }
 
-  private static final class ChildFirstClassLoader extends URLClassLoader {
-    private static final String CHILD_FIRST_PREFIX = "org.apache.hadoop.hive.metastore.api.";
-
-    private ChildFirstClassLoader(URL[] urls, ClassLoader parent) {
-      super(urls, parent);
-    }
-
-    @Override
-    protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-      if (!name.startsWith(CHILD_FIRST_PREFIX)) {
-        return super.loadClass(name, resolve);
-      }
-
-      Class<?> loaded = findLoadedClass(name);
-      if (loaded == null) {
-        try {
-          loaded = findClass(name);
-        } catch (ClassNotFoundException e) {
-          loaded = super.loadClass(name, false);
-        }
-      }
-      if (resolve) {
-        resolveClass(loaded);
-      }
-      return loaded;
-    }
-  }
 }

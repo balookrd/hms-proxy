@@ -13,9 +13,7 @@ import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
-import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
-import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
@@ -24,7 +22,7 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class RoutingMetaStoreHandler implements InvocationHandler {
+final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
   private static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
@@ -61,9 +59,17 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   @SuppressWarnings("unchecked")
   static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler) {
+    return newProxy(interfaceClass, handler, new Class<?>[0]);
+  }
+
+  @SuppressWarnings("unchecked")
+  static <T> T newProxy(Class<T> interfaceClass, InvocationHandler handler, Class<?>... extraInterfaces) {
+    Class<?>[] interfaces = new Class<?>[1 + extraInterfaces.length];
+    interfaces[0] = interfaceClass;
+    System.arraycopy(extraInterfaces, 0, interfaces, 1, extraInterfaces.length);
     return (T) Proxy.newProxyInstance(
         interfaceClass.getClassLoader(),
-        new Class<?>[] {interfaceClass},
+        interfaces,
         handler);
   }
 
@@ -140,6 +146,23 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     } finally {
       REQUEST_ID.remove();
     }
+  }
+
+  @Override
+  public Object addWriteNotificationLog(Object request) throws Throwable {
+    String dbName = (String) request.getClass().getMethod("getDb").invoke(request);
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+    CatalogBackend backend = namespace.backend();
+    if (backend.runtimeProfile() != MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+      throw metaException(
+          "Hortonworks add_write_notification_log requires a Hortonworks backend runtime for catalog '"
+              + backend.name()
+              + "'");
+    }
+
+    Object routedRequest = cloneWriteNotificationLogRequest(request);
+    routedRequest.getClass().getMethod("setDb", String.class).invoke(routedRequest, namespace.backendDbName());
+    return invokeBackendNamed(backend, "add_write_notification_log", routedRequest);
   }
 
   private Object handleGetCatalog(Object[] args) throws NoSuchObjectException {
@@ -225,9 +248,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     CatalogBackend backend = namespace.backend();
     GetTableRequest routedRequest =
         (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
-    Object result = backend.usesLegacyRequestApi()
-        ? invokeLegacyGetTable(backend, routedRequest)
-        : invokeBackend(backend, method, new Object[] {routedRequest});
+    Object result = invokeBackendRequest(backend, routedRequest, method.getName());
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
@@ -237,9 +258,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     CatalogBackend backend = namespace.backend();
     GetTablesRequest routedRequest =
         (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
-    Object result = backend.usesLegacyRequestApi()
-        ? invokeLegacyGetTables(backend, routedRequest)
-        : invokeBackend(backend, method, new Object[] {routedRequest});
+    Object result = invokeBackendRequest(backend, routedRequest, method.getName());
     return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
   }
 
@@ -400,18 +419,6 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
       }
       return result;
     } catch (Throwable cause) {
-      Optional<Object> downgradedResult = MetastoreCompatibility.downgradeRequest(
-          method.getName(),
-          args,
-          (legacyMethodName, parameterTypes, legacyArgs) ->
-              backend.invokeByName(legacyMethodName, parameterTypes, legacyArgs, impersonation),
-          cause);
-      if (downgradedResult.isPresent()) {
-        backend.rememberLegacyRequestApi();
-        LOG.warn("requestId={} backend catalog={} does not support {}, using legacy compatibility path",
-            requestId, backend.name(), method.getName(), cause);
-        return downgradedResult.get();
-      }
       Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(method.getName(), cause);
       if (compatibilityFallback.isPresent()) {
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
@@ -432,31 +439,7 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
     }
   }
 
-  private Object invokeLegacyGetTable(CatalogBackend backend, GetTableRequest request) throws Throwable {
-    return invokeBackendByName(
-        backend,
-        "get_table",
-        new Class<?>[] {String.class, String.class},
-        new Object[] {request.getDbName(), request.getTblName()},
-        new GetTableResultAdapter());
-  }
-
-  private Object invokeLegacyGetTables(CatalogBackend backend, GetTablesRequest request) throws Throwable {
-    return invokeBackendByName(
-        backend,
-        "get_table_objects_by_name",
-        new Class<?>[] {String.class, List.class},
-        new Object[] {request.getDbName(), request.getTblNames()},
-        new GetTablesResultAdapter());
-  }
-
-  private Object invokeBackendByName(
-      CatalogBackend backend,
-      String methodName,
-      Class<?>[] parameterTypes,
-      Object[] args,
-      LegacyResultAdapter adapter
-  ) throws Throwable {
+  private Object invokeBackendRequest(CatalogBackend backend, Object request, String methodName) throws Throwable {
     long startedAt = System.nanoTime();
     Long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
@@ -467,10 +450,13 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
             backend.name(),
             methodName,
             impersonation == null ? "-" : impersonation.userName(),
-            DebugLogUtil.formatArgs(args));
+            DebugLogUtil.formatArgs(new Object[] {request}));
       }
-      Object result = backend.invokeByName(methodName, parameterTypes, args, impersonation);
-      Object adapted = adapter.adapt(result);
+      Object adapted = switch (methodName) {
+        case "get_table_req" -> backend.invokeGetTableReq((GetTableRequest) request, impersonation);
+        case "get_table_objects_by_name_req" -> backend.invokeGetTablesReq((GetTablesRequest) request, impersonation);
+        default -> throw new IllegalArgumentException("Unsupported backend request method: " + methodName);
+      };
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
             requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(adapted));
@@ -487,6 +473,40 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
           requestId, backend.name(), methodName, elapsedMillis(startedAt), cause.toString(), cause);
       throw cause;
     }
+  }
+
+  private Object invokeBackendNamed(CatalogBackend backend, String methodName, Object request) throws Throwable {
+    long startedAt = System.nanoTime();
+    Long requestId = currentRequestId();
+    ImpersonationContext impersonation = currentImpersonation().orElse(null);
+    try {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
+            requestId,
+            backend.name(),
+            methodName,
+            impersonation == null ? "-" : impersonation.userName(),
+            DebugLogUtil.formatArgs(new Object[] {request}));
+      }
+      Object result = backend.invokeRawByName(
+          methodName,
+          new Class<?>[] {request.getClass()},
+          new Object[] {request},
+          impersonation);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
+            requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+      }
+      return result;
+    } catch (Throwable cause) {
+      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
+          requestId, backend.name(), methodName, elapsedMillis(startedAt), cause.toString(), cause);
+      throw cause;
+    }
+  }
+
+  private static Object cloneWriteNotificationLogRequest(Object request) throws ReflectiveOperationException {
+    return request.getClass().getConstructor(request.getClass()).newInstance(request);
   }
 
   private static long currentRequestId() {
@@ -591,25 +611,5 @@ final class RoutingMetaStoreHandler implements InvocationHandler {
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
     return MetastoreCompatibility.shouldUseFallback(methodName, cause);
-  }
-
-  @FunctionalInterface
-  private interface LegacyResultAdapter {
-    Object adapt(Object result);
-  }
-
-  private static final class GetTableResultAdapter implements LegacyResultAdapter {
-    @Override
-    public Object adapt(Object result) {
-      return new GetTableResult((org.apache.hadoop.hive.metastore.api.Table) result);
-    }
-  }
-
-  private static final class GetTablesResultAdapter implements LegacyResultAdapter {
-    @SuppressWarnings("unchecked")
-    @Override
-    public Object adapt(Object result) {
-      return new GetTablesResult((List<org.apache.hadoop.hive.metastore.api.Table>) result);
-    }
   }
 }

@@ -26,6 +26,7 @@ public class ProxyConfigLoaderTest {
       Assert.assertEquals(2, config.catalogs().size());
       Assert.assertEquals("thrift://hms2:9083",
           config.catalogs().get("catalog2").hiveConf().get("hive.metastore.uris"));
+      Assert.assertNull(config.catalogs().get("catalog1").runtimeProfile());
     } finally {
       Files.deleteIfExists(file);
     }
@@ -509,7 +510,8 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
-          compatibility.hortonworks-standalone-metastore-jar=/tmp/hdp-standalone-metastore.jar
+          compatibility.frontend-standalone-metastore-jar=/tmp/hdp-standalone-metastore.jar
+          compatibility.backend-standalone-metastore-jar=/tmp/backend-standalone-metastore.jar
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
 
@@ -520,7 +522,45 @@ public class ProxyConfigLoaderTest {
           config.compatibility().frontendProfile());
       Assert.assertEquals(
           "/tmp/hdp-standalone-metastore.jar",
-          config.compatibility().hortonworksStandaloneMetastoreJar());
+          config.compatibility().frontendStandaloneMetastoreJar());
+      Assert.assertEquals(
+          "/tmp/backend-standalone-metastore.jar",
+          config.compatibility().backendStandaloneMetastoreJar());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsPerCatalogBackendRuntimeOverrides() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=hdp,apache
+          routing.default-catalog=hdp
+          compatibility.backend-standalone-metastore-jar=/tmp/global-backend.jar
+          catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
+          catalog.hdp.backend-standalone-metastore-jar=/tmp/hdp-backend.jar
+          catalog.hdp.conf.hive.metastore.uris=thrift://hdp:9083
+          catalog.apache.runtime-profile=APACHE_3_1_3
+          catalog.apache.conf.hive.metastore.uris=thrift://apache:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+          config.catalogs().get("hdp").runtimeProfile());
+      Assert.assertEquals(
+          "/tmp/hdp-backend.jar",
+          config.catalogs().get("hdp").backendStandaloneMetastoreJar());
+      Assert.assertEquals(
+          MetastoreRuntimeProfile.APACHE_3_1_3,
+          config.catalogs().get("apache").runtimeProfile());
+      Assert.assertNull(config.catalogs().get("apache").backendStandaloneMetastoreJar());
+      Assert.assertEquals(
+          "/tmp/global-backend.jar",
+          config.compatibility().backendStandaloneMetastoreJar());
     } finally {
       Files.deleteIfExists(file);
     }

@@ -106,12 +106,25 @@ public class MetastoreCompatibilityTest {
   }
 
   @Test
-  public void detectsModernBackendProfileFromGnuVersion() {
+  public void detectsModernBackendProfileFromApacheVersion() {
     Assert.assertEquals(
         MetastoreCompatibility.BackendProfile.MODERN_REQUESTS,
         MetastoreCompatibility.backendProfile("3.1.3"));
     Assert.assertFalse(MetastoreCompatibility.usesLegacyRequestApi(
         MetastoreCompatibility.backendProfile("3.1.3")));
+  }
+
+  @Test
+  public void resolvesRuntimeProfileFromBackendVersion() {
+    Assert.assertEquals(
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        MetastoreRuntimeProfileResolver.forBackendVersion("3.1.0.3.1.0.0-78"));
+    Assert.assertEquals(
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        MetastoreRuntimeProfileResolver.forBackendVersion("3.1.3"));
+    Assert.assertEquals(
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        MetastoreRuntimeProfileResolver.forBackendVersion(null));
   }
 
   private static void assertRequiresFrontDoorSecurity(String methodName, Object[] args) {

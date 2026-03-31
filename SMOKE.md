@@ -1,6 +1,6 @@
 **Beeline Smoke**
 
-Подставь ваш `jdbc:hive2://...` и при необходимости `principal=...`. Предположу separator `__`, каталог Hortonworks backend — `hdp`, GNU backend — `gnu`.
+Подставь ваш `jdbc:hive2://...` и при необходимости `principal=...`. Предположу separator `__`, каталог Hortonworks backend — `hdp`, Apache backend — `apache`.
 
 ```sql
 !connect jdbc:hive2://proxy-host:10000/default
@@ -13,7 +13,7 @@ show databases;
 ```
 
 Ожидание:
-- видны базы в виде `hdp__...` и `gnu__...`
+- видны базы в виде `hdp__...` и `apache__...`
 - подключение проходит через proxy
 
 **2. Read path: Hortonworks backend**
@@ -24,9 +24,9 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**3. Read path: GNU backend**
+**3. Read path: Apache backend**
 ```sql
-use gnu__default;
+use apache__default;
 show tables;
 describe formatted some_table;
 select * from some_table limit 5;
@@ -37,7 +37,7 @@ select * from some_table limit 5;
 use hdp__default;
 show tables;
 
-use gnu__default;
+use apache__default;
 show tables;
 
 use hdp__default;
@@ -74,9 +74,9 @@ truncate table smoke_tbl;
 drop table smoke_tbl;
 ```
 
-**6. DDL: GNU backend**
+**6. DDL: Apache backend**
 ```sql
-use gnu__default;
+use apache__default;
 
 create table if not exists smoke_tbl (
   id int,
@@ -105,17 +105,57 @@ drop table smoke_tbl;
 use hdp__default;
 show tables;
 
-use gnu__default;
+use apache__default;
 select count(*) from some_table;
 ```
 
 Ожидание:
 - команды идут в нужный backend без ошибок namespace
 
-**8. Что смотреть в логах proxy**
+**8. Notification/ACID path**
+
+Эти проверки лучше делать не только через Beeline, а ещё и прямым HMS thrift client, потому что `add_write_notification_log` не обязательно вызывается SQL-обёртками напрямую.
+
+Проверить для Hortonworks backend:
+- `open_txns`
+- `allocate_table_write_ids`
+- `lock`
+- `commit_txn`
+- `get_valid_write_ids`
+- `add_write_notification_log`
+
+Ожидание:
+- ACID/txn методы доходят до нужного backend
+- `add_write_notification_log` проходит только в каталог на Hortonworks backend
+- в логах proxy видны `trace stage=backend-request` / `backend-response` для `add_write_notification_log`
+
+**9. Negative check: Hortonworks front -> Apache backend notification path**
+
+Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая маршрутизируется в Apache backend.
+
+Ожидание:
+- proxy возвращает явную ошибку про `requires a Hortonworks backend runtime`
+- не происходит silent success
+- в Apache backend не появляется побочный notification traffic
+
+**10. Что проверить после mixed runtime переключений**
+
+В одной клиентской сессии последовательно выполнить:
+- read/DDL на `hdp__default`
+- read/DDL на `apache__default`
+- `add_write_notification_log` на `hdp__default`
+- повторный read на `apache__default`
+
+Ожидание:
+- runtime одного каталога не “залипает” на другой
+- namespace rewrite остаётся корректным после notification/ACID вызова
+
+**11. Что смотреть в логах proxy**
 Ищи:
 - `Detected backend catalog ... metastore version ...`
 - `legacy request API compatibility mode`
 - `backend-request catalog=... method=...`
 - повторяющиеся `UNKNOWN_METHOD`
 - ошибки `Unsupported Hortonworks frontend method`
+- ошибки `requires a Hortonworks backend runtime`
+- trace-записи для `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`

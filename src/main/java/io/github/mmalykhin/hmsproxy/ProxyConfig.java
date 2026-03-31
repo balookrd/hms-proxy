@@ -16,7 +16,7 @@ public record ProxyConfig(
     catalogs = Map.copyOf(catalogs);
     backend = backend == null ? new BackendConfig(Map.of()) : backend;
     compatibility = compatibility == null
-        ? new CompatibilityConfig(FrontendProfile.GNU_3_1_3, false)
+        ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false)
         : compatibility;
   }
 
@@ -28,7 +28,7 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(FrontendProfile.GNU_3_1_3, false));
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false));
   }
 
   public ProxyConfig(
@@ -82,6 +82,8 @@ public record ProxyConfig(
       String description,
       String locationUri,
       boolean impersonationEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
       Map<String, String> hiveConf
   ) {
     public CatalogConfig {
@@ -99,34 +101,43 @@ public record ProxyConfig(
 
   public record CompatibilityConfig(
       FrontendProfile frontendProfile,
-      String hortonworksStandaloneMetastoreJar,
+      String frontendStandaloneMetastoreJar,
+      String backendStandaloneMetastoreJar,
       boolean preserveBackendCatalogName
   ) {
     public CompatibilityConfig {
-      frontendProfile = frontendProfile == null ? FrontendProfile.GNU_3_1_3 : frontendProfile;
+      frontendProfile = frontendProfile == null ? FrontendProfile.APACHE_3_1_3 : frontendProfile;
     }
 
     public CompatibilityConfig(FrontendProfile frontendProfile, boolean preserveBackendCatalogName) {
-      this(frontendProfile, null, preserveBackendCatalogName);
+      this(frontendProfile, null, null, preserveBackendCatalogName);
     }
 
     public CompatibilityConfig(boolean preserveBackendCatalogName) {
-      this(FrontendProfile.GNU_3_1_3, null, preserveBackendCatalogName);
+      this(FrontendProfile.APACHE_3_1_3, null, null, preserveBackendCatalogName);
     }
   }
 
   public enum FrontendProfile {
-    GNU_3_1_3("3.1.3"),
-    HORTONWORKS_3_1_0_3_1_0_78("3.1.0.3.1.0.0-78");
+    APACHE_3_1_3(MetastoreRuntimeProfile.APACHE_3_1_3),
+    HORTONWORKS_3_1_0_3_1_0_78(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
 
-    private final String metastoreVersion;
+    private final MetastoreRuntimeProfile runtimeProfile;
 
-    FrontendProfile(String metastoreVersion) {
-      this.metastoreVersion = metastoreVersion;
+    FrontendProfile(MetastoreRuntimeProfile runtimeProfile) {
+      this.runtimeProfile = runtimeProfile;
+    }
+
+    MetastoreRuntimeProfile runtimeProfile() {
+      return runtimeProfile;
     }
 
     public String metastoreVersion() {
-      return metastoreVersion;
+      return runtimeProfile.metastoreVersion();
+    }
+
+    public String defaultStandaloneMetastoreJar() {
+      return runtimeProfile.defaultStandaloneMetastoreJar();
     }
   }
 
