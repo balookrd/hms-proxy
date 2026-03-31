@@ -32,6 +32,17 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile,
       Configuration conf
   ) throws Exception {
+    return open(config, catalogConfig, runtimeProfile, null, null, conf);
+  }
+
+  static IsolatedMetastoreClient open(
+      ProxyConfig config,
+      ProxyConfig.CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile,
+      String principal,
+      String keytab,
+      Configuration conf
+  ) throws Exception {
     Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
     ClassLoader classLoader = new MetastoreApiClassLoader(
         MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarPath),
@@ -47,8 +58,10 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     }
     applyHortonworksCompatibilityWorkarounds(isolatedConf, childConfigurationClass, runtimeProfile);
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
-    Object client = withContextClassLoader(classLoader, () ->
-        clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf));
+    Object client = principal == null || keytab == null
+        ? withContextClassLoader(classLoader, () ->
+            clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf))
+        : loginAndOpenClient(classLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab);
     Field clientField = clientClass.getDeclaredField("client");
     clientField.setAccessible(true);
     Object thriftClient = clientField.get(client);
@@ -102,6 +115,28 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
 
     Method set = childConfigurationClass.getMethod("set", String.class, String.class);
     set.invoke(isolatedConf, HIVE_METASTORE_URI_SELECTION_KEY, HIVE_METASTORE_URI_SELECTION_SEQUENTIAL);
+  }
+
+  private static Object loginAndOpenClient(
+      ClassLoader classLoader,
+      Class<?> clientClass,
+      Class<?> childConfigurationClass,
+      Object isolatedConf,
+      String principal,
+      String keytab
+  ) throws Exception {
+    Class<?> childUgiClass = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader);
+    Method set = childConfigurationClass.getMethod("set", String.class, String.class);
+    set.invoke(isolatedConf, "hadoop.security.authentication", "kerberos");
+    Method setConfiguration = childUgiClass.getMethod("setConfiguration", childConfigurationClass);
+    setConfiguration.invoke(null, isolatedConf);
+    Method loginUserFromKeytabAndReturnUgi =
+        childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
+    Object childUgi = loginUserFromKeytabAndReturnUgi.invoke(null, principal, keytab);
+    Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
+    return doAs.invoke(childUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
+        withContextClassLoader(classLoader, () ->
+            clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
   }
 
   @FunctionalInterface

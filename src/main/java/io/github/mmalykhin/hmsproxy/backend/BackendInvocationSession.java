@@ -158,12 +158,14 @@ public final class BackendInvocationSession implements AutoCloseable {
     LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
         catalogConfig.name(), runtimeProfile, principal, keytab);
 
-    configureKerberosAuthentication();
-
     try {
-      UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
-      IsolatedMetastoreClient isolatedClient = ugi.doAs((PrivilegedExceptionAction<IsolatedMetastoreClient>) () ->
-          IsolatedMetastoreClient.open(proxyConfig, catalogConfig, runtimeProfile, conf));
+      IsolatedMetastoreClient isolatedClient = IsolatedMetastoreClient.open(
+          proxyConfig,
+          catalogConfig,
+          runtimeProfile,
+          principal,
+          keytab,
+          conf);
       return new BackendInvocationSession(null, null, isolatedClient);
     } catch (Exception e) {
       MetaException metaException = new MetaException(
