@@ -1,0 +1,63 @@
+package io.github.mmalykhin.hmsproxy;
+
+import java.lang.reflect.Field;
+import java.net.URL;
+import java.nio.file.Path;
+import java.util.List;
+import org.apache.hadoop.conf.Configuration;
+
+final class IsolatedMetastoreClient implements AutoCloseable {
+  private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
+  private static final String HIVE_METASTORE_CLIENT_CLASS = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
+
+  private final Object client;
+  private final IsolatedInvocationBridge bridge;
+
+  private IsolatedMetastoreClient(
+      Object client,
+      IsolatedInvocationBridge bridge
+  ) {
+    this.client = client;
+    this.bridge = bridge;
+  }
+
+  static IsolatedMetastoreClient open(
+      ProxyConfig config,
+      ProxyConfig.CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile,
+      Configuration conf
+  ) throws Exception {
+    Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new URL[] {jarPath.toUri().toURL()},
+        IsolatedMetastoreClient.class.getClassLoader());
+    Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
+    Object client = clientClass.getConstructor(Configuration.class).newInstance(conf);
+    Field clientField = clientClass.getDeclaredField("client");
+    clientField.setAccessible(true);
+    Object thriftClient = clientField.get(client);
+    Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, classLoader);
+    return new IsolatedMetastoreClient(client, new IsolatedInvocationBridge(classLoader, thriftClient, ifaceClass));
+  }
+
+  String getVersion() throws Throwable {
+    return bridge.getVersion();
+  }
+
+  void setUgi(String userName, List<String> groupNames) throws Throwable {
+    bridge.setUgi(userName, groupNames);
+  }
+
+  Object invoke(java.lang.reflect.Method method, Object[] args) throws Throwable {
+    return bridge.invoke(method, args);
+  }
+
+  Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
+    return bridge.invokeByName(methodName, parameterTypes, args);
+  }
+
+  @Override
+  public void close() throws Exception {
+    client.getClass().getMethod("close").invoke(client);
+  }
+}

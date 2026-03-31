@@ -49,9 +49,15 @@ public final class ProxyConfigLoader {
       catalogDbSeparator = ".";
     }
     ProxyConfig.FrontendProfile frontendProfile = ProxyConfig.FrontendProfile.valueOf(
-        get(properties, "compatibility.frontend-profile", "GNU_3_1_3").trim().toUpperCase());
-    String hortonworksStandaloneMetastoreJar =
-        trimToNull(properties.getProperty("compatibility.hortonworks-standalone-metastore-jar"));
+        get(properties, "compatibility.frontend-profile", "APACHE_3_1_3").trim().toUpperCase());
+    String frontendStandaloneMetastoreJar =
+        trimToNull(properties.getProperty("compatibility.frontend-standalone-metastore-jar"));
+    if (frontendStandaloneMetastoreJar == null) {
+      frontendStandaloneMetastoreJar =
+          trimToNull(properties.getProperty("compatibility.hortonworks-standalone-metastore-jar"));
+    }
+    String backendStandaloneMetastoreJar =
+        trimToNull(properties.getProperty("compatibility.backend-standalone-metastore-jar"));
     boolean preserveBackendCatalogName =
         Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
 
@@ -86,6 +92,10 @@ public final class ProxyConfigLoader {
       String prefix = "catalog." + catalogName + ".";
       boolean catalogImpersonationEnabled =
           Boolean.parseBoolean(get(properties, prefix + "impersonation-enabled", Boolean.toString(impersonationEnabled)));
+      MetastoreRuntimeProfile catalogRuntimeProfile = parseRuntimeProfile(
+          trimToNull(properties.getProperty(prefix + "runtime-profile")));
+      String catalogBackendStandaloneMetastoreJar =
+          trimToNull(properties.getProperty(prefix + "backend-standalone-metastore-jar"));
       Map<String, String> hiveConfOverrides = properties.stringPropertyNames().stream()
           .filter(name -> name.startsWith(prefix + "conf."))
           .sorted()
@@ -106,6 +116,8 @@ public final class ProxyConfigLoader {
           get(properties, prefix + "description", catalogName),
           get(properties, prefix + "location-uri", "file:///warehouse/" + catalogName),
           catalogImpersonationEnabled,
+          catalogRuntimeProfile,
+          catalogBackendStandaloneMetastoreJar,
           hiveConf));
     }
 
@@ -161,7 +173,8 @@ public final class ProxyConfigLoader {
     ProxyConfig.CompatibilityConfig compatibility =
         new ProxyConfig.CompatibilityConfig(
             frontendProfile,
-            hortonworksStandaloneMetastoreJar,
+            frontendStandaloneMetastoreJar,
+            backendStandaloneMetastoreJar,
             preserveBackendCatalogName);
     return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility);
   }
@@ -220,5 +233,12 @@ public final class ProxyConfigLoader {
 
   private static boolean backendKerberosEnabled(Map<String, String> hiveConf) {
     return Boolean.parseBoolean(trimToNull(hiveConf.get("hive.metastore.sasl.enabled")));
+  }
+
+  private static MetastoreRuntimeProfile parseRuntimeProfile(String value) {
+    if (value == null) {
+      return null;
+    }
+    return MetastoreRuntimeProfile.valueOf(value.trim().toUpperCase());
   }
 }

@@ -29,7 +29,10 @@ public final class HmsProxyApplication {
         FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
         RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, frontDoorSecurity);
         ThriftHiveMetastore.Iface proxy =
-            RoutingMetaStoreHandler.newProxy(ThriftHiveMetastore.Iface.class, handler);
+            RoutingMetaStoreHandler.newProxy(
+                ThriftHiveMetastore.Iface.class,
+                handler,
+                HortonworksFrontendExtension.class);
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server);
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
@@ -40,13 +43,20 @@ public final class HmsProxyApplication {
             config.compatibility().frontendProfile(),
             config.compatibility().frontendProfile().metastoreVersion(),
             config.compatibility().preserveBackendCatalogName());
+        LOG.info("Frontend runtime profile: {} ({})",
+            config.compatibility().frontendProfile().runtimeProfile(),
+            config.compatibility().frontendProfile().runtimeProfile().displayName());
+        if (config.compatibility().backendStandaloneMetastoreJar() != null) {
+          LOG.info("Backend standalone-metastore jar override: {}",
+              config.compatibility().backendStandaloneMetastoreJar());
+        }
         if (config.compatibility().frontendProfile()
             == ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78) {
           LOG.warn("Hortonworks frontend profile is enabled through the standalone-metastore jar {}. "
-                  + "Common GNU/HDP-overlapping thrift calls are bridged automatically, and selected "
-                  + "HDP-only request-wrapper methods are adapted to GNU equivalents. Some HDP-only "
-                  + "methods without a safe GNU mapping can still remain unsupported.",
-              config.compatibility().hortonworksStandaloneMetastoreJar());
+                  + "Common Apache/HDP-overlapping thrift calls are bridged automatically, and selected "
+                  + "HDP-only request-wrapper methods are adapted to Apache equivalents. Some HDP-only "
+                  + "methods without a safe Apache mapping can still remain unsupported.",
+              config.compatibility().frontendStandaloneMetastoreJar());
         }
         for (String catalogName : config.catalogNames()) {
           LOG.info("Catalog '{}' external DB example: {}",

@@ -1,20 +1,15 @@
 package io.github.mmalykhin.hmsproxy;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.security.PrivilegedExceptionAction;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Catalog;
+import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
-import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,33 +20,24 @@ final class CatalogBackend implements AutoCloseable {
   private final ProxyConfig proxyConfig;
   private final ProxyConfig.CatalogConfig config;
   private final HiveConf hiveConf;
-  private final boolean backendKerberosEnabled;
   private final Map<String, ImpersonationClient> impersonationClients = new LinkedHashMap<>(16, 0.75f, true);
-  private HiveMetaStoreClient client;
-  private ThriftHiveMetastore.Iface thriftClient;
-  private volatile String backendVersion;
-  private volatile MetastoreCompatibility.BackendProfile backendProfile;
+  private final BackendAdapter adapter;
+  private final BackendRuntime runtime;
   private final Catalog catalog;
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig config,
       HiveConf hiveConf,
-      boolean backendKerberosEnabled,
-      HiveMetaStoreClient client,
-      ThriftHiveMetastore.Iface thriftClient,
-      String backendVersion,
-      MetastoreCompatibility.BackendProfile backendProfile,
+      BackendAdapter adapter,
+      BackendRuntime runtime,
       Catalog catalog
   ) {
     this.proxyConfig = proxyConfig;
     this.config = config;
     this.hiveConf = hiveConf;
-    this.backendKerberosEnabled = backendKerberosEnabled;
-    this.client = client;
-    this.thriftClient = thriftClient;
-    this.backendVersion = backendVersion;
-    this.backendProfile = backendProfile;
+    this.adapter = adapter;
+    this.runtime = runtime;
     this.catalog = catalog;
   }
 
@@ -64,16 +50,20 @@ final class CatalogBackend implements AutoCloseable {
       conf.set(entry.getKey(), entry.getValue());
     }
 
-    HiveMetaStoreClient client = openClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
-    ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
-    String backendVersion = detectBackendVersion(catalogConfig.name(), thriftClient);
-    MetastoreCompatibility.BackendProfile backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
+    BackendRuntime.BootstrapState bootstrapState =
+        BackendRuntime.bootstrap(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
+    String backendVersion = bootstrapState.backendVersion();
+    BackendAdapter adapter = BackendAdapterFactory.create(catalogConfig.runtimeProfile(), backendVersion);
+    adapter.updateBackendVersion(backendVersion);
+    LOG.info("Backend catalog '{}' selected runtimeProfile={} compatibilityProfile={}",
+        catalogConfig.name(), adapter.runtimeProfile(), adapter.backendProfile());
+    BackendRuntime runtime = BackendRuntime.open(
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, adapter.runtimeProfile(), bootstrapState.session());
     Catalog catalog = new Catalog();
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
     catalog.setLocationUri(catalogConfig.locationUri());
-    return new CatalogBackend(
-        proxyConfig, catalogConfig, conf, backendKerberosEnabled, client, thriftClient, backendVersion, backendProfile, catalog);
+    return new CatalogBackend(proxyConfig, catalogConfig, conf, adapter, runtime, catalog);
   }
 
   String name() {
@@ -88,32 +78,42 @@ final class CatalogBackend implements AutoCloseable {
     return config.impersonationEnabled();
   }
 
-  ThriftHiveMetastore.Iface thriftClient() {
-    return thriftClient;
-  }
-
   String backendVersion() {
-    return backendVersion;
+    return adapter.backendVersion();
   }
 
   MetastoreCompatibility.BackendProfile backendProfile() {
-    return backendProfile;
+    return adapter.backendProfile();
+  }
+
+  MetastoreRuntimeProfile runtimeProfile() {
+    return adapter.runtimeProfile();
   }
 
   boolean usesLegacyRequestApi() {
-    return MetastoreCompatibility.usesLegacyRequestApi(backendProfile);
+    return MetastoreCompatibility.usesLegacyRequestApi(adapter.backendProfile());
   }
 
   void rememberLegacyRequestApi() {
-    if (usesLegacyRequestApi()) {
-      return;
-    }
-    backendProfile = MetastoreCompatibility.BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS;
-    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode; version={}",
-        config.name(), backendVersion == null ? "unknown" : backendVersion);
+    logLegacyRequestApiCompatibilitySwitch(adapter.backendVersion());
   }
 
   Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+      throws Throwable {
+    return adapter.invoke(this, method, args, impersonation);
+  }
+
+  Object invokeGetTableReq(GetTableRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+      throws Throwable {
+    return adapter.invokeGetTableReq(this, request, impersonation);
+  }
+
+  Object invokeGetTablesReq(GetTablesRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+      throws Throwable {
+    return adapter.invokeGetTablesReq(this, request, impersonation);
+  }
+
+  Object invokeRaw(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     if (impersonation != null && config.impersonationEnabled()) {
       return invokeWithImpersonation(method, args, impersonation);
@@ -125,32 +125,50 @@ final class CatalogBackend implements AutoCloseable {
     return invokeSharedClient(method, args);
   }
 
-  Object invokeByName(
+  Object invokeRawByName(
       String methodName,
       Class<?>[] parameterTypes,
       Object[] args,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
-    Method method = ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes);
-    return invoke(method, args, impersonation);
+    if (impersonation != null && config.impersonationEnabled()) {
+      return impersonationClient(impersonation).invokeByName(methodName, parameterTypes, args);
+    }
+    if (impersonation != null && LOG.isDebugEnabled()) {
+      LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
+          config.name(), impersonation.userName());
+    }
+    try {
+      return runtime.invokeSharedByName(methodName, parameterTypes, args);
+    } catch (Throwable cause) {
+      if (!(cause instanceof org.apache.thrift.TApplicationException)
+          && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
+        throw cause;
+      }
+      LOG.warn("Backend catalog '{}' transport failed in method {}, reconnecting once",
+          config.name(), methodName, cause);
+      runtime.reconnectShared(adapter);
+      return runtime.invokeSharedByName(methodName, parameterTypes, args);
+    }
+  }
+
+  void logLegacyRequestApiCompatibilitySwitch(String backendVersion) {
+    LOG.info("Backend catalog '{}' switched to legacy request API compatibility mode; version={}",
+        config.name(), backendVersion == null ? "unknown" : backendVersion);
   }
 
   private synchronized Object invokeSharedClient(Method method, Object[] args) throws Throwable {
     try {
-      return method.invoke(thriftClient, args);
-    } catch (InvocationTargetException e) {
-      Throwable cause = e.getCause();
-      if (!isTransportFailure(cause)) {
+      return runtime.invokeShared(method, args);
+    } catch (Throwable cause) {
+      if (!(cause instanceof org.apache.thrift.TApplicationException)
+          && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
         throw cause;
       }
       LOG.warn("Backend catalog '{}' transport failed in method {}, reconnecting once",
           config.name(), method.getName(), cause);
-      reconnect();
-      try {
-        return method.invoke(thriftClient, args);
-      } catch (InvocationTargetException retryError) {
-        throw retryError.getCause();
-      }
+      runtime.reconnectShared(adapter);
+      return runtime.invokeShared(method, args);
     }
   }
 
@@ -164,97 +182,15 @@ final class CatalogBackend implements AutoCloseable {
 
   @Override
   public synchronized void close() {
-    closeQuietly(client, "shared backend metastore client");
+    closeQuietly(runtime, "backend runtime");
     for (ImpersonationClient impersonationClient : impersonationClients.values()) {
       impersonationClient.closeQuietly();
     }
     impersonationClients.clear();
   }
 
-  private static HiveMetaStoreClient openClient(
-      ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
-      HiveConf conf,
-      boolean backendKerberosEnabled
-  ) throws MetaException {
-    if (!backendKerberosEnabled) {
-      return new HiveMetaStoreClient(conf);
-    }
-
-    ProxyConfig.SecurityConfig security = proxyConfig.security();
-    String principal = security.outboundPrincipal();
-    String keytab = security.outboundKeytab();
-    LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
-        catalogConfig.name(), principal, keytab);
-
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(securityConf);
-
-    try {
-      UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
-      return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
-    } catch (Exception e) {
-      MetaException metaException = new MetaException(
-          "Unable to open backend metastore client for catalog "
-              + catalogConfig.name()
-              + " with Kerberos principal "
-              + principal);
-      metaException.initCause(e);
-      throw metaException;
-    }
-  }
-
-  // HiveMetaStoreClient implements IMetaStoreClient (high-level API), not ThriftHiveMetastore.Iface
-  // (raw Thrift API). The proxy intercepts ThriftHiveMetastore.Iface calls and must forward them to
-  // the same interface on each backend. There is no public API to obtain the raw Thrift client from
-  // HiveMetaStoreClient, so we use reflection to access the private "client" field.
-  // If this breaks after a Hive upgrade, the alternative is to build the Thrift transport directly.
-  private static ThriftHiveMetastore.Iface extractThriftClient(HiveMetaStoreClient client)
-      throws MetaException {
-    try {
-      Field field = HiveMetaStoreClient.class.getDeclaredField("client");
-      field.setAccessible(true);
-      Object value = field.get(client);
-      if (!(value instanceof ThriftHiveMetastore.Iface)) {
-        throw new MetaException(
-            "Unexpected type for HiveMetaStoreClient.client field: "
-                + (value == null ? "null" : value.getClass().getName()));
-      }
-      return (ThriftHiveMetastore.Iface) value;
-    } catch (ReflectiveOperationException e) {
-      MetaException metaException = new MetaException(
-          "Unable to access underlying thrift client via reflection. "
-              + "This may happen after a Hive library upgrade that changes HiveMetaStoreClient internals.");
-      metaException.initCause(e);
-      throw metaException;
-    }
-  }
-
   private static boolean backendKerberosEnabled(ProxyConfig.CatalogConfig catalogConfig) {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
-  }
-
-  private static String detectBackendVersion(String catalogName, ThriftHiveMetastore.Iface thriftClient) {
-    try {
-      String version = thriftClient.getVersion();
-      if (version != null && !version.isBlank()) {
-        LOG.info("Detected backend catalog '{}' metastore version {}", catalogName, version);
-      }
-      return version;
-    } catch (Exception e) {
-      LOG.debug("Unable to detect backend catalog '{}' metastore version via getVersion()",
-          catalogName, e);
-      return null;
-    }
-  }
-
-  private synchronized void reconnect() throws MetaException {
-    closeQuietly(client, "stale shared backend metastore client before reconnect");
-    client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
-    thriftClient = extractThriftClient(client);
-    backendVersion = detectBackendVersion(config.name(), thriftClient);
-    backendProfile = MetastoreCompatibility.backendProfile(backendVersion);
   }
 
   static void closeQuietly(AutoCloseable closeable, String description) {
@@ -294,16 +230,10 @@ final class CatalogBackend implements AutoCloseable {
     }
   }
 
-  private static boolean isTransportFailure(Throwable throwable) {
-    return throwable instanceof TTransportException
-        || throwable instanceof org.apache.thrift.TApplicationException;
-  }
-
   private final class ImpersonationClient implements AutoCloseable {
     private final String userName;
     private final List<String> groupNames;
-    private HiveMetaStoreClient client;
-    private ThriftHiveMetastore.Iface thriftClient;
+    private BackendInvocationSession session;
 
     private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
       this.userName = userName;
@@ -316,10 +246,10 @@ final class CatalogBackend implements AutoCloseable {
         if ("set_ugi".equals(method.getName())) {
           return List.copyOf(groupNames);
         }
-        return method.invoke(thriftClient, args);
-      } catch (InvocationTargetException e) {
-        Throwable cause = e.getCause();
-        if (!isTransportFailure(cause)) {
+        return session.invoke(method, args);
+      } catch (Throwable cause) {
+        if (!(cause instanceof org.apache.thrift.TApplicationException)
+            && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
           throw cause;
         }
         LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
@@ -329,16 +259,37 @@ final class CatalogBackend implements AutoCloseable {
           if ("set_ugi".equals(method.getName())) {
             return List.copyOf(groupNames);
           }
-          return method.invoke(thriftClient, args);
-        } catch (InvocationTargetException retryError) {
-          throw retryError.getCause();
+          return session.invoke(method, args);
+        } catch (Throwable retryError) {
+          throw retryError;
         }
+      }
+    }
+
+    synchronized Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
+      try {
+        if ("set_ugi".equals(methodName)) {
+          return List.copyOf(groupNames);
+        }
+        return session.invokeByName(methodName, parameterTypes, args);
+      } catch (Throwable cause) {
+        if (!(cause instanceof org.apache.thrift.TApplicationException)
+            && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
+          throw cause;
+        }
+        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
+            config.name(), userName, methodName, cause);
+        reconnect();
+        if ("set_ugi".equals(methodName)) {
+          return List.copyOf(groupNames);
+        }
+        return session.invokeByName(methodName, parameterTypes, args);
       }
     }
 
     @Override
     public synchronized void close() {
-      CatalogBackend.closeQuietly(client, "impersonation backend metastore client for user '" + userName + "'");
+      CatalogBackend.closeQuietly(session, "impersonation backend metastore session for user '" + userName + "'");
     }
 
     private void closeQuietly() {
@@ -351,28 +302,8 @@ final class CatalogBackend implements AutoCloseable {
     }
 
     private void open() throws MetaException {
-      client = openClient(proxyConfig, config, hiveConf, backendKerberosEnabled);
-      try {
-        thriftClient = extractThriftClient(client);
-        thriftClient.set_ugi(userName, groupNames);
-        LOG.debug("Opened cached impersonation client for user '{}' in catalog '{}'", userName, config.name());
-      } catch (Exception e) {
-        CatalogBackend.closeQuietly(client, "failed impersonation backend metastore client for user '" + userName + "'");
-        MetaException metaException = new MetaException(
-            "Unable to open impersonating backend metastore client for catalog "
-                + config.name()
-                + " and user "
-                + userName
-                + ". Backend HMS must allow proxy-user impersonation for outbound principal "
-                + proxyConfig.security().outboundPrincipal()
-                + " (for example via hadoop.proxyuser."
-                + RoutingMetaStoreHandler.shortUserName(proxyConfig.security().outboundPrincipal())
-                + ".*), or impersonation must be disabled for this backend via catalog."
-                + config.name()
-                + ".impersonation-enabled=false");
-        metaException.initCause(e);
-        throw metaException;
-      }
+      session = runtime.openImpersonationSession(adapter.runtimeProfile(), userName, groupNames);
+      LOG.debug("Opened cached impersonation client for user '{}' in catalog '{}'", userName, config.name());
     }
 
     private synchronized void reconnect() throws MetaException {

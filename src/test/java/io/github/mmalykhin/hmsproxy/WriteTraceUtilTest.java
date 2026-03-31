@@ -19,6 +19,7 @@ public class WriteTraceUtilTest {
     Assert.assertTrue(WriteTraceUtil.shouldTrace("get_table_req"));
     Assert.assertTrue(WriteTraceUtil.shouldTrace("alter_table_with_environment_context"));
     Assert.assertTrue(WriteTraceUtil.shouldTrace("set_aggr_stats_for"));
+    Assert.assertTrue(WriteTraceUtil.shouldTrace("add_write_notification_log"));
     Assert.assertFalse(WriteTraceUtil.shouldTrace("get_all_databases"));
   }
 

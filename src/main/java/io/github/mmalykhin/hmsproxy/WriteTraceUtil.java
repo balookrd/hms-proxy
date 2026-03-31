@@ -33,6 +33,7 @@ final class WriteTraceUtil {
       "commit_txn",
       "rollback_txn",
       "abort_txn",
+      "add_write_notification_log",
       "heartbeat",
       "heartbeat_txn_range",
       "truncate_table",
