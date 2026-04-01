@@ -379,3 +379,75 @@ catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
 catalog.catalog2.conf.hive.metastore.sasl.enabled=true
 catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
+
+## Manual HMS smoke client
+
+For the scenarios in [SMOKE.md](SMOKE.md), the repo now includes a runnable direct HMS API smoke
+client:
+
+- `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
+- `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
+
+Build the jar first:
+
+```bash
+mvn -DskipTests package
+```
+
+For Java 17+ with Kerberos and Hadoop 2.x libraries, use the same JVM flags as the proxy:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn \
+  --uri thrift://proxy-host:9083 \
+  --auth kerberos \
+  --server-principal hive/proxy-host.example.com@REALM.COM \
+  --client-principal alice@REALM.COM \
+  --keytab /etc/security/keytabs/alice.keytab \
+  --krb5-conf /etc/krb5.conf \
+  --db hdp__default \
+  --table smoke_txn_tbl
+```
+
+That mode performs:
+
+- `open_txns`
+- `allocate_table_write_ids`
+- `lock`
+- `check_lock`
+- `get_valid_write_ids`
+- `commit_txn`
+
+The `notification` mode is for Hortonworks-only `add_write_notification_log`, so it also needs
+the HDP standalone metastore jar:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification \
+  --uri thrift://proxy-host:9083 \
+  --auth kerberos \
+  --server-principal hive/proxy-host.example.com@REALM.COM \
+  --client-principal alice@REALM.COM \
+  --keytab /etc/security/keytabs/alice.keytab \
+  --krb5-conf /etc/krb5.conf \
+  --db hdp__default \
+  --table smoke_txn_tbl \
+  --txn-id 1001 \
+  --write-id 2001 \
+  --files-added hdfs:///warehouse/tablespace/managed/hive/smoke_txn_tbl/delta_1001_1001_0000/bucket_00000 \
+  --hdp-standalone-metastore-jar /opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+Useful notes:
+
+- `--server-principal` must be the proxy front-door principal, not the backend HMS principal
+- `--client-principal` and `--keytab` are the Kerberos credentials used by this smoke client
+- extra HiveConf overrides can be passed via repeated `--conf key=value`
+- `notification` should succeed for a Hortonworks-routed catalog and fail with
+  `requires a Hortonworks backend runtime` for an Apache-routed catalog

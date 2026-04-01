@@ -209,6 +209,13 @@ select count(*) from some_table;
 Эти проверки лучше делать не только через Beeline, но и прямым HMS thrift client, потому что
 `add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
 
+Практически это можно запускать готовым клиентом из репозитория:
+- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- режим `txn` покрывает `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
+  `get_valid_write_ids` / `commit_txn`
+- режим `notification` покрывает Hortonworks-only `add_write_notification_log`
+- примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.ru.md](README.ru.md)
+
 Важно:
 - lifecycle RPC без `dbName` / `fullTableName`
   (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`)
