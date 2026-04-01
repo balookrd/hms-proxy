@@ -78,6 +78,12 @@ select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
 
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+
+show partitions smoke_managed_tbl;
+
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
 drop table smoke_managed_tbl;
 
 -- external
@@ -135,6 +141,12 @@ select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
 
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+
+show partitions smoke_managed_tbl;
+
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
 drop table smoke_managed_tbl;
 
 -- external
@@ -172,7 +184,7 @@ drop table smoke_txn_tbl;
 ```
 
 Ожидание:
-- managed DDL/DML проходит в нужный routed backend, включая insert + select
+- managed DDL/DML проходит в нужный routed backend, включая insert + select + rename partition
 - у `external` таблиц сохраняется явно заданный `LOCATION`
 - для `external` и `transactional='true'` тоже есть явная проверка insert + select там, где backend это поддерживает
 - таблицы с `transactional='true'` создаются только там, где backend поддерживает ACID

@@ -73,6 +73,12 @@ select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
 
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+
+show partitions smoke_managed_tbl;
+
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
 drop table smoke_managed_tbl;
 
 -- external
@@ -129,6 +135,12 @@ select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
 
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+
+show partitions smoke_managed_tbl;
+
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
 drop table smoke_managed_tbl;
 
 -- external
@@ -166,7 +178,7 @@ drop table smoke_txn_tbl;
 ```
 
 Expected:
-- managed DDL/DML works for the routed backend, including insert + select
+- managed DDL/DML works for the routed backend, including insert + select + partition rename
 - `external` tables keep an explicit custom `LOCATION`
 - `external` and `transactional='true'` variants also allow insert + select where supported
 - `transactional='true'` tables are accepted only where the backend supports ACID table creation
