@@ -123,6 +123,11 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void partitionValidationWithoutNamespaceUsesDefaultBackendCompatibilityPath() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("partition_name_has_valid_characters"));
+  }
+
+  @Test
   public void removedPrefixBasedMethodsNoLongerUseDefaultBackendPath() {
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_role_names"));

@@ -7,6 +7,7 @@ import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
+import org.apache.thrift.TApplicationException;
 
 public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
   HortonworksBackendAdapter() {
@@ -19,6 +20,19 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       GetTableRequest request,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
+    try {
+      return backend.invokeRawByName(
+          "get_table_req",
+          new Class<?>[] {GetTableRequest.class},
+          new Object[] {request},
+          impersonation);
+    } catch (Throwable cause) {
+      if (!(cause instanceof TApplicationException) && !(cause instanceof NoSuchMethodException)) {
+        throw cause;
+      }
+    }
+
+    // Older Hortonworks runtimes may only expose the legacy table lookup RPC.
     Object result = backend.invokeRawByName(
         "get_table",
         new Class<?>[] {String.class, String.class},
@@ -33,6 +47,18 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       GetTablesRequest request,
       RoutingMetaStoreHandler.ImpersonationContext impersonation
   ) throws Throwable {
+    try {
+      return backend.invokeRawByName(
+          "get_table_objects_by_name_req",
+          new Class<?>[] {GetTablesRequest.class},
+          new Object[] {request},
+          impersonation);
+    } catch (Throwable cause) {
+      if (!(cause instanceof TApplicationException) && !(cause instanceof NoSuchMethodException)) {
+        throw cause;
+      }
+    }
+
     Object result = backend.invokeRawByName(
         "get_table_objects_by_name",
         new Class<?>[] {String.class, List.class},

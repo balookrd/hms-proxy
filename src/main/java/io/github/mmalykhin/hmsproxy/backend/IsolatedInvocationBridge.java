@@ -38,7 +38,7 @@ public final class IsolatedInvocationBridge {
       Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
       return convertResult(result, method.getReturnType());
     } catch (InvocationTargetException e) {
-      throw e.getCause();
+      throw convertThrowable(e.getCause());
     }
   }
 
@@ -49,7 +49,7 @@ public final class IsolatedInvocationBridge {
       Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
       return convertDynamicValue(result, IsolatedInvocationBridge.class.getClassLoader());
     } catch (InvocationTargetException e) {
-      throw e.getCause();
+      throw convertThrowable(e.getCause());
     }
   }
 
@@ -251,6 +251,32 @@ public final class IsolatedInvocationBridge {
       }
     }
     return value;
+  }
+
+  private Throwable convertThrowable(Throwable throwable) throws Exception {
+    if (throwable == null) {
+      return null;
+    }
+    if (!(throwable instanceof TBase<?, ?>)) {
+      return throwable;
+    }
+
+    Class<?> targetClass =
+        loadTargetClass(throwable.getClass().getName(), IsolatedInvocationBridge.class.getClassLoader());
+    if (targetClass == null || !Throwable.class.isAssignableFrom(targetClass) || targetClass.isInstance(throwable)) {
+      return throwable;
+    }
+
+    Throwable converted = (Throwable) convertTBase(throwable, targetClass);
+    converted.setStackTrace(throwable.getStackTrace());
+    Throwable convertedCause = convertThrowable(throwable.getCause());
+    if (convertedCause != null && converted.getCause() == null) {
+      try {
+        converted.initCause(convertedCause);
+      } catch (IllegalStateException ignored) {
+      }
+    }
+    return converted;
   }
 
   private Class<?> loadTargetClass(String className, ClassLoader targetClassLoader) {

@@ -46,15 +46,19 @@ requests to multiple backend metastores by catalog.
 ```bash
 mvn -o test
 mvn -o package
+mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
+
+Build version is computed from git for every commit in the form `0.1.<git-distance>-<short-sha>`.
 
 ## Run
 
 ```bash
-java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+java -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
 `mvn package` produces both a regular jar and a runnable fat jar with classifier `fat`.
+The fat jar file name changes with every new commit.
 
 For Java 17+ with Hadoop 2.x Kerberos libraries, start with:
 
@@ -63,7 +67,7 @@ java \
   --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
   --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
   -Djava.security.krb5.conf=/etc/krb5.conf \
-  -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+  -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
 ## Routing model
