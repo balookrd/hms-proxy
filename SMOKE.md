@@ -201,6 +201,13 @@ Expected:
 These checks are best done not only through Beeline, but also through a direct HMS thrift client,
 because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
 
+Practical runner:
+- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
+  `get_valid_write_ids` / `commit_txn`
+- `notification` mode covers Hortonworks-only `add_write_notification_log`
+- see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
+
 Important:
 - lifecycle RPCs without `dbName` / `fullTableName`
   (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`)
