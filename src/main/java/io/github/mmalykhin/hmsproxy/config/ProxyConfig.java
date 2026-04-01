@@ -11,7 +11,8 @@ public record ProxyConfig(
     String defaultCatalog,
     Map<String, CatalogConfig> catalogs,
     BackendConfig backend,
-    CompatibilityConfig compatibility
+    CompatibilityConfig compatibility,
+    TransactionalDdlGuardConfig transactionalDdlGuard
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -19,6 +20,9 @@ public record ProxyConfig(
     compatibility = compatibility == null
         ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false)
         : compatibility;
+    transactionalDdlGuard = transactionalDdlGuard == null
+        ? new TransactionalDdlGuardConfig(false, List.of())
+        : transactionalDdlGuard;
   }
 
   public ProxyConfig(
@@ -29,7 +33,7 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false));
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false), new TransactionalDdlGuardConfig(false, List.of()));
   }
 
   public ProxyConfig(
@@ -40,7 +44,34 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs,
       CompatibilityConfig compatibility
   ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility);
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
+        new TransactionalDdlGuardConfig(false, List.of()));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
+        new TransactionalDdlGuardConfig(false, List.of()));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      CompatibilityConfig compatibility,
+      TransactionalDdlGuardConfig transactionalDdlGuard
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
+        transactionalDdlGuard);
   }
 
   public record ServerConfig(
@@ -116,6 +147,15 @@ public record ProxyConfig(
 
     public CompatibilityConfig(boolean preserveBackendCatalogName) {
       this(FrontendProfile.APACHE_3_1_3, null, null, preserveBackendCatalogName);
+    }
+  }
+
+  public record TransactionalDdlGuardConfig(
+      boolean enabled,
+      List<String> clientAddressRules
+  ) {
+    public TransactionalDdlGuardConfig {
+      clientAddressRules = List.copyOf(clientAddressRules);
     }
   }
 

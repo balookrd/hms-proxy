@@ -157,7 +157,15 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   TProcessor wrapProcessor(TProcessor processor) {
-    return saslServer.wrapProcessor(processor);
+    TProcessor wrapped = saslServer.wrapProcessor(processor);
+    return (in, out) -> {
+      String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddress());
+      try {
+        return wrapped.process(in, out);
+      } finally {
+        ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+      }
+    };
   }
 
   public String issueDelegationToken(String owner, String renewer)

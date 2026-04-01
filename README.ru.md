@@ -90,6 +90,34 @@ routing.catalog-db-separator=__
 
 Тогда legacy names будут выглядеть как `catalog1__sales`, а не `catalog1.sales`.
 
+## Guard для transactional DDL
+
+Proxy можно настроить так, чтобы он отклонял создание и изменение таблиц, если во входящем
+metadata таблица помечена как transactional:
+
+- `transactional=true`
+- любое непустое значение `transactional_properties`
+
+Проверка применяется к `create_table`, `alter_table` и `alter_table_with_environment_context`.
+
+Пример:
+
+```properties
+guard.transactional-ddl.enabled=true
+```
+
+Если указан только `guard.transactional-ddl.enabled=true`, guard действует для всех клиентов.
+
+Также можно ограничить его конкретными IP-адресами или CIDR-масками:
+
+```properties
+guard.transactional-ddl.enabled=true
+guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
+```
+
+Если `guard.transactional-ddl.client-addresses` задан, проверка применяется только к совпавшим
+клиентам. Если не задан, проверка действует для всех клиентов.
+
 ## Frontend profile и runtime jars
 
 Можно выбрать, какую версию HMS proxy объявляет наружу:

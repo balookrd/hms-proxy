@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.config;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -58,6 +59,67 @@ public class ProxyConfigLoaderTest {
           config.catalogs().get("catalog2").hiveConf().get("hive.metastore.client.socket.timeout"));
       Assert.assertEquals("7",
           config.catalogs().get("catalog2").hiveConf().get("hive.metastore.connect.retries"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsTransactionalDdlGuardConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          guard.transactional-ddl.enabled=true
+          guard.transactional-ddl.client-addresses=10.10.0.0/16,192.168.1.20
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.transactionalDdlGuard().enabled());
+      Assert.assertEquals(List.of("10.10.0.0/16", "192.168.1.20"),
+          config.transactionalDdlGuard().clientAddressRules());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void allowsTransactionalDdlGuardWithoutClientAddresses() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          guard.transactional-ddl.enabled=true
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.transactionalDdlGuard().enabled());
+      Assert.assertEquals(List.of(), config.transactionalDdlGuard().clientAddressRules());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsInvalidTransactionalDdlClientAddressRule() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          guard.transactional-ddl.enabled=true
+          guard.transactional-ddl.client-addresses=10.10.0.0/99
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for invalid client address rule");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("client address rule"));
+      }
     } finally {
       Files.deleteIfExists(file);
     }
