@@ -57,53 +57,117 @@ Expected:
 ```sql
 use hdp__default;
 
-create table if not exists smoke_tbl (
+create table if not exists smoke_managed_tbl (
   id int,
   ds string
 )
 partitioned by (p string)
 stored as parquet;
 
-alter table smoke_tbl set tblproperties ('smoke'='true');
+alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='managed');
 
-insert into smoke_tbl partition (p='2026-03-31') values (1, '2026-03-31');
+insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_tbl;
+show partitions smoke_managed_tbl;
 
-alter table smoke_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
 
-show partitions smoke_tbl;
+show partitions smoke_managed_tbl;
 
-truncate table smoke_tbl;
+truncate table smoke_managed_tbl;
 
-drop table smoke_tbl;
+drop table smoke_managed_tbl;
+
+create external table if not exists smoke_external_tbl (
+  id int,
+  ds string
+)
+stored as parquet
+location '/tmp/hms-proxy-smoke/hdp/external/smoke_external_tbl';
+
+alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
+
+describe formatted smoke_external_tbl;
+
+drop table smoke_external_tbl;
+
+create table if not exists smoke_txn_tbl (
+  id int,
+  ds string
+)
+clustered by (id) into 1 buckets
+stored as orc
+tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
+
+insert into smoke_txn_tbl values (1, '2026-03-31');
+
+select * from smoke_txn_tbl limit 5;
+
+truncate table smoke_txn_tbl;
+
+drop table smoke_txn_tbl;
 ```
 
 **6. DDL: Apache backend**
 ```sql
 use apache__default;
 
-create table if not exists smoke_tbl (
+create table if not exists smoke_managed_tbl (
   id int,
   ds string
 )
 partitioned by (p string)
 stored as parquet;
 
-alter table smoke_tbl set tblproperties ('smoke'='true');
+alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='managed');
 
-insert into smoke_tbl partition (p='2026-03-31') values (1, '2026-03-31');
+insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_tbl;
+show partitions smoke_managed_tbl;
 
-alter table smoke_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
 
-show partitions smoke_tbl;
+show partitions smoke_managed_tbl;
 
-truncate table smoke_tbl;
+truncate table smoke_managed_tbl;
 
-drop table smoke_tbl;
+drop table smoke_managed_tbl;
+
+create external table if not exists smoke_external_tbl (
+  id int,
+  ds string
+)
+stored as parquet
+location '/tmp/hms-proxy-smoke/apache/external/smoke_external_tbl';
+
+alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
+
+describe formatted smoke_external_tbl;
+
+drop table smoke_external_tbl;
+
+create table if not exists smoke_txn_tbl (
+  id int,
+  ds string
+)
+clustered by (id) into 1 buckets
+stored as orc
+tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
+
+insert into smoke_txn_tbl values (1, '2026-03-31');
+
+select * from smoke_txn_tbl limit 5;
+
+truncate table smoke_txn_tbl;
+
+drop table smoke_txn_tbl;
 ```
+
+Expected:
+- managed DDL/DML works for the routed backend
+- `external` tables keep an explicit custom `LOCATION`
+- `transactional='true'` tables are accepted only where the backend supports ACID table creation
+- table type and key properties are visible in `describe formatted`
 
 **7. Mixed Negative Check**
 ```sql
