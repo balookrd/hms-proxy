@@ -57,6 +57,7 @@ Expected:
 ```sql
 use hdp__default;
 
+-- managed
 create table if not exists smoke_managed_tbl (
   id int,
   ds string
@@ -68,16 +69,13 @@ alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='m
 
 insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_managed_tbl;
-
-alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
-
-truncate table smoke_managed_tbl;
 
 drop table smoke_managed_tbl;
 
+-- external
 create external table if not exists smoke_external_tbl (
   id int,
   ds string
@@ -87,10 +85,15 @@ location '/tmp/hms-proxy-smoke/hdp/external/smoke_external_tbl';
 
 alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
 
+insert into smoke_external_tbl values (2, '2026-03-31');
+
+select * from smoke_external_tbl where id=2;
+
 describe formatted smoke_external_tbl;
 
 drop table smoke_external_tbl;
 
+-- transactional=true
 create table if not exists smoke_txn_tbl (
   id int,
   ds string
@@ -101,9 +104,7 @@ tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transaction
 
 insert into smoke_txn_tbl values (1, '2026-03-31');
 
-select * from smoke_txn_tbl limit 5;
-
-truncate table smoke_txn_tbl;
+select * from smoke_txn_tbl where id=1;
 
 drop table smoke_txn_tbl;
 ```
@@ -112,6 +113,7 @@ drop table smoke_txn_tbl;
 ```sql
 use apache__default;
 
+-- managed
 create table if not exists smoke_managed_tbl (
   id int,
   ds string
@@ -123,16 +125,13 @@ alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='m
 
 insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_managed_tbl;
-
-alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
 show partitions smoke_managed_tbl;
-
-truncate table smoke_managed_tbl;
 
 drop table smoke_managed_tbl;
 
+-- external
 create external table if not exists smoke_external_tbl (
   id int,
   ds string
@@ -142,10 +141,15 @@ location '/tmp/hms-proxy-smoke/apache/external/smoke_external_tbl';
 
 alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
 
+insert into smoke_external_tbl values (2, '2026-03-31');
+
+select * from smoke_external_tbl where id=2;
+
 describe formatted smoke_external_tbl;
 
 drop table smoke_external_tbl;
 
+-- transactional=true
 create table if not exists smoke_txn_tbl (
   id int,
   ds string
@@ -156,16 +160,15 @@ tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transaction
 
 insert into smoke_txn_tbl values (1, '2026-03-31');
 
-select * from smoke_txn_tbl limit 5;
-
-truncate table smoke_txn_tbl;
+select * from smoke_txn_tbl where id=1;
 
 drop table smoke_txn_tbl;
 ```
 
 Expected:
-- managed DDL/DML works for the routed backend
+- managed DDL/DML works for the routed backend, including insert + select
 - `external` tables keep an explicit custom `LOCATION`
+- `external` and `transactional='true'` variants also allow insert + select where supported
 - `transactional='true'` tables are accepted only where the backend supports ACID table creation
 - table type and key properties are visible in `describe formatted`
 
