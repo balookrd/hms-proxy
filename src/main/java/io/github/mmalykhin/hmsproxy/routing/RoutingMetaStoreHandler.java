@@ -56,12 +56,14 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final FrontDoorSecurity frontDoorSecurity;
+  private final TransactionalTableMutationGuard transactionalTableMutationGuard;
   private final long aliveSince;
 
   public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
     this.config = config;
     this.router = router;
     this.frontDoorSecurity = frontDoorSecurity;
+    this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -101,6 +103,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
 
     try {
+      transactionalTableMutationGuard.validate(name, args);
       Object result = switch (name) {
         case "getName" -> config.server().name();
         case "getVersion" -> config.compatibility().frontendProfile().metastoreVersion();

@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.config;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.security.ClientAddressMatcher;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -61,6 +62,11 @@ public final class ProxyConfigLoader {
         trimToNull(properties.getProperty("compatibility.backend-standalone-metastore-jar"));
     boolean preserveBackendCatalogName =
         Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
+    boolean transactionalDdlGuardEnabled =
+        Boolean.parseBoolean(get(properties, "guard.transactional-ddl.enabled", "false"));
+    String[] transactionalDdlClientAddresses =
+        splitCsv(get(properties, "guard.transactional-ddl.client-addresses", ""));
+    ClientAddressMatcher.parseAll(Arrays.asList(transactionalDdlClientAddresses));
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -177,7 +183,19 @@ public final class ProxyConfigLoader {
             frontendStandaloneMetastoreJar,
             backendStandaloneMetastoreJar,
             preserveBackendCatalogName);
-    return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility);
+    ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
+        new ProxyConfig.TransactionalDdlGuardConfig(
+            transactionalDdlGuardEnabled,
+            Arrays.asList(transactionalDdlClientAddresses));
+    return new ProxyConfig(
+        server,
+        security,
+        catalogDbSeparator,
+        defaultCatalog,
+        catalogs,
+        backend,
+        compatibility,
+        transactionalDdlGuard);
   }
 
   private static String[] splitCsv(String value) {

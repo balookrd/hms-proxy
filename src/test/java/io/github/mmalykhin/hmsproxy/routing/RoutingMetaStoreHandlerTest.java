@@ -12,18 +12,24 @@ import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
@@ -257,6 +263,98 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void transactionalDdlGuardBlocksCreateTableForMatchingClientAddress() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreHandler handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {table}));
+
+      Assert.assertTrue(error.getMessage().contains("create_table"));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlGuardAllowsCreateTableForNonMatchingClientAddress() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = guardedHandler(backendCalls, capturedTable, "10.20.0.0/16");
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("192.168.10.5");
+    try {
+      handler.invoke(null, method, new Object[] {table});
+
+      Assert.assertEquals(1, backendCalls.get());
+      Assert.assertEquals("sales", capturedTable.get().getDbName());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlGuardBlocksAlterTableWhenTransactionalPropertiesArePresent() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreHandler handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.10.10.10");
+    Table table = table("catalog1__sales", "events", Map.of("transactional_properties", "insert_only"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "alter_table_with_environment_context",
+        String.class,
+        String.class,
+        Table.class,
+        EnvironmentContext.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.10.10.10");
+    try {
+      MetaException error = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(null, method, new Object[] {"catalog1__sales", "events", table, new EnvironmentContext()}));
+
+      Assert.assertTrue(error.getMessage().contains("alter_table_with_environment_context"));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlGuardWithoutAddressListAppliesToAllClients() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(true, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {table}));
+
+    Assert.assertTrue(error.getMessage().contains("create_table"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
   public void addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();
@@ -454,6 +552,63 @@ public class RoutingMetaStoreHandlerTest {
               throw new UnsupportedOperationException(method.getName());
             });
     return ctor.newInstance(null, thriftClient, null);
+  }
+
+  private static RoutingMetaStoreHandler guardedHandler(
+      AtomicInteger backendCalls,
+      AtomicReference<Table> capturedTable,
+      String clientAddressRule
+  ) throws Exception {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(true, List.of(clientAddressRule)));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    return new RoutingMetaStoreHandler(config, router, null);
+  }
+
+  private static BackendInvocationSession newSession(java.lang.reflect.InvocationHandler invocationHandler) throws Exception {
+    Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+        org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+        org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class,
+        IsolatedMetastoreClient.class);
+    ctor.setAccessible(true);
+    org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface thriftClient =
+        (org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface) java.lang.reflect.Proxy.newProxyInstance(
+            org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class.getClassLoader(),
+            new Class<?>[] {org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class},
+            invocationHandler);
+    return ctor.newInstance(null, thriftClient, null);
+  }
+
+  private static Table table(String dbName, String tableName, Map<String, String> parameters) {
+    Table table = new Table();
+    table.setDbName(dbName);
+    table.setTableName(tableName);
+    table.setParameters(parameters);
+    return table;
   }
 
   private static final class TestBackendAdapter extends AbstractBackendAdapter {
