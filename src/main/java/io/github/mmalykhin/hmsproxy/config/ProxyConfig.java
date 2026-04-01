@@ -21,7 +21,7 @@ public record ProxyConfig(
         ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false)
         : compatibility;
     transactionalDdlGuard = transactionalDdlGuard == null
-        ? new TransactionalDdlGuardConfig(false, List.of())
+        ? new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of())
         : transactionalDdlGuard;
   }
 
@@ -33,7 +33,8 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false), new TransactionalDdlGuardConfig(false, List.of()));
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false),
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()));
   }
 
   public ProxyConfig(
@@ -45,7 +46,7 @@ public record ProxyConfig(
       CompatibilityConfig compatibility
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new TransactionalDdlGuardConfig(false, List.of()));
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()));
   }
 
   public ProxyConfig(
@@ -58,7 +59,7 @@ public record ProxyConfig(
       CompatibilityConfig compatibility
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
-        new TransactionalDdlGuardConfig(false, List.of()));
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()));
   }
 
   public ProxyConfig(
@@ -151,12 +152,31 @@ public record ProxyConfig(
   }
 
   public record TransactionalDdlGuardConfig(
-      boolean enabled,
+      TransactionalDdlGuardMode mode,
       List<String> clientAddressRules
   ) {
     public TransactionalDdlGuardConfig {
+      mode = mode == null ? TransactionalDdlGuardMode.DISABLED : mode;
       clientAddressRules = List.copyOf(clientAddressRules);
     }
+
+    public boolean enabled() {
+      return mode != TransactionalDdlGuardMode.DISABLED;
+    }
+
+    public boolean rewriteEnabled() {
+      return mode == TransactionalDdlGuardMode.REWRITE;
+    }
+
+    public boolean rejectEnabled() {
+      return mode == TransactionalDdlGuardMode.REJECT;
+    }
+  }
+
+  public enum TransactionalDdlGuardMode {
+    DISABLED,
+    REJECT,
+    REWRITE
   }
 
   public enum FrontendProfile {

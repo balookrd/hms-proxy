@@ -92,26 +92,33 @@ routing.catalog-db-separator=__
 
 ## Guard для transactional DDL
 
-Proxy можно настроить так, чтобы он отклонял создание и изменение таблиц, если во входящем
+Proxy можно настроить так, чтобы он защищал создание и изменение таблиц, если во входящем
 metadata таблица помечена как transactional:
 
 - `transactional=true`
 - любое непустое значение `transactional_properties`
 
-Проверка применяется к `create_table`, `alter_table` и `alter_table_with_environment_context`.
+Правило применяется к `create_table`, `alter_table` и `alter_table_with_environment_context`.
 
-Пример:
+Режим reject:
 
 ```properties
-guard.transactional-ddl.enabled=true
+guard.transactional-ddl.mode=reject
 ```
 
-Если указан только `guard.transactional-ddl.enabled=true`, guard действует для всех клиентов.
+Режим rewrite:
+
+```properties
+guard.transactional-ddl.mode=rewrite
+```
+
+В режиме rewrite proxy переписывает входящую таблицу в `EXTERNAL_TABLE`, добавляет
+`external.table.purge=true` и удаляет `transactional` и `transactional_properties`.
 
 Также можно ограничить его конкретными IP-адресами или CIDR-масками:
 
 ```properties
-guard.transactional-ddl.enabled=true
+guard.transactional-ddl.mode=reject
 guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 ```
 

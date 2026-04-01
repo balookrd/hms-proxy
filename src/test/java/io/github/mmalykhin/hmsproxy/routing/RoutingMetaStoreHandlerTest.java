@@ -332,7 +332,7 @@ public class RoutingMetaStoreHandlerTest {
         Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
             null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(true, List.of()));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of()));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -352,6 +352,102 @@ public class RoutingMetaStoreHandlerTest {
 
     Assert.assertTrue(error.getMessage().contains("create_table"));
     Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void transactionalDdlRewriteChangesManagedTransactionalTableToExternal() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of(
+        "transactional", "true",
+        "transactional_properties", "insert_only",
+        "owner", "etl"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      handler.invoke(null, method, new Object[] {table});
+
+      Assert.assertEquals(1, backendCalls.get());
+      Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+      Assert.assertEquals("TRUE", capturedTable.get().getParameters().get("EXTERNAL"));
+      Assert.assertEquals("true", capturedTable.get().getParameters().get("external.table.purge"));
+      Assert.assertEquals("etl", capturedTable.get().getParameters().get("owner"));
+      Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional"));
+      Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional_properties"));
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlRewriteWithoutAddressListAppliesToAllClients() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
   }
 
   @Test
@@ -567,7 +663,7 @@ public class RoutingMetaStoreHandlerTest {
         Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
             null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(true, List.of(clientAddressRule)));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of(clientAddressRule)));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
