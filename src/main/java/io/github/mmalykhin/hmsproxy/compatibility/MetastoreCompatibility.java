@@ -53,7 +53,8 @@ public final class MetastoreCompatibility {
       "get_active_resource_plan",
       "get_all_resource_plans",
       "get_runtime_stats",
-      "flushCache"
+      "flushCache",
+      "partition_name_has_valid_characters"
   );
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
