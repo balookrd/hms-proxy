@@ -20,6 +20,20 @@ public class MetastoreCompatibilityTest {
     assertRequiresFrontDoorSecurity("cancel_delegation_token", new Object[] {"token"});
   }
 
+  @Test
+  public void defaultBackendRoutingPoliciesExplainNamespaceFreeCompatibilityPaths() {
+    Assert.assertEquals(
+        MetastoreCompatibility.DefaultBackendRoutingPolicy.NAMESPACELESS_VALIDATION,
+        MetastoreCompatibility.defaultBackendRoutingPolicy("partition_name_has_valid_characters").orElse(null));
+    Assert.assertEquals(
+        MetastoreCompatibility.DefaultBackendRoutingPolicy.TXN_AND_LOCK_LIFECYCLE,
+        MetastoreCompatibility.defaultBackendRoutingPolicy("open_txns").orElse(null));
+    Assert.assertEquals(
+        MetastoreCompatibility.DefaultBackendRoutingPolicy.SESSION_COMPATIBILITY,
+        MetastoreCompatibility.defaultBackendRoutingPolicy("flushCache").orElse(null));
+    Assert.assertTrue(MetastoreCompatibility.defaultBackendRoutingPolicy("create_role").isEmpty());
+  }
+
   private static void assertRequiresFrontDoorSecurity(String methodName, Object[] args) {
     try {
       MetastoreCompatibility.handleLocally(methodName, args, null);

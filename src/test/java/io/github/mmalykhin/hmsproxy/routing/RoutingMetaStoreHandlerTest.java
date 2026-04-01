@@ -462,21 +462,13 @@ public class RoutingMetaStoreHandlerTest {
     }
 
     @Override
-    public Object invokeGetTableReq(
+    public Object invokeRequest(
         CatalogBackend backend,
-        org.apache.hadoop.hive.metastore.api.GetTableRequest request,
+        String methodName,
+        Object request,
         RoutingMetaStoreHandler.ImpersonationContext impersonation
     ) throws Throwable {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Object invokeGetTablesReq(
-        CatalogBackend backend,
-        org.apache.hadoop.hive.metastore.api.GetTablesRequest request,
-        RoutingMetaStoreHandler.ImpersonationContext impersonation
-    ) throws Throwable {
-      throw new UnsupportedOperationException();
+      return super.invokeRequest(backend, methodName, request, impersonation);
     }
   }
 

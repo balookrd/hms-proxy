@@ -33,29 +33,8 @@ public final class MetastoreCompatibility {
       "Delegation tokens require Kerberos/SASL on the proxy front door";
   private static final Pattern BACKEND_VISIBLE_CONFIG_PATTERN =
       Pattern.compile("(hive|hdfs|mapred|metastore).*");
-  private static final List<String> DEFAULT_BACKEND_GLOBAL_METHODS = List.of(
-      "set_ugi",
-      "get_current_notificationEventId",
-      "get_next_notification",
-      "get_notification_events_count",
-      "get_open_txns",
-      "get_open_txns_info",
-      "open_txns",
-      "commit_txn",
-      "abort_txn",
-      "abort_txns",
-      "check_lock",
-      "unlock",
-      "heartbeat",
-      "heartbeat_txn_range",
-      "show_locks",
-      "show_compact",
-      "get_active_resource_plan",
-      "get_all_resource_plans",
-      "get_runtime_stats",
-      "flushCache",
-      "partition_name_has_valid_characters"
-  );
+  private static final Map<String, DefaultBackendRoutingPolicy> DEFAULT_BACKEND_GLOBAL_METHODS =
+      buildDefaultBackendRoutingPolicies();
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
 
@@ -63,7 +42,11 @@ public final class MetastoreCompatibility {
   }
 
   public static boolean routesToDefaultBackend(String methodName) {
-    return DEFAULT_BACKEND_GLOBAL_METHODS.contains(methodName);
+    return defaultBackendRoutingPolicy(methodName).isPresent();
+  }
+
+  public static Optional<DefaultBackendRoutingPolicy> defaultBackendRoutingPolicy(String methodName) {
+    return Optional.ofNullable(DEFAULT_BACKEND_GLOBAL_METHODS.get(methodName));
   }
 
   public static boolean handlesLocally(String methodName) {
@@ -176,6 +159,55 @@ public final class MetastoreCompatibility {
     return Map.copyOf(fallbacks);
   }
 
+  private static Map<String, DefaultBackendRoutingPolicy> buildDefaultBackendRoutingPolicies() {
+    Map<String, DefaultBackendRoutingPolicy> routes = new LinkedHashMap<>();
+    registerDefaultBackendRoutes(
+        routes,
+        DefaultBackendRoutingPolicy.SESSION_COMPATIBILITY,
+        List.of("set_ugi", "flushCache"));
+    registerDefaultBackendRoutes(
+        routes,
+        DefaultBackendRoutingPolicy.SERVICE_READS,
+        List.of(
+            "get_current_notificationEventId",
+            "get_next_notification",
+            "get_notification_events_count",
+            "get_open_txns",
+            "get_open_txns_info",
+            "show_locks",
+            "show_compact",
+            "get_active_resource_plan",
+            "get_all_resource_plans",
+            "get_runtime_stats"));
+    registerDefaultBackendRoutes(
+        routes,
+        DefaultBackendRoutingPolicy.TXN_AND_LOCK_LIFECYCLE,
+        List.of(
+            "open_txns",
+            "commit_txn",
+            "abort_txn",
+            "abort_txns",
+            "check_lock",
+            "unlock",
+            "heartbeat",
+            "heartbeat_txn_range"));
+    registerDefaultBackendRoutes(
+        routes,
+        DefaultBackendRoutingPolicy.NAMESPACELESS_VALIDATION,
+        List.of("partition_name_has_valid_characters"));
+    return Map.copyOf(routes);
+  }
+
+  private static void registerDefaultBackendRoutes(
+      Map<String, DefaultBackendRoutingPolicy> routes,
+      DefaultBackendRoutingPolicy policy,
+      List<String> methods
+  ) {
+    for (String method : methods) {
+      routes.put(method, policy);
+    }
+  }
+
   private static FrontDoorSecurity requireFrontDoorSecurity(FrontDoorSecurity frontDoorSecurity) throws MetaException {
     if (frontDoorSecurity == null) {
       throw new MetaException(FRONT_DOOR_TOKEN_ERROR);
@@ -214,6 +246,13 @@ public final class MetastoreCompatibility {
   public enum BackendProfile {
     MODERN_REQUESTS,
     HORTONWORKS_3_1_0_LEGACY_REQUESTS
+  }
+
+  public enum DefaultBackendRoutingPolicy {
+    SESSION_COMPATIBILITY,
+    SERVICE_READS,
+    TXN_AND_LOCK_LIFECYCLE,
+    NAMESPACELESS_VALIDATION
   }
 
   private record CompatibleConfigKey(String metastoreName, String hiveName, String defaultValue) {

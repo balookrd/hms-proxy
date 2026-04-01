@@ -460,11 +460,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
             impersonation == null ? "-" : impersonation.userName(),
             DebugLogUtil.formatArgs(new Object[] {request}));
       }
-      Object adapted = switch (methodName) {
-        case "get_table_req" -> backend.invokeGetTableReq((GetTableRequest) request, impersonation);
-        case "get_table_objects_by_name_req" -> backend.invokeGetTablesReq((GetTablesRequest) request, impersonation);
-        default -> throw new IllegalArgumentException("Unsupported backend request method: " + methodName);
-      };
+      Object adapted = backend.invokeRequest(methodName, request, impersonation);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
             requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(adapted));
