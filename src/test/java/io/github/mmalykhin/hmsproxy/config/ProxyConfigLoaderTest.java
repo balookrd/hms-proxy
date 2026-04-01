@@ -71,13 +71,14 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.enabled=true
+          guard.transactional-ddl.mode=reject
           guard.transactional-ddl.client-addresses=10.10.0.0/16,192.168.1.20
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of("10.10.0.0/16", "192.168.1.20"),
           config.transactionalDdlGuard().clientAddressRules());
     } finally {
@@ -92,13 +93,54 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.enabled=true
+          guard.transactional-ddl.mode=reject
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of(), config.transactionalDdlGuard().clientAddressRules());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsTransactionalDdlRewriteConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          guard.transactional-ddl.mode=rewrite
+          guard.transactional-ddl.client-addresses=10.10.0.0/16
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REWRITE, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(List.of("10.10.0.0/16"), config.transactionalDdlGuard().clientAddressRules());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsInvalidTransactionalDdlMode() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          guard.transactional-ddl.mode=unexpected
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for invalid transactional DDL mode");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("guard.transactional-ddl.mode"));
+      }
     } finally {
       Files.deleteIfExists(file);
     }
@@ -111,7 +153,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.enabled=true
+          guard.transactional-ddl.mode=reject
           guard.transactional-ddl.client-addresses=10.10.0.0/99
           """);
       try {

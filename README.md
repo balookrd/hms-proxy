@@ -100,30 +100,37 @@ With that setting, legacy names become `catalog1__sales` instead of `catalog1.sa
 
 ## Transactional DDL guard
 
-You can ask the proxy to reject table creation or table alteration when the incoming table
+You can ask the proxy to protect table creation or table alteration when the incoming table
 metadata marks the table as transactional:
 
 - `transactional=true`
 - any non-empty `transactional_properties`
 
-The guard applies to `create_table`, `alter_table`, and `alter_table_with_environment_context`.
+The rule applies to `create_table`, `alter_table`, and `alter_table_with_environment_context`.
 
-Example:
+Reject mode:
 
 ```properties
-guard.transactional-ddl.enabled=true
+guard.transactional-ddl.mode=reject
 ```
 
-With only `guard.transactional-ddl.enabled=true`, the guard applies to all clients.
+Rewrite mode:
+
+```properties
+guard.transactional-ddl.mode=rewrite
+```
+
+In rewrite mode the proxy rewrites the incoming table to `EXTERNAL_TABLE`, adds
+`external.table.purge=true`, and removes `transactional` plus `transactional_properties`.
 
 You can also scope it to specific client IPs or CIDR ranges:
 
 ```properties
-guard.transactional-ddl.enabled=true
+guard.transactional-ddl.mode=reject
 guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 ```
 
-If `guard.transactional-ddl.client-addresses` is set, the guard is evaluated only for matching
+If `guard.transactional-ddl.client-addresses` is set, the rule is evaluated only for matching
 clients. If it is omitted, all clients are covered.
 
 You can also choose which HMS version the proxy advertises on the front door:

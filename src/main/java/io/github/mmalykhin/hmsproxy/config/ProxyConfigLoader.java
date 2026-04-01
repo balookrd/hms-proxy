@@ -62,8 +62,8 @@ public final class ProxyConfigLoader {
         trimToNull(properties.getProperty("compatibility.backend-standalone-metastore-jar"));
     boolean preserveBackendCatalogName =
         Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
-    boolean transactionalDdlGuardEnabled =
-        Boolean.parseBoolean(get(properties, "guard.transactional-ddl.enabled", "false"));
+    ProxyConfig.TransactionalDdlGuardMode transactionalDdlGuardMode = parseTransactionalDdlGuardMode(
+        trimToNull(properties.getProperty("guard.transactional-ddl.mode")));
     String[] transactionalDdlClientAddresses =
         splitCsv(get(properties, "guard.transactional-ddl.client-addresses", ""));
     ClientAddressMatcher.parseAll(Arrays.asList(transactionalDdlClientAddresses));
@@ -185,7 +185,7 @@ public final class ProxyConfigLoader {
             preserveBackendCatalogName);
     ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
         new ProxyConfig.TransactionalDdlGuardConfig(
-            transactionalDdlGuardEnabled,
+            transactionalDdlGuardMode,
             Arrays.asList(transactionalDdlClientAddresses));
     return new ProxyConfig(
         server,
@@ -259,5 +259,17 @@ public final class ProxyConfigLoader {
       return null;
     }
     return MetastoreRuntimeProfile.valueOf(value.trim().toUpperCase());
+  }
+
+  private static ProxyConfig.TransactionalDdlGuardMode parseTransactionalDdlGuardMode(String value) {
+    if (value == null) {
+      return ProxyConfig.TransactionalDdlGuardMode.DISABLED;
+    }
+    try {
+      return ProxyConfig.TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for guard.transactional-ddl.mode: " + value + ". Expected one of: reject, rewrite", e);
+    }
   }
 }

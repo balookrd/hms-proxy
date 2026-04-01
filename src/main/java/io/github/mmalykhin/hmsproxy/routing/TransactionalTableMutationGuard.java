@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.security.ClientAddressMatcher;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,12 +25,19 @@ final class TransactionalTableMutationGuard {
   }
 
   void validate(String methodName, Object[] args) throws MetaException {
-    if (!config.enabled() || !GUARDED_METHODS.contains(methodName) || !matchesClientAddress()) {
+    if (!config.enabled()
+        || !GUARDED_METHODS.contains(methodName)
+        || !matchesClientAddress()) {
       return;
     }
 
     Table table = findTable(args);
     if (table == null || !isBlockedTransactionalMutation(table.getParameters())) {
+      return;
+    }
+
+    if (config.rewriteEnabled()) {
+      rewriteToExternal(table);
       return;
     }
 
@@ -79,6 +87,19 @@ final class TransactionalTableMutationGuard {
     }
     String transactionalProperties = parameters.get("transactional_properties");
     return transactionalProperties != null && !transactionalProperties.isBlank();
+  }
+
+  private static void rewriteToExternal(Table table) {
+    table.setTableType("EXTERNAL_TABLE");
+    Map<String, String> parameters = new LinkedHashMap<>();
+    if (table.getParameters() != null) {
+      parameters.putAll(table.getParameters());
+    }
+    parameters.remove("transactional");
+    parameters.remove("transactional_properties");
+    parameters.put("EXTERNAL", "TRUE");
+    parameters.put("external.table.purge", "true");
+    table.setParameters(parameters);
   }
 
   private static String qualifiedName(Table table) {
