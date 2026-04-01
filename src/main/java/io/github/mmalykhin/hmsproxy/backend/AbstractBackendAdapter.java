@@ -27,6 +27,20 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
   }
 
   @Override
+  public Object invokeRequest(
+      CatalogBackend backend,
+      String methodName,
+      Object request,
+      RoutingMetaStoreHandler.ImpersonationContext impersonation
+  ) throws Throwable {
+    return backend.invokeRawByName(
+        methodName,
+        new Class<?>[] {request.getClass()},
+        new Object[] {request},
+        impersonation);
+  }
+
+  @Override
   public MetastoreCompatibility.BackendProfile backendProfile() {
     return backendProfile;
   }

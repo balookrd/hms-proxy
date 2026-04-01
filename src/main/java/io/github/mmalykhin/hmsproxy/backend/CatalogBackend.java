@@ -10,8 +10,6 @@ import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
-import org.apache.hadoop.hive.metastore.api.GetTableRequest;
-import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
@@ -97,14 +95,13 @@ public final class CatalogBackend implements AutoCloseable {
     return adapter.invoke(this, method, args, impersonation);
   }
 
-  public Object invokeGetTableReq(GetTableRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invokeRequest(
+      String methodName,
+      Object request,
+      RoutingMetaStoreHandler.ImpersonationContext impersonation
+  )
       throws Throwable {
-    return adapter.invokeGetTableReq(this, request, impersonation);
-  }
-
-  public Object invokeGetTablesReq(GetTablesRequest request, RoutingMetaStoreHandler.ImpersonationContext impersonation)
-      throws Throwable {
-    return adapter.invokeGetTablesReq(this, request, impersonation);
+    return adapter.invokeRequest(this, methodName, request, impersonation);
   }
 
   public Object invokeRaw(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
