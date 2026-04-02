@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
@@ -42,7 +43,7 @@ public final class ManagementHttpServer implements AutoCloseable {
           + "}\n";
       respond(exchange, 200, "application/json; charset=utf-8", body);
     });
-    server.createContext("/readyz", new ReadinessHandler(router, observability));
+    server.createContext("/readyz", new ReadinessHandler(config, router, observability));
     server.createContext("/metrics", exchange -> respond(
         exchange,
         200,
@@ -70,32 +71,41 @@ public final class ManagementHttpServer implements AutoCloseable {
   }
 
   private static final class ReadinessHandler implements HttpHandler {
+    private final ProxyConfig config;
     private final CatalogRouter router;
     private final ProxyObservability observability;
 
-    private ReadinessHandler(CatalogRouter router, ProxyObservability observability) {
+    private ReadinessHandler(ProxyConfig config, CatalogRouter router, ProxyObservability observability) {
+      this.config = config;
       this.router = router;
       this.observability = observability;
     }
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-      boolean ready = true;
+      boolean backendConnectivity = true;
       for (CatalogBackend backend : router.backends()) {
         try {
           backend.checkConnectivity();
           observability.runtimeState().recordBackendProbeSuccess(backend.name());
         } catch (Throwable error) {
-          ready = false;
+          backendConnectivity = false;
           observability.runtimeState().recordBackendProbeFailure(backend.name(), error);
         }
       }
+
+      KerberosHealthProbe.KerberosStatus frontDoorKerberos = configKerberosStatus();
+      KerberosHealthProbe.KerberosStatus backendKerberos = backendKerberosStatus();
+      boolean ready = backendConnectivity && frontDoorKerberos.healthy() && backendKerberos.healthy();
 
       List<ProxyRuntimeState.BackendRuntimeStatus> statuses = observability.runtimeState().backendStatuses();
       StringBuilder body = new StringBuilder(512);
       body.append("{\"status\":\"").append(ready ? "ready" : "degraded").append("\",")
           .append("\"alive\":true,")
-          .append("\"backendConnectivity\":").append(ready).append(',')
+          .append("\"backendConnectivity\":").append(backendConnectivity).append(',')
+          .append("\"kerberos\":{")
+          .append("\"frontDoor\":").append(renderKerberos(frontDoorKerberos)).append(',')
+          .append("\"backend\":").append(renderKerberos(backendKerberos)).append("},")
           .append("\"backends\":[");
       for (int index = 0; index < statuses.size(); index++) {
         ProxyRuntimeState.BackendRuntimeStatus status = statuses.get(index);
@@ -121,8 +131,56 @@ public final class ManagementHttpServer implements AutoCloseable {
       respond(exchange, ready ? 200 : 503, "application/json; charset=utf-8", body.toString());
     }
 
+    private KerberosHealthProbe.KerberosStatus configKerberosStatus() {
+      if (!config.security().kerberosEnabled()) {
+        return KerberosHealthProbe.disabled("frontDoor");
+      }
+      return KerberosHealthProbe.probe(
+          "frontDoor",
+          config.security().serverPrincipal(),
+          config.security().keytab());
+    }
+
+    private KerberosHealthProbe.KerberosStatus backendKerberosStatus() {
+      boolean backendKerberosEnabled = config.catalogs().values().stream()
+          .anyMatch(catalog -> Boolean.parseBoolean(catalog.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false")));
+      if (!backendKerberosEnabled) {
+        return KerberosHealthProbe.disabled("backend");
+      }
+      return KerberosHealthProbe.probe(
+          "backend",
+          config.security().outboundPrincipal(),
+          config.security().outboundKeytab());
+    }
+
     private static String escape(String value) {
       return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {
+      StringBuilder builder = new StringBuilder(160);
+      builder.append('{')
+          .append("\"component\":\"").append(escape(status.component())).append("\",")
+          .append("\"enabled\":").append(status.enabled()).append(',')
+          .append("\"loggedIn\":").append(status.loggedIn()).append(',')
+          .append("\"healthy\":").append(status.healthy()).append(',')
+          .append("\"principal\":");
+      if (status.principal() == null) {
+        builder.append("null");
+      } else {
+        builder.append('"').append(escape(status.principal())).append('"');
+      }
+      builder.append(",\"checkedAtEpochSecond\":").append(status.checkedAtEpochSecond() == null ? "null" : status.checkedAtEpochSecond())
+          .append(",\"tgtExpiresAtEpochSecond\":").append(status.tgtExpiresAtEpochSecond() == null ? "null" : status.tgtExpiresAtEpochSecond())
+          .append(",\"secondsUntilExpiry\":").append(status.secondsUntilExpiry() == null ? "null" : status.secondsUntilExpiry())
+          .append(",\"detail\":");
+      if (status.detail() == null) {
+        builder.append("null");
+      } else {
+        builder.append('"').append(escape(status.detail())).append('"');
+      }
+      builder.append('}');
+      return builder.toString();
     }
   }
 }

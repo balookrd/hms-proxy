@@ -5,7 +5,9 @@ import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
+import io.github.mmalykhin.hmsproxy.observability.AuditLogUtil;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
 import io.github.mmalykhin.hmsproxy.util.WriteTraceUtil;
@@ -15,7 +17,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
@@ -33,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 public final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
+  private static final Logger AUDIT_LOG = LoggerFactory.getLogger("io.github.mmalykhin.hmsproxy.audit");
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
   private static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
   private static final ThreadLocal<RequestObservation> REQUEST_OBSERVATION = new ThreadLocal<>();
@@ -177,6 +182,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
           observation.backend(),
           observation.status(),
           elapsedSeconds(startedAt));
+      emitAuditLog(requestId, observation, elapsedMillis(startedAt));
       REQUEST_ID.remove();
       REQUEST_OBSERVATION.remove();
     }
@@ -727,6 +733,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       CatalogRouter.ResolvedNamespace namespace
   ) {
     if (namespace.catalogName().equals(config.defaultCatalog()) && router.resolvePattern(dbName).isEmpty()) {
+      currentObservation().markDefaultCatalogRoute();
       observability.metrics().recordDefaultCatalogRoute(methodName);
     }
   }
@@ -740,8 +747,30 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     if ((catName == null || catName.isBlank())
         && namespace.catalogName().equals(config.defaultCatalog())
         && router.resolvePattern(dbName).isEmpty()) {
+      currentObservation().markDefaultCatalogRoute();
       observability.metrics().recordDefaultCatalogRoute(methodName);
     }
+  }
+
+  private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
+    if (!AUDIT_LOG.isInfoEnabled()) {
+      return;
+    }
+    Map<String, Object> fields = new LinkedHashMap<>();
+    fields.put("event", "hms_proxy_audit");
+    fields.put("requestId", requestId);
+    fields.put("method", observation.method());
+    fields.put("catalog", observation.catalog());
+    fields.put("backend", observation.backend());
+    fields.put("status", observation.status());
+    fields.put("durationMs", elapsedMs);
+    fields.put("routed", observation.routed());
+    fields.put("fanout", observation.fanout());
+    fields.put("fallback", observation.fallback());
+    fields.put("defaultCatalogRouted", observation.defaultCatalogRouted());
+    fields.put("remoteAddress", ClientRequestContext.remoteAddress().orElse(null));
+    fields.put("authenticatedUser", ClientRequestContext.remoteUser().orElse(null));
+    AUDIT_LOG.info(AuditLogUtil.toJson(fields));
   }
 
   private static RequestObservation currentObservation() {
@@ -754,6 +783,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     private String catalog = "none";
     private String backend = "none";
     private String status = "ok";
+    private boolean routed;
+    private boolean fanout;
+    private boolean fallback;
+    private boolean defaultCatalogRouted;
 
     private RequestObservation(String method) {
       this.method = method;
@@ -775,9 +808,26 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       return status;
     }
 
+    private boolean routed() {
+      return routed;
+    }
+
+    private boolean fanout() {
+      return fanout;
+    }
+
+    private boolean fallback() {
+      return fallback;
+    }
+
+    private boolean defaultCatalogRouted() {
+      return defaultCatalogRouted;
+    }
+
     private void recordNamespace(CatalogRouter.ResolvedNamespace namespace) {
       catalog = namespace.catalogName();
       backend = namespace.backend().name();
+      routed = true;
     }
 
     private void recordBackend(String backendName) {
@@ -785,21 +835,29 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       if ("none".equals(catalog)) {
         catalog = backendName;
       }
+      routed = true;
     }
 
     private void recordFanout() {
       catalog = "all";
       backend = "fanout";
+      routed = true;
+      fanout = true;
     }
 
     private void markFallback() {
       status = "fallback";
+      fallback = true;
     }
 
     private void markError() {
       if (!"fallback".equals(status)) {
         status = "error";
       }
+    }
+
+    private void markDefaultCatalogRoute() {
+      defaultCatalogRouted = true;
     }
   }
 }
