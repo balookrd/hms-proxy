@@ -1,5 +1,7 @@
 # HMS Proxy
 
+[![CI](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml)
+
 Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
 
 Java proxy for Hive Metastore that exposes one external HMS Thrift endpoint and routes
