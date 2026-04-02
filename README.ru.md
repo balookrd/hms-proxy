@@ -153,7 +153,8 @@ compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hi
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
-Для mixed deployment runtime можно закрепить явно по каталогу:
+Backend runtime задаётся явно по каталогу. Если `catalog.<name>.runtime-profile` не указан, для
+этого каталога используется `APACHE_3_1_3`:
 
 ```properties
 catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
@@ -162,7 +163,11 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
-С этим jar proxy поднимает Hortonworks thrift `Processor` в isolated classloader и автоматически
+С этим jar proxy может открыть выбранный Hortonworks backend runtime в isolated classloader.
+Выбор runtime не autodetect'ится по версии backend сервера, а берётся из
+`catalog.<name>.runtime-profile`.
+
+Для front door proxy поднимает Hortonworks thrift `Processor` в isolated classloader и автоматически
 бриджит общие RPC в внутренний Apache `3.1.3` handler. Поддержанные HDP-only методы:
 
 - `truncate_table_req` -> `truncate_table`

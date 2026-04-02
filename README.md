@@ -165,8 +165,8 @@ For Hortonworks backend runtimes the proxy forces `hive.metastore.uri.selection=
 inside the isolated metastore client. This avoids a known HDP 3.1.0.x client bug in the
 random URI selection path when `HiveMetaStoreClient` resolves backend metastore URIs.
 
-For mixed deployments, backend runtime selection can be pinned per catalog instead of relying on
-`getVersion()` autodetection:
+Backend runtime is configured explicitly per catalog. If `catalog.<name>.runtime-profile` is not
+set, the proxy uses `APACHE_3_1_3` for that catalog:
 
 ```properties
 catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
@@ -175,7 +175,11 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
-With that jar present, the proxy instantiates the Hortonworks thrift `Processor` in an isolated
+With that jar present, the proxy can open the selected Hortonworks backend runtime in an isolated
+classloader. Runtime choice is not autodetected from the backend server version; it follows the
+configured `catalog.<name>.runtime-profile`.
+
+For the front door, the proxy instantiates the Hortonworks thrift `Processor` in an isolated
 classloader and bridges overlapping RPCs to the internal Apache `3.1.3` handler automatically.
 Selected HDP-only methods are also adapted to Apache equivalents:
 

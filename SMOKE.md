@@ -252,8 +252,10 @@ Expected:
 
 **11. What To Watch In Proxy Logs**
 Look for:
-- `Detected backend catalog ... metastore version ...`
-- `legacy request API compatibility mode`
+- `Starting HMS proxy`
+- `Routing config: defaultCatalog=...`
+- `Compatibility config: frontendProfile=..., frontendVersion=...`
+- `Backend catalog '...' selected runtimeProfile=... compatibilityProfile=...`
 - `backend-request catalog=... method=...`
 - repeated `UNKNOWN_METHOD`
 - `Unsupported Hortonworks frontend method` errors
