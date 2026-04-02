@@ -7,36 +7,63 @@ Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
 Java proxy for Hive Metastore that exposes one external HMS Thrift endpoint and routes
 requests to multiple backend metastores by catalog.
 
-## What it supports
+## Primary scenarios
 
-- one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients
-- Apache Hive Metastore `3.1.3` on the front door with compatibility downgrades for older backend RPCs
-- Hortonworks Hive Metastore `3.1.0.3.1.0.0-78` backends for read paths that still expect pre-`*_req` APIs
-- optional front-door identity switch so the proxy can present itself as Hortonworks
-  `3.1.0.3.1.0.0-78` instead of Apache Hive Metastore `3.1.3`
-- optional Hortonworks front-door bridge through an HDP `standalone-metastore` jar for
-  HDP-only thrift request-wrapper methods
-- routing by explicit `catName` in newer HMS requests
-- routing by legacy database names in `catalog<separator>db` form for older clients
-- static catalog registry, so one proxy can front tables stored in different storage systems
-- optional Kerberos/SASL on the front door
-- optional impersonation of the authenticated Kerberos caller on backend HMS requests
+### 1. Multi-catalog federation
 
-## Important scope notes
+Use one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients, while
+routing requests to multiple backend metastores by explicit `catName` or by legacy
+`catalog<separator>db` database names.
 
-- catalog definitions are managed in the proxy config, not via `create_catalog` or `drop_catalog`
+### 2. Apache ↔ HDP compatibility bridge
+
+Expose an Apache Hive Metastore `3.1.3` front door, downgrade selected calls for older
+Hortonworks `3.1.0.x` backends, and optionally present the proxy itself as a Hortonworks
+front door through an HDP `standalone-metastore` jar.
+
+### 3. Kerberized proxy for HS2/HMS
+
+Run the proxy as the security boundary between clients and backend metastores with optional
+Kerberos/SASL on the front door, optional outbound Kerberos to backends, and optional
+impersonation of the authenticated Kerberos caller.
+
+## RPC behavior matrix
+
+| RPC group | Status | Behavior |
+| --- | --- | --- |
+| Catalog-aware metadata reads and writes with explicit namespace (`catName`, `dbName`, `fullTableName`) | supported | Routed to the resolved catalog/backend normally. |
+| Legacy reads and writes using `catalog<separator>db` database names | supported | Routed by externalized database name; table/database objects are rewritten on the way back. |
+| Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
+| Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`. |
+| Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
+| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; validate carefully before using in multi-catalog mode. |
+| Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured. |
+| Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog definitions are managed in proxy config, not through client RPCs. |
+| HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
+| HDP-only methods that require a matching Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Forwarded only to compatible Hortonworks backends/front doors when configured. |
+| HDP-only methods without a safe Apache mapping | rejected | Proxy fails explicitly instead of returning a misleading success response. |
+
+## Public compatibility matrix
+
+This matrix is the public contract for how to think about the proxy. It is intentionally grouped by
+client shape, advertised front door, backend runtime, auth mode, and method family rather than by
+individual thrift method names.
+
+| Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
+| --- | --- | --- | --- | --- | --- |
+| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` or `KERBEROS` | catalog-aware reads/writes, legacy `catalog<separator>db` routing, view rewrite | Supported as the baseline deployment. |
+| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | read paths and selected metadata writes that can fall back from `*_req` APIs | Supported with compatibility downgrade; some calls are degraded to legacy RPCs. |
+| Hortonworks clients that only expect a Hortonworks front-door identity via `getVersion()` | `HORTONWORKS_*` without standalone jar | `APACHE_3_1_3` or Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | overlapping Apache/HDP method families | Supported when changing the advertised profile is enough for the client. |
+| Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Supported when the matching Hortonworks front-door and backend runtime jars are configured. |
+| Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
+| HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
+| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; treat this as a single-catalog control plane unless you validated otherwise. |
+| Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
+| Clients attempting global writes without a resolvable catalog or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
+
+## Scope notes
+
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
-- session-level compatibility calls and other global read-only HMS operations without catalog context are routed to `routing.default-catalog`
-- ACID/txn/lock lifecycle RPCs that do not carry catalog or database context are also routed to
-  `routing.default-catalog`
-- global write operations without clear catalog context are rejected when more than one catalog is configured
-- when a backend HMS returns `TApplicationException` for selected read-only service APIs
-  (notifications, privilege refresh/introspection, token/key listings except delegation-token issuance,
-  txn/lock/compaction status),
-  the proxy returns an empty compatibility response instead of failing the caller
-- when a backend HMS does not implement newer Apache `3.1.3` request-wrapper RPCs such as
-  `get_table_req` or `get_table_objects_by_name_req`, the proxy automatically retries through
-  older legacy methods supported by Hortonworks `3.1.0.x`
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
 - in practice this means ACID write lifecycle is supported only for the default catalog unless the
   request payload itself carries routable namespace information such as `dbName` or `fullTableName`
@@ -616,6 +643,15 @@ client:
 
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
+
+The current smoke coverage is summarized in the [SMOKE.md](SMOKE.md) test matrix by:
+
+- client version
+- front-door profile
+- backend profile
+- auth mode
+- method families
+- expected result
 
 Build the jar first:
 
