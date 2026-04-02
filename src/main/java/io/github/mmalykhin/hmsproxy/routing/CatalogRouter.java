@@ -25,7 +25,7 @@ public final class CatalogRouter implements AutoCloseable {
     return new CatalogRouter(config, backends);
   }
 
-  Collection<CatalogBackend> backends() {
+  public Collection<CatalogBackend> backends() {
     return backends.values();
   }
 

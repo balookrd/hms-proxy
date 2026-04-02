@@ -29,6 +29,29 @@ public class ProxyConfigLoaderTest {
       Assert.assertEquals("thrift://hms2:9083",
           config.catalogs().get("catalog2").hiveConf().get("hive.metastore.uris"));
       Assert.assertNull(config.catalogs().get("catalog1").runtimeProfile());
+      Assert.assertFalse(config.management().enabled());
+      Assert.assertEquals(10088, config.management().port());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void enablesManagementListenerWhenPortIsConfigured() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          server.bind-host=127.0.0.2
+          catalogs=catalog1
+          management.port=19083
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.management().enabled());
+      Assert.assertEquals("127.0.0.2", config.management().bindHost());
+      Assert.assertEquals(19083, config.management().port());
     } finally {
       Files.deleteIfExists(file);
     }

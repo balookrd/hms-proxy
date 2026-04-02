@@ -67,6 +67,15 @@ public final class ProxyConfigLoader {
     String[] transactionalDdlClientAddresses =
         splitCsv(get(properties, "guard.transactional-ddl.client-addresses", ""));
     ClientAddressMatcher.parseAll(Arrays.asList(transactionalDdlClientAddresses));
+    boolean managementPortConfigured = properties.containsKey("management.port");
+    boolean managementEnabled = Boolean.parseBoolean(
+        get(properties, "management.enabled", Boolean.toString(managementPortConfigured)));
+    int managementPort = getInt(properties, "management.port", port + 1000);
+    if (managementEnabled && (managementPort < 1 || managementPort > 65535)) {
+      throw new IllegalArgumentException(
+          "management.port must be between 1 and 65535, got: " + managementPort);
+    }
+    String managementBindHost = get(properties, "management.bind-host", server.bindHost());
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -192,6 +201,8 @@ public final class ProxyConfigLoader {
         new ProxyConfig.TransactionalDdlGuardConfig(
             transactionalDdlGuardMode,
             Arrays.asList(transactionalDdlClientAddresses));
+    ProxyConfig.ManagementConfig management =
+        new ProxyConfig.ManagementConfig(managementEnabled, managementBindHost, managementPort);
     return new ProxyConfig(
         server,
         security,
@@ -200,7 +211,8 @@ public final class ProxyConfigLoader {
         catalogs,
         backend,
         compatibility,
-        transactionalDdlGuard);
+        transactionalDdlGuard,
+        management);
   }
 
   private static String[] splitCsv(String value) {
