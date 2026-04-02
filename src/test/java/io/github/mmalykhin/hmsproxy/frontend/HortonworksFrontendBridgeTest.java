@@ -258,6 +258,63 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeDelegatesGetTablesExtToHortonworksExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("getTablesExt".equals(method.getName())) {
+        Object request = args[0];
+        capturedDb.set((String) request.getClass().getMethod("getDatabase").invoke(request));
+        Class<?> infoClass = request.getClass().getClassLoader()
+            .loadClass("org.apache.hadoop.hive.metastore.api.ExtendedTableInfo");
+        Object info = infoClass.getConstructor(String.class).newInstance("events");
+        return List.of(info);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTablesExtRequest");
+    Object request = requestClass.getConstructor(String.class, String.class, String.class, int.class)
+        .newInstance("catalog1", "sales", "*", 1);
+    Method method = bridge.ifaceClass().getMethod("get_tables_ext", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals(1, ((List<?>) response).size());
+  }
+
+  @Test
+  public void bridgeDelegatesGetAllMaterializedViewsToHortonworksExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("getAllMaterializedViewObjectsForRewriting".equals(method.getName())) {
+        Table table = new Table();
+        table.setDbName("sales");
+        table.setTableName("mv_events");
+        return List.of(table);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Method method = bridge.ifaceClass().getMethod("get_all_materialized_view_objects_for_rewriting");
+
+    Object response = method.invoke(bridge.handlerProxy());
+
+    Assert.assertEquals(1, ((List<?>) response).size());
+  }
+
+  @Test
   public void bridgeCoversAllHortonworksOnlyIfaceMethodsForLegacyRuntime() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
 
@@ -324,7 +381,9 @@ public class HortonworksFrontendBridgeTest {
             "update_table_column_statistics_req",
             "update_partition_column_statistics_req",
             "add_write_notification_log",
-            "get_partitions_by_names_req"),
+            "get_partitions_by_names_req",
+            "get_tables_ext",
+            "get_all_materialized_view_objects_for_rewriting"),
         adaptedMethods);
     Assert.assertTrue(hortonworksOnlyMethods.containsAll(adaptedMethods));
   }
