@@ -501,15 +501,28 @@ If no persistent token store is configured, Hive falls back to
 `org.apache.hadoop.hive.metastore.security.MemoryTokenStore`, and then a proxy
 restart invalidates existing HiveServer2 delegation tokens.
 
-Example with ZooKeeper token storage configured directly in the proxy config:
+### Front-door proxy-user rules for delegation-token issuance
+
+`hadoop.proxyuser.<service>.*` is not related to ZooKeeper transport. It is only needed when a
+service principal such as HiveServer2 asks the proxy to issue an end-user delegation token via
+`get_delegation_token("alice", ...)`.
+
+Example:
+
+```properties
+# Allow HiveServer2's Kerberos principal to request end-user delegation tokens from the proxy.
+security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
+security.front-door-conf.hadoop.proxyuser.hive.groups=*
+```
+
+### ZooKeeper token storage
+
+Example with `ZooKeeperTokenStore` configured directly in the proxy config:
 
 ```properties
 security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
-# Allow HiveServer2's Kerberos principal to request end-user delegation tokens from the proxy.
-security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
-security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
 
 When `ZooKeeperTokenStore` is enabled and `security.mode=KERBEROS`, the proxy now also
