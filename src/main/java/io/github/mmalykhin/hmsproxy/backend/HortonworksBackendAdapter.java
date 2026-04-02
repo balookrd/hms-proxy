@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import java.util.Map;
 import java.util.List;
+import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
@@ -12,6 +13,14 @@ import org.apache.thrift.TApplicationException;
 
 public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
   private static final Map<String, RequestCompatibilityHandler> REQUEST_COMPATIBILITY_HANDLERS = Map.of(
+      "get_database_req",
+      (backend, request, impersonation) -> {
+        return (Database) backend.invokeRawByName(
+            "get_database",
+            new Class<?>[] {String.class},
+            new Object[] {request.getClass().getMethod("getName").invoke(request)},
+            impersonation);
+      },
       "get_table_req",
       (backend, request, impersonation) -> {
         GetTableRequest getTableRequest = (GetTableRequest) request;
@@ -36,8 +45,8 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
         return new GetTablesResult(tables);
       });
 
-  HortonworksBackendAdapter() {
-    super(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+  HortonworksBackendAdapter(MetastoreRuntimeProfile runtimeProfile) {
+    super(runtimeProfile);
   }
 
   @Override

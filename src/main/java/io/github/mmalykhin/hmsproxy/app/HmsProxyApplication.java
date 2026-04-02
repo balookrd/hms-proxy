@@ -60,8 +60,7 @@ public final class HmsProxyApplication {
           LOG.info("Backend standalone-metastore jar override: {}",
               config.compatibility().backendStandaloneMetastoreJar());
         }
-        if (config.compatibility().frontendProfile()
-            == ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+        if (config.compatibility().frontendProfile().runtimeProfile().isHortonworks()) {
           LOG.warn("Hortonworks frontend profile is enabled through the standalone-metastore jar {}. "
                   + "Common Apache/HDP-overlapping thrift calls are bridged automatically, and selected "
                   + "HDP-only request-wrapper methods are adapted to Apache equivalents. Some HDP-only "

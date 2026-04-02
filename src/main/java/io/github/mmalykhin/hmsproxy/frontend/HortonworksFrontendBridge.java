@@ -28,7 +28,8 @@ import org.apache.thrift.protocol.TBinaryProtocol;
 
 public final class HortonworksFrontendBridge {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
-  private static final Set<String> HDP_ONLY_METHODS = Set.of(
+  private static final Set<String> ADAPTED_HDP_ONLY_METHODS = Set.of(
+      "get_database_req",
       "truncate_table_req",
       "alter_table_req",
       "alter_partitions_req",
@@ -60,8 +61,12 @@ public final class HortonworksFrontendBridge {
     return new BridgeBundle(processor, handlerProxy, ifaceClass, classLoader, jarPath);
   }
 
-  static Set<String> supportedHdpOnlyMethods() {
-    return Set.copyOf(HDP_ONLY_METHODS);
+  static Set<String> supportedHdpOnlyMethods(Class<?> ifaceClass) {
+    return ifaceClass == null
+        ? Set.of()
+        : ifaceMethods(ifaceClass).stream()
+            .filter(ADAPTED_HDP_ONLY_METHODS::contains)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
   }
 
   record BridgeBundle(
@@ -96,7 +101,7 @@ public final class HortonworksFrontendBridge {
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
-      if (HDP_ONLY_METHODS.contains(method.getName())) {
+      if (ADAPTED_HDP_ONLY_METHODS.contains(method.getName())) {
         return invokeHdpOnly(method, args);
       }
 
@@ -120,6 +125,7 @@ public final class HortonworksFrontendBridge {
       String methodName = method.getName();
       Object request = args == null || args.length == 0 ? null : args[0];
       return switch (methodName) {
+        case "get_database_req" -> handleGetDatabaseReq(method, request);
         case "truncate_table_req" -> handleTruncateTableReq(method, request);
         case "alter_table_req" -> handleAlterTableReq(method, request);
         case "alter_partitions_req" -> handleAlterPartitionsReq(method, request);
@@ -131,6 +137,11 @@ public final class HortonworksFrontendBridge {
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hortonworks frontend method: " + methodName);
       };
+    }
+
+    private Object handleGetDatabaseReq(Method method, Object request) throws Throwable {
+      Object database = apacheHandler.get_database((String) invokeNoArgs(request, "getName"));
+      return convertResult(database, method.getReturnType());
     }
 
     private Object handleTruncateTableReq(Method method, Object request) throws Throwable {
@@ -339,6 +350,14 @@ public final class HortonworksFrontendBridge {
         return null;
       }
     }
+  }
+
+  private static Set<String> ifaceMethods(Class<?> ifaceClass) {
+    Set<String> methods = new java.util.LinkedHashSet<>();
+    for (Method method : ifaceClass.getMethods()) {
+      methods.add(method.getName());
+    }
+    return methods;
   }
 
 }

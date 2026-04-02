@@ -39,7 +39,8 @@ public class BackendRuntimeTest {
         false,
         MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
         factory);
-    HortonworksBackendAdapter adapter = new HortonworksBackendAdapter();
+    HortonworksBackendAdapter adapter =
+        new HortonworksBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
 
     runtime.reconnectShared(adapter);
 

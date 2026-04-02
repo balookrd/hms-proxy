@@ -196,7 +196,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     recordDefaultCatalogRouteIfImplicit("add_write_notification_log", dbName, namespace);
     CatalogBackend backend = namespace.backend();
     validateCatalogAccess(backend, "add_write_notification_log", namespace.backendDbName());
-    if (backend.runtimeProfile() != MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+    if (!backend.runtimeProfile().isHortonworks()) {
       throw metaException(
           "Hortonworks add_write_notification_log requires a Hortonworks backend runtime for catalog '"
               + backend.name()

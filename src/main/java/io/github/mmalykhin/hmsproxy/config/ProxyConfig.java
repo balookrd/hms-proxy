@@ -206,7 +206,8 @@ public record ProxyConfig(
 
   public enum FrontendProfile {
     APACHE_3_1_3(MetastoreRuntimeProfile.APACHE_3_1_3),
-    HORTONWORKS_3_1_0_3_1_0_78(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+    HORTONWORKS_3_1_0_3_1_0_78(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78),
+    HORTONWORKS_3_1_0_3_1_5_6150_1(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1);
 
     private final MetastoreRuntimeProfile runtimeProfile;
 

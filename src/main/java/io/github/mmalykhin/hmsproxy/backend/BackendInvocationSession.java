@@ -42,7 +42,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
   ) throws MetaException {
-    return runtimeProfile == MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78
+    return runtimeProfile.isHortonworks()
         ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile)
         : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
   }

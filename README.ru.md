@@ -195,6 +195,12 @@ compatibility.frontend-profile=APACHE_3_1_3
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 ```
 
+или для клиентов HDP `3.1.0.3.1.5.6150-1`:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+```
+
 Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
 
 ```properties
@@ -202,10 +208,23 @@ compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
+Для HDP `3.1.0.3.1.5.6150-1` используй соответствующий jar:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
 Для isolated Hortonworks backend runtime можно указать backend jar:
 
 ```properties
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+или:
+
+```properties
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
 Backend runtime задаётся явно по каталогу. Если `catalog.<name>.runtime-profile` не указан, для
@@ -218,6 +237,13 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
+Для HDP `3.1.0.3.1.5.6150-1` профиль и jar задаются аналогично:
+
+```properties
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
 С этим jar proxy может открыть выбранный Hortonworks backend runtime в isolated classloader.
 Выбор runtime не autodetect'ится по версии backend сервера, а берётся из
 `catalog.<name>.runtime-profile`.
@@ -225,6 +251,7 @@ catalog.apache.runtime-profile=APACHE_3_1_3
 Для front door proxy поднимает Hortonworks thrift `Processor` в isolated classloader и автоматически
 бриджит общие RPC в внутренний Apache `3.1.3` handler. Поддержанные HDP-only методы:
 
+- `get_database_req` -> `get_database` для HDP `3.1.0.3.1.5.6150-1`
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
 - `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`
@@ -396,9 +423,9 @@ server.port=9083
 routing.default-catalog=hdp
 routing.catalog-db-separator=__
 
-compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
-compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
-compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 
 security.mode=KERBEROS
 security.server-principal=hive/_HOST@EXAMPLE.COM
@@ -409,8 +436,8 @@ security.impersonation-enabled=true
 
 catalogs=hdp,apache
 
-catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
-catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 catalog.hdp.impersonation-enabled=true
 catalog.hdp.conf.hive.metastore.uris=thrift://hdp-hms.example.com:9083
 catalog.hdp.conf.hive.metastore.sasl.enabled=true

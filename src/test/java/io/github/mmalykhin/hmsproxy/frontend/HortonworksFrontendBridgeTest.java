@@ -21,12 +21,14 @@ import org.junit.Assume;
 import org.junit.Test;
 
 public class HortonworksFrontendBridgeTest {
-  private static final Path HDP_JAR =
+  private static final Path HDP_78_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar").toAbsolutePath();
+  private static final Path HDP_6150_JAR =
+      Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
 
   @Test
   public void bridgeDelegatesCommonRequestWrapperMethods() throws Exception {
-    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();
 
     ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
@@ -42,7 +44,8 @@ public class HortonworksFrontendBridgeTest {
       throw new UnsupportedOperationException(method.getName());
     });
 
-    HortonworksFrontendBridge.BridgeBundle bridge = HortonworksFrontendBridge.createBridge(config(), apacheHandler);
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
     Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
     Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
@@ -58,7 +61,7 @@ public class HortonworksFrontendBridgeTest {
 
   @Test
   public void bridgeMapsHdpOnlyTruncateTableReqToLegacyApacheMethod() throws Exception {
-    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();
     List<Object> capturedArgs = new ArrayList<>();
 
@@ -71,7 +74,8 @@ public class HortonworksFrontendBridgeTest {
       return null;
     });
 
-    HortonworksFrontendBridge.BridgeBundle bridge = HortonworksFrontendBridge.createBridge(config(), apacheHandler);
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableRequest");
     Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
     requestClass.getMethod("setPartNames", List.class).invoke(request, List.of("ds=2026-03-31"));
@@ -86,7 +90,7 @@ public class HortonworksFrontendBridgeTest {
 
   @Test
   public void bridgeMapsHdpOnlyStatsUpdateRequestToSetAggrStatsFor() throws Exception {
-    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();
 
     ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
@@ -98,7 +102,8 @@ public class HortonworksFrontendBridgeTest {
       throw new UnsupportedOperationException(method.getName());
     });
 
-    HortonworksFrontendBridge.BridgeBundle bridge = HortonworksFrontendBridge.createBridge(config(), apacheHandler);
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest");
     Object request = requestClass.getConstructor().newInstance();
     requestClass.getMethod("setColStats", List.class).invoke(request, List.of());
@@ -113,7 +118,7 @@ public class HortonworksFrontendBridgeTest {
 
   @Test
   public void bridgeDelegatesAddWriteNotificationLogToHortonworksExtension() throws Exception {
-    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();
 
     ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
@@ -129,7 +134,8 @@ public class HortonworksFrontendBridgeTest {
       throw new UnsupportedOperationException(method.getName());
     }, HortonworksFrontendExtension.class);
 
-    HortonworksFrontendBridge.BridgeBundle bridge = HortonworksFrontendBridge.createBridge(config(), apacheHandler);
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass =
         bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.WriteNotificationLogRequest");
     Class<?> fileInfoClass =
@@ -150,11 +156,45 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
-  public void bridgeCoversAllHortonworksOnlyIfaceMethods() throws Exception {
-    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+  public void bridgeMapsGetDatabaseReqForNewerHdpRuntime() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("get_database".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Database database =
+            new org.apache.hadoop.hive.metastore.api.Database();
+        database.setName((String) args[0]);
+        return database;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(), noopHandler());
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetDatabaseRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setName", String.class).invoke(request, "sales");
+    Method method = bridge.ifaceClass().getMethod("get_database_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("get_database", invokedMethod.get());
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.Database", response.getClass().getName());
+    Assert.assertEquals("sales", response.getClass().getMethod("getName").invoke(response));
+  }
+
+  @Test
+  public void bridgeCoversAllHortonworksOnlyIfaceMethodsForLegacyRuntime() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
+            noopHandler());
 
     Set<String> apacheMethods = new HashSet<>();
     for (Method method : ThriftHiveMetastore.Iface.class.getMethods()) {
@@ -178,10 +218,46 @@ public class HortonworksFrontendBridgeTest {
             "update_partition_column_statistics_req",
             "add_write_notification_log"),
         hortonworksOnlyMethods);
-    Assert.assertEquals(hortonworksOnlyMethods, HortonworksFrontendBridge.supportedHdpOnlyMethods());
+    Assert.assertEquals(hortonworksOnlyMethods, HortonworksFrontendBridge.supportedHdpOnlyMethods(bridge.ifaceClass()));
   }
 
-  private static ProxyConfig config() {
+  @Test
+  public void bridgeCoversAllHortonworksOnlyIfaceMethodsFor6150Runtime() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            noopHandler());
+
+    Set<String> apacheMethods = new HashSet<>();
+    for (Method method : ThriftHiveMetastore.Iface.class.getMethods()) {
+      apacheMethods.add(signature(method));
+    }
+
+    Set<String> hortonworksOnlyMethods = new HashSet<>();
+    for (Method method : bridge.ifaceClass().getMethods()) {
+      if (!apacheMethods.contains(signature(method))) {
+        hortonworksOnlyMethods.add(method.getName());
+      }
+    }
+
+    Set<String> adaptedMethods = HortonworksFrontendBridge.supportedHdpOnlyMethods(bridge.ifaceClass());
+    Assert.assertEquals(
+        Set.of(
+            "get_database_req",
+            "truncate_table_req",
+            "alter_table_req",
+            "alter_partitions_req",
+            "rename_partition_req",
+            "update_table_column_statistics_req",
+            "update_partition_column_statistics_req",
+            "add_write_notification_log"),
+        adaptedMethods);
+    Assert.assertTrue(hortonworksOnlyMethods.containsAll(adaptedMethods));
+  }
+
+  private static ProxyConfig config(ProxyConfig.FrontendProfile frontendProfile, Path jar) {
     return new ProxyConfig(
         new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
@@ -191,8 +267,8 @@ public class HortonworksFrontendBridgeTest {
             "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
-            HDP_JAR.toString(),
+            frontendProfile,
+            jar.toString(),
             null,
             false));
   }

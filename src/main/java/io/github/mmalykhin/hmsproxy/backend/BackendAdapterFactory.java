@@ -8,7 +8,8 @@ final class BackendAdapterFactory {
 
   static BackendAdapter create(MetastoreRuntimeProfile runtimeProfile) {
     return switch (runtimeProfile) {
-      case HORTONWORKS_3_1_0_3_1_0_78 -> new HortonworksBackendAdapter();
+      case HORTONWORKS_3_1_0_3_1_0_78, HORTONWORKS_3_1_0_3_1_5_6150_1 ->
+          new HortonworksBackendAdapter(runtimeProfile);
       case APACHE_3_1_3 -> new ApacheBackendAdapter();
     };
   }

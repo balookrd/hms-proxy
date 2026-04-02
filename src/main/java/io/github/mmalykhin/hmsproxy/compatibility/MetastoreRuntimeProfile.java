@@ -5,7 +5,11 @@ public enum MetastoreRuntimeProfile {
   HORTONWORKS_3_1_0_3_1_0_78(
       "Hortonworks Hive Metastore",
       "3.1.0.3.1.0.0-78",
-      "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar");
+      "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar"),
+  HORTONWORKS_3_1_0_3_1_5_6150_1(
+      "Hortonworks Hive Metastore",
+      "3.1.0.3.1.5.6150-1",
+      "hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar");
 
   private final String displayName;
   private final String metastoreVersion;
@@ -27,5 +31,13 @@ public enum MetastoreRuntimeProfile {
 
   public String defaultStandaloneMetastoreJar() {
     return defaultStandaloneMetastoreJar;
+  }
+
+  public boolean isHortonworks() {
+    return this == HORTONWORKS_3_1_0_3_1_0_78 || this == HORTONWORKS_3_1_0_3_1_5_6150_1;
+  }
+
+  public boolean usesLegacyRequestCompatibility() {
+    return this == HORTONWORKS_3_1_0_3_1_0_78;
   }
 }

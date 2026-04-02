@@ -94,7 +94,7 @@ public class HortonworksBackendAdapterTest {
     return newBackend(
         proxyConfig,
         catalogConfig,
-        new HortonworksBackendAdapter(),
+        new HortonworksBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78),
         newBackendRuntime(proxyConfig, catalogConfig, invocationHandler));
   }
 

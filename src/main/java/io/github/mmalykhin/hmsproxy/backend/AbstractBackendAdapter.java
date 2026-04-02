@@ -11,7 +11,7 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
 
   protected AbstractBackendAdapter(MetastoreRuntimeProfile runtimeProfile) {
     this.runtimeProfile = runtimeProfile;
-    this.backendProfile = runtimeProfile == MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78
+    this.backendProfile = runtimeProfile.usesLegacyRequestCompatibility()
         ? MetastoreCompatibility.BackendProfile.HORTONWORKS_3_1_0_LEGACY_REQUESTS
         : MetastoreCompatibility.BackendProfile.MODERN_REQUESTS;
   }

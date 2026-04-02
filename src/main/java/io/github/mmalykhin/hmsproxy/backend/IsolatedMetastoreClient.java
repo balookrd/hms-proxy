@@ -105,7 +105,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       Class<?> childConfigurationClass,
       MetastoreRuntimeProfile runtimeProfile
   ) throws ReflectiveOperationException {
-    if (runtimeProfile != MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78) {
+    if (!runtimeProfile.isHortonworks()) {
       return;
     }
 
