@@ -72,7 +72,9 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
-## Management endpoints, metrics, and dashboard
+## Observability
+
+### Management listener
 
 The proxy can expose a lightweight HTTP listener for health checks, readiness, and Prometheus
 metrics. The listener is disabled by default and turns on automatically when `management.port`
@@ -93,12 +95,36 @@ management.bind-host=0.0.0.0
 management.port=19083
 ```
 
+Quick checks:
+
+```bash
+curl -s http://127.0.0.1:19083/healthz
+curl -s http://127.0.0.1:19083/readyz
+curl -s http://127.0.0.1:19083/metrics
+```
+
+### Health and readiness endpoints
+
 Available endpoints:
 
 - `/healthz` returns process liveness and uptime
 - `/readyz` checks backend connectivity, returns per-backend `connected` / `degraded` state,
   and includes Kerberos login status plus TGT freshness for front-door and outbound backend credentials
 - `/metrics` exposes Prometheus text format metrics
+
+`/healthz` is intended for simple liveness checks and only answers whether the proxy process is up.
+
+`/readyz` is intended for load balancers, orchestration probes, and operational diagnostics. The
+response includes:
+
+- overall readiness status
+- backend connectivity summary
+- per-backend `connected`, `degraded`, `lastSuccessEpochSecond`, `lastFailureEpochSecond`,
+  `lastProbeEpochSecond`, and `lastError`
+- Kerberos status for the front door and outbound backend credentials
+- Kerberos TGT freshness via `tgtExpiresAtEpochSecond` and `secondsUntilExpiry` when available
+
+### Prometheus metrics
 
 Current Prometheus metrics:
 
@@ -119,14 +145,33 @@ scrape_configs:
           - hms-proxy-01.example.com:19083
 ```
 
+Metric semantics:
+
+- `status` in `hms_proxy_requests_total` is one of `ok`, `error`, or `fallback`
+- `catalog=all, backend=fanout` means a request was broadcast to multiple backends
+- `hms_proxy_backend_failures_total` counts backend-side invocation failures grouped by backend and exception type
+- `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
+- `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
+- `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+
+### Structured audit log
+
+The proxy emits one structured audit log record per request through the logger
+`io.github.mmalykhin.hmsproxy.audit`. Each record is a single-line JSON object with fields such as
+`requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress`,
+`authenticatedUser`, `routed`, `fanout`, `fallback`, and `defaultCatalogRouted`.
+
+Example:
+
+```json
+{"event":"hms_proxy_audit","requestId":42,"method":"get_table","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
+```
+
+### Grafana dashboard
+
 A ready-to-import Grafana dashboard is included in
 `monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
 fallbacks, default-catalog routing, and ambiguous routing events.
-
-The proxy also emits one structured audit log record per request through the logger
-`io.github.mmalykhin.hmsproxy.audit`. Each record is a single-line JSON object with fields such as
-`requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress`, and
-`authenticatedUser`.
 
 ## Routing model
 

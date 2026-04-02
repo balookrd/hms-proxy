@@ -69,7 +69,9 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
-## Management endpoints, метрики и dashboard
+## Observability
+
+### Management listener
 
 Proxy может поднимать легковесный HTTP listener для health checks, readiness и Prometheus
 метрик. По умолчанию listener выключен и автоматически включается, если задан `management.port`:
@@ -89,12 +91,36 @@ management.bind-host=0.0.0.0
 management.port=19083
 ```
 
+Быстрые проверки:
+
+```bash
+curl -s http://127.0.0.1:19083/healthz
+curl -s http://127.0.0.1:19083/readyz
+curl -s http://127.0.0.1:19083/metrics
+```
+
+### Health и readiness endpoints
+
 Доступные endpoints:
 
 - `/healthz` возвращает liveness процесса и uptime
 - `/readyz` проверяет backend connectivity, отдаёт per-backend состояние `connected` / `degraded`,
   а также включает Kerberos login status и TGT freshness для front-door и outbound backend credentials
 - `/metrics` отдаёт Prometheus text format
+
+`/healthz` предназначен для простых liveness checks и отвечает только на вопрос, жив ли сам
+процесс proxy.
+
+`/readyz` предназначен для load balancer, orchestration probes и operational diagnostics. В ответе есть:
+
+- общий статус readiness
+- summary по backend connectivity
+- по каждому backend поля `connected`, `degraded`, `lastSuccessEpochSecond`,
+  `lastFailureEpochSecond`, `lastProbeEpochSecond` и `lastError`
+- Kerberos status для front door и outbound backend credentials
+- TGT freshness через `tgtExpiresAtEpochSecond` и `secondsUntilExpiry`, когда эти данные доступны
+
+### Prometheus метрики
 
 Текущие Prometheus метрики:
 
@@ -115,14 +141,33 @@ scrape_configs:
           - hms-proxy-01.example.com:19083
 ```
 
-Готовый Grafana dashboard лежит в
-`monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
-backend failures, fallbacks, default-catalog routing и ambiguous routing.
+Семантика метрик:
+
+- `status` в `hms_proxy_requests_total` принимает значения `ok`, `error` или `fallback`
+- `catalog=all, backend=fanout` означает, что запрос был отправлен сразу в несколько backend
+- `hms_proxy_backend_failures_total` считает backend-side ошибки вызова с группировкой по backend и exception type
+- `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
+- `hms_proxy_routing_ambiguous_total` считает запросы, отклонённые из-за conflicting namespace hints
+- `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+
+### Structured audit log
 
 Proxy также пишет один structured audit log на каждый запрос через logger
 `io.github.mmalykhin.hmsproxy.audit`. Каждая запись представляет собой single-line JSON с полями
-вроде `requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress` и
-`authenticatedUser`.
+`requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress`,
+`authenticatedUser`, `routed`, `fanout`, `fallback` и `defaultCatalogRouted`.
+
+Пример:
+
+```json
+{"event":"hms_proxy_audit","requestId":42,"method":"get_table","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
+```
+
+### Grafana dashboard
+
+Готовый Grafana dashboard лежит в
+`monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
+backend failures, fallbacks, default-catalog routing и ambiguous routing.
 
 ## Модель маршрутизации
 
