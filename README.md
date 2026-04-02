@@ -188,7 +188,7 @@ fallbacks, default-catalog routing, and ambiguous routing events.
 - ACID/txn/lock lifecycle requests that only carry ids, for example `open_txns`, `commit_txn`,
   `abort_txn`, `check_lock`, `unlock`, or `heartbeat`, are pinned to `routing.default-catalog`
 - by default, externalized HMS objects use proxy catalog ids in `catName`/`catalogName`
-- for older HiveServer2 flows, you can enable `compatibility.preserve-backend-catalog-name=true`
+- for older HiveServer2 flows, you can enable `federation.preserve-backend-catalog-name=true`
   so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
   still uses the proxy namespace like `catalog2__default`
 
@@ -364,7 +364,7 @@ If HiveServer2 metadata writes behave differently through the proxy than directl
 backend HMS, try enabling:
 
 ```properties
-compatibility.preserve-backend-catalog-name=true
+federation.preserve-backend-catalog-name=true
 ```
 
 This keeps `catName`/`catalogName` from the backend, typically `hive`, while still routing by the

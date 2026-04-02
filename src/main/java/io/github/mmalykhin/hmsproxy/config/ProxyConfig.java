@@ -12,6 +12,7 @@ public record ProxyConfig(
     Map<String, CatalogConfig> catalogs,
     BackendConfig backend,
     CompatibilityConfig compatibility,
+    FederationConfig federation,
     TransactionalDdlGuardConfig transactionalDdlGuard,
     ManagementConfig management
 ) {
@@ -19,8 +20,11 @@ public record ProxyConfig(
     catalogs = Map.copyOf(catalogs);
     backend = backend == null ? new BackendConfig(Map.of()) : backend;
     compatibility = compatibility == null
-        ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false)
+        ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false)
         : compatibility;
+    federation = federation == null
+        ? new FederationConfig(compatibility.preserveBackendCatalogName())
+        : federation;
     transactionalDdlGuard = transactionalDdlGuard == null
         ? new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of())
         : transactionalDdlGuard;
@@ -37,7 +41,8 @@ public record ProxyConfig(
       Map<String, CatalogConfig> catalogs
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, false),
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
+        new FederationConfig(false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -51,20 +56,7 @@ public record ProxyConfig(
       CompatibilityConfig compatibility
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
-  }
-
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      BackendConfig backend,
-      CompatibilityConfig compatibility
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
+        new FederationConfig(false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -79,6 +71,38 @@ public record ProxyConfig(
       TransactionalDdlGuardConfig transactionalDdlGuard
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
+        new FederationConfig(compatibility != null && compatibility.preserveBackendCatalogName()),
+        transactionalDdlGuard,
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
+        new FederationConfig(false),
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      CompatibilityConfig compatibility,
+      FederationConfig federation,
+      TransactionalDdlGuardConfig transactionalDdlGuard
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
+        federation,
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -154,6 +178,10 @@ public record ProxyConfig(
       frontendProfile = frontendProfile == null ? FrontendProfile.APACHE_3_1_3 : frontendProfile;
     }
 
+    public CompatibilityConfig(FrontendProfile frontendProfile) {
+      this(frontendProfile, null, null, false);
+    }
+
     public CompatibilityConfig(FrontendProfile frontendProfile, boolean preserveBackendCatalogName) {
       this(frontendProfile, null, null, preserveBackendCatalogName);
     }
@@ -161,6 +189,12 @@ public record ProxyConfig(
     public CompatibilityConfig(boolean preserveBackendCatalogName) {
       this(FrontendProfile.APACHE_3_1_3, null, null, preserveBackendCatalogName);
     }
+
+  }
+
+  public record FederationConfig(
+      boolean preserveBackendCatalogName
+  ) {
   }
 
   public record TransactionalDdlGuardConfig(

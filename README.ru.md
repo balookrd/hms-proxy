@@ -1,5 +1,7 @@
 # HMS Proxy
 
+[![CI](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml)
+
 English documentation: [README.md](README.md), [SMOKE.md](SMOKE.md)
 
 Java proxy для Hive Metastore, который поднимает один внешний HMS Thrift endpoint и маршрутизирует
@@ -179,7 +181,7 @@ backend failures, fallbacks, default-catalog routing и ambiguous routing.
   совместимости пытается маршрутизировать по `dbName` / `default-catalog`
 - по умолчанию externalized HMS objects используют proxy catalog ids в `catName`/`catalogName`
 - для старых HiveServer2 сценариев можно включить
-  `compatibility.preserve-backend-catalog-name=true`, чтобы во внешних объектах сохранялся
+  `federation.preserve-backend-catalog-name=true`, чтобы во внешних объектах сохранялся
   backend catalog name, например `hive`, а `dbName` при этом оставался proxy namespace
 
 Разделитель каталога и базы настраивается:
@@ -349,7 +351,7 @@ routing.catalog-db-separator=__
 попробовать:
 
 ```properties
-compatibility.preserve-backend-catalog-name=true
+federation.preserve-backend-catalog-name=true
 ```
 
 Тогда `catName`/`catalogName` будет сохраняться с backend стороны, обычно это `hive`, а routing

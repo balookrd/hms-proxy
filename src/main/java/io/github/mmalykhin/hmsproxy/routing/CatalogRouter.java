@@ -29,29 +29,29 @@ public final class CatalogRouter implements AutoCloseable {
     return backends.values();
   }
 
-  boolean singleCatalog() {
+  public boolean singleCatalog() {
     return backends.size() == 1;
   }
 
-  CatalogBackend defaultBackend() {
+  public CatalogBackend defaultBackend() {
     return requireBackend(config.defaultCatalog());
   }
 
-  CatalogBackend requireBackend(String catalog) {
+  public CatalogBackend requireBackend(String catalog) {
     if (!backends.containsKey(catalog)) {
       throw new IllegalArgumentException("Unknown catalog: " + catalog);
     }
     return backends.get(catalog);
   }
 
-  Optional<ResolvedNamespace> resolveCatalogIfKnown(String catalog, String backendDbName) {
+  public Optional<ResolvedNamespace> resolveCatalogIfKnown(String catalog, String backendDbName) {
     if (catalog == null || catalog.isBlank() || !backends.containsKey(catalog)) {
       return Optional.empty();
     }
     return Optional.of(resolveCatalog(catalog, backendDbName));
   }
 
-  ResolvedNamespace resolveDatabase(String dbName) throws MetaException {
+  public ResolvedNamespace resolveDatabase(String dbName) throws MetaException {
     String normalizedDbName = normalizeExternalDbName(dbName);
     if (normalizedDbName == null || normalizedDbName.isBlank()) {
       return resolveCatalog(config.defaultCatalog(), normalizedDbName);
@@ -68,7 +68,7 @@ public final class CatalogRouter implements AutoCloseable {
     return resolveCatalog(config.defaultCatalog(), normalizedDbName);
   }
 
-  Optional<ResolvedNamespace> resolvePattern(String dbPattern) {
+  public Optional<ResolvedNamespace> resolvePattern(String dbPattern) {
     String normalizedDbPattern = normalizeExternalDbName(dbPattern);
     if (normalizedDbPattern == null || normalizedDbPattern.isBlank()) {
       return Optional.empty();
@@ -84,7 +84,7 @@ public final class CatalogRouter implements AutoCloseable {
     return Optional.empty();
   }
 
-  ResolvedNamespace resolveCatalog(String catalog, String backendDbName) {
+  public ResolvedNamespace resolveCatalog(String catalog, String backendDbName) {
     String effectiveDbName = backendDbName == null || backendDbName.isBlank() ? "" : backendDbName;
     return resolveCatalog(catalog, effectiveDbName, externalDatabaseName(catalog, effectiveDbName));
   }
@@ -155,7 +155,7 @@ public final class CatalogRouter implements AutoCloseable {
     }
   }
 
-  record ResolvedNamespace(
+  public record ResolvedNamespace(
       CatalogBackend backend,
       String catalogName,
       String externalDbName,

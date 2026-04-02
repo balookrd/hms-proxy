@@ -60,8 +60,10 @@ public final class ProxyConfigLoader {
     }
     String backendStandaloneMetastoreJar =
         trimToNull(properties.getProperty("compatibility.backend-standalone-metastore-jar"));
-    boolean preserveBackendCatalogName =
-        Boolean.parseBoolean(get(properties, "compatibility.preserve-backend-catalog-name", "false"));
+    boolean preserveBackendCatalogName = Boolean.parseBoolean(get(
+        properties,
+        "federation.preserve-backend-catalog-name",
+        get(properties, "compatibility.preserve-backend-catalog-name", "false")));
     ProxyConfig.TransactionalDdlGuardMode transactionalDdlGuardMode = parseTransactionalDdlGuardMode(
         trimToNull(properties.getProperty("guard.transactional-ddl.mode")));
     String[] transactionalDdlClientAddresses =
@@ -197,6 +199,7 @@ public final class ProxyConfigLoader {
             frontendStandaloneMetastoreJar,
             backendStandaloneMetastoreJar,
             preserveBackendCatalogName);
+    ProxyConfig.FederationConfig federation = new ProxyConfig.FederationConfig(preserveBackendCatalogName);
     ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
         new ProxyConfig.TransactionalDdlGuardConfig(
             transactionalDdlGuardMode,
@@ -211,6 +214,7 @@ public final class ProxyConfigLoader {
         catalogs,
         backend,
         compatibility,
+        federation,
         transactionalDdlGuard,
         management);
   }
