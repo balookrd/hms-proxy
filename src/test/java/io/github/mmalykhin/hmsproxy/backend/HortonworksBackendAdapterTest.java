@@ -8,6 +8,7 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
@@ -83,6 +84,40 @@ public class HortonworksBackendAdapterTest {
       Assert.assertEquals("events", legacyTable.get());
       Assert.assertEquals("sales", result.getTable().getDbName());
       Assert.assertEquals("events", result.getTable().getTableName());
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
+  public void invokeRequestCachesUnsupportedWrapperAndSkipsSecondProbe() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicInteger wrapperCalls = new AtomicInteger();
+    AtomicInteger legacyCalls = new AtomicInteger();
+
+    CatalogBackend backend = newIsolatedBackend((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        wrapperCalls.incrementAndGet();
+        throw new TApplicationException(TApplicationException.UNKNOWN_METHOD, "unsupported");
+      }
+      if ("get_table".equals(method.getName())) {
+        legacyCalls.incrementAndGet();
+        return childTable(proxy.getClass().getClassLoader(), (String) args[0], (String) args[1]);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    try {
+      GetTableRequest first = new GetTableRequest("sales", "events");
+      GetTableRequest second = new GetTableRequest("sales", "events");
+
+      backend.invokeRequest("get_table_req", first, null);
+      int wrapperCallsAfterFirstRequest = wrapperCalls.get();
+      backend.invokeRequest("get_table_req", second, null);
+
+      Assert.assertEquals(2, wrapperCallsAfterFirstRequest);
+      Assert.assertEquals(wrapperCallsAfterFirstRequest, wrapperCalls.get());
+      Assert.assertEquals(2, legacyCalls.get());
     } finally {
       backend.close();
     }
