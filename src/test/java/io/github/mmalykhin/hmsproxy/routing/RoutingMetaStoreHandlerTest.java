@@ -141,6 +141,17 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void compatibilityFallbackMethodsWithoutCatalogContextReturnFallback() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_token_identifiers");
+
+    Object result = handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals(List.of(), result);
+  }
+
+  @Test
   public void unrelatedGlobalMethodStillRequiresExplicitHandling() {
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("create_role"));
   }

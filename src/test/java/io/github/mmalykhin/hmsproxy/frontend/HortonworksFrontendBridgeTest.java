@@ -188,6 +188,76 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeMapsCreateTableReqToCreateTableWithEnvironmentContext() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<List<Object>> capturedArgs = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      capturedArgs.set(args == null ? List.of() : List.of(args));
+      return null;
+    });
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Class<?> envClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.EnvironmentContext");
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+    Object env = envClass.getConstructor().newInstance();
+    Method method = bridge.ifaceClass().getMethod("create_table_req", requestClass);
+    Object request = requestClass.getConstructor(tableClass).newInstance(table);
+    requestClass.getMethod("setEnvContext", envClass).invoke(request, env);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("create_table_with_environment_context", invokedMethod.get());
+    Assert.assertEquals("sales", ((Table) capturedArgs.get().get(0)).getDbName());
+    Assert.assertEquals("events", ((Table) capturedArgs.get().get(0)).getTableName());
+    Assert.assertTrue(capturedArgs.get().get(1) instanceof org.apache.hadoop.hive.metastore.api.EnvironmentContext);
+  }
+
+  @Test
+  public void bridgeMapsGetPartitionsByNamesReqToLegacyMethod() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("get_partitions_by_names".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Partition partition =
+            new org.apache.hadoop.hive.metastore.api.Partition();
+        partition.setDbName((String) args[0]);
+        partition.setTableName((String) args[1]);
+        partition.setValues(List.of("ds=2026-04-02"));
+        return List.of(partition);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass =
+        bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    requestClass.getMethod("setNames", List.class).invoke(request, List.of("ds=2026-04-02"));
+    Method method = bridge.ifaceClass().getMethod("get_partitions_by_names_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("get_partitions_by_names", invokedMethod.get());
+    Object partitions = response.getClass().getMethod("getPartitions").invoke(response);
+    Assert.assertEquals(1, ((List<?>) partitions).size());
+  }
+
+  @Test
   public void bridgeCoversAllHortonworksOnlyIfaceMethodsForLegacyRuntime() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
 
@@ -246,13 +316,15 @@ public class HortonworksFrontendBridgeTest {
     Assert.assertEquals(
         Set.of(
             "get_database_req",
+            "create_table_req",
             "truncate_table_req",
             "alter_table_req",
             "alter_partitions_req",
             "rename_partition_req",
             "update_table_column_statistics_req",
             "update_partition_column_statistics_req",
-            "add_write_notification_log"),
+            "add_write_notification_log",
+            "get_partitions_by_names_req"),
         adaptedMethods);
     Assert.assertTrue(hortonworksOnlyMethods.containsAll(adaptedMethods));
   }
