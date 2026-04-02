@@ -262,6 +262,21 @@ security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.exa
 security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
 
+Для persistent storage delegation tokens можно включить `ZooKeeperTokenStore` через обычный
+`HiveConf` или напрямую в `hms-proxy.properties`:
+
+```properties
+security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
+security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
+security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+```
+
+Если при этом включён `security.mode=KERBEROS`, proxy автоматически прокинет
+`hive.metastore.kerberos.principal` и `hive.metastore.kerberos.keytab.file` в front-door `HiveConf`
+из `security.server-principal` и `security.keytab`, чтобы встроенный `ZooKeeperTokenStore`
+аутентифицировался в ZooKeeper по SASL/Kerberos. Если для ZooKeeper нужны отдельные credentials,
+задай эти `hive.metastore.kerberos.*` явно через `security.front-door-conf.*`.
+
 ### Kerberos impersonation
 
 Если хочешь, чтобы backend HMS вызовы выполнялись от имени аутентифицированного пользователя, а не
