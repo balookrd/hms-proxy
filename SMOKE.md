@@ -1,20 +1,25 @@
 **Beeline Smoke**
 
-Подставь ваш `jdbc:hive2://...` и при необходимости `principal=...`. Предположу separator `__`, каталог Hortonworks backend — `hdp`, GNU backend — `gnu`.
+Replace `jdbc:hive2://...` with your actual connection string and add `principal=...` if needed.
+Assume:
+
+- separator: `__`
+- Hortonworks backend catalog: `hdp`
+- Apache backend catalog: `apache`
 
 ```sql
 !connect jdbc:hive2://proxy-host:10000/default
 ```
 
-**1. Базовая проверка фронта**
+**1. Basic Front-Door Check**
 ```sql
 set -v;
 show databases;
 ```
 
-Ожидание:
-- видны базы в виде `hdp__...` и `gnu__...`
-- подключение проходит через proxy
+Expected:
+- databases are visible as `hdp__...` and `apache__...`
+- the connection succeeds through the proxy
 
 **2. Read path: Hortonworks backend**
 ```sql
@@ -24,9 +29,9 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**3. Read path: GNU backend**
+**3. Read path: Apache backend**
 ```sql
-use gnu__default;
+use apache__default;
 show tables;
 describe formatted some_table;
 select * from some_table limit 5;
@@ -37,85 +42,220 @@ select * from some_table limit 5;
 use hdp__default;
 show tables;
 
-use gnu__default;
+use apache__default;
 show tables;
 
 use hdp__default;
 show tables;
 ```
 
-Ожидание:
-- нет “залипания” одного backend
-- маршрутизация остаётся корректной
+Expected:
+- there is no backend “stickiness”
+- routing stays correct
 
 **5. DDL: Hortonworks backend**
 ```sql
 use hdp__default;
 
-create table if not exists smoke_tbl (
+-- managed
+create table if not exists smoke_managed_tbl (
   id int,
   ds string
 )
 partitioned by (p string)
 stored as parquet;
 
-alter table smoke_tbl set tblproperties ('smoke'='true');
+alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='managed');
 
-insert into smoke_tbl partition (p='2026-03-31') values (1, '2026-03-31');
+insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_tbl;
+select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
-alter table smoke_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+show partitions smoke_managed_tbl;
 
-show partitions smoke_tbl;
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
 
-truncate table smoke_tbl;
+show partitions smoke_managed_tbl;
 
-drop table smoke_tbl;
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
+drop table smoke_managed_tbl;
+
+-- external
+create external table if not exists smoke_external_tbl (
+  id int,
+  ds string
+)
+stored as parquet
+location '/tmp/hms-proxy-smoke/hdp/external/smoke_external_tbl';
+
+alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
+
+insert into smoke_external_tbl values (2, '2026-03-31');
+
+select * from smoke_external_tbl where id=2;
+
+describe formatted smoke_external_tbl;
+
+drop table smoke_external_tbl;
+
+-- transactional=true
+create table if not exists smoke_txn_tbl (
+  id int,
+  ds string
+)
+clustered by (id) into 1 buckets
+stored as orc
+tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
+
+insert into smoke_txn_tbl values (1, '2026-03-31');
+
+select * from smoke_txn_tbl where id=1;
+
+drop table smoke_txn_tbl;
 ```
 
-**6. DDL: GNU backend**
+**6. DDL: Apache backend**
 ```sql
-use gnu__default;
+use apache__default;
 
-create table if not exists smoke_tbl (
+-- managed
+create table if not exists smoke_managed_tbl (
   id int,
   ds string
 )
 partitioned by (p string)
 stored as parquet;
 
-alter table smoke_tbl set tblproperties ('smoke'='true');
+alter table smoke_managed_tbl set tblproperties ('smoke'='true', 'table_kind'='managed');
 
-insert into smoke_tbl partition (p='2026-03-31') values (1, '2026-03-31');
+insert into smoke_managed_tbl partition (p='2026-03-31') values (1, '2026-03-31');
 
-show partitions smoke_tbl;
+select id, ds, p from smoke_managed_tbl where p='2026-03-31';
 
-alter table smoke_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
+show partitions smoke_managed_tbl;
 
-show partitions smoke_tbl;
+alter table smoke_managed_tbl partition (p='2026-03-31') rename to partition (p='2026-04-01');
 
-truncate table smoke_tbl;
+show partitions smoke_managed_tbl;
 
-drop table smoke_tbl;
+select id, ds, p from smoke_managed_tbl where p='2026-04-01';
+
+drop table smoke_managed_tbl;
+
+-- external
+create external table if not exists smoke_external_tbl (
+  id int,
+  ds string
+)
+stored as parquet
+location '/tmp/hms-proxy-smoke/apache/external/smoke_external_tbl';
+
+alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
+
+insert into smoke_external_tbl values (2, '2026-03-31');
+
+select * from smoke_external_tbl where id=2;
+
+describe formatted smoke_external_tbl;
+
+drop table smoke_external_tbl;
+
+-- transactional=true
+create table if not exists smoke_txn_tbl (
+  id int,
+  ds string
+)
+clustered by (id) into 1 buckets
+stored as orc
+tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
+
+insert into smoke_txn_tbl values (1, '2026-03-31');
+
+select * from smoke_txn_tbl where id=1;
+
+drop table smoke_txn_tbl;
 ```
 
-**7. Негативная mixed-check**
+Expected:
+- managed DDL/DML works for the routed backend, including insert + select + partition rename
+- `external` tables keep an explicit custom `LOCATION`
+- `external` and `transactional='true'` variants also allow insert + select where supported
+- `transactional='true'` tables are accepted only where the backend supports ACID table creation
+- table type and key properties are visible in `describe formatted`
+
+**7. Mixed Negative Check**
 ```sql
 use hdp__default;
 show tables;
 
-use gnu__default;
+use apache__default;
 select count(*) from some_table;
 ```
 
-Ожидание:
-- команды идут в нужный backend без ошибок namespace
+Expected:
+- commands reach the correct backend without namespace errors
 
-**8. Что смотреть в логах proxy**
-Ищи:
+**8. Notification/ACID path**
+
+These checks are best done not only through Beeline, but also through a direct HMS thrift client,
+because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
+
+Practical runner:
+- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
+  `get_valid_write_ids` / `commit_txn`
+- `notification` mode covers Hortonworks-only `add_write_notification_log`
+- see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
+
+Important:
+- lifecycle RPCs without `dbName` / `fullTableName`
+  (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`)
+  are intentionally pinned to `routing.default-catalog`
+- multi-catalog ACID routing is expected only where namespace can be extracted from the request payload
+
+Check for the Hortonworks backend:
+- `open_txns`
+- `allocate_table_write_ids`
+- `lock`
+- `commit_txn`
+- `get_valid_write_ids`
+- `add_write_notification_log`
+
+Expected:
+- `open_txns` / `commit_txn` and other id-only lifecycle RPCs go to `routing.default-catalog`
+- request-based ACID methods (`allocate_table_write_ids`, `get_valid_write_ids`) are routed by payload
+- `add_write_notification_log` works only for the Hortonworks backend catalog
+- proxy logs contain `trace stage=backend-request` / `backend-response` for `add_write_notification_log`
+
+**9. Negative check: Hortonworks front -> Apache backend notification path**
+
+Send `add_write_notification_log` through an HMS thrift client to a database/table that routes to
+the Apache backend.
+
+Expected:
+- the proxy returns an explicit `requires a Hortonworks backend runtime` error
+- there is no silent success
+- no side notification traffic appears on the Apache backend
+
+**10. Mixed Runtime Switching Check**
+
+In a single client session, run in sequence:
+- read/DDL on `hdp__default`
+- read/DDL on `apache__default`
+- `add_write_notification_log` on `hdp__default`
+- another read on `apache__default`
+
+Expected:
+- one catalog runtime does not “stick” to another
+- namespace rewrite remains correct after notification/ACID calls
+
+**11. What To Watch In Proxy Logs**
+Look for:
 - `Detected backend catalog ... metastore version ...`
 - `legacy request API compatibility mode`
 - `backend-request catalog=... method=...`
-- повторяющиеся `UNKNOWN_METHOD`
-- ошибки `Unsupported Hortonworks frontend method`
+- repeated `UNKNOWN_METHOD`
+- `Unsupported Hortonworks frontend method` errors
+- `requires a Hortonworks backend runtime` errors
+- trace entries for `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`

@@ -1,0 +1,10 @@
+<configuration xmlns="http://jgitver.github.io/maven/configuration/1.1.0"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:schemaLocation="http://jgitver.github.io/maven/configuration/1.1.0 https://jgitver.github.io/maven/configuration/jgitver-configuration-v1_1_0.xsd">
+  <strategy>PATTERN</strategy>
+  <versionPattern>0.1.${meta.COMMIT_DISTANCE}-${meta.GIT_SHA1_8}</versionPattern>
+  <tagVersionPattern>0.1.${meta.COMMIT_DISTANCE}-${meta.GIT_SHA1_8}</tagVersionPattern>
+  <exclusions>
+    <exclusion>target/**</exclusion>
+  </exclusions>
+</configuration>

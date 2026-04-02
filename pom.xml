@@ -165,7 +165,7 @@
         <configuration>
           <archive>
             <manifest>
-              <mainClass>io.github.mmalykhin.hmsproxy.HmsProxyApplication</mainClass>
+              <mainClass>io.github.mmalykhin.hmsproxy.app.HmsProxyApplication</mainClass>
             </manifest>
           </archive>
         </configuration>
@@ -186,7 +186,7 @@
               <shadedClassifierName>fat</shadedClassifierName>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>io.github.mmalykhin.hmsproxy.HmsProxyApplication</mainClass>
+                  <mainClass>io.github.mmalykhin.hmsproxy.app.HmsProxyApplication</mainClass>
                 </transformer>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>

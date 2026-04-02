@@ -1,0 +1,39 @@
+package io.github.mmalykhin.hmsproxy.config;
+
+import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
+import org.junit.Assert;
+import org.junit.Test;
+
+public class MetastoreThriftServerTest {
+  @Test
+  public void frontDoorAlwaysUsesServerPrincipalForInboundKerberos() {
+    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
+        ProxyConfig.SecurityMode.KERBEROS,
+        "hive/proxy-host.example.com@EXAMPLE.COM",
+        "hive/backend-host.example.com@EXAMPLE.COM",
+        "/tmp/proxy.keytab",
+        "/tmp/backend.keytab",
+        false,
+        java.util.Map.of());
+
+    Assert.assertEquals(
+        "hive/proxy-host.example.com@EXAMPLE.COM",
+        MetastoreThriftServer.frontDoorClientPrincipal(security));
+  }
+
+  @Test
+  public void frontDoorDoesNotExposeBackendClientPrincipal() {
+    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
+        ProxyConfig.SecurityMode.KERBEROS,
+        "hive/proxy-host.example.com@EXAMPLE.COM",
+        "hive/backend-host.example.com@EXAMPLE.COM",
+        "/tmp/proxy.keytab",
+        "/tmp/backend.keytab",
+        false,
+        java.util.Map.of());
+
+    Assert.assertNotEquals(
+        security.clientPrincipal(),
+        MetastoreThriftServer.frontDoorClientPrincipal(security));
+  }
+}
