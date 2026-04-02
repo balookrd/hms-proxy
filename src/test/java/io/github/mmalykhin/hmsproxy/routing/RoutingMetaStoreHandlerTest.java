@@ -45,10 +45,8 @@ public class RoutingMetaStoreHandlerTest {
       "__",
       "catalog1",
       Map.of(
-          "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false, null, null,
-              Map.of("hive.metastore.uris", "thrift://one")),
-          "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", false, null, null,
-              Map.of("hive.metastore.uris", "thrift://two"))));
+          "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+          "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
 
   private static CatalogRouter routerFor(ProxyConfig config) {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
@@ -248,8 +246,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(
             ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
             false));
@@ -332,8 +329,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
         new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of()));
 
@@ -367,8 +363,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
         new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
 
@@ -421,8 +416,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
         new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of()));
 
@@ -483,8 +477,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
         new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
 
@@ -523,6 +516,61 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void readOnlyCatalogBlocksWriteOperations() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreHandler handler = accessModeHandler(
+        ProxyConfig.CatalogAccessMode.READ_ONLY,
+        List.of(),
+        backendCalls,
+        new AtomicReference<>());
+    Table table = table("catalog1__sales", "events", Map.of());
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {table}));
+
+    Assert.assertTrue(error.getMessage().contains("READ_ONLY"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void whitelistCatalogAllowsWritesForWhitelistedDatabases() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = accessModeHandler(
+        ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+        List.of("sales"),
+        backendCalls,
+        capturedTable);
+    Table table = table("catalog1__sales", "events", Map.of());
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("sales", capturedTable.get().getDbName());
+  }
+
+  @Test
+  public void whitelistCatalogBlocksWritesForNonWhitelistedDatabases() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreHandler handler = accessModeHandler(
+        ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+        List.of("sales"),
+        backendCalls,
+        new AtomicReference<>());
+    Table table = table("catalog1__finance", "events", Map.of());
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {table}));
+
+    Assert.assertTrue(error.getMessage().contains("not allowed"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
   public void addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();
@@ -534,10 +582,9 @@ public class RoutingMetaStoreHandlerTest {
         "__",
         "catalog1",
         Map.of(
-            "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-                null, null, Map.of("hive.metastore.uris", "thrift://one")),
-            "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", false,
-                MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
                 Map.of("hive.metastore.uris", "thrift://two"))),
         new ProxyConfig.CompatibilityConfig(
             ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
@@ -584,8 +631,7 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(
             ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
             HDP_JAR.toString(),
@@ -732,10 +778,55 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
         new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of(clientAddressRule)));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    return new RoutingMetaStoreHandler(config, router, null);
+  }
+
+  private static RoutingMetaStoreHandler accessModeHandler(
+      ProxyConfig.CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      AtomicInteger backendCalls,
+      AtomicReference<Table> capturedTable
+  ) throws Exception {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            new ProxyConfig.CatalogConfig(
+                "catalog1",
+                "c1",
+                "file:///c1",
+                false,
+                accessMode,
+                writeDbWhitelist,
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -769,6 +860,25 @@ public class RoutingMetaStoreHandlerTest {
             new Class<?>[] {org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class},
             invocationHandler);
     return ctor.newInstance(null, thriftClient, null);
+  }
+
+  private static ProxyConfig.CatalogConfig catalogConfig(
+      String name,
+      String description,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf
+  ) {
+    return new ProxyConfig.CatalogConfig(
+        name,
+        description,
+        "file:///" + description,
+        false,
+        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        List.of(),
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf);
   }
 
   private static Table table(String dbName, String tableName, Map<String, String> parameters) {

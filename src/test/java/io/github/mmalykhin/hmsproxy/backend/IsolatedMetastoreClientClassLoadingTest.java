@@ -69,6 +69,8 @@ public class IsolatedMetastoreClientClassLoadingTest {
             "c1",
             "file:///c1",
             false,
+            ProxyConfig.CatalogAccessMode.READ_WRITE,
+            java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
             java.util.Map.of("hive.metastore.uris", "thrift://one"))));

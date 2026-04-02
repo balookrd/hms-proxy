@@ -16,9 +16,11 @@ public class CatalogRouterTest {
       ".",
       "catalog1",
       Map.of(
-          "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false, null, null,
+          "catalog1", new ProxyConfig.CatalogConfig(
+              "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://one")),
-          "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", false, null, null,
+          "catalog2", new ProxyConfig.CatalogConfig(
+              "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))));
 
   private static final ProxyConfig ONE_CATALOG_CONFIG = new ProxyConfig(
@@ -26,7 +28,8 @@ public class CatalogRouterTest {
       new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
       ".",
       "catalog1",
-      Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false, null, null,
+      Map.of("catalog1", new ProxyConfig.CatalogConfig(
+          "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
           Map.of("hive.metastore.uris", "thrift://one"))));
 
   private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = new ProxyConfig(
@@ -35,9 +38,11 @@ public class CatalogRouterTest {
       "__",
       "catalog1",
       Map.of(
-          "catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false, null, null,
+          "catalog1", new ProxyConfig.CatalogConfig(
+              "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://one")),
-          "catalog2", new ProxyConfig.CatalogConfig("catalog2", "c2", "file:///c2", false, null, null,
+          "catalog2", new ProxyConfig.CatalogConfig(
+              "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))));
 
   private static CatalogRouter routerFor(ProxyConfig config) {
