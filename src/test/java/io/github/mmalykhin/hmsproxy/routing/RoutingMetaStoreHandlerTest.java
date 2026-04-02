@@ -39,6 +39,8 @@ import org.junit.Test;
 public class RoutingMetaStoreHandlerTest {
   private static final Path HDP_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar").toAbsolutePath();
+  private static final Path HDP_6150_JAR =
+      Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
   private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = new ProxyConfig(
       new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
       new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
@@ -672,19 +674,116 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertTrue(error.getMessage().contains("requires a Hortonworks backend runtime"));
   }
 
+  @Test
+  public void getTablesExtRoutesToResolvedCatalogAndRewritesNamespace() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> capturedCatalog = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))),
+        new ProxyConfig.CompatibilityConfig(
+            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+            HDP_6150_JAR.toString(),
+            HDP_6150_JAR.toString(),
+            false));
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config, config.catalogs().get("catalog2"), HDP_6150_JAR, MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        (proxy, method, args) -> {
+          if ("get_tables_ext".equals(method.getName())) {
+            Object request = args[0];
+            capturedCatalog.set((String) request.getClass().getMethod("getCatalog").invoke(request));
+            capturedDb.set((String) request.getClass().getMethod("getDatabase").invoke(request));
+            Class<?> infoClass = request.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.ExtendedTableInfo");
+            Object info = infoClass.getConstructor(String.class).newInstance("events");
+            return List.of(info);
+          }
+          if ("getVersion".equals(method.getName())) {
+            return "3.1.0.3.1.5.6150-1";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_6150_JAR.toUri().toURL()},
+        RoutingMetaStoreHandlerTest.class.getClassLoader());
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.GetTablesExtRequest", true, classLoader);
+    Object request = requestClass.getConstructor(String.class, String.class, String.class, int.class)
+        .newInstance("catalog2", "catalog2__sales", "*", 1);
+
+    Object response = handler.getTablesExt(request);
+
+    Assert.assertEquals("catalog2", capturedCatalog.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals(1, ((List<?>) response).size());
+  }
+
+  @Test
+  public void getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog2",
+        Map.of("catalog2", catalogConfig(
+            "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
+            Map.of("hive.metastore.uris", "thrift://two"))),
+        new ProxyConfig.CompatibilityConfig(
+            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+            HDP_6150_JAR.toString(),
+            HDP_6150_JAR.toString(),
+            false));
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config, config.catalogs().get("catalog2"), HDP_6150_JAR, MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        (proxy, method, args) -> {
+          if ("get_all_materialized_view_objects_for_rewriting".equals(method.getName())) {
+            return List.of(childTable(proxy.getClass().getClassLoader(), "sales", "mv_events"));
+          }
+          if ("getVersion".equals(method.getName())) {
+            return "3.1.0.3.1.5.6150-1";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog2", hdpBackend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+
+    Object response = handler.getAllMaterializedViewObjectsForRewriting();
+
+    Assert.assertEquals(1, ((List<?>) response).size());
+    Table table = (Table) ((List<?>) response).get(0);
+    Assert.assertEquals("sales", table.getDbName());
+  }
+
   private static CatalogBackend newIsolatedHortonworksBackend(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
       AtomicReference<String> capturedDb,
       AtomicReference<String> capturedTable
   ) throws Exception {
-    ClassLoader classLoader = new MetastoreApiClassLoader(
-        new java.net.URL[] {HDP_JAR.toUri().toURL()},
-        RoutingMetaStoreHandlerTest.class.getClassLoader());
-    Class<?> ifaceClass = Class.forName("org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Iface", true, classLoader);
-    Object delegate = java.lang.reflect.Proxy.newProxyInstance(
-        classLoader,
-        new Class<?>[] {ifaceClass},
+    return newIsolatedHortonworksBackend(
+        proxyConfig,
+        catalogConfig,
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
         (proxy, method, args) -> {
           if ("add_write_notification_log".equals(method.getName())) {
             Object request = args[0];
@@ -701,6 +800,23 @@ public class RoutingMetaStoreHandlerTest {
           }
           throw new UnsupportedOperationException(method.getName());
         });
+  }
+
+  private static CatalogBackend newIsolatedHortonworksBackend(
+      ProxyConfig proxyConfig,
+      ProxyConfig.CatalogConfig catalogConfig,
+      Path jar,
+      MetastoreRuntimeProfile runtimeProfile,
+      java.lang.reflect.InvocationHandler delegateHandler
+  ) throws Exception {
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {jar.toUri().toURL()},
+        RoutingMetaStoreHandlerTest.class.getClassLoader());
+    Class<?> ifaceClass = Class.forName("org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Iface", true, classLoader);
+    Object delegate = java.lang.reflect.Proxy.newProxyInstance(
+        classLoader,
+        new Class<?>[] {ifaceClass},
+        delegateHandler);
 
     IsolatedInvocationBridge bridge = new IsolatedInvocationBridge(classLoader, delegate, ifaceClass);
     Constructor<IsolatedMetastoreClient> isolatedCtor =
@@ -722,7 +838,7 @@ public class RoutingMetaStoreHandlerTest {
     BackendInvocationSession session = sessionCtor.newInstance(null, null, isolatedClient);
 
     BackendAdapter adapter =
-        new TestBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+        new TestBackendAdapter(runtimeProfile);
     return newBackend(proxyConfig, catalogConfig, adapter, newBackendRuntime(proxyConfig, catalogConfig, session));
   }
 
@@ -745,6 +861,15 @@ public class RoutingMetaStoreHandlerTest {
         Catalog.class);
     ctor.setAccessible(true);
     return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), adapter, runtime, catalog);
+  }
+
+  private static Object childTable(ClassLoader classLoader, String dbName, String tableName) throws Exception {
+    Object table = Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader)
+        .getConstructor()
+        .newInstance();
+    table.getClass().getMethod("setDbName", String.class).invoke(table, dbName);
+    table.getClass().getMethod("setTableName", String.class).invoke(table, tableName);
+    return table;
   }
 
   private static BackendRuntime newBackendRuntime(

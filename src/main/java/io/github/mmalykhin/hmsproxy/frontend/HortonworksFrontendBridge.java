@@ -38,7 +38,9 @@ public final class HortonworksFrontendBridge {
       "update_table_column_statistics_req",
       "update_partition_column_statistics_req",
       "add_write_notification_log",
-      "get_partitions_by_names_req");
+      "get_partitions_by_names_req",
+      "get_tables_ext",
+      "get_all_materialized_view_objects_for_rewriting");
 
   private HortonworksFrontendBridge() {
   }
@@ -137,6 +139,9 @@ public final class HortonworksFrontendBridge {
             handleUpdateColumnStatisticsReq(method, request);
         case "add_write_notification_log" -> handleAddWriteNotificationLog(method, request);
         case "get_partitions_by_names_req" -> handleGetPartitionsByNamesReq(method, request);
+        case "get_tables_ext" -> handleGetTablesExt(method, request);
+        case "get_all_materialized_view_objects_for_rewriting" ->
+            handleGetAllMaterializedViewObjectsForRewriting(method);
         default -> throw new TApplicationException(
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hortonworks frontend method: " + methodName);
@@ -248,6 +253,26 @@ public final class HortonworksFrontendBridge {
             "Hortonworks frontend method add_write_notification_log requires proxy extension support");
       }
       Object response = extension.addWriteNotificationLog(request);
+      return convertResult(response, method.getReturnType());
+    }
+
+    private Object handleGetTablesExt(Method method, Object request) throws Throwable {
+      if (extension == null) {
+        throw new TApplicationException(
+            TApplicationException.UNKNOWN_METHOD,
+            "Hortonworks frontend method get_tables_ext requires proxy extension support");
+      }
+      Object response = extension.getTablesExt(request);
+      return convertResult(response, method.getReturnType());
+    }
+
+    private Object handleGetAllMaterializedViewObjectsForRewriting(Method method) throws Throwable {
+      if (extension == null) {
+        throw new TApplicationException(
+            TApplicationException.UNKNOWN_METHOD,
+            "Hortonworks frontend method get_all_materialized_view_objects_for_rewriting requires proxy extension support");
+      }
+      Object response = extension.getAllMaterializedViewObjectsForRewriting();
       return convertResult(response, method.getReturnType());
     }
 

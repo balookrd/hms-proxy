@@ -208,6 +208,57 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     return invokeBackendNamed(backend, "add_write_notification_log", routedRequest);
   }
 
+  @Override
+  public Object getTablesExt(Object request) throws Throwable {
+    String catalogName = (String) request.getClass().getMethod("getCatalog").invoke(request);
+    String dbName = (String) request.getClass().getMethod("getDatabase").invoke(request);
+    CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(catalogName, dbName);
+    currentObservation().recordNamespace(namespace);
+    recordDefaultCatalogRouteIfImplicit("get_tables_ext", catalogName, dbName, namespace);
+    CatalogBackend backend = namespace.backend();
+    if (!backend.runtimeProfile().isHortonworks()) {
+      throw metaException(
+          "Hortonworks get_tables_ext requires a Hortonworks backend runtime for catalog '"
+              + backend.name()
+              + "'");
+    }
+    validateCatalogAccess(backend, "get_tables_ext", namespace.backendDbName());
+    Object routedRequest = request.getClass().getConstructor(request.getClass()).newInstance(request);
+    routedRequest.getClass().getMethod("setDatabase", String.class).invoke(routedRequest, namespace.backendDbName());
+    String internalCatalog = NamespaceTranslator.internalCatalogName(catalogName, dbName, namespace,
+        preserveBackendCatalogName());
+    routedRequest.getClass().getMethod("setCatalog", String.class)
+        .invoke(routedRequest, internalCatalog == null ? catalogName : internalCatalog);
+    return invokeBackendNamed(backend, "get_tables_ext", routedRequest);
+  }
+
+  @Override
+  public Object getAllMaterializedViewObjectsForRewriting() throws Throwable {
+    CatalogBackend backend = router.defaultBackend();
+    currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+    currentObservation().markDefaultCatalogRoute();
+    observability.metrics().recordDefaultCatalogRoute("get_all_materialized_view_objects_for_rewriting");
+    if (!backend.runtimeProfile().isHortonworks()) {
+      throw metaException(
+          "Hortonworks get_all_materialized_view_objects_for_rewriting requires a Hortonworks backend runtime for catalog '"
+              + backend.name()
+              + "'");
+    }
+    validateCatalogAccess(backend, "get_all_materialized_view_objects_for_rewriting", null);
+    Object result = invokeBackendByName(backend, "get_all_materialized_view_objects_for_rewriting",
+        new Class<?>[0], new Object[0]);
+    if (result instanceof List<?> tables) {
+      List<Object> externalized = new ArrayList<>(tables.size());
+      for (Object table : tables) {
+        String dbName = NamespaceTranslator.extractDbName(table);
+        CatalogRouter.ResolvedNamespace namespace = router.resolveCatalog(config.defaultCatalog(), dbName);
+        externalized.add(NamespaceTranslator.externalizeResult(table, namespace, preserveBackendCatalogName()));
+      }
+      return externalized;
+    }
+    return result;
+  }
+
   private Object handleGetCatalog(Object[] args) throws NoSuchObjectException {
     GetCatalogRequest request = (GetCatalogRequest) args[0];
     if (!config.catalogs().containsKey(request.getName())) {
@@ -572,6 +623,15 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   private Object invokeBackendNamed(CatalogBackend backend, String methodName, Object request) throws Throwable {
+    return invokeBackendByName(backend, methodName, new Class<?>[] {request.getClass()}, new Object[] {request});
+  }
+
+  private Object invokeBackendByName(
+      CatalogBackend backend,
+      String methodName,
+      Class<?>[] parameterTypes,
+      Object[] args
+  ) throws Throwable {
     long startedAt = System.nanoTime();
     Long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
@@ -583,12 +643,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
             backend.name(),
             methodName,
             impersonation == null ? "-" : impersonation.userName(),
-            DebugLogUtil.formatArgs(new Object[] {request}));
+            DebugLogUtil.formatArgs(args));
       }
       Object result = backend.invokeRawByName(
           methodName,
-          new Class<?>[] {request.getClass()},
-          new Object[] {request},
+          parameterTypes,
+          args,
           impersonation);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
