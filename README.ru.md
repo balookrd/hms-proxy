@@ -252,13 +252,17 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 бриджит общие RPC в внутренний Apache `3.1.3` handler. Поддержанные HDP-only методы:
 
 - `get_database_req` -> `get_database` для HDP `3.1.0.3.1.5.6150-1`
+- `create_table_req` -> `create_table` / `create_table_with_environment_context` / `create_table_with_constraints`
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
 - `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`
 - `rename_partition_req` -> `rename_partition`
+- `get_partitions_by_names_req` -> `get_partitions_by_names`
 - `update_table_column_statistics_req` -> `set_aggr_stats_for`
 - `update_partition_column_statistics_req` -> `set_aggr_stats_for`
 - `add_write_notification_log` -> прямой Hortonworks passthrough только в Hortonworks backend
+- `get_tables_ext` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1`
+- `get_all_materialized_view_objects_for_rewriting` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1` через `routing.default-catalog`
 
 ## ACID / txn / lock policy
 
