@@ -70,6 +70,62 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+## Management endpoints, metrics, and dashboard
+
+The proxy can expose a lightweight HTTP listener for health checks, readiness, and Prometheus
+metrics. The listener is disabled by default and turns on automatically when `management.port`
+is configured:
+
+```properties
+management.bind-host=0.0.0.0
+management.port=19083
+```
+
+You can also enable it explicitly:
+
+```properties
+management.enabled=true
+# Optional; defaults to server.bind-host
+management.bind-host=0.0.0.0
+# Optional; defaults to server.port + 1000
+management.port=19083
+```
+
+Available endpoints:
+
+- `/healthz` returns process liveness and uptime
+- `/readyz` checks backend connectivity, returns per-backend `connected` / `degraded` state,
+  and includes Kerberos login status plus TGT freshness for front-door and outbound backend credentials
+- `/metrics` exposes Prometheus text format metrics
+
+Current Prometheus metrics:
+
+- `hms_proxy_requests_total{method,catalog,backend,status}`
+- `hms_proxy_request_duration_seconds{method,catalog,backend}`
+- `hms_proxy_backend_failures_total{backend,exception}`
+- `hms_proxy_backend_fallback_total{method,from_api,to_api}`
+- `hms_proxy_routing_ambiguous_total`
+- `hms_proxy_default_catalog_routed_total{method}`
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: hms-proxy
+    static_configs:
+      - targets:
+          - hms-proxy-01.example.com:19083
+```
+
+A ready-to-import Grafana dashboard is included in
+`monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
+fallbacks, default-catalog routing, and ambiguous routing events.
+
+The proxy also emits one structured audit log record per request through the logger
+`io.github.mmalykhin.hmsproxy.audit`. Each record is a single-line JSON object with fields such as
+`requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress`, and
+`authenticatedUser`.
+
 ## Routing model
 
 - Catalog-aware HMS clients can send `catName=dbCatalog, dbName=sales`

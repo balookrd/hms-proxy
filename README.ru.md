@@ -69,6 +69,61 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+## Management endpoints, метрики и dashboard
+
+Proxy может поднимать легковесный HTTP listener для health checks, readiness и Prometheus
+метрик. По умолчанию listener выключен и автоматически включается, если задан `management.port`:
+
+```properties
+management.bind-host=0.0.0.0
+management.port=19083
+```
+
+Либо его можно включить явно:
+
+```properties
+management.enabled=true
+# Необязательно; по умолчанию берётся server.bind-host
+management.bind-host=0.0.0.0
+# Необязательно; по умолчанию server.port + 1000
+management.port=19083
+```
+
+Доступные endpoints:
+
+- `/healthz` возвращает liveness процесса и uptime
+- `/readyz` проверяет backend connectivity, отдаёт per-backend состояние `connected` / `degraded`,
+  а также включает Kerberos login status и TGT freshness для front-door и outbound backend credentials
+- `/metrics` отдаёт Prometheus text format
+
+Текущие Prometheus метрики:
+
+- `hms_proxy_requests_total{method,catalog,backend,status}`
+- `hms_proxy_request_duration_seconds{method,catalog,backend}`
+- `hms_proxy_backend_failures_total{backend,exception}`
+- `hms_proxy_backend_fallback_total{method,from_api,to_api}`
+- `hms_proxy_routing_ambiguous_total`
+- `hms_proxy_default_catalog_routed_total{method}`
+
+Пример Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: hms-proxy
+    static_configs:
+      - targets:
+          - hms-proxy-01.example.com:19083
+```
+
+Готовый Grafana dashboard лежит в
+`monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
+backend failures, fallbacks, default-catalog routing и ambiguous routing.
+
+Proxy также пишет один structured audit log на каждый запрос через logger
+`io.github.mmalykhin.hmsproxy.audit`. Каждая запись представляет собой single-line JSON с полями
+вроде `requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress` и
+`authenticatedUser`.
+
 ## Модель маршрутизации
 
 - catalog-aware клиенты могут отправлять `catName=dbCatalog, dbName=sales`
