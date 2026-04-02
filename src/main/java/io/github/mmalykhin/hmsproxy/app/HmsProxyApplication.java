@@ -52,7 +52,7 @@ public final class HmsProxyApplication {
         LOG.info("Compatibility config: frontendProfile={}, frontendVersion={}, preserveBackendCatalogName={}",
             config.compatibility().frontendProfile(),
             config.compatibility().frontendProfile().metastoreVersion(),
-            config.compatibility().preserveBackendCatalogName());
+            config.federation().preserveBackendCatalogName());
         LOG.info("Frontend runtime profile: {} ({})",
             config.compatibility().frontendProfile().runtimeProfile(),
             config.compatibility().frontendProfile().runtimeProfile().displayName());

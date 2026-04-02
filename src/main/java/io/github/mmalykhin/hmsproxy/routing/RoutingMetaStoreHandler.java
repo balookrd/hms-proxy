@@ -1,9 +1,10 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
-import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.AuditLogUtil;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
@@ -16,7 +17,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,6 +64,8 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final CatalogRouter router;
   private final FrontDoorSecurity frontDoorSecurity;
   private final ProxyObservability observability;
+  private final CompatibilityLayer compatibilityLayer;
+  private final FederationLayer federationLayer;
   private final TransactionalTableMutationGuard transactionalTableMutationGuard;
   private final long aliveSince;
 
@@ -81,6 +83,8 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.router = router;
     this.frontDoorSecurity = frontDoorSecurity;
     this.observability = observability;
+    this.compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
+    this.federationLayer = new FederationLayer(config, router);
     this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
@@ -126,12 +130,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       transactionalTableMutationGuard.validate(name, args);
       Object result = switch (name) {
         case "getName" -> config.server().name();
-        case "getVersion" -> config.compatibility().frontendProfile().metastoreVersion();
+        case "getVersion" -> compatibilityLayer.frontendVersion();
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
         case "set_ugi" -> handleSetUgi(method, args);
         case "get_delegation_token", "renew_delegation_token", "cancel_delegation_token" ->
-            MetastoreCompatibility.handleLocally(name, args, frontDoorSecurity);
+            compatibilityLayer.handleLocalMethod(name, args);
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -226,7 +230,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     Object routedRequest = request.getClass().getConstructor(request.getClass()).newInstance(request);
     routedRequest.getClass().getMethod("setDatabase", String.class).invoke(routedRequest, namespace.backendDbName());
     String internalCatalog = NamespaceTranslator.internalCatalogName(catalogName, dbName, namespace,
-        preserveBackendCatalogName());
+        federationLayer.preserveBackendCatalogName());
     routedRequest.getClass().getMethod("setCatalog", String.class)
         .invoke(routedRequest, internalCatalog == null ? catalogName : internalCatalog);
     return invokeBackendNamed(backend, "get_tables_ext", routedRequest);
@@ -252,7 +256,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       for (Object table : tables) {
         String dbName = NamespaceTranslator.extractDbName(table);
         CatalogRouter.ResolvedNamespace namespace = router.resolveCatalog(config.defaultCatalog(), dbName);
-        externalized.add(NamespaceTranslator.externalizeResult(table, namespace, preserveBackendCatalogName()));
+        externalized.add(federationLayer.externalizeResult(table, namespace));
       }
       return externalized;
     }
@@ -276,7 +280,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       @SuppressWarnings("unchecked")
       List<String> backendDatabases = (List<String>) invokeBackend(backend, method, null);
       for (String database : backendDatabases) {
-        databases.add(router.externalDatabaseName(backend.name(), database));
+        databases.add(federationLayer.externalDatabaseName(backend.name(), database));
       }
     }
     return databases;
@@ -291,7 +295,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       List<String> backendDatabases =
           (List<String>) invokeBackend(resolved.backend(), method, new Object[] {resolved.backendDbName()});
       return backendDatabases.stream()
-          .map(db -> router.externalDatabaseName(resolved.catalogName(), db))
+          .map(db -> federationLayer.externalDatabaseName(resolved.catalogName(), db))
           .toList();
     }
 
@@ -302,7 +306,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       List<String> backendDatabases =
           (List<String>) invokeBackend(backend, method, new Object[] {pattern});
       for (String database : backendDatabases) {
-        databases.add(router.externalDatabaseName(backend.name(), database));
+        databases.add(federationLayer.externalDatabaseName(backend.name(), database));
       }
     }
     return databases;
@@ -321,7 +325,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
           resolved.backend(), method, new Object[] {resolved.backendDbName(), tablePattern, tableTypes});
       return backendResults.stream()
-          .map(result -> NamespaceTranslator.externalizeTableMeta(result, resolved, preserveBackendCatalogName()))
+          .map(result -> federationLayer.externalizeTableMeta(result, resolved))
           .toList();
     }
 
@@ -335,7 +339,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
         results.add(NamespaceTranslator.externalizeTableMeta(
             result,
             router.resolveCatalog(backend.name(), result.getDbName()),
-            preserveBackendCatalogName()));
+            federationLayer.preserveBackendCatalogName()));
       }
     }
     return results;
@@ -343,26 +347,26 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private Object handleGetTableReq(Method method, Object[] args) throws Throwable {
     GetTableRequest request = (GetTableRequest) args[0];
-    CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    CatalogRouter.ResolvedNamespace namespace = federationLayer.resolveRequestNamespace(request.getCatName(),
+        request.getDbName());
     currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit(method.getName(), request.getCatName(), request.getDbName(), namespace);
     CatalogBackend backend = namespace.backend();
-    GetTableRequest routedRequest =
-        (GetTableRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
+    GetTableRequest routedRequest = (GetTableRequest) federationLayer.internalizeTableRequest(request, namespace);
     Object result = invokeBackendRequest(backend, routedRequest, method.getName());
-    return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
+    return federationLayer.externalizeResult(result, namespace);
   }
 
   private Object handleGetTablesReq(Method method, Object[] args) throws Throwable {
     GetTablesRequest request = (GetTablesRequest) args[0];
-    CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(request.getCatName(), request.getDbName());
+    CatalogRouter.ResolvedNamespace namespace = federationLayer.resolveRequestNamespace(request.getCatName(),
+        request.getDbName());
     currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit(method.getName(), request.getCatName(), request.getDbName(), namespace);
     CatalogBackend backend = namespace.backend();
-    GetTablesRequest routedRequest =
-        (GetTablesRequest) NamespaceTranslator.internalizeArgument(request, namespace, preserveBackendCatalogName());
+    GetTablesRequest routedRequest = (GetTablesRequest) federationLayer.internalizeTablesRequest(request, namespace);
     Object result = invokeBackendRequest(backend, routedRequest, method.getName());
-    return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
+    return federationLayer.externalizeResult(result, namespace);
   }
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
@@ -376,34 +380,34 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       currentObservation().recordNamespace(namespace);
       recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
       validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
-      Object[] routedArgs = internalizeDbStringArguments(args, namespace);
+      Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
+      return federationLayer.externalizeResult(result, namespace);
     }
 
     CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
     if (extractedNamespace != null) {
       currentObservation().recordNamespace(extractedNamespace);
       validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
-      Object[] routedArgs = internalizeObjectArguments(args, extractedNamespace);
+      Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
       Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, extractedNamespace, preserveBackendCatalogName());
+      return federationLayer.externalizeResult(result, extractedNamespace);
     }
     if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
       currentObservation().recordNamespace(namespace);
       recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
       validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
-      Object[] routedArgs = internalizeDbStringArguments(args, namespace);
+      Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
+      return federationLayer.externalizeResult(result, namespace);
     }
 
     return invokeGlobal(method, args);
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
-    Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(
+    Optional<Object> compatibilityFallback = compatibilityLayer.fallback(
         method.getName(),
         metaException("Operation " + method.getName() + " has no catalog context"));
     if (!DefaultBackendRoutingPolicy.routesToDefaultBackend(method.getName())
@@ -433,7 +437,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private Object handleGetConfigValue(Method method, Object[] args) throws Throwable {
     String requestedName = args != null && args.length > 0 ? (String) args[0] : null;
     String defaultValue = args != null && args.length > 1 ? (String) args[1] : null;
-    Optional<String> compatibilityValue = MetastoreCompatibility.compatibleConfigValue(
+    Optional<String> compatibilityValue = compatibilityLayer.compatibleConfigValue(
         requestedName,
         defaultValue,
         config.catalogs().get(config.defaultCatalog()).hiveConf());
@@ -450,69 +454,29 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     return invokeBackend(router.defaultBackend(), method, args);
   }
 
-  private Object[] internalizeDbStringArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {
-    Object[] routedArgs = Arrays.copyOf(args, args.length);
-    routedArgs[0] = namespace.backendDbName();
-    for (int index = 1; index < routedArgs.length; index++) {
-      routedArgs[index] = NamespaceTranslator.internalizeArgument(
-          routedArgs[index], namespace, preserveBackendCatalogName());
-    }
-    return routedArgs;
-  }
-
-  private Object[] internalizeObjectArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {
-    Object[] routedArgs = Arrays.copyOf(args, args.length);
-    for (int index = 0; index < routedArgs.length; index++) {
-      routedArgs[index] = routedArgs[index] instanceof String dbName
-          ? NamespaceTranslator.internalizeStringArgument(dbName, namespace)
-          : NamespaceTranslator.internalizeArgument(
-              routedArgs[index], namespace, preserveBackendCatalogName());
-    }
-    return routedArgs;
-  }
-
   private CatalogRouter.ResolvedNamespace findNamespaceInArgs(Object[] args) throws MetaException {
-    CatalogRouter.ResolvedNamespace resolvedCandidate = null;
-    for (Object argument : args) {
-      String extractedDbName = NamespaceTranslator.extractDbName(argument);
-      if (extractedDbName != null) {
-        resolvedCandidate = reconcileNamespaceCandidate(resolvedCandidate, router.resolveDatabase(extractedDbName));
-      }
+    try {
+      return federationLayer.findNamespaceInArgs(args);
+    } catch (MetaException e) {
+      observability.metrics().recordRoutingAmbiguous();
+      throw e;
     }
-    for (Object argument : args) {
-      if (!(argument instanceof String candidateString)) {
-        continue;
-      }
-      CatalogRouter.ResolvedNamespace explicitNamespace = router.resolvePattern(candidateString).orElse(null);
-      if (explicitNamespace != null) {
-        resolvedCandidate = reconcileNamespaceCandidate(resolvedCandidate, explicitNamespace);
-      }
-    }
-    return resolvedCandidate;
   }
 
   private CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)
       throws MetaException {
-    if (catName != null && !catName.isBlank()) {
-      Optional<CatalogRouter.ResolvedNamespace> explicitNamespace = router.resolveCatalogIfKnown(catName, dbName);
-      if (explicitNamespace.isPresent()) {
-        CatalogRouter.ResolvedNamespace resolvedByDb = router.resolvePattern(dbName).orElse(null);
-        if (resolvedByDb != null) {
-          if (!resolvedByDb.catalogName().equals(catName)) {
-            observability.metrics().recordRoutingAmbiguous();
-            throw metaException("Request has conflicting catalog and database namespace: catName='"
-                + catName + "', dbName='" + dbName + "'");
-          }
-          return resolvedByDb;
-        }
-        return explicitNamespace.get();
-      }
-      if (LOG.isDebugEnabled()) {
+    try {
+      return federationLayer.resolveRequestNamespace(catName, dbName);
+    } catch (MetaException e) {
+      if (e.getMessage() != null && e.getMessage().contains("conflicting catalog and database namespace")) {
+        observability.metrics().recordRoutingAmbiguous();
+      } else if (catName != null && !catName.isBlank() && LOG.isDebugEnabled()
+          && federationLayer.resolveCatalogIfKnown(catName, dbName).isEmpty()) {
         LOG.debug("requestId={} ignoring unknown request catalog '{}' and resolving by dbName='{}'",
             currentRequestId(), catName, dbName);
       }
+      throw e;
     }
-    return router.resolveDatabase(dbName);
   }
 
   private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
@@ -556,13 +520,13 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     } catch (Throwable cause) {
       observability.metrics().recordBackendFailure(backend.name(), cause);
       observability.runtimeState().recordBackendFailure(backend.name(), cause);
-      Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(method.getName(), cause);
+      Optional<Object> compatibilityFallback = compatibilityLayer.fallback(method.getName(), cause);
       if (compatibilityFallback.isPresent()) {
         currentObservation().markFallback();
         observability.metrics().recordBackendFallback(
             method.getName(),
             backend.runtimeProfile().name(),
-            config.compatibility().frontendProfile().runtimeProfile().name());
+            compatibilityLayer.frontendRuntimeProfile().name());
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), method.getName(), cause);
         return compatibilityFallback.get();
@@ -605,13 +569,13 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     } catch (Throwable cause) {
       observability.metrics().recordBackendFailure(backend.name(), cause);
       observability.runtimeState().recordBackendFailure(backend.name(), cause);
-      Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(methodName, cause);
+      Optional<Object> compatibilityFallback = compatibilityLayer.fallback(methodName, cause);
       if (compatibilityFallback.isPresent()) {
         currentObservation().markFallback();
         observability.metrics().recordBackendFallback(
             methodName,
             backend.runtimeProfile().name(),
-            config.compatibility().frontendProfile().runtimeProfile().name());
+            compatibilityLayer.frontendRuntimeProfile().name());
         LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
             requestId, backend.name(), methodName, cause);
         return compatibilityFallback.get();
@@ -685,10 +649,6 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private static double elapsedSeconds(long startedAt) {
     return (System.nanoTime() - startedAt) / 1_000_000_000.0d;
-  }
-
-  private boolean preserveBackendCatalogName() {
-    return config.compatibility().preserveBackendCatalogName();
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
@@ -780,22 +740,6 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
     return MetastoreCompatibility.shouldUseFallback(methodName, cause);
-  }
-
-  private CatalogRouter.ResolvedNamespace reconcileNamespaceCandidate(
-      CatalogRouter.ResolvedNamespace current,
-      CatalogRouter.ResolvedNamespace candidate
-  ) throws MetaException {
-    if (current == null || sameNamespace(current, candidate)) {
-      return candidate;
-    }
-    observability.metrics().recordRoutingAmbiguous();
-    throw metaException("Request contains conflicting namespace hints: '"
-        + current.externalDbName() + "' and '" + candidate.externalDbName() + "'");
-  }
-
-  private boolean sameNamespace(CatalogRouter.ResolvedNamespace left, CatalogRouter.ResolvedNamespace right) {
-    return left.catalogName().equals(right.catalogName()) && left.backendDbName().equals(right.backendDbName());
   }
 
   private void recordDefaultCatalogRouteIfImplicit(

@@ -15,7 +15,7 @@ import org.apache.thrift.TFieldIdEnum;
 import org.apache.thrift.TFieldRequirementType;
 import org.apache.thrift.meta_data.FieldMetaData;
 
-final class NamespaceTranslator {
+public final class NamespaceTranslator {
   private enum Direction {
     EXTERNALIZE,
     INTERNALIZE
@@ -24,11 +24,11 @@ final class NamespaceTranslator {
   private NamespaceTranslator() {
   }
 
-  static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
+  public static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeResult(value, namespace, false);
   }
 
-  static Object externalizeResult(
+  public static Object externalizeResult(
       Object value,
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
@@ -36,11 +36,11 @@ final class NamespaceTranslator {
     return transform(value, namespace, Direction.EXTERNALIZE, preserveBackendCatalogName);
   }
 
-  static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
+  public static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
     return internalizeArgument(value, namespace, false);
   }
 
-  static Object internalizeArgument(
+  public static Object internalizeArgument(
       Object value,
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
@@ -48,18 +48,18 @@ final class NamespaceTranslator {
     return transform(value, namespace, Direction.INTERNALIZE, preserveBackendCatalogName);
   }
 
-  static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
+  public static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
     if (value == null) {
       return null;
     }
     return matchesExternalDatabaseAlias(value, namespace.externalDbName()) ? namespace.backendDbName() : value;
   }
 
-  static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
+  public static Table externalizeTable(Table table, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeTable(table, namespace, false);
   }
 
-  static Table externalizeTable(
+  public static Table externalizeTable(
       Table table,
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
@@ -67,11 +67,11 @@ final class NamespaceTranslator {
     return (Table) externalizeResult(table, namespace, preserveBackendCatalogName);
   }
 
-  static TableMeta externalizeTableMeta(TableMeta tableMeta, CatalogRouter.ResolvedNamespace namespace) {
+  public static TableMeta externalizeTableMeta(TableMeta tableMeta, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeTableMeta(tableMeta, namespace, false);
   }
 
-  static TableMeta externalizeTableMeta(
+  public static TableMeta externalizeTableMeta(
       TableMeta tableMeta,
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
@@ -79,7 +79,7 @@ final class NamespaceTranslator {
     return (TableMeta) externalizeResult(tableMeta, namespace, preserveBackendCatalogName);
   }
 
-  static String extractDbName(Object value) {
+  public static String extractDbName(Object value) {
     if (value == null) {
       return null;
     }
@@ -310,11 +310,11 @@ final class NamespaceTranslator {
     return ((TBase) thriftValue).isSet(fieldId);
   }
 
-  static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
+  public static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
     return internalCatalogName(requestCatalogName, null, namespace);
   }
 
-  static String internalCatalogName(
+  public static String internalCatalogName(
       String requestCatalogName,
       String originalDbName,
       CatalogRouter.ResolvedNamespace namespace
@@ -322,7 +322,7 @@ final class NamespaceTranslator {
     return internalCatalogName(requestCatalogName, originalDbName, namespace, false);
   }
 
-  static String internalCatalogName(
+  public static String internalCatalogName(
       String requestCatalogName,
       String originalDbName,
       CatalogRouter.ResolvedNamespace namespace,
@@ -337,7 +337,7 @@ final class NamespaceTranslator {
         preserveBackendCatalogName);
   }
 
-  static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
+  public static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
     return internalCatalogName(requestCatalogName, null, proxyCatalogName, null, null, false);
   }
 
