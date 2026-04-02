@@ -1,15 +1,17 @@
 # HMS Proxy
 
+Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
+
 Java proxy for Hive Metastore that exposes one external HMS Thrift endpoint and routes
 requests to multiple backend metastores by catalog.
 
 ## What it supports
 
 - one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients
-- GNU Hive Metastore `3.1.3` on the front door with compatibility downgrades for older backend RPCs
+- Apache Hive Metastore `3.1.3` on the front door with compatibility downgrades for older backend RPCs
 - Hortonworks Hive Metastore `3.1.0.3.1.0.0-78` backends for read paths that still expect pre-`*_req` APIs
 - optional front-door identity switch so the proxy can present itself as Hortonworks
-  `3.1.0.3.1.0.0-78` instead of GNU `3.1.3`
+  `3.1.0.3.1.0.0-78` instead of Apache Hive Metastore `3.1.3`
 - optional Hortonworks front-door bridge through an HDP `standalone-metastore` jar for
   HDP-only thrift request-wrapper methods
 - routing by explicit `catName` in newer HMS requests
@@ -23,32 +25,40 @@ requests to multiple backend metastores by catalog.
 - catalog definitions are managed in the proxy config, not via `create_catalog` or `drop_catalog`
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
 - session-level compatibility calls and other global read-only HMS operations without catalog context are routed to `routing.default-catalog`
+- ACID/txn/lock lifecycle RPCs that do not carry catalog or database context are also routed to
+  `routing.default-catalog`
 - global write operations without clear catalog context are rejected when more than one catalog is configured
 - when a backend HMS returns `TApplicationException` for selected read-only service APIs
   (notifications, privilege refresh/introspection, token/key listings except delegation-token issuance,
   txn/lock/compaction status),
   the proxy returns an empty compatibility response instead of failing the caller
-- when a backend HMS does not implement newer GNU `3.1.3` request-wrapper RPCs such as
+- when a backend HMS does not implement newer Apache `3.1.3` request-wrapper RPCs such as
   `get_table_req` or `get_table_objects_by_name_req`, the proxy automatically retries through
   older legacy methods supported by Hortonworks `3.1.0.x`
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
-- Hive ACID, locks, tokens, and other truly global metastore operations need careful validation
-  in your environment before turning them on behind a multi-catalog proxy
+- in practice this means ACID write lifecycle is supported only for the default catalog unless the
+  request payload itself carries routable namespace information such as `dbName` or `fullTableName`
+- Hive ACID, locks, tokens, and other truly global metastore operations still need careful
+  validation in your environment before turning them on behind a multi-catalog proxy
 
 ## Build
 
 ```bash
 mvn -o test
 mvn -o package
+mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
+
+Build version is computed from git for every commit in the form `0.1.<git-distance>-<short-sha>`.
 
 ## Run
 
 ```bash
-java -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+java -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
 `mvn package` produces both a regular jar and a runnable fat jar with classifier `fat`.
+The fat jar file name changes with every new commit.
 
 For Java 17+ with Hadoop 2.x Kerberos libraries, start with:
 
@@ -57,7 +67,7 @@ java \
   --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
   --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
   -Djava.security.krb5.conf=/etc/krb5.conf \
-  -jar target/hms-proxy-0.1.0-SNAPSHOT-fat.jar /etc/hms-proxy/hms-proxy.properties
+  -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
 ## Routing model
@@ -68,6 +78,12 @@ java \
 - table objects returned to legacy callers are rewritten back to external names
 - if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
   to `dbName`/default-catalog routing for compatibility
+- ACID requests that include routable namespace in the payload, for example
+  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
+  `add_dynamic_partitions`, `fire_listener_event`, or `repl_tbl_writeid_state`, are routed by that
+  payload
+- ACID/txn/lock lifecycle requests that only carry ids, for example `open_txns`, `commit_txn`,
+  `abort_txn`, `check_lock`, `unlock`, or `heartbeat`, are pinned to `routing.default-catalog`
 - by default, externalized HMS objects use proxy catalog ids in `catName`/`catalogName`
 - for older HiveServer2 flows, you can enable `compatibility.preserve-backend-catalog-name=true`
   so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
@@ -82,10 +98,46 @@ routing.catalog-db-separator=__
 
 With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
 
+## Transactional DDL guard
+
+You can ask the proxy to protect table creation or table alteration when the incoming table
+metadata marks a managed table as transactional:
+
+- `transactional=true`
+- any non-empty `transactional_properties`
+
+The rule applies to `create_table`, `alter_table`, and `alter_table_with_environment_context`.
+It is evaluated only for `MANAGED_TABLE`. External tables are left unchanged.
+
+Reject mode:
+
+```properties
+guard.transactional-ddl.mode=reject
+```
+
+Rewrite mode:
+
+```properties
+guard.transactional-ddl.mode=rewrite
+```
+
+In rewrite mode the proxy rewrites the incoming table to `EXTERNAL_TABLE`, adds
+`external.table.purge=true`, and removes `transactional` plus `transactional_properties`.
+
+You can also scope it to specific client IPs or CIDR ranges:
+
+```properties
+guard.transactional-ddl.mode=reject
+guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
+```
+
+If `guard.transactional-ddl.client-addresses` is set, the rule is evaluated only for matching
+clients. If it is omitted, all clients are covered.
+
 You can also choose which HMS version the proxy advertises on the front door:
 
 ```properties
-compatibility.frontend-profile=GNU_3_1_3
+compatibility.frontend-profile=APACHE_3_1_3
 ```
 
 or for Hortonworks clients:
@@ -100,12 +152,32 @@ For a real Hortonworks front door, point the proxy to an HDP `standalone-metasto
 
 ```properties
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
-compatibility.hortonworks-standalone-metastore-jar=/opt/hms-proxy/hdp-hive/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+For isolated Hortonworks backend runtimes, you can also point the proxy to a backend jar explicitly:
+
+```properties
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+For Hortonworks backend runtimes the proxy forces `hive.metastore.uri.selection=SEQUENTIAL`
+inside the isolated metastore client. This avoids a known HDP 3.1.0.x client bug in the
+random URI selection path when `HiveMetaStoreClient` resolves backend metastore URIs.
+
+For mixed deployments, backend runtime selection can be pinned per catalog instead of relying on
+`getVersion()` autodetection:
+
+```properties
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+
+catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
 With that jar present, the proxy instantiates the Hortonworks thrift `Processor` in an isolated
-classloader and bridges overlapping RPCs to the internal GNU `3.1.3` handler automatically.
-Selected HDP-only methods are also adapted to GNU equivalents:
+classloader and bridges overlapping RPCs to the internal Apache `3.1.3` handler automatically.
+Selected HDP-only methods are also adapted to Apache equivalents:
 
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
@@ -114,7 +186,7 @@ Selected HDP-only methods are also adapted to GNU equivalents:
 - `update_table_column_statistics_req` -> `set_aggr_stats_for`
 - `update_partition_column_statistics_req` -> `set_aggr_stats_for`
 
-Some HDP-only methods still do not have a safe GNU mapping, so they remain unsupported and fail
+Some HDP-only methods still do not have a safe Apache mapping, so they remain unsupported and fail
 explicitly rather than returning a misleading success response.
 
 ## Debug logging
@@ -208,7 +280,8 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 
 `security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
 The keytab must exist and be readable — the proxy will fail to start otherwise.
-`_HOST` is replaced with the machine's FQDN at runtime (standard Hadoop behaviour).
+`_HOST` is replaced with the proxy machine's canonical hostname before Kerberos login. If your DNS
+canonical name differs from the keytab/KDC principal name, use the explicit FQDN instead.
 
 When Kerberos is enabled on the front door, delegation-token methods
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
@@ -240,6 +313,13 @@ security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hm
 security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
 security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
+
+When `ZooKeeperTokenStore` is enabled and `security.mode=KERBEROS`, the proxy now also
+auto-populates `hive.metastore.kerberos.principal` and `hive.metastore.kerberos.keytab.file`
+for the front-door `HiveConf` from `security.server-principal` and `security.keytab`. That lets
+Hive's built-in `ZooKeeperTokenStore` client authenticate to ZooKeeper over SASL/Kerberos
+without requiring a separate JAAS file in the common case. If you need different credentials for
+ZooKeeper, set those `hive.metastore.kerberos.*` keys explicitly through `security.front-door-conf.*`.
 
 On startup the proxy logs which `HiveConf` resources it found and which front-door
 overrides were applied. If you see `Found configuration file null` from Hive or the
@@ -342,3 +422,75 @@ catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
 catalog.catalog2.conf.hive.metastore.sasl.enabled=true
 catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
+
+## Manual HMS smoke client
+
+For the scenarios in [SMOKE.md](SMOKE.md), the repo now includes a runnable direct HMS API smoke
+client:
+
+- `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
+- `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
+
+Build the jar first:
+
+```bash
+mvn -DskipTests package
+```
+
+For Java 17+ with Kerberos and Hadoop 2.x libraries, use the same JVM flags as the proxy:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn \
+  --uri thrift://proxy-host:9083 \
+  --auth kerberos \
+  --server-principal hive/proxy-host.example.com@REALM.COM \
+  --client-principal alice@REALM.COM \
+  --keytab /etc/security/keytabs/alice.keytab \
+  --krb5-conf /etc/krb5.conf \
+  --db hdp__default \
+  --table smoke_txn_tbl
+```
+
+That mode performs:
+
+- `open_txns`
+- `allocate_table_write_ids`
+- `lock`
+- `check_lock`
+- `get_valid_write_ids`
+- `commit_txn`
+
+The `notification` mode is for Hortonworks-only `add_write_notification_log`, so it also needs
+the HDP standalone metastore jar:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification \
+  --uri thrift://proxy-host:9083 \
+  --auth kerberos \
+  --server-principal hive/proxy-host.example.com@REALM.COM \
+  --client-principal alice@REALM.COM \
+  --keytab /etc/security/keytabs/alice.keytab \
+  --krb5-conf /etc/krb5.conf \
+  --db hdp__default \
+  --table smoke_txn_tbl \
+  --txn-id 1001 \
+  --write-id 2001 \
+  --files-added hdfs:///warehouse/tablespace/managed/hive/smoke_txn_tbl/delta_1001_1001_0000/bucket_00000 \
+  --hdp-standalone-metastore-jar /opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+Useful notes:
+
+- `--server-principal` must be the proxy front-door principal, not the backend HMS principal
+- `--client-principal` and `--keytab` are the Kerberos credentials used by this smoke client
+- extra HiveConf overrides can be passed via repeated `--conf key=value`
+- `notification` should succeed for a Hortonworks-routed catalog and fail with
+  `requires a Hortonworks backend runtime` for an Apache-routed catalog
