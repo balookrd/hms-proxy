@@ -670,4 +670,65 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsPerCatalogAccessModeAndWriteDbWhitelist() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.access-mode=READ_WRITE_DB_WHITELIST
+          catalog.catalog1.write-db-whitelist=sales,analytics
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+          config.catalogs().get("catalog1").accessMode());
+      Assert.assertEquals(List.of("sales", "analytics"), config.catalogs().get("catalog1").writeDbWhitelist());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void defaultsCatalogAccessModeToReadWrite() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(ProxyConfig.CatalogAccessMode.READ_WRITE, config.catalogs().get("catalog1").accessMode());
+      Assert.assertEquals(List.of(), config.catalogs().get("catalog1").writeDbWhitelist());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsInvalidCatalogAccessMode() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.access-mode=unexpected
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for invalid catalog access mode");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("catalog.<name>.access-mode"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

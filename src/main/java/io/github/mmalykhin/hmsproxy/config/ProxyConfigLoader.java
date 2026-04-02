@@ -99,6 +99,9 @@ public final class ProxyConfigLoader {
       String prefix = "catalog." + catalogName + ".";
       boolean catalogImpersonationEnabled =
           Boolean.parseBoolean(get(properties, prefix + "impersonation-enabled", Boolean.toString(impersonationEnabled)));
+      ProxyConfig.CatalogAccessMode catalogAccessMode = parseCatalogAccessMode(
+          trimToNull(properties.getProperty(prefix + "access-mode")));
+      String[] catalogWriteDbWhitelist = splitCsv(get(properties, prefix + "write-db-whitelist", ""));
       MetastoreRuntimeProfile catalogRuntimeProfile = parseRuntimeProfile(
           trimToNull(properties.getProperty(prefix + "runtime-profile")));
       String catalogBackendStandaloneMetastoreJar =
@@ -123,6 +126,8 @@ public final class ProxyConfigLoader {
           get(properties, prefix + "description", catalogName),
           get(properties, prefix + "location-uri", "file:///warehouse/" + catalogName),
           catalogImpersonationEnabled,
+          catalogAccessMode,
+          Arrays.asList(catalogWriteDbWhitelist),
           catalogRuntimeProfile,
           catalogBackendStandaloneMetastoreJar,
           hiveConf));
@@ -270,6 +275,20 @@ public final class ProxyConfigLoader {
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for guard.transactional-ddl.mode: " + value + ". Expected one of: reject, rewrite", e);
+    }
+  }
+
+  private static ProxyConfig.CatalogAccessMode parseCatalogAccessMode(String value) {
+    if (value == null) {
+      return ProxyConfig.CatalogAccessMode.READ_WRITE;
+    }
+    try {
+      return ProxyConfig.CatalogAccessMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for catalog.<name>.access-mode: " + value
+              + ". Expected one of: READ_ONLY, READ_WRITE, READ_WRITE_DB_WHITELIST",
+          e);
     }
   }
 }

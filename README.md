@@ -388,6 +388,21 @@ catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
 
+Per catalog you can also restrict write traffic:
+
+```properties
+catalog.catalog1.access-mode=READ_ONLY
+catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
+catalog.catalog2.write-db-whitelist=sales,analytics
+```
+
+Supported modes:
+
+- `READ_WRITE`: default behavior
+- `READ_ONLY`: only read RPCs are allowed for that catalog
+- `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
+  `catalog.<name>.write-db-whitelist`
+
 This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
 the metastore URI and Kerberos settings.
 

@@ -238,6 +238,8 @@ public class HortonworksBackendAdapterTest {
             "c1",
             "file:///c1",
             false,
+            ProxyConfig.CatalogAccessMode.READ_WRITE,
+            java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             HDP_JAR.toString(),
             Map.of("hive.metastore.uris", "thrift://one"))));

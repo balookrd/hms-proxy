@@ -311,6 +311,21 @@ catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 Когда для любого backend включён `hive.metastore.sasl.enabled=true`, proxy открывает outbound HMS
 соединения под `security.client-principal` и `security.client-keytab`.
 
+Для каждого каталога можно отдельно ограничить write RPC:
+
+```properties
+catalog.catalog1.access-mode=READ_ONLY
+catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
+catalog.catalog2.write-db-whitelist=sales,analytics
+```
+
+Поддерживаются режимы:
+
+- `READ_WRITE`: поведение по умолчанию
+- `READ_ONLY`: для каталога разрешены только read RPC
+- `READ_WRITE_DB_WHITELIST`: write RPC разрешены только для баз из
+  `catalog.<name>.write-db-whitelist`
+
 ## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
 
 ```properties

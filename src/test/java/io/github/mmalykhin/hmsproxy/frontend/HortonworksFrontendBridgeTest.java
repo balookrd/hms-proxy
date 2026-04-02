@@ -187,7 +187,8 @@ public class HortonworksFrontendBridgeTest {
         new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
         "__",
         "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+        Map.of("catalog1", new ProxyConfig.CatalogConfig(
+            "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(
             ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,

@@ -164,6 +164,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     String dbName = (String) request.getClass().getMethod("getDb").invoke(request);
     CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
     CatalogBackend backend = namespace.backend();
+    validateCatalogAccess(backend, "add_write_notification_log", namespace.backendDbName());
     if (backend.runtimeProfile() != MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78) {
       throw metaException(
           "Hortonworks add_write_notification_log requires a Hortonworks backend runtime for catalog '"
@@ -281,6 +282,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     if (DB_STRING_METHODS.contains(methodName) && args[0] instanceof String dbName) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+      validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
       Object[] routedArgs = internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
       return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
@@ -288,12 +290,14 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
     if (extractedNamespace != null) {
+      validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
       Object[] routedArgs = internalizeObjectArguments(args, extractedNamespace);
       Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
       return NamespaceTranslator.externalizeResult(result, extractedNamespace, preserveBackendCatalogName());
     }
     if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+      validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
       Object[] routedArgs = internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
       return NamespaceTranslator.externalizeResult(result, namespace, preserveBackendCatalogName());
@@ -304,12 +308,14 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
     if (MetastoreCompatibility.routesToDefaultBackend(method.getName())) {
+      validateCatalogAccess(router.defaultBackend(), method.getName(), null);
       return invokeBackend(router.defaultBackend(), method, args);
     }
     if (!router.singleCatalog()) {
       throw metaException("Operation " + method.getName()
           + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");
     }
+    validateCatalogAccess(router.defaultBackend(), method.getName(), null);
     return invokeBackend(router.defaultBackend(), method, args);
   }
 
@@ -514,6 +520,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private static Object cloneWriteNotificationLogRequest(Object request) throws ReflectiveOperationException {
     return request.getClass().getConstructor(request.getClass()).newInstance(request);
+  }
+
+  private void validateCatalogAccess(CatalogBackend backend, String methodName, String backendDbName)
+      throws MetaException {
+    CatalogAccessModeGuard.validate(config.catalogs().get(backend.name()), methodName, backendDbName);
   }
 
   private static long currentRequestId() {

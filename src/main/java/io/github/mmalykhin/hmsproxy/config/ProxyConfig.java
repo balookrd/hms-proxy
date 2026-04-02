@@ -115,11 +115,15 @@ public record ProxyConfig(
       String description,
       String locationUri,
       boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
       Map<String, String> hiveConf
   ) {
     public CatalogConfig {
+      accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
+      writeDbWhitelist = List.copyOf(writeDbWhitelist);
       hiveConf = Map.copyOf(hiveConf);
     }
   }
@@ -177,6 +181,12 @@ public record ProxyConfig(
     DISABLED,
     REJECT,
     REWRITE
+  }
+
+  public enum CatalogAccessMode {
+    READ_ONLY,
+    READ_WRITE,
+    READ_WRITE_DB_WHITELIST
   }
 
   public enum FrontendProfile {

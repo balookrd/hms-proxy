@@ -86,6 +86,8 @@ public class BackendRuntimeTest {
         "c1",
         "file:///c1",
         false,
+        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        java.util.List.of(),
         runtimeProfile,
         backendJar,
         Map.of("hive.metastore.uris", "thrift://one"));
