@@ -196,7 +196,51 @@ select count(*) from some_table;
 Expected:
 - commands reach the correct backend without namespace errors
 
-**8. Notification/ACID path**
+**8. Views and Materialized Views**
+
+Run this block with `federation.view-text-rewrite.mode=rewrite`. If you need the original client SQL
+to stay byte-for-byte visible through HMS, also set
+`federation.view-text-rewrite.preserve-original-text=true`.
+
+```sql
+use hdp__default;
+
+create or replace view smoke_view_local as
+select * from hdp__default.some_table;
+
+show create table smoke_view_local;
+describe formatted smoke_view_local;
+select * from smoke_view_local limit 5;
+
+create or replace view smoke_view_cross as
+select * from apache__default.some_table;
+
+show create table smoke_view_cross;
+select * from smoke_view_cross limit 5;
+```
+
+If your backend supports materialized views, also run:
+
+```sql
+use hdp__default;
+
+create materialized view if not exists smoke_mv_local as
+select * from hdp__default.some_table;
+
+show create table smoke_mv_local;
+describe formatted smoke_mv_local;
+drop materialized view if exists smoke_mv_local;
+```
+
+Expected:
+- `show create table` / HMS `get_table` return proxy namespaces like `hdp__default`
+- with `preserve-original-text=true`, `viewOriginalText` keeps the client SQL while
+  `viewExpandedText` still routes correctly on the backend
+- cross-catalog references like `apache__default.some_table` are stored in backend-compatible form
+  and stay queryable through the proxy
+- if the backend does not support materialized views, the failure is explicit rather than silent
+
+**9. Notification/ACID path**
 
 These checks are best done not only through Beeline, but also through a direct HMS thrift client,
 because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
@@ -228,7 +272,7 @@ Expected:
 - `add_write_notification_log` works only for the Hortonworks backend catalog
 - proxy logs contain `trace stage=backend-request` / `backend-response` for `add_write_notification_log`
 
-**9. Negative check: Hortonworks front -> Apache backend notification path**
+**10. Negative check: Hortonworks front -> Apache backend notification path**
 
 Send `add_write_notification_log` through an HMS thrift client to a database/table that routes to
 the Apache backend.
@@ -238,7 +282,7 @@ Expected:
 - there is no silent success
 - no side notification traffic appears on the Apache backend
 
-**10. Mixed Runtime Switching Check**
+**11. Mixed Runtime Switching Check**
 
 In a single client session, run in sequence:
 - read/DDL on `hdp__default`
@@ -250,7 +294,7 @@ Expected:
 - one catalog runtime does not “stick” to another
 - namespace rewrite remains correct after notification/ACID calls
 
-**11. What To Watch In Proxy Logs**
+**12. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `Routing config: defaultCatalog=...`

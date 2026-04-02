@@ -63,7 +63,13 @@ public final class ProxyConfigLoader {
     boolean preserveBackendCatalogName = Boolean.parseBoolean(get(
         properties,
         "federation.preserve-backend-catalog-name",
-        get(properties, "compatibility.preserve-backend-catalog-name", "false")));
+        "false"));
+    ProxyConfig.ViewTextRewriteMode viewTextRewriteMode = parseViewTextRewriteMode(
+        trimToNull(properties.getProperty("federation.view-text-rewrite.mode")));
+    boolean preserveOriginalViewText = Boolean.parseBoolean(get(
+        properties,
+        "federation.view-text-rewrite.preserve-original-text",
+        "false"));
     ProxyConfig.TransactionalDdlGuardMode transactionalDdlGuardMode = parseTransactionalDdlGuardMode(
         trimToNull(properties.getProperty("guard.transactional-ddl.mode")));
     String[] transactionalDdlClientAddresses =
@@ -199,7 +205,10 @@ public final class ProxyConfigLoader {
             frontendStandaloneMetastoreJar,
             backendStandaloneMetastoreJar,
             preserveBackendCatalogName);
-    ProxyConfig.FederationConfig federation = new ProxyConfig.FederationConfig(preserveBackendCatalogName);
+    ProxyConfig.FederationConfig federation = new ProxyConfig.FederationConfig(
+        preserveBackendCatalogName,
+        viewTextRewriteMode,
+        preserveOriginalViewText);
     ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
         new ProxyConfig.TransactionalDdlGuardConfig(
             transactionalDdlGuardMode,
@@ -304,6 +313,20 @@ public final class ProxyConfigLoader {
       throw new IllegalArgumentException(
           "Invalid value for catalog.<name>.access-mode: " + value
               + ". Expected one of: READ_ONLY, READ_WRITE, READ_WRITE_DB_WHITELIST",
+          e);
+    }
+  }
+
+  private static ProxyConfig.ViewTextRewriteMode parseViewTextRewriteMode(String value) {
+    if (value == null) {
+      return ProxyConfig.ViewTextRewriteMode.DISABLED;
+    }
+    try {
+      return ProxyConfig.ViewTextRewriteMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for federation.view-text-rewrite.mode: " + value
+              + ". Expected one of: DISABLED, REWRITE",
           e);
     }
   }
