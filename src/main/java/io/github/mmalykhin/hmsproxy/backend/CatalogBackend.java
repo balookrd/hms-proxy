@@ -90,6 +90,10 @@ public final class CatalogBackend implements AutoCloseable {
     return adapter.runtimeProfile();
   }
 
+  public void checkConnectivity() throws Throwable {
+    invokeRawByName("getStatus", new Class<?>[0], new Object[0], null);
+  }
+
   public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invoke(this, method, args, impersonation);
