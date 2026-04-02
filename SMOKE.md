@@ -11,6 +11,24 @@ Assume:
 !connect jdbc:hive2://proxy-host:10000/default
 ```
 
+## Test matrix
+
+Use this matrix as the operational checklist for smoke coverage. It makes explicit which client /
+front-door / backend / auth combinations are expected to work, degrade, or fail before you start
+running the detailed Beeline or direct HMS steps below.
+
+| Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
+| --- | --- | --- | --- | --- | --- |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | reads, namespace switching, DDL/DML | Should pass through one proxy endpoint with correct cross-catalog routing. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | reads, namespace switching, DDL/DML | Same as above, plus front-door SASL/Kerberos must succeed. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | views, cross-catalog view rewrite, materialized views | Should pass when view rewrite is enabled; unsupported MV backends must fail explicitly. |
+| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Hortonworks-routed traffic. |
+| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Apache-routed traffic. |
+| Direct HMS smoke CLI `txn` | any | mixed backends | `KERBEROS` | same txn family plus authenticated front door | Should pass when Kerberos login and, if enabled, backend impersonation are configured correctly. |
+| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
+| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail with an explicit `requires a Hortonworks backend runtime` style error. |
+| Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
+
 **1. Basic Front-Door Check**
 ```sql
 set -v;

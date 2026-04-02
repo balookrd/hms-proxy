@@ -7,36 +7,63 @@ English documentation: [README.md](README.md), [SMOKE.md](SMOKE.md)
 Java proxy для Hive Metastore, который поднимает один внешний HMS Thrift endpoint и маршрутизирует
 запросы в несколько backend metastore по каталогу.
 
-## Что поддерживается
+## Основные сценарии
 
-- один production-facing HMS Thrift endpoint для HiveServer2 и прямых HMS API клиентов
-- Apache Hive Metastore `3.1.3` на фронте с compatibility downgrade для старых backend RPC
-- Hortonworks Hive Metastore `3.1.0.3.1.0.0-78` на backend
-- опциональная смена front-door identity, чтобы proxy представлялся как Hortonworks
-  `3.1.0.3.1.0.0-78`, а не Apache Hive Metastore `3.1.3`
-- опциональный Hortonworks frontend bridge через HDP `standalone-metastore` jar для
-  HDP-only thrift request-wrapper методов
-- routing по явному `catName` в новых HMS запросах
-- routing по legacy database name в формате `catalog<separator>db` для старых клиентов
-- статический набор каталогов в конфиге
-- опциональный Kerberos/SASL на фронте
-- опциональная impersonation аутентифицированного Kerberos пользователя на backend HMS
+### 1. Multi-catalog federation
 
-## Важные ограничения
+Один production-facing HMS Thrift endpoint для HiveServer2 и прямых HMS API клиентов, который
+маршрутизирует запросы в несколько backend metastore по явному `catName` или по legacy
+database name в формате `catalog<separator>db`.
 
-- каталоги задаются только через конфиг proxy, а не через `create_catalog` / `drop_catalog`
+### 2. Apache ↔ HDP compatibility bridge
+
+Apache Hive Metastore `3.1.3` на фронте, compatibility downgrade для старых Hortonworks
+`3.1.0.x` backend RPC и, при необходимости, полноценный Hortonworks front door через
+HDP `standalone-metastore` jar.
+
+### 3. Kerberized proxy for HS2/HMS
+
+Proxy как security boundary между клиентами и backend metastore: Kerberos/SASL на фронте,
+опциональный outbound Kerberos к backend и опциональная impersonation аутентифицированного
+Kerberos пользователя.
+
+## Матрица поведения RPC
+
+| Группа RPC | Статус | Поведение |
+| --- | --- | --- |
+| Metadata read/write RPC с явным namespace (`catName`, `dbName`, `fullTableName`) | supported | Нормально маршрутизируются в нужный catalog/backend. |
+| Legacy read/write RPC с database name в формате `catalog<separator>db` | supported | Маршрутизируются по externalized database name; table/database объекты переписываются на обратном пути. |
+| Apache `3.1.3` wrapper RPC против старых Hortonworks `3.1.0.x` backend | degraded | Proxy повторяет часть `*_req` API через старые legacy методы вроде `get_table`. |
+| Session-level и global read-only RPC без catalog context | degraded | Идут в `routing.default-catalog`. |
+| Read-only service API, которых нет на backend (`TApplicationException` на notifications, privilege refresh/introspection, token/key listings кроме delegation-token issuance, txn/lock/compaction status) | degraded | Proxy возвращает empty compatibility response вместо ошибки. |
+| ACID / txn / lock lifecycle RPC без routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Пинятся к `routing.default-catalog`; в multi-catalog режиме это нужно отдельно валидировать. |
+| Global write operations без явного catalog context | rejected | Proxy отклоняет запрос, если настроено больше одного каталога. |
+| Управление каталогами (`create_catalog`, `drop_catalog`) | rejected | Каталоги задаются в конфиге proxy, а не через клиентские RPC. |
+| HDP-only front-door методы, для которых есть явный Apache bridge mapping | supported | Proxy адаптирует выбранные Hortonworks request-wrapper методы к Apache equivalents. |
+| HDP-only методы, которым нужен совместимый Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Пробрасываются только в совместимые Hortonworks backend/front door при соответствующей конфигурации. |
+| HDP-only методы без безопасного Apache mapping | rejected | Proxy падает явно, а не возвращает вводящий в заблуждение success. |
+
+## Public compatibility matrix
+
+Это публичная сводка того, как позиционировать proxy. Матрица сгруппирована не по отдельным thrift
+методам, а по типу клиента, advertised front door, backend runtime, auth mode и семействам методов.
+
+| Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
+| --- | --- | --- | --- | --- | --- |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` или `KERBEROS` | catalog-aware read/write, legacy `catalog<separator>db` routing, view rewrite | Базовый полностью поддержанный сценарий. |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | read path и часть metadata write, где возможен fallback с `*_req` API | Поддержано через compatibility downgrade; часть вызовов работает в degraded-режиме через legacy RPC. |
+| Hortonworks клиенты, которым достаточно Hortonworks identity на фронте через `getVersion()` | `HORTONWORKS_*` без standalone jar | `APACHE_3_1_3` или Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | пересекающиеся Apache/HDP method families | Поддержано, если клиенту достаточно только смены advertised profile. |
+| Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Поддержано при наличии совместимых Hortonworks front-door и backend runtime jar. |
+| Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | HDP-only passthrough методы вроде `add_write_notification_log` | Явно отклоняется, если target backend не даёт совместимый Hortonworks runtime. |
+| HiveServer2 / Beeline SQL workloads через несколько каталогов | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | read, DDL/DML, namespace rewrite, optional view rewrite | Поддержано, пока routing может однозначно вычислить целевой каталог. |
+| HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC без namespace в payload | любой | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: идут в `routing.default-catalog`; считать это single-catalog control plane, пока не проведена отдельная валидация. |
+| Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
+| Клиенты, которые пытаются делать global write без resolvable catalog или динамически управлять registry каталогов | любой | любой | `NONE` или `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
+
+## Важные оговорки
+
 - legacy database references без префикса каталога идут в `routing.default-catalog`
-- session-level compatibility calls и другие global read-only операции без catalog context тоже
-  идут в `routing.default-catalog`
-- ACID/txn/lock lifecycle RPC без catalog/database context тоже идут в `routing.default-catalog`
-- global write operations без явного catalog context в multi-catalog режиме в общем случае
-  запрещаются
-- если backend HMS возвращает `TApplicationException` для части read-only service API
-  (notifications, privilege refresh/introspection, token/key listings кроме delegation-token issuance,
-  txn/lock/compaction status), proxy отдаёт empty compatibility response вместо ошибки
-- если backend HMS не поддерживает более новые Apache `3.1.3` request-wrapper RPC вроде
-  `get_table_req` или `get_table_objects_by_name_req`, proxy автоматически переключается
-  на legacy метод, совместимый с Hortonworks `3.1.0.x`
+- это сохраняет совместимость со Spark/Hive, но не открывает путь к неоднозначным metadata write
 - на практике это означает, что ACID write lifecycle полноценно поддерживается только для
   `default-catalog`, если из payload нельзя извлечь namespace
 - request-based ACID методы, где в payload есть `dbName` или `fullTableName`, продолжают
@@ -540,6 +567,15 @@ RPC:
 
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
+
+Текущее smoke-покрытие сведено в test matrix в [SMOKE.ru.md](SMOKE.ru.md) по полям:
+
+- client version
+- front-door profile
+- backend profile
+- auth mode
+- method families
+- expected result
 
 Сначала собери jar:
 
