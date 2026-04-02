@@ -64,6 +64,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     applyZooKeeperKerberosDefaults(config, securityConf);
     emitConfigurationDiagnostics(config, securityConf);
     UserGroupInformation.setConfiguration(securityConf);
+    ensureKeytabLoginUser(config, securityConf);
     ProxyUsers.refreshSuperUserGroupsConfiguration(securityConf);
 
     HadoopThriftAuthBridge bridge = HadoopThriftAuthBridge.getBridge();
@@ -137,6 +138,24 @@ public final class FrontDoorSecurity implements AutoCloseable {
     if (!config.security().frontDoorConf().containsKey(METASTORE_KERBEROS_KEYTAB_KEY)) {
       conf.set(METASTORE_KERBEROS_KEYTAB_KEY, config.security().keytab());
     }
+  }
+
+  static void ensureKeytabLoginUser(ProxyConfig config, Configuration conf) throws IOException {
+    if (!config.security().kerberosEnabled()) {
+      return;
+    }
+    if (!tokenStoreClass(conf).endsWith(".ZooKeeperTokenStore")) {
+      return;
+    }
+    UserGroupInformation loginUser = UserGroupInformation.getLoginUser();
+    if (loginUser != null && loginUser.isFromKeytab()) {
+      LOG.debug("Front door login user already comes from keytab: {}", loginUser.getUserName());
+      return;
+    }
+    String principal = KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal());
+    LOG.info("Refreshing Hadoop login user from keytab before starting ZooKeeperTokenStore using principal {}",
+        principal);
+    UserGroupInformation.loginUserFromKeytab(principal, config.security().keytab());
   }
 
   private static String tokenStoreClass(Configuration conf) {
