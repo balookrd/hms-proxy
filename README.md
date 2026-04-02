@@ -202,6 +202,12 @@ or for Hortonworks clients:
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 ```
 
+or for HDP `3.1.0.3.1.5.6150-1` clients:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+```
+
 That changes the value returned by `getVersion()` while keeping the same proxy routing logic.
 
 For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
@@ -211,10 +217,23 @@ compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
+For HDP `3.1.0.3.1.5.6150-1`, point the proxy to the matching jar:
+
+```properties
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
 For isolated Hortonworks backend runtimes, you can also point the proxy to a backend jar explicitly:
 
 ```properties
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+```
+
+or:
+
+```properties
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
 For Hortonworks backend runtimes the proxy forces `hive.metastore.uri.selection=SEQUENTIAL`
@@ -231,6 +250,13 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
+For HDP `3.1.0.3.1.5.6150-1`, configure the catalog the same way:
+
+```properties
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
 With that jar present, the proxy can open the selected Hortonworks backend runtime in an isolated
 classloader. Runtime choice is not autodetected from the backend server version; it follows the
 configured `catalog.<name>.runtime-profile`.
@@ -239,6 +265,7 @@ For the front door, the proxy instantiates the Hortonworks thrift `Processor` in
 classloader and bridges overlapping RPCs to the internal Apache `3.1.3` handler automatically.
 Selected HDP-only methods are also adapted to Apache equivalents:
 
+- `get_database_req` -> `get_database` for HDP `3.1.0.3.1.5.6150-1`
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
 - `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`

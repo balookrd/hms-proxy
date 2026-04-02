@@ -660,6 +660,30 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsNewerFrontendCompatibilityProfile() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+          compatibility.frontend-standalone-metastore-jar=/tmp/hdp-6150-standalone-metastore.jar
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+          config.compatibility().frontendProfile());
+      Assert.assertEquals(
+          "/tmp/hdp-6150-standalone-metastore.jar",
+          config.compatibility().frontendStandaloneMetastoreJar());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void loadsPerCatalogBackendRuntimeOverrides() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
