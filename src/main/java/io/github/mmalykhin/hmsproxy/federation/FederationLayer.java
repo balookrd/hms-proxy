@@ -13,10 +13,12 @@ import org.apache.hadoop.hive.metastore.api.TableMeta;
 public final class FederationLayer {
   private final ProxyConfig config;
   private final CatalogRouter router;
+  private final ViewDefinitionCompatibility viewDefinitionCompatibility;
 
   public FederationLayer(ProxyConfig config, CatalogRouter router) {
     this.config = config;
     this.router = router;
+    this.viewDefinitionCompatibility = new ViewDefinitionCompatibility(config, router);
   }
 
   public boolean preserveBackendCatalogName() {
@@ -44,7 +46,8 @@ public final class FederationLayer {
   }
 
   public Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    return NamespaceTranslator.externalizeResult(value, namespace, preserveBackendCatalogName());
+    Object externalized = NamespaceTranslator.externalizeResult(value, namespace, preserveBackendCatalogName());
+    return viewDefinitionCompatibility.externalizeResult(externalized, namespace);
   }
 
   public TableMeta externalizeTableMeta(TableMeta value, CatalogRouter.ResolvedNamespace namespace) {
@@ -52,7 +55,8 @@ public final class FederationLayer {
   }
 
   public Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
-    return NamespaceTranslator.internalizeArgument(value, namespace, preserveBackendCatalogName());
+    Object internalized = NamespaceTranslator.internalizeArgument(value, namespace, preserveBackendCatalogName());
+    return viewDefinitionCompatibility.internalizeArgument(internalized, namespace);
   }
 
   public Object[] internalizeDbStringArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace) {

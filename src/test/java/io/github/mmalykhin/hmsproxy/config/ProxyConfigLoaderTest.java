@@ -150,6 +150,46 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsViewTextRewriteConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          federation.view-text-rewrite.mode=rewrite
+          federation.view-text-rewrite.preserve-original-text=true
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(ProxyConfig.ViewTextRewriteMode.REWRITE, config.federation().viewTextRewriteMode());
+      Assert.assertTrue(config.federation().preserveOriginalViewText());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsInvalidViewTextRewriteMode() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          federation.view-text-rewrite.mode=unexpected
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for invalid view text rewrite mode");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("federation.view-text-rewrite.mode"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void rejectsInvalidTransactionalDdlMode() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
@@ -614,17 +654,18 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
-  public void loadsCompatibilityFlagForPreservingBackendCatalogName() throws Exception {
+  public void loadsFederationFlagForPreservingBackendCatalogName() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
           catalogs=catalog1
-          compatibility.preserve-backend-catalog-name=true
+          federation.preserve-backend-catalog-name=true
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
+      Assert.assertTrue(config.federation().preserveBackendCatalogName());
       Assert.assertTrue(config.compatibility().preserveBackendCatalogName());
     } finally {
       Files.deleteIfExists(file);

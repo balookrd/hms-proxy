@@ -204,7 +204,51 @@ select count(*) from some_table;
 - команды идут в правильный backend
 - namespace не ломается
 
-**8. Notification / ACID path**
+**8. Views и materialized views**
+
+Этот блок стоит прогонять с `federation.view-text-rewrite.mode=rewrite`. Если важно, чтобы
+оригинальный клиентский SQL оставался видимым в HMS без изменений, дополнительно включи
+`federation.view-text-rewrite.preserve-original-text=true`.
+
+```sql
+use hdp__default;
+
+create or replace view smoke_view_local as
+select * from hdp__default.some_table;
+
+show create table smoke_view_local;
+describe formatted smoke_view_local;
+select * from smoke_view_local limit 5;
+
+create or replace view smoke_view_cross as
+select * from apache__default.some_table;
+
+show create table smoke_view_cross;
+select * from smoke_view_cross limit 5;
+```
+
+Если backend поддерживает materialized views, дополнительно проверить:
+
+```sql
+use hdp__default;
+
+create materialized view if not exists smoke_mv_local as
+select * from hdp__default.some_table;
+
+show create table smoke_mv_local;
+describe formatted smoke_mv_local;
+drop materialized view if exists smoke_mv_local;
+```
+
+Ожидание:
+- `show create table` / HMS `get_table` возвращают proxy namespace вида `hdp__default`
+- при `preserve-original-text=true` `viewOriginalText` остаётся пользовательским, а
+  `viewExpandedText` всё ещё корректно маршрутизируется для backend
+- cross-catalog ссылки вроде `apache__default.some_table` сохраняются в backend-compatible форме
+  и продолжают работать через proxy
+- если backend не поддерживает materialized views, ошибка явная, без silent success
+
+**9. Notification / ACID path**
 
 Эти проверки лучше делать не только через Beeline, но и прямым HMS thrift client, потому что
 `add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
@@ -238,7 +282,7 @@ select count(*) from some_table;
 - в логах proxy видны `trace stage=backend-request` / `backend-response` для
   `add_write_notification_log`
 
-**9. Negative check: Hortonworks front -> Apache backend notification path**
+**10. Negative check: Hortonworks front -> Apache backend notification path**
 
 Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
 маршрутизируется в Apache backend.
@@ -248,7 +292,7 @@ select count(*) from some_table;
 - нет silent success
 - в Apache backend не появляется побочный notification traffic
 
-**10. Проверка после mixed runtime переключений**
+**11. Проверка после mixed runtime переключений**
 
 В одной клиентской сессии последовательно выполнить:
 - read/DDL на `hdp__default`

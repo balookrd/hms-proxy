@@ -23,7 +23,7 @@ public record ProxyConfig(
         ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false)
         : compatibility;
     federation = federation == null
-        ? new FederationConfig(compatibility.preserveBackendCatalogName())
+        ? new FederationConfig(compatibility.preserveBackendCatalogName(), ViewTextRewriteMode.DISABLED, false)
         : federation;
     transactionalDdlGuard = transactionalDdlGuard == null
         ? new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of())
@@ -42,7 +42,7 @@ public record ProxyConfig(
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
         new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
-        new FederationConfig(false),
+        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -56,7 +56,7 @@ public record ProxyConfig(
       CompatibilityConfig compatibility
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new FederationConfig(false),
+        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -71,7 +71,10 @@ public record ProxyConfig(
       TransactionalDdlGuardConfig transactionalDdlGuard
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new FederationConfig(compatibility != null && compatibility.preserveBackendCatalogName()),
+        new FederationConfig(
+            compatibility != null && compatibility.preserveBackendCatalogName(),
+            ViewTextRewriteMode.DISABLED,
+            false),
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -86,7 +89,7 @@ public record ProxyConfig(
       CompatibilityConfig compatibility
   ) {
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
-        new FederationConfig(false),
+        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000));
   }
@@ -193,8 +196,22 @@ public record ProxyConfig(
   }
 
   public record FederationConfig(
-      boolean preserveBackendCatalogName
+      boolean preserveBackendCatalogName,
+      ViewTextRewriteMode viewTextRewriteMode,
+      boolean preserveOriginalViewText
   ) {
+    public FederationConfig {
+      viewTextRewriteMode = viewTextRewriteMode == null ? ViewTextRewriteMode.DISABLED : viewTextRewriteMode;
+    }
+
+    public boolean viewTextRewriteEnabled() {
+      return viewTextRewriteMode == ViewTextRewriteMode.REWRITE;
+    }
+  }
+
+  public enum ViewTextRewriteMode {
+    DISABLED,
+    REWRITE
   }
 
   public record TransactionalDdlGuardConfig(

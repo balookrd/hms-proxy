@@ -183,6 +183,18 @@ backend failures, fallbacks, default-catalog routing и ambiguous routing.
 - для старых HiveServer2 сценариев можно включить
   `federation.preserve-backend-catalog-name=true`, чтобы во внешних объектах сохранялся
   backend catalog name, например `hive`, а `dbName` при этом оставался proxy namespace
+- опционально proxy умеет переписывать SQL внутри `viewExpandedText` и `viewOriginalText`
+  для `VIRTUAL_VIEW` / `MATERIALIZED_VIEW`:
+
+```properties
+federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.preserve-original-text=true
+```
+
+При `mode=rewrite` proxy переписывает ссылки вида `catalog<separator>db.table` на пути в backend,
+а на пути обратно разворачивает ссылки текущего backend db в внешний namespace. Если
+`preserve-original-text=true`, переписывается только `viewExpandedText`, а `viewOriginalText`
+остаётся как прислал клиент.
 
 Разделитель каталога и базы настраивается:
 
@@ -311,6 +323,15 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 - `get_tables_ext` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1`
 - `get_all_materialized_view_objects_for_rewriting` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1` через `routing.default-catalog`
 
+Замечания по view / materialized view:
+- переписывание SQL работает только при `federation.view-text-rewrite.mode=rewrite`
+- rewrite сделан intentionally parser-less: proxy переписывает ссылки вида `db.table`, а не
+  пытается разобрать весь Hive SQL grammar
+- входящие cross-catalog ссылки вроде `catalog2__dim.table_x` internalize'ятся для backend, но на
+  выходе гарантированно переписывается только namespace текущей таблицы
+- comments, string literals и экзотические quoted identifiers лучше проверить отдельным smoke
+  тестом в вашей среде
+
 ## ACID / txn / lock policy
 
 - request-based ACID методы с routable namespace в payload, например
@@ -356,6 +377,17 @@ federation.preserve-backend-catalog-name=true
 
 Тогда `catName`/`catalogName` будет сохраняться с backend стороны, обычно это `hive`, а routing
 по-прежнему будет идти по externalized `dbName`.
+
+Если нагрузки используют Hive views или materialized views между несколькими catalog, имеет смысл
+сразу прогонять и такой режим:
+
+```properties
+federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.preserve-original-text=true
+```
+
+Такой набор сохраняет пользовательский `viewOriginalText`, но всё ещё переписывает
+`viewExpandedText` для совместимости с backend.
 
 ## Безопасность
 

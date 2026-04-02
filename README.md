@@ -191,6 +191,18 @@ fallbacks, default-catalog routing, and ambiguous routing events.
 - for older HiveServer2 flows, you can enable `federation.preserve-backend-catalog-name=true`
   so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
   still uses the proxy namespace like `catalog2__default`
+- optional view-definition rewrite can also translate `viewExpandedText` and `viewOriginalText`
+  for `VIRTUAL_VIEW` / `MATERIALIZED_VIEW` table objects:
+
+```properties
+federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.preserve-original-text=true
+```
+
+With `mode=rewrite`, the proxy rewrites `catalog<separator>db.table` references in view SQL on the
+way to the backend, and rewrites the current catalog's backend db references back to the external
+namespace on the way out. If `preserve-original-text=true`, only `viewExpandedText` is rewritten
+while `viewOriginalText` is left untouched.
 
 The catalog/database separator is configurable:
 
@@ -328,6 +340,15 @@ Selected HDP-only methods are also adapted to Apache equivalents:
 Some HDP-only methods still do not have a safe Apache mapping, so they remain unsupported and fail
 explicitly rather than returning a misleading success response.
 
+View/materialized-view notes:
+- the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=rewrite`
+- rewrite is intentionally parser-less and conservative: it targets `db.table` references, not full
+  Hive SQL grammar
+- cross-catalog references in inbound SQL like `catalog2__dim.table_x` are internalized for the
+  backend, but outbound rewrite is only guaranteed for the current table namespace
+- comments, string literals, and unusual quoted identifiers may still need manual validation in
+  your environment
+
 ## Debug logging
 
 Detailed debug tracing for the proxy package is enabled by default through the bundled
@@ -369,6 +390,17 @@ federation.preserve-backend-catalog-name=true
 
 This keeps `catName`/`catalogName` from the backend, typically `hive`, while still routing by the
 externalized `dbName`.
+
+If your workloads depend on Hive views or materialized views across multiple catalogs, also test
+with:
+
+```properties
+federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.preserve-original-text=true
+```
+
+That combination preserves the user-facing `viewOriginalText` while still rewriting
+`viewExpandedText` for backend compatibility.
 
 Then a non-default catalog is used through the external database name:
 
