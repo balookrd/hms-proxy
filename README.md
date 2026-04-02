@@ -101,12 +101,13 @@ With that setting, legacy names become `catalog1__sales` instead of `catalog1.sa
 ## Transactional DDL guard
 
 You can ask the proxy to protect table creation or table alteration when the incoming table
-metadata marks the table as transactional:
+metadata marks a managed table as transactional:
 
 - `transactional=true`
 - any non-empty `transactional_properties`
 
 The rule applies to `create_table`, `alter_table`, and `alter_table_with_environment_context`.
+It is evaluated only for `MANAGED_TABLE`. External tables are left unchanged.
 
 Reject mode:
 
