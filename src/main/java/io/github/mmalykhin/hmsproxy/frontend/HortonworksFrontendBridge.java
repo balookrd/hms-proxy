@@ -30,13 +30,15 @@ public final class HortonworksFrontendBridge {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final Set<String> ADAPTED_HDP_ONLY_METHODS = Set.of(
       "get_database_req",
+      "create_table_req",
       "truncate_table_req",
       "alter_table_req",
       "alter_partitions_req",
       "rename_partition_req",
       "update_table_column_statistics_req",
       "update_partition_column_statistics_req",
-      "add_write_notification_log");
+      "add_write_notification_log",
+      "get_partitions_by_names_req");
 
   private HortonworksFrontendBridge() {
   }
@@ -126,6 +128,7 @@ public final class HortonworksFrontendBridge {
       Object request = args == null || args.length == 0 ? null : args[0];
       return switch (methodName) {
         case "get_database_req" -> handleGetDatabaseReq(method, request);
+        case "create_table_req" -> handleCreateTableReq(method, request);
         case "truncate_table_req" -> handleTruncateTableReq(method, request);
         case "alter_table_req" -> handleAlterTableReq(method, request);
         case "alter_partitions_req" -> handleAlterPartitionsReq(method, request);
@@ -133,6 +136,7 @@ public final class HortonworksFrontendBridge {
         case "update_table_column_statistics_req", "update_partition_column_statistics_req" ->
             handleUpdateColumnStatisticsReq(method, request);
         case "add_write_notification_log" -> handleAddWriteNotificationLog(method, request);
+        case "get_partitions_by_names_req" -> handleGetPartitionsByNamesReq(method, request);
         default -> throw new TApplicationException(
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hortonworks frontend method: " + methodName);
@@ -142,6 +146,46 @@ public final class HortonworksFrontendBridge {
     private Object handleGetDatabaseReq(Method method, Object request) throws Throwable {
       Object database = apacheHandler.get_database((String) invokeNoArgs(request, "getName"));
       return convertResult(database, method.getReturnType());
+    }
+
+    private Object handleCreateTableReq(Method method, Object request) throws Throwable {
+      Table table = (Table) convertTBase(invokeNoArgs(request, "getTable"), Table.class);
+      EnvironmentContext environmentContext =
+          (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvContext"), EnvironmentContext.class);
+      @SuppressWarnings("unchecked")
+      List<Object> primaryKeys = (List<Object>) invokeNoArgs(request, "getPrimaryKeys");
+      @SuppressWarnings("unchecked")
+      List<Object> foreignKeys = (List<Object>) invokeNoArgs(request, "getForeignKeys");
+      @SuppressWarnings("unchecked")
+      List<Object> uniqueConstraints = (List<Object>) invokeNoArgs(request, "getUniqueConstraints");
+      @SuppressWarnings("unchecked")
+      List<Object> notNullConstraints = (List<Object>) invokeNoArgs(request, "getNotNullConstraints");
+      @SuppressWarnings("unchecked")
+      List<Object> defaultConstraints = (List<Object>) invokeNoArgs(request, "getDefaultConstraints");
+      @SuppressWarnings("unchecked")
+      List<Object> checkConstraints = (List<Object>) invokeNoArgs(request, "getCheckConstraints");
+      boolean hasConstraints = hasAny(primaryKeys, foreignKeys, uniqueConstraints,
+          notNullConstraints, defaultConstraints, checkConstraints);
+      if (hasConstraints && environmentContext != null) {
+        throw new TApplicationException(
+            TApplicationException.UNKNOWN_METHOD,
+            "create_table_req with both constraints and envContext has no safe Apache 3.1.3 mapping");
+      }
+      if (hasConstraints) {
+        apacheHandler.create_table_with_constraints(
+            table,
+            typedList(primaryKeys, org.apache.hadoop.hive.metastore.api.SQLPrimaryKey.class),
+            typedList(foreignKeys, org.apache.hadoop.hive.metastore.api.SQLForeignKey.class),
+            typedList(uniqueConstraints, org.apache.hadoop.hive.metastore.api.SQLUniqueConstraint.class),
+            typedList(notNullConstraints, org.apache.hadoop.hive.metastore.api.SQLNotNullConstraint.class),
+            typedList(defaultConstraints, org.apache.hadoop.hive.metastore.api.SQLDefaultConstraint.class),
+            typedList(checkConstraints, org.apache.hadoop.hive.metastore.api.SQLCheckConstraint.class));
+      } else if (environmentContext != null) {
+        apacheHandler.create_table_with_environment_context(table, environmentContext);
+      } else {
+        apacheHandler.create_table(table);
+      }
+      return null;
     }
 
     private Object handleTruncateTableReq(Method method, Object request) throws Throwable {
@@ -205,6 +249,17 @@ public final class HortonworksFrontendBridge {
       }
       Object response = extension.addWriteNotificationLog(request);
       return convertResult(response, method.getReturnType());
+    }
+
+    private Object handleGetPartitionsByNamesReq(Method method, Object request) throws Throwable {
+      @SuppressWarnings("unchecked")
+      List<org.apache.hadoop.hive.metastore.api.Partition> partitions = apacheHandler.get_partitions_by_names(
+          (String) invokeNoArgs(request, "getDb_name"),
+          (String) invokeNoArgs(request, "getTbl_name"),
+          stringList(invokeNoArgs(request, "getNames")));
+      Object response = emptyResponse(method.getReturnType());
+      response.getClass().getMethod("setPartitions", List.class).invoke(response, partitions);
+      return response;
     }
 
     private Method findApacheMethod(String methodName, int argumentCount) {
@@ -326,6 +381,20 @@ public final class HortonworksFrontendBridge {
     @SuppressWarnings("unchecked")
     private List<String> stringList(Object value) {
       return value == null ? List.of() : (List<String>) value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> List<T> typedList(List<Object> value, Class<T> type) {
+      return value == null ? List.of() : (List<T>) value;
+    }
+
+    private boolean hasAny(List<?>... values) {
+      for (List<?> value : values) {
+        if (value != null && !value.isEmpty()) {
+          return true;
+        }
+      }
+      return false;
     }
 
     private Object emptyResponse(Class<?> responseType) throws ReflectiveOperationException {

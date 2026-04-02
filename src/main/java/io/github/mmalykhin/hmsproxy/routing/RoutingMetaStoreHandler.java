@@ -352,6 +352,17 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
+    Optional<Object> compatibilityFallback = MetastoreCompatibility.fallback(
+        method.getName(),
+        metaException("Operation " + method.getName() + " has no catalog context"));
+    if (!DefaultBackendRoutingPolicy.routesToDefaultBackend(method.getName())
+        && !router.singleCatalog()
+        && compatibilityFallback.isPresent()) {
+      currentObservation().markFallback();
+      LOG.warn("requestId={} method={} has no catalog context, returning compatibility fallback",
+          currentRequestId(), method.getName());
+      return compatibilityFallback.get();
+    }
     if (DefaultBackendRoutingPolicy.routesToDefaultBackend(method.getName())) {
       currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
       observability.metrics().recordDefaultCatalogRoute(method.getName());
