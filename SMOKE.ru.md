@@ -263,8 +263,10 @@ select count(*) from some_table;
 **11. Что смотреть в логах proxy**
 
 Ищи:
-- `Detected backend catalog ... metastore version ...`
-- `legacy request API compatibility mode`
+- `Starting HMS proxy`
+- `Routing config: defaultCatalog=...`
+- `Compatibility config: frontendProfile=..., frontendVersion=...`
+- `Backend catalog '...' selected runtimeProfile=... compatibilityProfile=...`
 - `backend-request catalog=... method=...`
 - повторяющиеся `UNKNOWN_METHOD`
 - ошибки `Unsupported Hortonworks frontend method`
