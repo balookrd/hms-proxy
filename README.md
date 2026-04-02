@@ -313,6 +313,13 @@ security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.exa
 security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
 
+When `ZooKeeperTokenStore` is enabled and `security.mode=KERBEROS`, the proxy now also
+auto-populates `hive.metastore.kerberos.principal` and `hive.metastore.kerberos.keytab.file`
+for the front-door `HiveConf` from `security.server-principal` and `security.keytab`. That lets
+Hive's built-in `ZooKeeperTokenStore` client authenticate to ZooKeeper over SASL/Kerberos
+without requiring a separate JAAS file in the common case. If you need different credentials for
+ZooKeeper, set those `hive.metastore.kerberos.*` keys explicitly through `security.front-door-conf.*`.
+
 On startup the proxy logs which `HiveConf` resources it found and which front-door
 overrides were applied. If you see `Found configuration file null` from Hive or the
 proxy warns that it is using `MemoryTokenStore`, the process did not see a persistent

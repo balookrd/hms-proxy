@@ -24,6 +24,8 @@ public final class FrontDoorSecurity implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(FrontDoorSecurity.class);
   private static final String TOKEN_STORE_CLASS_KEY = "hive.cluster.delegation.token.store.class";
   private static final String FALLBACK_TOKEN_STORE_CLASS_KEY = "metastore.cluster.delegation.token.store.class";
+  private static final String METASTORE_KERBEROS_PRINCIPAL_KEY = "hive.metastore.kerberos.principal";
+  private static final String METASTORE_KERBEROS_KEYTAB_KEY = "hive.metastore.kerberos.keytab.file";
   private static final String TOKEN_STORE_CONNECT_STRING_KEY =
       "hive.cluster.delegation.token.store.zookeeper.connectString";
   private static final String FALLBACK_TOKEN_STORE_CONNECT_STRING_KEY =
@@ -59,6 +61,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     HiveConf securityConf = new HiveConf();
     config.security().frontDoorConf().forEach(securityConf::set);
     securityConf.set("hadoop.security.authentication", config.security().mode().hadoopAuthValue());
+    applyZooKeeperKerberosDefaults(config, securityConf);
     emitConfigurationDiagnostics(config, securityConf);
     UserGroupInformation.setConfiguration(securityConf);
     ProxyUsers.refreshSuperUserGroupsConfiguration(securityConf);
@@ -116,6 +119,23 @@ public final class FrontDoorSecurity implements AutoCloseable {
           config.security().frontDoorConf().size(),
           config.security().frontDoorConf().keySet());
       LOG.debug("Effective front-door token store class after overrides: {}", tokenStoreClass(securityConf));
+    }
+  }
+
+  static void applyZooKeeperKerberosDefaults(ProxyConfig config, Configuration conf) {
+    if (!config.security().kerberosEnabled()) {
+      return;
+    }
+    String tokenStoreClass = tokenStoreClass(conf);
+    if (!tokenStoreClass.endsWith(".ZooKeeperTokenStore")) {
+      return;
+    }
+    if (!config.security().frontDoorConf().containsKey(METASTORE_KERBEROS_PRINCIPAL_KEY)) {
+      conf.set(METASTORE_KERBEROS_PRINCIPAL_KEY,
+          KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal()));
+    }
+    if (!config.security().frontDoorConf().containsKey(METASTORE_KERBEROS_KEYTAB_KEY)) {
+      conf.set(METASTORE_KERBEROS_KEYTAB_KEY, config.security().keytab());
     }
   }
 
