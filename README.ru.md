@@ -92,13 +92,14 @@ routing.catalog-db-separator=__
 
 ## Guard для transactional DDL
 
-Proxy можно настроить так, чтобы он защищал создание и изменение таблиц, если во входящем
+Proxy можно настроить так, чтобы он защищал создание и изменение managed-таблиц, если во входящем
 metadata таблица помечена как transactional:
 
 - `transactional=true`
 - любое непустое значение `transactional_properties`
 
 Правило применяется к `create_table`, `alter_table` и `alter_table_with_environment_context`.
+Оно срабатывает только для `MANAGED_TABLE`. External-таблицы остаются без изменений.
 
 Режим reject:
 

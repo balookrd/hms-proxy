@@ -32,7 +32,7 @@ final class TransactionalTableMutationGuard {
     }
 
     Table table = findTable(args);
-    if (table == null || !isBlockedTransactionalMutation(table.getParameters())) {
+    if (table == null || !isManagedTable(table) || !isBlockedTransactionalMutation(table.getParameters())) {
       return;
     }
 
@@ -87,6 +87,11 @@ final class TransactionalTableMutationGuard {
     }
     String transactionalProperties = parameters.get("transactional_properties");
     return transactionalProperties != null && !transactionalProperties.isBlank();
+  }
+
+  private static boolean isManagedTable(Table table) {
+    String tableType = table.getTableType();
+    return tableType != null && "MANAGED_TABLE".equalsIgnoreCase(tableType.trim());
   }
 
   private static void rewriteToExternal(Table table) {

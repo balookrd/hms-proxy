@@ -267,6 +267,7 @@ public class RoutingMetaStoreHandlerTest {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreHandler handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
     String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
     try {
@@ -285,6 +286,7 @@ public class RoutingMetaStoreHandlerTest {
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     RoutingMetaStoreHandler handler = guardedHandler(backendCalls, capturedTable, "10.20.0.0/16");
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
     String previousRemoteAddress = ClientRequestContext.setRemoteAddress("192.168.10.5");
     try {
@@ -302,6 +304,7 @@ public class RoutingMetaStoreHandlerTest {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreHandler handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.10.10.10");
     Table table = table("catalog1__sales", "events", Map.of("transactional_properties", "insert_only"));
+    table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod(
         "alter_table_with_environment_context",
         String.class,
@@ -346,6 +349,7 @@ public class RoutingMetaStoreHandlerTest {
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
 
     MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {table}));
@@ -448,6 +452,74 @@ public class RoutingMetaStoreHandlerTest {
 
     Assert.assertEquals(1, backendCalls.get());
     Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+  }
+
+  @Test
+  public void transactionalDdlRejectDoesNotApplyToExternalTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = guardedHandler(backendCalls, capturedTable, "10.20.0.0/16");
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("EXTERNAL_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      handler.invoke(null, method, new Object[] {table});
+
+      Assert.assertEquals(1, backendCalls.get());
+      Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+      Assert.assertEquals("true", capturedTable.get().getParameters().get("transactional"));
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlRewriteDoesNotApplyToExternalTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", new ProxyConfig.CatalogConfig("catalog1", "c1", "file:///c1", false,
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table currentTable) {
+            capturedTable.set(currentTable);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("EXTERNAL_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      handler.invoke(null, method, new Object[] {table});
+
+      Assert.assertEquals(1, backendCalls.get());
+      Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+      Assert.assertEquals("true", capturedTable.get().getParameters().get("transactional"));
+      Assert.assertFalse(capturedTable.get().getParameters().containsKey("external.table.purge"));
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
   }
 
   @Test
