@@ -352,7 +352,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
-    if (MetastoreCompatibility.routesToDefaultBackend(method.getName())) {
+    if (DefaultBackendRoutingPolicy.routesToDefaultBackend(method.getName())) {
       currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
       observability.metrics().recordDefaultCatalogRoute(method.getName());
       validateCatalogAccess(router.defaultBackend(), method.getName(), null);
@@ -681,7 +681,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   static boolean isDefaultBackendGlobalMethod(String methodName) {
-    return MetastoreCompatibility.routesToDefaultBackend(methodName);
+    return DefaultBackendRoutingPolicy.routesToDefaultBackend(methodName);
   }
 
   public static String shortUserName(String principalOrUser) {

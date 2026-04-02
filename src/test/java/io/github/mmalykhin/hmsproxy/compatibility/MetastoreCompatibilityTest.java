@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
+import io.github.mmalykhin.hmsproxy.routing.DefaultBackendRoutingPolicy;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.junit.Assert;
 import org.junit.Test;
@@ -21,17 +22,17 @@ public class MetastoreCompatibilityTest {
   }
 
   @Test
-  public void defaultBackendRoutingPoliciesExplainNamespaceFreeCompatibilityPaths() {
+  public void compatibilityNoLongerOwnsDefaultBackendRoutingPolicy() {
     Assert.assertEquals(
-        MetastoreCompatibility.DefaultBackendRoutingPolicy.NAMESPACELESS_VALIDATION,
-        MetastoreCompatibility.defaultBackendRoutingPolicy("partition_name_has_valid_characters").orElse(null));
+        DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION,
+        DefaultBackendRoutingPolicy.policyFor("partition_name_has_valid_characters").orElse(null));
     Assert.assertEquals(
-        MetastoreCompatibility.DefaultBackendRoutingPolicy.TXN_AND_LOCK_LIFECYCLE,
-        MetastoreCompatibility.defaultBackendRoutingPolicy("open_txns").orElse(null));
+        DefaultBackendRoutingPolicy.Policy.TXN_AND_LOCK_LIFECYCLE,
+        DefaultBackendRoutingPolicy.policyFor("open_txns").orElse(null));
     Assert.assertEquals(
-        MetastoreCompatibility.DefaultBackendRoutingPolicy.SESSION_COMPATIBILITY,
-        MetastoreCompatibility.defaultBackendRoutingPolicy("flushCache").orElse(null));
-    Assert.assertTrue(MetastoreCompatibility.defaultBackendRoutingPolicy("create_role").isEmpty());
+        DefaultBackendRoutingPolicy.Policy.SESSION_COMPATIBILITY,
+        DefaultBackendRoutingPolicy.policyFor("flushCache").orElse(null));
+    Assert.assertTrue(DefaultBackendRoutingPolicy.policyFor("create_role").isEmpty());
   }
 
   private static void assertRequiresFrontDoorSecurity(String methodName, Object[] args) {
