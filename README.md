@@ -266,12 +266,17 @@ classloader and bridges overlapping RPCs to the internal Apache `3.1.3` handler 
 Selected HDP-only methods are also adapted to Apache equivalents:
 
 - `get_database_req` -> `get_database` for HDP `3.1.0.3.1.5.6150-1`
+- `create_table_req` -> `create_table` / `create_table_with_environment_context` / `create_table_with_constraints`
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
 - `alter_partitions_req` -> `alter_partitions` / `alter_partitions_with_environment_context`
 - `rename_partition_req` -> `rename_partition`
+- `get_partitions_by_names_req` -> `get_partitions_by_names`
 - `update_table_column_statistics_req` -> `set_aggr_stats_for`
 - `update_partition_column_statistics_req` -> `set_aggr_stats_for`
+- `add_write_notification_log` -> direct Hortonworks passthrough only to a Hortonworks backend
+- `get_tables_ext` -> direct Hortonworks passthrough only to a Hortonworks `3.1.0.3.1.5.6150-1` backend
+- `get_all_materialized_view_objects_for_rewriting` -> direct Hortonworks passthrough only to a Hortonworks `3.1.0.3.1.5.6150-1` backend via `routing.default-catalog`
 
 Some HDP-only methods still do not have a safe Apache mapping, so they remain unsupported and fail
 explicitly rather than returning a misleading success response.
