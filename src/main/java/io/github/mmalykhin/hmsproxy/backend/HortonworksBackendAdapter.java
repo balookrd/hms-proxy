@@ -2,8 +2,11 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import java.util.Collections;
 import java.util.Map;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
@@ -44,6 +47,7 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
             (List<org.apache.hadoop.hive.metastore.api.Table>) result;
         return new GetTablesResult(tables);
       });
+  private final Set<String> unsupportedRequestWrappers = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
   HortonworksBackendAdapter(MetastoreRuntimeProfile runtimeProfile) {
     super(runtimeProfile);
@@ -61,6 +65,10 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       return super.invokeRequest(backend, methodName, request, impersonation);
     }
 
+    if (unsupportedRequestWrappers.contains(methodName)) {
+      return compatibilityHandler.invoke(backend, request, impersonation);
+    }
+
     try {
       return super.invokeRequest(
           backend,
@@ -71,6 +79,7 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       if (!shouldFallbackToLegacy(cause)) {
         throw cause;
       }
+      unsupportedRequestWrappers.add(methodName);
     }
 
     return compatibilityHandler.invoke(backend, request, impersonation);
