@@ -452,13 +452,20 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
 обслуживаются локально самим proxy.
 
-Если HiveServer2 подключается как `hive/_HOST@REALM.COM` и запрашивает delegation token от имени
-пользователя, proxy тоже должен видеть `hadoop.proxyuser.hive.*` правила на своём фронте:
+### Front-door proxy-user rules для delegation-token issuance
+
+`hadoop.proxyuser.<service>.*` не относится к подключению к ZooKeeper. Эта настройка нужна только
+в сценарии, когда service principal вроде HiveServer2 просит proxy выдать delegation token для
+конечного пользователя через `get_delegation_token("alice", ...)`.
+
+Пример:
 
 ```properties
 security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
 security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
+
+### ZooKeeper token storage
 
 Для persistent storage delegation tokens можно включить `ZooKeeperTokenStore` через обычный
 `HiveConf` или напрямую в `hms-proxy.properties`:
