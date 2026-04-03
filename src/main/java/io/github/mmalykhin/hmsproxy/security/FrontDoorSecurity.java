@@ -147,11 +147,6 @@ public final class FrontDoorSecurity implements AutoCloseable {
     if (!tokenStoreClass(conf).endsWith(".ZooKeeperTokenStore")) {
       return;
     }
-    UserGroupInformation loginUser = UserGroupInformation.getLoginUser();
-    if (loginUser != null && loginUser.isFromKeytab()) {
-      LOG.debug("Front door login user already comes from keytab: {}", loginUser.getUserName());
-      return;
-    }
     String principal = KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal());
     LOG.info("Refreshing Hadoop login user from keytab before starting ZooKeeperTokenStore using principal {}",
         principal);
