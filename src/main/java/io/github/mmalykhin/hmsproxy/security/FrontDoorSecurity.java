@@ -12,6 +12,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
 import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
+import org.apache.hadoop.hive.metastore.utils.SecurityUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
@@ -62,6 +63,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     config.security().frontDoorConf().forEach(securityConf::set);
     securityConf.set("hadoop.security.authentication", config.security().mode().hadoopAuthValue());
     applyZooKeeperKerberosDefaults(config, securityConf);
+    configureZooKeeperClientJaas(securityConf);
     emitConfigurationDiagnostics(config, securityConf);
     UserGroupInformation.setConfiguration(securityConf);
     ensureKeytabLoginUser(config, securityConf);
@@ -151,6 +153,21 @@ public final class FrontDoorSecurity implements AutoCloseable {
     LOG.info("Refreshing Hadoop login user from keytab before starting ZooKeeperTokenStore using principal {}",
         principal);
     UserGroupInformation.loginUserFromKeytab(principal, config.security().keytab());
+  }
+
+  static void configureZooKeeperClientJaas(Configuration conf) throws IOException {
+    if (!tokenStoreClass(conf).endsWith(".ZooKeeperTokenStore")) {
+      return;
+    }
+    String principal = trimToNull(conf.get(METASTORE_KERBEROS_PRINCIPAL_KEY));
+    String keytab = trimToNull(conf.get(METASTORE_KERBEROS_KEYTAB_KEY));
+    if (principal == null || keytab == null) {
+      return;
+    }
+    SecurityUtils.setZookeeperClientKerberosJaasConfig(principal, keytab);
+    LOG.info("Configured ZooKeeper SASL client JAAS entry '{}' for delegation-token store principal {}",
+        System.getProperty("zookeeper.sasl.clientconfig", "<unset>"),
+        principal);
   }
 
   private static String tokenStoreClass(Configuration conf) {
