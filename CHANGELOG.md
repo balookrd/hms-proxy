@@ -4,7 +4,7 @@ This changelog summarizes the full commit history of the repository from the fir
 `2026-04-03`. The project has not published tagged releases yet, so entries are grouped by commit
 date and focused on user-visible changes.
 
-For a Russian version, see `CHANGELOG.ru.md`.
+For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ## 2026-04-03
 
