@@ -34,9 +34,9 @@ public final class HmsProxyApplication {
     try {
       ProxyConfig config = ProxyConfigLoader.load(Path.of(args[0]));
       ProxyObservability observability = new ProxyObservability(config);
+      FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
       try (CatalogRouter router = CatalogRouter.open(config);
            ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability)) {
-        FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
         RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, frontDoorSecurity, observability);
         ThriftHiveMetastore.Iface proxy =
             RoutingMetaStoreHandler.newProxy(
