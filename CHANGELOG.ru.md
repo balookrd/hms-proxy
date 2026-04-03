@@ -11,6 +11,8 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 ### Добавлено
 
 - Добавлен synthetic proxy read-lock shim для non-ACID `SELECT` на non-default catalog.
+- Добавлено прямое smoke-покрытие для synthetic non-transactional `NO_TXN` lock сценариев,
+  включая DB lock в стиле `CREATE TABLE` и partition lock в стиле rename/drop на non-default catalog.
 - Добавлено хранение synthetic read-lock state в ZooKeeper, чтобы после падения одного proxy
   транзакции и lock lifecycle могли продолжаться через соседний instance.
 - Добавлена observability для synthetic lock: Prometheus-метрики, gauge активных lock,
@@ -25,14 +27,18 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 ### Исправлено
 
 - Исправлена policy для namespace-less HMS routing.
+- Исправлена обработка synthetic lock для non-transactional `NO_TXN` DDL lock на non-default
+  catalog, включая `CREATE TABLE` и partition rename, которые Hive ведёт через txn/lock API.
 - Front-door security теперь стартует раньше backend runtimes.
 - Убран нежелательный UGI fallback до keytab login на front door.
 - ZooKeeper SASL JAAS теперь настраивается до старта token manager.
+- Исправлен ZooKeeper integration test: в средах без права bind локального порта embedded
+  `TestingServer` теперь корректно пропускается, а не валит весь suite.
 
 ### Документация
 
-- Задокументированы ZooKeeper token-store credentials, overrides и текущее поведение
-  namespace-less routing.
+- Задокументированы ZooKeeper token-store credentials, overrides, текущее поведение
+  namespace-less routing и расширенные synthetic `NO_TXN` smoke-сценарии.
 
 ## 2026-04-02
 
