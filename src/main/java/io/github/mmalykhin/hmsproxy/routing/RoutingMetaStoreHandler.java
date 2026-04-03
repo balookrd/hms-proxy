@@ -42,7 +42,7 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension {
+public final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension, AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
   private static final Logger AUDIT_LOG = LoggerFactory.getLogger("io.github.mmalykhin.hmsproxy.audit");
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
@@ -243,6 +243,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       REQUEST_ID.remove();
       REQUEST_OBSERVATION.remove();
     }
+  }
+
+  @Override
+  public void close() throws MetaException {
+    syntheticReadLockManager.close();
   }
 
   @Override

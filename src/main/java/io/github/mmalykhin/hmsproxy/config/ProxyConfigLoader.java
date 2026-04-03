@@ -84,6 +84,25 @@ public final class ProxyConfigLoader {
           "management.port must be between 1 and 65535, got: " + managementPort);
     }
     String managementBindHost = get(properties, "management.bind-host", server.bindHost());
+    boolean syntheticReadLockZooKeeperConfigured =
+        hasConfiguredPrefix(properties, "synthetic-read-lock.store.zookeeper.");
+    ProxyConfig.SyntheticReadLockStoreMode syntheticReadLockStoreMode = parseSyntheticReadLockStoreMode(
+        trimToNull(properties.getProperty("synthetic-read-lock.store.mode")),
+        syntheticReadLockZooKeeperConfigured);
+    String syntheticReadLockZooKeeperZnode =
+        trimToNull(properties.getProperty("synthetic-read-lock.store.zookeeper.znode"));
+    if (properties.containsKey("synthetic-read-lock.store.zookeeper.znode")
+        && syntheticReadLockZooKeeperZnode == null) {
+      throw new IllegalArgumentException("synthetic-read-lock.store.zookeeper.znode must not be blank");
+    }
+    int syntheticReadLockConnectionTimeoutMs =
+        getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.connection-timeout-ms", 15_000);
+    int syntheticReadLockSessionTimeoutMs =
+        getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.session-timeout-ms", 60_000);
+    int syntheticReadLockBaseSleepMs =
+        getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.base-sleep-ms", 1_000);
+    int syntheticReadLockMaxRetries =
+        getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.max-retries", 3);
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -215,6 +234,21 @@ public final class ProxyConfigLoader {
             Arrays.asList(transactionalDdlClientAddresses));
     ProxyConfig.ManagementConfig management =
         new ProxyConfig.ManagementConfig(managementEnabled, managementBindHost, managementPort);
+    ProxyConfig.SyntheticReadLockStoreZooKeeperConfig syntheticReadLockZooKeeper =
+        new ProxyConfig.SyntheticReadLockStoreZooKeeperConfig(
+            trimToNull(properties.getProperty("synthetic-read-lock.store.zookeeper.connect-string")),
+            syntheticReadLockZooKeeperZnode,
+            syntheticReadLockConnectionTimeoutMs,
+            syntheticReadLockSessionTimeoutMs,
+            syntheticReadLockBaseSleepMs,
+            syntheticReadLockMaxRetries);
+    if (syntheticReadLockStoreMode == ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER) {
+      requireNonBlank(
+          syntheticReadLockZooKeeper.connectString(),
+          "synthetic-read-lock.store.zookeeper.connect-string");
+    }
+    ProxyConfig.SyntheticReadLockStoreConfig syntheticReadLockStore =
+        new ProxyConfig.SyntheticReadLockStoreConfig(syntheticReadLockStoreMode, syntheticReadLockZooKeeper);
     return new ProxyConfig(
         server,
         security,
@@ -225,7 +259,8 @@ public final class ProxyConfigLoader {
         compatibility,
         federation,
         transactionalDdlGuard,
-        management);
+        management,
+        syntheticReadLockStore);
   }
 
   private static String[] splitCsv(String value) {
@@ -257,6 +292,18 @@ public final class ProxyConfigLoader {
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("Invalid integer value for property " + key + ": " + value, e);
     }
+  }
+
+  private static int getPositiveInt(Properties properties, String key, int defaultValue) {
+    int value = getInt(properties, key, defaultValue);
+    if (value < 1) {
+      throw new IllegalArgumentException(key + " must be >= 1, got: " + value);
+    }
+    return value;
+  }
+
+  private static boolean hasConfiguredPrefix(Properties properties, String prefix) {
+    return properties.stringPropertyNames().stream().anyMatch(name -> name.startsWith(prefix));
   }
 
   private static String trimToNull(String value) {
@@ -300,6 +347,25 @@ public final class ProxyConfigLoader {
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for guard.transactional-ddl.mode: " + value + ". Expected one of: reject, rewrite", e);
+    }
+  }
+
+  private static ProxyConfig.SyntheticReadLockStoreMode parseSyntheticReadLockStoreMode(
+      String value,
+      boolean zooKeeperConfigured
+  ) {
+    if (value == null) {
+      return zooKeeperConfigured
+          ? ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER
+          : ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY;
+    }
+    try {
+      return ProxyConfig.SyntheticReadLockStoreMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for synthetic-read-lock.store.mode: " + value
+              + ". Expected one of: IN_MEMORY, ZOOKEEPER",
+          e);
     }
   }
 

@@ -31,6 +31,41 @@ public class ProxyConfigLoaderTest {
       Assert.assertNull(config.catalogs().get("catalog1").runtimeProfile());
       Assert.assertFalse(config.management().enabled());
       Assert.assertEquals(10088, config.management().port());
+      Assert.assertEquals(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, config.syntheticReadLockStore().mode());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsSyntheticReadLockZooKeeperConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          synthetic-read-lock.store.mode=zookeeper
+          synthetic-read-lock.store.zookeeper.connect-string=zk1:2181,zk2:2181
+          synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
+          synthetic-read-lock.store.zookeeper.connection-timeout-ms=21000
+          synthetic-read-lock.store.zookeeper.session-timeout-ms=91000
+          synthetic-read-lock.store.zookeeper.base-sleep-ms=750
+          synthetic-read-lock.store.zookeeper.max-retries=5
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER, config.syntheticReadLockStore().mode());
+      Assert.assertEquals(
+          "zk1:2181,zk2:2181",
+          config.syntheticReadLockStore().zooKeeper().connectString());
+      Assert.assertEquals(
+          "/hms-proxy-synthetic-read-locks",
+          config.syntheticReadLockStore().zooKeeper().znode());
+      Assert.assertEquals(21000, config.syntheticReadLockStore().zooKeeper().connectionTimeoutMs());
+      Assert.assertEquals(91000, config.syntheticReadLockStore().zooKeeper().sessionTimeoutMs());
+      Assert.assertEquals(750, config.syntheticReadLockStore().zooKeeper().baseSleepMs());
+      Assert.assertEquals(5, config.syntheticReadLockStore().zooKeeper().maxRetries());
     } finally {
       Files.deleteIfExists(file);
     }

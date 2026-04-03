@@ -36,7 +36,7 @@ impersonation of the authenticated Kerberos caller.
 | Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
 | Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
-| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; validate carefully before using in multi-catalog mode. |
+| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` read locks on non-default catalogs can use the proxy's synthetic read-lock shim, but this is still not a distributed ACID coordinator. |
 | Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured, including namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token`. |
 | Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog definitions are managed in proxy config, not through client RPCs. |
 | HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
@@ -67,6 +67,10 @@ individual thrift method names.
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
 - in practice this means ACID write lifecycle is supported only for the default catalog unless the
   request payload itself carries routable namespace information such as `dbName` or `fullTableName`
+- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks for non-default catalogs so
+  HiveServer2 read paths stop depending on backend txn state alignment
+- that synthetic lock state is in-memory by default and can be moved to ZooKeeper for multi-instance
+  proxy failover, but it still does not make ACID writes or write-id coordination multi-catalog safe
 - Hive ACID, locks, tokens, and other truly global metastore operations still need careful
   validation in your environment before turning them on behind a multi-catalog proxy
 
@@ -563,6 +567,34 @@ proxy warns that it is using `MemoryTokenStore`, the process did not see a persi
 delegation-token store config. If `get_delegation_token` fails with
 `User: hive/... is not allowed to impersonate alice`, the proxy is missing front-door
 `hadoop.proxyuser.<service>.hosts/groups` rules for that Kerberos caller.
+
+### ZooKeeper storage for synthetic read locks
+
+The proxy also has a narrow synthetic lock shim for non-ACID HiveServer2 read paths on
+non-default catalogs. It only covers synthetic `SHARED_READ` `SELECT` locks that the
+proxy serves locally when backend txn ids do not line up across catalogs. This does not
+turn the proxy into a distributed ACID coordinator.
+
+By default that synthetic lock state is kept in memory, which is fine for a single proxy
+instance. For HA / load-balanced deployments you can persist it in ZooKeeper so
+`check_lock`, `unlock`, `heartbeat`, `commit_txn`, and `abort_txn` can continue through a
+different proxy instance after the first one dies.
+
+Example:
+
+```properties
+synthetic-read-lock.store.mode=ZOOKEEPER
+synthetic-read-lock.store.zookeeper.connect-string=zk1:2181,zk2:2181,zk3:2181
+synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
+# synthetic-read-lock.store.zookeeper.connection-timeout-ms=15000
+# synthetic-read-lock.store.zookeeper.session-timeout-ms=60000
+# synthetic-read-lock.store.zookeeper.base-sleep-ms=1000
+# synthetic-read-lock.store.zookeeper.max-retries=3
+```
+
+When `security.mode=KERBEROS`, the synthetic read-lock store uses the same
+`security.server-principal` and `security.keytab` credentials for ZooKeeper SASL/Kerberos
+as the front door by default, similar to the delegation-token store setup above.
 
 ### Kerberos impersonation
 
