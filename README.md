@@ -523,6 +523,10 @@ Example with `ZooKeeperTokenStore` configured directly in the proxy config:
 security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+# Optional: ACL applied to newly created ZooKeeper nodes for the token store.
+# security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.acl=sasl:hive:cdrwa
+# Optional: token max lifetime in milliseconds.
+# security.front-door-conf.hive.cluster.delegation.token.max-lifetime=604800000
 ```
 
 When `ZooKeeperTokenStore` is enabled and `security.mode=KERBEROS`, the proxy now also
@@ -531,6 +535,27 @@ for the front-door `HiveConf` from `security.server-principal` and `security.key
 Hive's built-in `ZooKeeperTokenStore` client authenticate to ZooKeeper over SASL/Kerberos
 without requiring a separate JAAS file in the common case. If you need different credentials for
 ZooKeeper, set those `hive.metastore.kerberos.*` keys explicitly through `security.front-door-conf.*`.
+
+In other words, the default ZooKeeper client credentials are:
+
+- principal: `security.server-principal`
+- keytab: `security.keytab`
+
+These are the front-door service credentials. They are not taken from
+`security.client-principal` or `security.client-keytab`, which are used for outbound backend HMS
+connections instead.
+
+At startup the proxy also pre-configures Hive's `HiveZooKeeperClient` JAAS entry for the
+front-door token store from those same credentials before starting the local delegation-token
+manager. In the usual setup that means you do not need a separate `-Djava.security.auth.login.config`
+file just for ZooKeeper SASL.
+
+If ZooKeeper must use different credentials from the proxy front door, override them explicitly:
+
+```properties
+security.front-door-conf.hive.metastore.kerberos.principal=hive-zk/_HOST@REALM.COM
+security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keytabs/hms-proxy-zk.keytab
+```
 
 On startup the proxy logs which `HiveConf` resources it found and which front-door
 overrides were applied. If you see `Found configuration file null` from Hive or the

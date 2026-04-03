@@ -474,6 +474,10 @@ security.front-door-conf.hadoop.proxyuser.hive.groups=*
 security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
+# Опционально: ACL для новых znode, которые создаёт token store.
+# security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.acl=sasl:hive:cdrwa
+# Опционально: максимальный lifetime токена в миллисекундах.
+# security.front-door-conf.hive.cluster.delegation.token.max-lifetime=604800000
 ```
 
 Если при этом включён `security.mode=KERBEROS`, proxy автоматически прокинет
@@ -481,6 +485,26 @@ security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hm
 из `security.server-principal` и `security.keytab`, чтобы встроенный `ZooKeeperTokenStore`
 аутентифицировался в ZooKeeper по SASL/Kerberos. Если для ZooKeeper нужны отдельные credentials,
 задай эти `hive.metastore.kerberos.*` явно через `security.front-door-conf.*`.
+
+То есть по умолчанию для подключения к ZooKeeper используются:
+
+- principal: `security.server-principal`
+- keytab: `security.keytab`
+
+Это именно front-door credentials proxy. Они не берутся из
+`security.client-principal` и `security.client-keytab`, потому что те параметры относятся к
+исходящим подключениям proxy к backend HMS.
+
+При старте proxy также заранее настраивает JAAS entry `HiveZooKeeperClient` для front-door
+token store из этих же credentials до запуска локального delegation-token manager. Обычно это
+означает, что отдельный `-Djava.security.auth.login.config` только для ZooKeeper не нужен.
+
+Если для ZooKeeper нужен другой principal/keytab, их можно переопределить явно:
+
+```properties
+security.front-door-conf.hive.metastore.kerberos.principal=hive-zk/_HOST@REALM.COM
+security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keytabs/hms-proxy-zk.keytab
+```
 
 ### Kerberos impersonation
 
