@@ -17,6 +17,7 @@
     <hadoop.mapreduce.version>2.6.5</hadoop.mapreduce.version>
     <junit.version>4.13.2</junit.version>
     <slf4j.version>1.7.36</slf4j.version>
+    <surefire.argLine>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED</surefire.argLine>
   </properties>
 
   <dependencyManagement>
@@ -189,6 +190,9 @@
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
+        <configuration>
+          <argLine>${surefire.argLine}</argLine>
+        </configuration>
       </plugin>
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
