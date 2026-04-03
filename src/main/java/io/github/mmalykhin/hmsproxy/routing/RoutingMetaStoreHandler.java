@@ -581,7 +581,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       }
       LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
           requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
-      throw cause;
+      throw normalizeBackendFailure(method, backend.name(), cause);
     }
   }
 
@@ -698,6 +698,33 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private static MetaException metaException(String message) {
     return new MetaException(message);
+  }
+
+  private static Throwable normalizeBackendFailure(Method method, String backendName, Throwable cause) {
+    if (!(cause instanceof TException) || isDeclaredMethodException(method, cause)) {
+      return cause;
+    }
+
+    String message = "Backend catalog '" + backendName + "' failed in method '" + method.getName()
+        + "' with " + cause.getClass().getSimpleName();
+    if (cause.getMessage() != null && !cause.getMessage().isBlank()) {
+      message += ": " + cause.getMessage();
+    }
+    MetaException metaException = metaException(message);
+    metaException.initCause(cause);
+    return metaException;
+  }
+
+  private static boolean isDeclaredMethodException(Method method, Throwable cause) {
+    for (Class<?> declaredType : method.getExceptionTypes()) {
+      if (declaredType == TException.class) {
+        continue;
+      }
+      if (declaredType.isAssignableFrom(cause.getClass())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private Object handleSetUgi(Method method, Object[] args) throws Throwable {

@@ -28,6 +28,12 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
+import org.apache.hadoop.hive.metastore.api.LockLevel;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.LockState;
+import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -362,6 +368,116 @@ public class RoutingMetaStoreHandlerTest {
         () -> handler.invoke(null, method, new Object[0]));
 
     Assert.assertTrue(error.getMessage().contains("Delegation tokens require Kerberos/SASL"));
+  }
+
+  @Test
+  public void lockRoutesByNamespaceAndRewritesNestedDbName() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("lock".equals(method.getName())) {
+        capturedRequest.set((LockRequest) args[0]);
+        LockResponse response = new LockResponse();
+        response.setLockid(7L);
+        response.setState(LockState.ACQUIRED);
+        return response;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    Object result = handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")});
+
+    Assert.assertTrue(result instanceof LockResponse);
+    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("events", capturedRequest.get().getComponent().get(0).getTablename());
+  }
+
+  @Test
+  public void backendLockTransportFailuresAreSurfacedAsMetaExceptions() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+    BackendAdapter failingAdapter = new BackendAdapter() {
+      @Override
+      public Object invoke(
+          CatalogBackend backend,
+          Method backendMethod,
+          Object[] args,
+          RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ) throws Throwable {
+        throw new TApplicationException(TApplicationException.INTERNAL_ERROR, "backend lock failed");
+      }
+
+      @Override
+      public Object invokeRequest(
+          CatalogBackend backend,
+          String methodName,
+          Object request,
+          RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ) throws Throwable {
+        throw new UnsupportedOperationException(methodName);
+      }
+
+      @Override
+      public MetastoreCompatibility.BackendProfile backendProfile() {
+        return MetastoreCompatibility.BackendProfile.MODERN_REQUESTS;
+      }
+
+      @Override
+      public MetastoreRuntimeProfile runtimeProfile() {
+        return MetastoreRuntimeProfile.APACHE_3_1_3;
+      }
+
+      @Override
+      public String backendVersion() {
+        return null;
+      }
+    };
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        failingAdapter,
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")}));
+
+    Assert.assertTrue(error.getMessage().contains("catalog2"));
+    Assert.assertTrue(error.getMessage().contains("lock"));
+    Assert.assertTrue(error.getMessage().contains("TApplicationException"));
+    Assert.assertTrue(error.getMessage().contains("backend lock failed"));
   }
 
   @Test
@@ -1234,6 +1350,20 @@ public class RoutingMetaStoreHandlerTest {
     table.setTableName(tableName);
     table.setParameters(parameters);
     return table;
+  }
+
+  private static LockRequest lockRequest(String dbName, String tableName) {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+
+    LockRequest request = new LockRequest();
+    request.setComponent(List.of(component));
+    request.setUser("alice");
+    request.setHostname("host");
+    return request;
   }
 
   private static final class TestBackendAdapter extends AbstractBackendAdapter {
