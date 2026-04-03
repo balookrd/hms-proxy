@@ -171,8 +171,6 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
         case "aliveSince" -> aliveSince;
         case "reinitialize", "shutdown" -> null;
         case "set_ugi" -> handleSetUgi(method, args);
-        case "get_delegation_token", "renew_delegation_token", "cancel_delegation_token" ->
-            compatibilityLayer.handleLocalMethod(name, args);
         case "getStatus" -> enumConstant(method.getReturnType(), "ALIVE");
         case "get_catalogs" -> new GetCatalogsResponse(config.catalogNames());
         case "get_catalog" -> handleGetCatalog(args);
@@ -184,7 +182,9 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
         case "get_table_meta" -> handleGetTableMeta(method, args);
         case "get_table_req" -> handleGetTableReq(method, args);
         case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
-        default -> routeByNamespaceOrFail(method, args);
+        default -> MetastoreCompatibility.handlesLocally(name)
+            ? compatibilityLayer.handleLocalMethod(name, args)
+            : routeByNamespaceOrFail(method, args);
       };
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",

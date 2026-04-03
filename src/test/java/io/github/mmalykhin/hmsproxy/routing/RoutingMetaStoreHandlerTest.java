@@ -339,7 +339,7 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
-  public void addTokenWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+  public void addTokenWithoutKerberosFrontDoorIsRejected() throws Throwable {
     RoutingMetaStoreHandler handler =
         new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("add_token", String.class, String.class);
@@ -348,18 +348,20 @@ public class RoutingMetaStoreHandlerTest {
         MetaException.class,
         () -> handler.invoke(null, method, new Object[] {"token-id", "payload"}));
 
-    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+    Assert.assertTrue(error.getMessage().contains("Delegation tokens require Kerberos/SASL"));
   }
 
   @Test
-  public void compatibilityFallbackMethodsWithoutCatalogContextReturnFallback() throws Throwable {
+  public void tokenIdentifierListingWithoutKerberosFrontDoorIsRejected() throws Throwable {
     RoutingMetaStoreHandler handler =
         new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_token_identifiers");
 
-    Object result = handler.invoke(null, method, new Object[0]);
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[0]));
 
-    Assert.assertEquals(List.of(), result);
+    Assert.assertTrue(error.getMessage().contains("Delegation tokens require Kerberos/SASL"));
   }
 
   @Test

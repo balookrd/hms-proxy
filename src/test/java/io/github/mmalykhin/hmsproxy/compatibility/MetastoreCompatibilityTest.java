@@ -11,6 +11,14 @@ public class MetastoreCompatibilityTest {
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("get_delegation_token"));
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("renew_delegation_token"));
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("cancel_delegation_token"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("add_token"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("get_token"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("remove_token"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("get_all_token_identifiers"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("add_master_key"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("update_master_key"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("remove_master_key"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("get_master_keys"));
     Assert.assertFalse(MetastoreCompatibility.handlesLocally("set_ugi"));
   }
 
@@ -19,6 +27,8 @@ public class MetastoreCompatibilityTest {
     assertRequiresFrontDoorSecurity("get_delegation_token", new Object[] {"alice", "hive"});
     assertRequiresFrontDoorSecurity("renew_delegation_token", new Object[] {"token"});
     assertRequiresFrontDoorSecurity("cancel_delegation_token", new Object[] {"token"});
+    assertRequiresFrontDoorSecurity("add_master_key", new Object[] {"key"});
+    assertRequiresFrontDoorSecurity("get_master_keys", new Object[0]);
   }
 
   @Test
