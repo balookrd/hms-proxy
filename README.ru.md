@@ -34,10 +34,10 @@ Kerberos пользователя.
 | Metadata read/write RPC с явным namespace (`catName`, `dbName`, `fullTableName`) | supported | Нормально маршрутизируются в нужный catalog/backend. |
 | Legacy read/write RPC с database name в формате `catalog<separator>db` | supported | Маршрутизируются по externalized database name; table/database объекты переписываются на обратном пути. |
 | Apache `3.1.3` wrapper RPC против старых Hortonworks `3.1.0.x` backend | degraded | Proxy повторяет часть `*_req` API через старые legacy методы вроде `get_table`. |
-| Session-level и global read-only RPC без catalog context | degraded | Идут в `routing.default-catalog`. |
+| Session-level и global read-only RPC без catalog context | degraded | Идут в `routing.default-catalog`, включая `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns` и `get_open_txns_info`. |
 | Read-only service API, которых нет на backend (`TApplicationException` на notifications, privilege refresh/introspection, token/key listings кроме delegation-token issuance, txn/lock/compaction status) | degraded | Proxy возвращает empty compatibility response вместо ошибки. |
 | ACID / txn / lock lifecycle RPC без routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Пинятся к `routing.default-catalog`; в multi-catalog режиме это нужно отдельно валидировать. |
-| Global write operations без явного catalog context | rejected | Proxy отклоняет запрос, если настроено больше одного каталога. |
+| Global write operations без явного catalog context | rejected | Proxy отклоняет запрос, если настроено больше одного каталога, включая namespace-less service write RPC вроде `setMetaConf`, `grant_role`, `revoke_role` и `add_token`. |
 | Управление каталогами (`create_catalog`, `drop_catalog`) | rejected | Каталоги задаются в конфиге proxy, а не через клиентские RPC. |
 | HDP-only front-door методы, для которых есть явный Apache bridge mapping | supported | Proxy адаптирует выбранные Hortonworks request-wrapper методы к Apache equivalents. |
 | HDP-only методы, которым нужен совместимый Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Пробрасываются только в совместимые Hortonworks backend/front door при соответствующей конфигурации. |

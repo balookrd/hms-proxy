@@ -34,10 +34,10 @@ impersonation of the authenticated Kerberos caller.
 | Catalog-aware metadata reads and writes with explicit namespace (`catName`, `dbName`, `fullTableName`) | supported | Routed to the resolved catalog/backend normally. |
 | Legacy reads and writes using `catalog<separator>db` database names | supported | Routed by externalized database name; table/database objects are rewritten on the way back. |
 | Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
-| Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`. |
+| Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
 | ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; validate carefully before using in multi-catalog mode. |
-| Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured. |
+| Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured, including namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token`. |
 | Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog definitions are managed in proxy config, not through client RPCs. |
 | HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
 | HDP-only methods that require a matching Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Forwarded only to compatible Hortonworks backends/front doors when configured. |
