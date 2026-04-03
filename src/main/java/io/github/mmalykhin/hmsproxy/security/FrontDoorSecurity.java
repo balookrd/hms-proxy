@@ -41,17 +41,20 @@ public final class FrontDoorSecurity implements AutoCloseable {
   private final HadoopThriftAuthBridge bridge;
   private final HadoopThriftAuthBridge.Server saslServer;
   private final MetastoreDelegationTokenManager delegationTokenManager;
+  private final LocalDelegationTokenStore localTokenStore;
 
   private FrontDoorSecurity(
       Configuration securityConf,
       HadoopThriftAuthBridge bridge,
       HadoopThriftAuthBridge.Server saslServer,
-      MetastoreDelegationTokenManager delegationTokenManager
+      MetastoreDelegationTokenManager delegationTokenManager,
+      LocalDelegationTokenStore localTokenStore
   ) {
     this.securityConf = securityConf;
     this.bridge = bridge;
     this.saslServer = saslServer;
     this.delegationTokenManager = delegationTokenManager;
+    this.localTokenStore = localTokenStore;
   }
 
   public static FrontDoorSecurity open(ProxyConfig config) throws Exception {
@@ -78,6 +81,8 @@ public final class FrontDoorSecurity implements AutoCloseable {
     MetastoreDelegationTokenManager delegationTokenManager = new MetastoreDelegationTokenManager();
     delegationTokenManager.startDelegationTokenSecretManager(securityConf, null);
     saslServer.setSecretManager(delegationTokenManager.getSecretManager());
+    LocalDelegationTokenStore localTokenStore =
+        LocalDelegationTokenStore.fromSecretManager(delegationTokenManager.getSecretManager());
 
     String tokenStoreClass = tokenStoreClass(securityConf);
     LOG.info("Front door delegation-token manager started using token store {}", tokenStoreClass);
@@ -109,7 +114,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
             + "directly in hms-proxy.properties.");
       }
     }
-    return new FrontDoorSecurity(securityConf, bridge, saslServer, delegationTokenManager);
+    return new FrontDoorSecurity(securityConf, bridge, saslServer, delegationTokenManager, localTokenStore);
   }
 
   private static void emitConfigurationDiagnostics(ProxyConfig config, HiveConf securityConf) {
@@ -239,6 +244,38 @@ public final class FrontDoorSecurity implements AutoCloseable {
 
   public void cancelDelegationToken(String token) throws IOException {
     delegationTokenManager.cancelDelegationToken(token);
+  }
+
+  public boolean addToken(String tokenIdentifier, String token) throws MetaException {
+    return localTokenStore.addToken(tokenIdentifier, token);
+  }
+
+  public boolean removeToken(String tokenIdentifier) throws MetaException {
+    return localTokenStore.removeToken(tokenIdentifier);
+  }
+
+  public String getToken(String tokenIdentifier) throws MetaException {
+    return localTokenStore.getToken(tokenIdentifier);
+  }
+
+  public java.util.List<String> getAllTokenIdentifiers() throws MetaException {
+    return localTokenStore.getAllTokenIdentifiers();
+  }
+
+  public int addMasterKey(String key) throws MetaException {
+    return localTokenStore.addMasterKey(key);
+  }
+
+  public void updateMasterKey(int keySeq, String key) throws MetaException {
+    localTokenStore.updateMasterKey(keySeq, key);
+  }
+
+  public boolean removeMasterKey(int keySeq) {
+    return localTokenStore.removeMasterKey(keySeq);
+  }
+
+  public java.util.List<String> getMasterKeys() throws MetaException {
+    return localTokenStore.getMasterKeys();
   }
 
   String remoteUser() {

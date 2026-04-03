@@ -115,6 +115,24 @@ public final class MetastoreCompatibility {
       requireFrontDoorSecurity(frontDoorSecurity).cancelDelegationToken((String) args[0]);
       return null;
     });
+    handlers.put("add_token", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).addToken((String) args[0], (String) args[1]));
+    handlers.put("remove_token", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).removeToken((String) args[0]));
+    handlers.put("get_token", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).getToken((String) args[0]));
+    handlers.put("get_all_token_identifiers", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).getAllTokenIdentifiers());
+    handlers.put("add_master_key", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).addMasterKey((String) args[0]));
+    handlers.put("update_master_key", (args, frontDoorSecurity) -> {
+      requireFrontDoorSecurity(frontDoorSecurity).updateMasterKey((Integer) args[0], (String) args[1]);
+      return null;
+    });
+    handlers.put("remove_master_key", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).removeMasterKey((Integer) args[0]));
+    handlers.put("get_master_keys", (args, frontDoorSecurity) ->
+        requireFrontDoorSecurity(frontDoorSecurity).getMasterKeys());
     return Map.copyOf(handlers);
   }
 
