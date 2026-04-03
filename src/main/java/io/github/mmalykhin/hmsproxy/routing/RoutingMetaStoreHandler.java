@@ -22,11 +22,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
+import org.apache.hadoop.hive.metastore.api.AbortTxnsRequest;
+import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
+import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
+import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
@@ -104,6 +111,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final CompatibilityLayer compatibilityLayer;
   private final FederationLayer federationLayer;
   private final TransactionalTableMutationGuard transactionalTableMutationGuard;
+  private final SyntheticReadLockManager syntheticReadLockManager;
   private final long aliveSince;
 
   public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
@@ -123,6 +131,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
     this.federationLayer = new FederationLayer(config, router);
     this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
+    this.syntheticReadLockManager = new SyntheticReadLockManager(config);
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -179,6 +188,13 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
             throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
         case "get_all_databases" -> handleGetAllDatabases(method);
         case "get_databases" -> handleGetDatabases(method, args);
+        case "lock" -> handleLock(method, args);
+        case "check_lock" -> handleCheckLock(method, args);
+        case "unlock" -> handleUnlock(method, args);
+        case "heartbeat" -> handleHeartbeat(method, args);
+        case "commit_txn" -> handleCommitTxn(method, args);
+        case "abort_txn" -> handleAbortTxn(method, args);
+        case "abort_txns" -> handleAbortTxns(method, args);
         case "get_table_meta" -> handleGetTableMeta(method, args);
         case "get_table_req" -> handleGetTableReq(method, args);
         case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
@@ -404,6 +420,101 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     GetTablesRequest routedRequest = (GetTablesRequest) federationLayer.internalizeTablesRequest(request, namespace);
     Object result = invokeBackendRequest(backend, routedRequest, method.getName());
     return federationLayer.externalizeResult(result, namespace);
+  }
+
+  private Object handleLock(Method method, Object[] args) throws Throwable {
+    CatalogRouter.ResolvedNamespace namespace = args == null ? null : findNamespaceInArgs(args);
+    if (namespace != null) {
+      SyntheticReadLockManager.SyntheticLockState syntheticState =
+          syntheticReadLockManager.tryAcquire((LockRequest) args[0], namespace);
+      if (syntheticState != null) {
+        currentObservation().recordNamespace(namespace);
+        currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
+        LockResponse response = syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
+        if (LOG.isInfoEnabled()) {
+          LOG.info("requestId={} synthetic read lock acquired catalog={} db={} txnId={} lockId={}",
+              currentRequestId(),
+              namespace.catalogName(),
+              syntheticState.externalDbName(),
+              syntheticState.txnId(),
+              syntheticState.lockId());
+        }
+        return response;
+      }
+    }
+    return routeByNamespaceOrFail(method, args);
+  }
+
+  private Object handleCheckLock(Method method, Object[] args) throws Throwable {
+    SyntheticReadLockManager.SyntheticLockState syntheticState =
+        syntheticReadLockManager.syntheticLock((CheckLockRequest) args[0]);
+    if (syntheticState == null) {
+      return routeByNamespaceOrFail(method, args);
+    }
+    currentObservation().recordNamespace(syntheticState.namespace(router));
+    currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
+    return syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
+  }
+
+  private Object handleUnlock(Method method, Object[] args) throws Throwable {
+    SyntheticReadLockManager.SyntheticLockState syntheticState =
+        syntheticReadLockManager.syntheticLock((org.apache.hadoop.hive.metastore.api.UnlockRequest) args[0]);
+    if (syntheticState == null) {
+      return routeByNamespaceOrFail(method, args);
+    }
+    currentObservation().recordNamespace(syntheticState.namespace(router));
+    currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
+    syntheticReadLockManager.releaseLock(syntheticState.lockId());
+    return null;
+  }
+
+  private Object handleHeartbeat(Method method, Object[] args) throws Throwable {
+    HeartbeatRequest request = (HeartbeatRequest) args[0];
+    SyntheticReadLockManager.SyntheticLockState syntheticState = syntheticReadLockManager.syntheticLock(request);
+    if (syntheticState == null) {
+      return routeByNamespaceOrFail(method, args);
+    }
+    currentObservation().recordNamespace(syntheticState.namespace(router));
+    currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
+    syntheticReadLockManager.touch(syntheticState);
+
+    HeartbeatRequest txnOnlyHeartbeat = syntheticReadLockManager.txnOnlyHeartbeat(request);
+    if (txnOnlyHeartbeat == null) {
+      return null;
+    }
+    validateCatalogAccess(router.defaultBackend(), method.getName(), null);
+    return invokeBackend(router.defaultBackend(), method, new Object[] {txnOnlyHeartbeat});
+  }
+
+  private Object handleCommitTxn(Method method, Object[] args) throws Throwable {
+    long txnId = ((CommitTxnRequest) args[0]).getTxnid();
+    try {
+      return invokeGlobal(method, args);
+    } finally {
+      syntheticReadLockManager.releaseTxn(txnId);
+    }
+  }
+
+  private Object handleAbortTxn(Method method, Object[] args) throws Throwable {
+    long txnId = ((AbortTxnRequest) args[0]).getTxnid();
+    try {
+      return invokeGlobal(method, args);
+    } finally {
+      syntheticReadLockManager.releaseTxn(txnId);
+    }
+  }
+
+  private Object handleAbortTxns(Method method, Object[] args) throws Throwable {
+    List<Long> txnIds = ((AbortTxnsRequest) args[0]).getTxn_ids();
+    try {
+      return invokeGlobal(method, args);
+    } finally {
+      if (txnIds != null) {
+        for (Long txnId : txnIds) {
+          syntheticReadLockManager.releaseTxn(txnId == null ? 0L : txnId);
+        }
+      }
+    }
   }
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
