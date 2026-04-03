@@ -56,6 +56,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
       String catalogName,
       String backendDbName,
       String externalDbName,
+      String ownerInstanceId,
       long createdAtMs
   ) throws Exception {
     SyntheticReadLockManager.SyntheticLockState provisional = new SyntheticReadLockManager.SyntheticLockState(
@@ -64,6 +65,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
         catalogName,
         backendDbName,
         externalDbName,
+        ownerInstanceId,
         createdAtMs);
     String createdPath = client.create()
         .creatingParentContainersIfNeeded()
@@ -113,21 +115,30 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   }
 
   @Override
-  public void releaseTxn(long txnId) throws Exception {
+  public ReleaseSummary releaseTxn(long txnId, String currentInstanceId) throws Exception {
     if (txnId <= 0) {
-      return;
+      return new ReleaseSummary(0L, 0L);
     }
+    long releasedCount = 0L;
+    long remoteOwnerCount = 0L;
     for (String child : children()) {
       String path = locksRootPath + "/" + child;
       SyntheticReadLockManager.SyntheticLockState state = readState(path);
       if (state != null && state.txnId() == txnId) {
+        releasedCount++;
+        if (!state.ownerInstanceId().equals(currentInstanceId)) {
+          remoteOwnerCount++;
+        }
         deleteIfPresent(path);
       }
     }
+    return new ReleaseSummary(releasedCount, remoteOwnerCount);
   }
 
   @Override
-  public void cleanupExpiredLocks(long nowMs, long timeoutMs) throws Exception {
+  public CleanupSummary cleanupExpiredLocks(long nowMs, long timeoutMs, String currentInstanceId) throws Exception {
+    long expiredCount = 0L;
+    long remoteOwnerCount = 0L;
     for (String child : children()) {
       String path = locksRootPath + "/" + child;
       Stat stat = new Stat();
@@ -143,10 +154,20 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
       }
       try {
         client.delete().withVersion(stat.getVersion()).forPath(path);
+        expiredCount++;
+        if (!state.ownerInstanceId().equals(currentInstanceId)) {
+          remoteOwnerCount++;
+        }
       } catch (KeeperException.NoNodeException | KeeperException.BadVersionException ignored) {
         // Another proxy refreshed or removed the node while we were cleaning up.
       }
     }
+    return new CleanupSummary(expiredCount, remoteOwnerCount);
+  }
+
+  @Override
+  public long activeLockCount() throws Exception {
+    return children().size();
   }
 
   @Override
@@ -225,6 +246,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
       writeString(data, state.catalogName());
       writeString(data, state.backendDbName());
       writeString(data, state.externalDbName());
+      writeString(data, state.ownerInstanceId());
       data.writeLong(state.lastTouchedAtMs());
     }
     return output.toByteArray();
@@ -239,6 +261,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
       return new SyntheticReadLockManager.SyntheticLockState(
           input.readLong(),
           input.readLong(),
+          readString(input),
           readString(input),
           readString(input),
           readString(input),

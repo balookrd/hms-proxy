@@ -6,6 +6,7 @@ interface SyntheticReadLockStore extends AutoCloseable {
       String catalogName,
       String backendDbName,
       String externalDbName,
+      String ownerInstanceId,
       long createdAtMs
   ) throws Exception;
 
@@ -15,11 +16,25 @@ interface SyntheticReadLockStore extends AutoCloseable {
 
   void releaseLock(long lockId) throws Exception;
 
-  void releaseTxn(long txnId) throws Exception;
+  ReleaseSummary releaseTxn(long txnId, String currentInstanceId) throws Exception;
 
-  void cleanupExpiredLocks(long nowMs, long timeoutMs) throws Exception;
+  CleanupSummary cleanupExpiredLocks(long nowMs, long timeoutMs, String currentInstanceId) throws Exception;
+
+  long activeLockCount() throws Exception;
 
   @Override
   default void close() throws Exception {
+  }
+
+  record ReleaseSummary(
+      long releasedCount,
+      long remoteOwnerCount
+  ) {
+  }
+
+  record CleanupSummary(
+      long expiredCount,
+      long remoteOwnerCount
+  ) {
   }
 }

@@ -1,6 +1,9 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
@@ -19,6 +22,7 @@ import org.slf4j.LoggerFactory;
 final class SyntheticReadLockManager implements AutoCloseable {
   static final String SYNTHETIC_BACKEND_NAME = "proxy-synthetic";
   static final long SYNTHETIC_LOCK_ID_FLOOR = Long.MAX_VALUE / 2;
+  private static final String ALL_CATALOGS = "all";
 
   private static final Logger LOG = LoggerFactory.getLogger(SyntheticReadLockManager.class);
   private static final long DEFAULT_TXN_TIMEOUT_SECONDS = 300L;
@@ -26,13 +30,22 @@ final class SyntheticReadLockManager implements AutoCloseable {
 
   private final String defaultCatalog;
   private final long timeoutMs;
+  private final PrometheusMetrics metrics;
   private final SyntheticReadLockStore store;
+  private final String storeMode;
+  private final String instanceId;
   private final AtomicLong lastCleanupAtMs = new AtomicLong();
 
-  SyntheticReadLockManager(ProxyConfig config) {
+  SyntheticReadLockManager(ProxyConfig config, PrometheusMetrics metrics) {
     this.defaultCatalog = config.defaultCatalog();
     this.timeoutMs = parseTimeoutMs(config);
+    this.metrics = metrics;
+    this.storeMode = config.syntheticReadLockStore().mode().name().toLowerCase(Locale.ROOT);
+    this.instanceId = UUID.randomUUID().toString();
+    metrics.setSyntheticReadLockStoreMode(storeMode);
+    metrics.setSyntheticReadLocksActive(storeMode, 0L);
     this.store = openStore(config);
+    syncActiveLockGauge();
   }
 
   SyntheticLockState tryAcquire(LockRequest request, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
@@ -42,63 +55,75 @@ final class SyntheticReadLockManager implements AutoCloseable {
     }
 
     long now = System.currentTimeMillis();
-    return runWithStorage(
+    SyntheticLockState state = runWithStorage(
         "create synthetic read lock",
+        "acquire",
+        namespace.catalogName(),
         () -> store.create(
             request.isSetTxnid() ? request.getTxnid() : 0L,
             namespace.catalogName(),
             namespace.backendDbName(),
             namespace.externalDbName(),
+            instanceId,
             now));
+    metrics.recordSyntheticReadLockEvent("acquire", state.catalogName(), storeMode, "acquired");
+    syncActiveLockGauge();
+    return state;
   }
 
   SyntheticLockState syntheticLock(CheckLockRequest request) throws MetaException, NoSuchLockException {
-    return syntheticLock(request == null ? 0L : request.getLockid());
+    return syntheticLock(request == null ? 0L : request.getLockid(), "check_lock");
   }
 
   SyntheticLockState syntheticLock(UnlockRequest request) throws MetaException, NoSuchLockException {
-    return syntheticLock(request == null ? 0L : request.getLockid());
+    return syntheticLock(request == null ? 0L : request.getLockid(), "unlock");
   }
 
   SyntheticLockState syntheticLock(HeartbeatRequest request) throws MetaException, NoSuchLockException {
-    return syntheticLock(request == null ? 0L : request.getLockid());
-  }
-
-  SyntheticLockState syntheticLock(long lockId) throws MetaException, NoSuchLockException {
-    cleanupExpiredLocks();
-    if (!isSyntheticLockId(lockId)) {
-      return null;
-    }
-    SyntheticLockState state = runWithStorage("lookup synthetic read lock", () -> store.get(lockId));
-    if (state == null) {
-      throw noSuchLock(lockId);
-    }
-    if (state.isExpired(System.currentTimeMillis(), timeoutMs)) {
-      releaseLock(lockId);
-      throw noSuchLock(lockId);
-    }
-    return state;
+    return syntheticLock(request == null ? 0L : request.getLockid(), "heartbeat");
   }
 
   LockResponse acquiredResponse(long lockId) {
     return new LockResponse(lockId, LockState.ACQUIRED);
   }
 
-  void releaseLock(long lockId) throws MetaException {
-    runWithStorage("release synthetic read lock", () -> {
-      store.releaseLock(lockId);
+  void releaseLock(SyntheticLockState state) throws MetaException {
+    if (state == null) {
+      return;
+    }
+    runWithStorage("release synthetic read lock", "unlock", state.catalogName(), () -> {
+      store.releaseLock(state.lockId());
       return null;
     });
+    metrics.recordSyntheticReadLockEvent("unlock", state.catalogName(), storeMode, "released");
+    syncActiveLockGauge();
   }
 
   void releaseTxn(long txnId) throws MetaException {
     if (txnId <= 0) {
       return;
     }
-    runWithStorage("release synthetic read locks for txn " + txnId, () -> {
-      store.releaseTxn(txnId);
-      return null;
-    });
+    SyntheticReadLockStore.ReleaseSummary summary = runWithStorage(
+        "release synthetic read locks for txn " + txnId,
+        "release_txn",
+        ALL_CATALOGS,
+        () -> store.releaseTxn(txnId, instanceId));
+    if (summary.releasedCount() > 0) {
+      metrics.recordSyntheticReadLockEvent(
+          "release_txn",
+          ALL_CATALOGS,
+          storeMode,
+          "released",
+          summary.releasedCount());
+      syncActiveLockGauge();
+    }
+    if (summary.remoteOwnerCount() > 0) {
+      metrics.recordSyntheticReadLockHandoff(
+          "release_txn",
+          ALL_CATALOGS,
+          storeMode,
+          summary.remoteOwnerCount());
+    }
   }
 
   void touch(SyntheticLockState state) throws MetaException {
@@ -106,10 +131,23 @@ final class SyntheticReadLockManager implements AutoCloseable {
       return;
     }
     long now = System.currentTimeMillis();
-    runWithStorage("heartbeat synthetic read lock", () -> {
+    runWithStorage("heartbeat synthetic read lock", "heartbeat", state.catalogName(), () -> {
       store.touch(state.lockId(), now);
       return null;
     });
+    metrics.recordSyntheticReadLockEvent("heartbeat", state.catalogName(), storeMode, "touched");
+  }
+
+  void recordHeartbeatForwarded(SyntheticLockState state) {
+    if (state != null) {
+      metrics.recordSyntheticReadLockEvent("heartbeat", state.catalogName(), storeMode, "txn_forwarded");
+    }
+  }
+
+  void recordHeartbeatWithoutTxn(SyntheticLockState state) {
+    if (state != null) {
+      metrics.recordSyntheticReadLockEvent("heartbeat", state.catalogName(), storeMode, "no_txn");
+    }
   }
 
   HeartbeatRequest txnOnlyHeartbeat(HeartbeatRequest request) {
@@ -127,7 +165,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
 
   @Override
   public void close() throws MetaException {
-    runWithStorage("close synthetic read-lock store", () -> {
+    runWithStorage("close synthetic read-lock store", "close", ALL_CATALOGS, () -> {
       store.close();
       return null;
     });
@@ -145,6 +183,36 @@ final class SyntheticReadLockManager implements AutoCloseable {
     return sequence;
   }
 
+  private SyntheticLockState syntheticLock(long lockId, String operation) throws MetaException, NoSuchLockException {
+    cleanupExpiredLocks();
+    if (!isSyntheticLockId(lockId)) {
+      return null;
+    }
+    SyntheticLockState state = runWithStorage(
+        "lookup synthetic read lock",
+        operation,
+        null,
+        () -> store.get(lockId));
+    if (state == null) {
+      metrics.recordSyntheticReadLockEvent(operation, null, storeMode, "miss");
+      throw noSuchLock(lockId);
+    }
+    if (state.isExpired(System.currentTimeMillis(), timeoutMs)) {
+      runWithStorage("expire synthetic read lock", operation, state.catalogName(), () -> {
+        store.releaseLock(lockId);
+        return null;
+      });
+      metrics.recordSyntheticReadLockEvent(operation, state.catalogName(), storeMode, "expired");
+      syncActiveLockGauge();
+      throw noSuchLock(lockId);
+    }
+    recordHandoffIfNeeded(operation, state);
+    if ("check_lock".equals(operation)) {
+      metrics.recordSyntheticReadLockEvent(operation, state.catalogName(), storeMode, "hit");
+    }
+    return state;
+  }
+
   private SyntheticReadLockStore openStore(ProxyConfig config) {
     try {
       if (config.syntheticReadLockStore().zooKeeperEnabled()) {
@@ -155,6 +223,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
               + "Set synthetic-read-lock.store.mode=ZOOKEEPER for multi-instance deployments.");
       return new InMemorySyntheticReadLockStore();
     } catch (Exception e) {
+      metrics.recordSyntheticReadLockStoreFailure("init", storeMode, e);
       throw new IllegalStateException(
           "Unable to initialize synthetic read-lock store: "
               + e.getClass().getSimpleName()
@@ -192,10 +261,36 @@ final class SyntheticReadLockManager implements AutoCloseable {
     if (!lastCleanupAtMs.compareAndSet(previousCleanupAt, now)) {
       return;
     }
-    runWithStorage("cleanup synthetic read locks", () -> {
-      store.cleanupExpiredLocks(now, timeoutMs);
-      return null;
-    });
+    SyntheticReadLockStore.CleanupSummary summary = runWithStorage(
+        "cleanup synthetic read locks",
+        "cleanup",
+        ALL_CATALOGS,
+        () -> store.cleanupExpiredLocks(now, timeoutMs, instanceId));
+    if (summary.expiredCount() > 0) {
+      metrics.recordSyntheticReadLockEvent(
+          "cleanup",
+          ALL_CATALOGS,
+          storeMode,
+          "expired",
+          summary.expiredCount());
+      syncActiveLockGauge();
+    }
+    if (summary.remoteOwnerCount() > 0) {
+      metrics.recordSyntheticReadLockHandoff(
+          "cleanup",
+          ALL_CATALOGS,
+          storeMode,
+          summary.remoteOwnerCount());
+    }
+  }
+
+  private void syncActiveLockGauge() {
+    try {
+      metrics.setSyntheticReadLocksActive(storeMode, store.activeLockCount());
+    } catch (Exception e) {
+      metrics.recordSyntheticReadLockStoreFailure("active_count", storeMode, e);
+      LOG.debug("Unable to refresh synthetic read-lock active gauge for store mode {}", storeMode, e);
+    }
   }
 
   private long parseTimeoutMs(ProxyConfig config) {
@@ -212,6 +307,12 @@ final class SyntheticReadLockManager implements AutoCloseable {
     return Math.max(1L, timeoutSeconds) * 1000L;
   }
 
+  private void recordHandoffIfNeeded(String operation, SyntheticLockState state) {
+    if (state != null && !state.ownerInstanceId().equals(instanceId)) {
+      metrics.recordSyntheticReadLockHandoff(operation, state.catalogName(), storeMode);
+    }
+  }
+
   private NoSuchLockException noSuchLock(long lockId) {
     return new NoSuchLockException("Synthetic read lock " + lockId + " does not exist");
   }
@@ -225,12 +326,13 @@ final class SyntheticReadLockManager implements AutoCloseable {
     return metaException;
   }
 
-  private <T> T runWithStorage(String action, StorageCall<T> call) throws MetaException {
+  private <T> T runWithStorage(String action, String operation, String catalog, StorageCall<T> call) throws MetaException {
     try {
       return call.run();
     } catch (MetaException e) {
       throw e;
     } catch (Exception e) {
+      metrics.recordSyntheticReadLockStoreFailure(operation, storeMode, e);
       throw storageFailure(action, e);
     }
   }
@@ -246,6 +348,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
       String catalogName,
       String backendDbName,
       String externalDbName,
+      String ownerInstanceId,
       long lastTouchedAtMs
   ) {
     CatalogRouter.ResolvedNamespace namespace(CatalogRouter router) {
@@ -259,6 +362,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
           catalogName,
           backendDbName,
           externalDbName,
+          ownerInstanceId,
           Math.max(lastTouchedAtMs, nowMs));
     }
 
@@ -269,6 +373,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
           catalogName,
           backendDbName,
           externalDbName,
+          ownerInstanceId,
           lastTouchedAtMs);
     }
 

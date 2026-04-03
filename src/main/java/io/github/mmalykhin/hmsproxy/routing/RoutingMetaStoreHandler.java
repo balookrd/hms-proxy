@@ -131,7 +131,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
     this.federationLayer = new FederationLayer(config, router);
     this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
-    this.syntheticReadLockManager = new SyntheticReadLockManager(config);
+    this.syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -469,7 +469,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
     currentObservation().recordNamespace(syntheticState.namespace(router));
     currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
-    syntheticReadLockManager.releaseLock(syntheticState.lockId());
+    syntheticReadLockManager.releaseLock(syntheticState);
     return null;
   }
 
@@ -485,10 +485,13 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     HeartbeatRequest txnOnlyHeartbeat = syntheticReadLockManager.txnOnlyHeartbeat(request);
     if (txnOnlyHeartbeat == null) {
+      syntheticReadLockManager.recordHeartbeatWithoutTxn(syntheticState);
       return null;
     }
     validateCatalogAccess(router.defaultBackend(), method.getName(), null);
-    return invokeBackend(router.defaultBackend(), method, new Object[] {txnOnlyHeartbeat});
+    Object result = invokeBackend(router.defaultBackend(), method, new Object[] {txnOnlyHeartbeat});
+    syntheticReadLockManager.recordHeartbeatForwarded(syntheticState);
+    return result;
   }
 
   private Object handleCommitTxn(Method method, Object[] args) throws Throwable {
