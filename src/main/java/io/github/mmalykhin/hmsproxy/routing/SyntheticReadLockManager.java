@@ -240,16 +240,26 @@ final class SyntheticReadLockManager implements AutoCloseable {
       return false;
     }
     for (LockComponent component : request.getComponent()) {
-      if (component == null
-          || component.getType() != LockType.SHARED_READ
-          || !component.isSetOperationType()
-          || component.getOperationType() != DataOperationType.SELECT
-          || !component.isSetIsTransactional()
-          || component.isIsTransactional()) {
+      if (!isEligibleSyntheticReadLock(component)) {
         return false;
       }
     }
     return true;
+  }
+
+  private boolean isEligibleSyntheticReadLock(LockComponent component) {
+    if (component == null || component.getType() != LockType.SHARED_READ || !component.isSetOperationType()) {
+      return false;
+    }
+    if (component.getOperationType() == DataOperationType.SELECT) {
+      return component.isSetIsTransactional() && !component.isIsTransactional();
+    }
+    if (component.getOperationType() == DataOperationType.NO_TXN) {
+      // Hive can issue DB-level SHARED_READ locks for non-transactional DDL before the
+      // actual catalog-scoped write request. Those locks still carry the default-backend txn id.
+      return !component.isSetIsTransactional() || !component.isIsTransactional();
+    }
+    return false;
   }
 
   private void cleanupExpiredLocks() throws MetaException {

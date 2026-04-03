@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
@@ -617,6 +618,91 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertTrue(capturedHeartbeat.get().isSetTxnid());
     Assert.assertEquals(52L, capturedHeartbeat.get().getTxnid());
     Assert.assertFalse(capturedHeartbeat.get().isSetLockid());
+  }
+
+  @Test
+  public void syntheticNoTxnDbLockForNonDefaultCatalogUsesShim() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+    AtomicReference<HeartbeatRequest> capturedHeartbeat = new AtomicReference<>();
+    AtomicInteger defaultHeartbeatCalls = new AtomicInteger();
+    AtomicInteger defaultAbortCalls = new AtomicInteger();
+    AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("heartbeat".equals(method.getName())) {
+                defaultHeartbeatCalls.incrementAndGet();
+                capturedHeartbeat.set((HeartbeatRequest) args[0]);
+                return null;
+              }
+              if ("abort_txn".equals(method.getName())) {
+                defaultAbortCalls.incrementAndGet();
+                return null;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              nonDefaultBackendCalls.incrementAndGet();
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticNoTxnDbLockRequest("catalog2__sales", 52L)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+
+    Method checkLockMethod = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+    CheckLockRequest checkRequest = new CheckLockRequest(lock.getLockid());
+    checkRequest.setTxnid(52L);
+    LockResponse checked = (LockResponse) handler.invoke(null, checkLockMethod, new Object[] {checkRequest});
+    Assert.assertEquals(LockState.ACQUIRED, checked.getState());
+
+    Method heartbeatMethod = ThriftHiveMetastore.Iface.class.getMethod("heartbeat", HeartbeatRequest.class);
+    HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
+    heartbeatRequest.setTxnid(52L);
+    heartbeatRequest.setLockid(lock.getLockid());
+    handler.invoke(null, heartbeatMethod, new Object[] {heartbeatRequest});
+
+    Method abortMethod = ThriftHiveMetastore.Iface.class.getMethod("abort_txn", AbortTxnRequest.class);
+    handler.invoke(null, abortMethod, new Object[] {new AbortTxnRequest(52L)});
+
+    Assert.assertEquals(1, defaultHeartbeatCalls.get());
+    Assert.assertEquals(1, defaultAbortCalls.get());
+    Assert.assertEquals(0, nonDefaultBackendCalls.get());
+    Assert.assertNotNull(capturedHeartbeat.get());
+    Assert.assertEquals(52L, capturedHeartbeat.get().getTxnid());
+    Assert.assertFalse(capturedHeartbeat.get().isSetLockid());
+    Assert.assertThrows(
+        NoSuchLockException.class,
+        () -> handler.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
   }
 
   @Test
@@ -1762,6 +1848,21 @@ public class RoutingMetaStoreHandlerTest {
     request.setTxnid(txnId);
     request.getComponent().get(0).setOperationType(DataOperationType.SELECT);
     request.getComponent().get(0).setIsTransactional(false);
+    return request;
+  }
+
+  private static LockRequest syntheticNoTxnDbLockRequest(String dbName, long txnId) {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.DB);
+    component.setDbname(dbName);
+    component.setOperationType(DataOperationType.NO_TXN);
+
+    LockRequest request = new LockRequest();
+    request.setComponent(List.of(component));
+    request.setTxnid(txnId);
+    request.setUser("alice");
+    request.setHostname("host");
     return request;
   }
 
