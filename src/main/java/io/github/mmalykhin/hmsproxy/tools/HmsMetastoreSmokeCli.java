@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
@@ -19,10 +20,12 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.AllocateTableWriteIdsRequest;
 import org.apache.hadoop.hive.metastore.api.AllocateTableWriteIdsResponse;
+import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
+import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
@@ -32,13 +35,18 @@ import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.OpenTxnRequest;
 import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.hadoop.security.UserGroupInformation;
 
 public final class HmsMetastoreSmokeCli {
   private static final String MODE_TXN = "txn";
+  private static final String MODE_LOCK = "lock";
   private static final String MODE_NOTIFICATION = "notification";
   private static final String AUTH_SIMPLE = "simple";
   private static final String AUTH_KERBEROS = "kerberos";
+  private static final String TXN_CLOSE_ABORT = "abort";
+  private static final String TXN_CLOSE_COMMIT = "commit";
+  private static final String TXN_CLOSE_NONE = "none";
 
   private HmsMetastoreSmokeCli() {
   }
@@ -53,6 +61,7 @@ public final class HmsMetastoreSmokeCli {
     CliArgs cli = CliArgs.parse(Arrays.copyOfRange(args, 1, args.length));
     switch (mode) {
       case MODE_TXN -> runTxnSmoke(cli);
+      case MODE_LOCK -> runLockSmoke(cli);
       case MODE_NOTIFICATION -> runNotificationSmoke(cli);
       default -> throw new IllegalArgumentException("Unknown mode: " + mode);
     }
@@ -85,7 +94,7 @@ public final class HmsMetastoreSmokeCli {
       System.out.println("allocate_table_write_ids writeId=" + writeId);
 
       if (doLock) {
-        LockResponse lockResp = thriftClient.lock(buildLockRequest(db, table, user, host, agentInfo, txnId));
+        LockResponse lockResp = thriftClient.lock(buildTxnLockRequest(db, table, user, host, agentInfo, txnId));
         System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
 
         CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
@@ -111,7 +120,84 @@ public final class HmsMetastoreSmokeCli {
     }
   }
 
-  private static LockRequest buildLockRequest(
+  private static void runLockSmoke(CliArgs cli) throws Exception {
+    String uri = cli.required("uri");
+    String db = cli.required("db");
+    String user = cli.getOrDefault("user", System.getProperty("user.name", "smoke-user"));
+    String host = cli.getOrDefault("host", "localhost");
+    String agentInfo = cli.getOrDefault("agent-info", "hms-proxy-smoke-cli");
+    boolean doHeartbeat = cli.getBoolean("heartbeat", true);
+    boolean doUnlock = cli.getBoolean("unlock", true);
+    String closeTxn = cli.getOrDefault("close-txn", TXN_CLOSE_ABORT).toLowerCase(Locale.ROOT);
+    LockType lockType = parseEnumOption("lock-type", cli.required("lock-type"), LockType.class);
+    LockLevel lockLevel = parseEnumOption("lock-level", cli.required("lock-level"), LockLevel.class);
+    DataOperationType operationType =
+        parseEnumOption("operation-type", cli.required("operation-type"), DataOperationType.class);
+    boolean transactional = cli.getBoolean("transactional", false);
+
+    String table = lockLevel == LockLevel.DB ? cli.get("table") : cli.required("table");
+    String partition = lockLevel == LockLevel.PARTITION ? cli.required("partition") : cli.get("partition");
+
+    if (!TXN_CLOSE_ABORT.equals(closeTxn)
+        && !TXN_CLOSE_COMMIT.equals(closeTxn)
+        && !TXN_CLOSE_NONE.equals(closeTxn)) {
+      throw new IllegalArgumentException(
+          "Invalid value for --close-txn: " + closeTxn + ". Expected one of: "
+              + TXN_CLOSE_ABORT + ", " + TXN_CLOSE_COMMIT + ", " + TXN_CLOSE_NONE);
+    }
+
+    applyOptionalKrbs(cli);
+    HiveConf conf = baseConf(cli, uri);
+
+    try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
+      ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+      OpenTxnRequest openReq = new OpenTxnRequest(1, user, host);
+      openReq.setAgentInfo(agentInfo);
+      OpenTxnsResponse openResp = thriftClient.open_txns(openReq);
+      long txnId = openResp.getTxn_ids().get(0);
+      System.out.println("open_txns txnId=" + txnId);
+
+      LockRequest request = buildLockRequest(
+          db, table, partition, user, host, agentInfo, txnId, lockType, lockLevel, operationType, transactional);
+      LockResponse lockResp = thriftClient.lock(request);
+      System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
+
+      CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
+      checkReq.setTxnid(txnId);
+      LockResponse checkResp = thriftClient.check_lock(checkReq);
+      System.out.println("check_lock lockId=" + checkResp.getLockid() + " state=" + checkResp.getState());
+      if (checkResp.getState() != LockState.ACQUIRED && checkResp.getState() != LockState.WAITING) {
+        throw new IllegalStateException("Unexpected lock state: " + checkResp.getState());
+      }
+
+      if (doHeartbeat) {
+        HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
+        heartbeatRequest.setTxnid(txnId);
+        heartbeatRequest.setLockid(lockResp.getLockid());
+        thriftClient.heartbeat(heartbeatRequest);
+        System.out.println("heartbeat txnId=" + txnId + " lockId=" + lockResp.getLockid());
+      }
+
+      if (doUnlock) {
+        thriftClient.unlock(new UnlockRequest(lockResp.getLockid()));
+        System.out.println("unlock lockId=" + lockResp.getLockid());
+      }
+
+      switch (closeTxn) {
+        case TXN_CLOSE_ABORT -> {
+          thriftClient.abort_txn(new AbortTxnRequest(txnId));
+          System.out.println("abort_txn txnId=" + txnId);
+        }
+        case TXN_CLOSE_COMMIT -> {
+          thriftClient.commit_txn(new CommitTxnRequest(txnId));
+          System.out.println("commit_txn txnId=" + txnId);
+        }
+        default -> System.out.println("txn left open txnId=" + txnId);
+      }
+    }
+  }
+
+  private static LockRequest buildTxnLockRequest(
       String db,
       String table,
       String user,
@@ -119,15 +205,59 @@ public final class HmsMetastoreSmokeCli {
       String agentInfo,
       long txnId
   ) {
-    LockComponent component = new LockComponent(LockType.SHARED_WRITE, LockLevel.TABLE, db);
-    component.setTablename(table);
-    component.setOperationType(DataOperationType.INSERT);
-    component.setIsTransactional(true);
+    return buildLockRequest(
+        db,
+        table,
+        null,
+        user,
+        host,
+        agentInfo,
+        txnId,
+        LockType.SHARED_WRITE,
+        LockLevel.TABLE,
+        DataOperationType.INSERT,
+        true);
+  }
+
+  private static LockRequest buildLockRequest(
+      String db,
+      String table,
+      String partition,
+      String user,
+      String host,
+      String agentInfo,
+      long txnId,
+      LockType lockType,
+      LockLevel lockLevel,
+      DataOperationType operationType,
+      boolean transactional
+  ) {
+    LockComponent component = new LockComponent(lockType, lockLevel, db);
+    if (table != null && !table.isBlank()) {
+      component.setTablename(table);
+    }
+    if (partition != null && !partition.isBlank()) {
+      component.setPartitionname(partition);
+    }
+    component.setOperationType(operationType);
+    component.setIsTransactional(transactional);
 
     LockRequest request = new LockRequest(List.of(component), user, host);
     request.setTxnid(txnId);
     request.setAgentInfo(agentInfo);
     return request;
+  }
+
+  private static <E extends Enum<E>> E parseEnumOption(String optionName, String value, Class<E> enumClass) {
+    try {
+      return Enum.valueOf(enumClass, value.trim().toUpperCase(Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      String allowed = Arrays.stream(enumClass.getEnumConstants())
+          .map(Enum::name)
+          .collect(Collectors.joining(", "));
+      throw new IllegalArgumentException(
+          "Invalid value for --" + optionName + ": " + value + ". Expected one of: " + allowed, e);
+    }
   }
 
   private static void runNotificationSmoke(CliArgs cli) throws Exception {
@@ -306,6 +436,7 @@ public final class HmsMetastoreSmokeCli {
     System.out.println("""
         Usage:
           java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn [options]
+          java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock [options]
           java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification [options]
 
         Common options:
@@ -325,6 +456,21 @@ public final class HmsMetastoreSmokeCli {
           --agent-info hms-proxy-smoke-cli      optional
           --lock true|false                     default: true
           --valid-txn-list ...                  optional
+
+        lock mode:
+          --db dev3__default
+          --lock-type SHARED_READ|SHARED_WRITE|EXCLUSIVE
+          --lock-level DB|TABLE|PARTITION
+          --operation-type SELECT|INSERT|UPDATE|DELETE|UNSET|NO_TXN
+          --transactional true|false            default: false
+          --table smoke_managed_tbl             required for TABLE/PARTITION
+          --partition p=2026-04-01              required for PARTITION
+          --user smoke-user                     optional
+          --host localhost                      optional
+          --agent-info hms-proxy-smoke-cli      optional
+          --heartbeat true|false                default: true
+          --unlock true|false                   default: true
+          --close-txn abort|commit|none         default: abort
 
         notification mode:
           --db hdp__default
