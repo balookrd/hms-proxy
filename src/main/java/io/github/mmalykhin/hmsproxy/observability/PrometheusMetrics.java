@@ -40,6 +40,26 @@ public final class PrometheusMetrics {
       "hms_proxy_default_catalog_routed_total",
       "Requests routed to the default catalog because no explicit catalog namespace was provided",
       List.of("method"));
+  private final Counter syntheticReadLockEventsTotal = new Counter(
+      "hms_proxy_synthetic_read_lock_events_total",
+      "Synthetic read-lock shim lifecycle events grouped by operation, catalog, store mode, and result",
+      List.of("operation", "catalog", "store_mode", "result"));
+  private final Counter syntheticReadLockStoreFailuresTotal = new Counter(
+      "hms_proxy_synthetic_read_lock_store_failures_total",
+      "Synthetic read-lock store failures grouped by operation, store mode, and exception type",
+      List.of("operation", "store_mode", "exception"));
+  private final Counter syntheticReadLockHandoffsTotal = new Counter(
+      "hms_proxy_synthetic_read_lock_handoffs_total",
+      "Synthetic read-lock operations served by a different proxy instance than the original lock owner",
+      List.of("operation", "catalog", "store_mode"));
+  private final Gauge syntheticReadLocksActive = new Gauge(
+      "hms_proxy_synthetic_read_locks_active",
+      "Current number of active synthetic read locks visible to this proxy instance",
+      List.of("store_mode"));
+  private final Gauge syntheticReadLockStoreInfo = new Gauge(
+      "hms_proxy_synthetic_read_lock_store_info",
+      "Configured synthetic read-lock store mode for this proxy instance",
+      List.of("store_mode"));
 
   public void recordRequest(String method, String catalog, String backend, String status, double durationSeconds) {
     requestsTotal.inc(labels("method", method, "catalog", catalog, "backend", backend, "status", status));
@@ -64,6 +84,58 @@ public final class PrometheusMetrics {
     defaultCatalogRoutedTotal.inc(labels("method", method));
   }
 
+  public void recordSyntheticReadLockEvent(
+      String operation,
+      String catalog,
+      String storeMode,
+      String result
+  ) {
+    recordSyntheticReadLockEvent(operation, catalog, storeMode, result, 1L);
+  }
+
+  public void recordSyntheticReadLockEvent(
+      String operation,
+      String catalog,
+      String storeMode,
+      String result,
+      long count
+  ) {
+    syntheticReadLockEventsTotal.add(labels(
+        "operation", operation,
+        "catalog", catalog,
+        "store_mode", storeMode,
+        "result", result), count);
+  }
+
+  public void recordSyntheticReadLockStoreFailure(String operation, String storeMode, Throwable error) {
+    syntheticReadLockStoreFailuresTotal.inc(labels(
+        "operation", operation,
+        "store_mode", storeMode,
+        "exception", error == null ? "unknown" : error.getClass().getSimpleName()));
+  }
+
+  public void recordSyntheticReadLockHandoff(String operation, String catalog, String storeMode) {
+    syntheticReadLockHandoffsTotal.inc(labels(
+        "operation", operation,
+        "catalog", catalog,
+        "store_mode", storeMode));
+  }
+
+  public void recordSyntheticReadLockHandoff(String operation, String catalog, String storeMode, long count) {
+    syntheticReadLockHandoffsTotal.add(labels(
+        "operation", operation,
+        "catalog", catalog,
+        "store_mode", storeMode), count);
+  }
+
+  public void setSyntheticReadLocksActive(String storeMode, long activeLocks) {
+    syntheticReadLocksActive.set(labels("store_mode", storeMode), activeLocks);
+  }
+
+  public void setSyntheticReadLockStoreMode(String storeMode) {
+    syntheticReadLockStoreInfo.set(labels("store_mode", storeMode), 1.0);
+  }
+
   public String render() {
     StringBuilder builder = new StringBuilder(4096);
     requestsTotal.renderInto(builder);
@@ -72,6 +144,11 @@ public final class PrometheusMetrics {
     backendFallbackTotal.renderInto(builder);
     routingAmbiguousTotal.renderInto(builder);
     defaultCatalogRoutedTotal.renderInto(builder);
+    syntheticReadLockEventsTotal.renderInto(builder);
+    syntheticReadLockStoreFailuresTotal.renderInto(builder);
+    syntheticReadLockHandoffsTotal.renderInto(builder);
+    syntheticReadLocksActive.renderInto(builder);
+    syntheticReadLockStoreInfo.renderInto(builder);
     return builder.toString();
   }
 
@@ -148,7 +225,14 @@ public final class PrometheusMetrics {
     }
 
     private void inc(Map<String, String> labels) {
-      values.computeIfAbsent(LabelValues.from(labelNames(), labels), ignored -> new LongAdder()).increment();
+      add(labels, 1L);
+    }
+
+    private void add(Map<String, String> labels, long value) {
+      if (value <= 0) {
+        return;
+      }
+      values.computeIfAbsent(LabelValues.from(labelNames(), labels), ignored -> new LongAdder()).add(value);
     }
 
     private void renderInto(StringBuilder builder) {
@@ -160,6 +244,43 @@ public final class PrometheusMetrics {
         return;
       }
       for (Map.Entry<LabelValues, LongAdder> entry : entries) {
+        builder.append(name())
+            .append(formatLabels(labelNames(), entry.getKey()))
+            .append(' ')
+            .append(entry.getValue().sum())
+            .append('\n');
+      }
+    }
+  }
+
+  private static final class Gauge extends Metric {
+    private final ConcurrentMap<LabelValues, DoubleAdder> values = new ConcurrentHashMap<>();
+
+    private Gauge(String name, String help, List<String> labelNames) {
+      super(name, help, labelNames);
+    }
+
+    private void set(Map<String, String> labels, double value) {
+      LabelValues key = LabelValues.from(labelNames(), labels);
+      DoubleAdder gauge = values.computeIfAbsent(key, ignored -> new DoubleAdder());
+      synchronized (gauge) {
+        double current = gauge.sum();
+        if (current != 0.0d) {
+          gauge.add(-current);
+        }
+        gauge.add(value);
+      }
+    }
+
+    private void renderInto(StringBuilder builder) {
+      appendHeader(builder, "gauge");
+      List<Map.Entry<LabelValues, DoubleAdder>> entries = new ArrayList<>(values.entrySet());
+      entries.sort(Map.Entry.comparingByKey());
+      if (entries.isEmpty()) {
+        builder.append(name()).append(" 0\n");
+        return;
+      }
+      for (Map.Entry<LabelValues, DoubleAdder> entry : entries) {
         builder.append(name())
             .append(formatLabels(labelNames(), entry.getKey()))
             .append(' ')

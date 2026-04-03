@@ -165,6 +165,11 @@ Current Prometheus metrics:
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
+- `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
+- `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
+- `hms_proxy_synthetic_read_locks_active{store_mode}`
+- `hms_proxy_synthetic_read_lock_store_info{store_mode}`
 
 Example Prometheus scrape config:
 
@@ -184,6 +189,15 @@ Metric semantics:
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+- `hms_proxy_synthetic_read_lock_events_total` tracks synthetic read-lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
+- `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
+- `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
+- `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend
+- `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
+
+The bundled Grafana dashboard at `monitoring/grafana/hms-proxy-dashboard.json` includes panels for
+synthetic lock activity, handoffs, store failures, and active lock counts, plus a `store_mode`
+templating variable for quickly switching between `in_memory` and `zookeeper` views.
 
 ### Structured audit log
 

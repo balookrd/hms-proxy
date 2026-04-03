@@ -163,6 +163,11 @@ curl -s http://127.0.0.1:19083/metrics
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
+- `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
+- `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
+- `hms_proxy_synthetic_read_locks_active{store_mode}`
+- `hms_proxy_synthetic_read_lock_store_info{store_mode}`
 
 Пример Prometheus scrape config:
 
@@ -182,6 +187,15 @@ scrape_configs:
 - `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
 - `hms_proxy_routing_ambiguous_total` считает запросы, отклонённые из-за conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+- `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic read-lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
+- `hms_proxy_synthetic_read_lock_store_failures_total` считает ошибки in-memory или ZooKeeper store с группировкой по операции и exception type
+- `hms_proxy_synthetic_read_lock_handoffs_total` считает случаи, когда synthetic lock, открытый через один proxy instance, продолжает обслуживаться через другой instance
+- `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend
+- `hms_proxy_synthetic_read_lock_store_info` это constant-info gauge, который помечает, работает ли proxy с `in_memory` или `zookeeper` storage для synthetic lock
+
+В комплектный Grafana dashboard `monitoring/grafana/hms-proxy-dashboard.json` добавлены панели по
+synthetic lock activity, handoff, store failures и active lock counts, а также template variable
+`store_mode` для быстрого переключения между режимами `in_memory` и `zookeeper`.
 
 ### Structured audit log
 

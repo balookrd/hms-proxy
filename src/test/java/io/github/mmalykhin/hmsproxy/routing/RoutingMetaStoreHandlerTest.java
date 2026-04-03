@@ -12,6 +12,7 @@ import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
@@ -671,6 +672,80 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void syntheticReadLockMetricsAreRecordedForInMemoryShim() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("heartbeat".equals(method.getName())) {
+                return null;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 91L)});
+
+    Method checkLockMethod = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+    CheckLockRequest checkRequest = new CheckLockRequest(lock.getLockid());
+    checkRequest.setTxnid(91L);
+    handler.invoke(null, checkLockMethod, new Object[] {checkRequest});
+
+    Method heartbeatMethod = ThriftHiveMetastore.Iface.class.getMethod("heartbeat", HeartbeatRequest.class);
+    HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
+    heartbeatRequest.setTxnid(91L);
+    heartbeatRequest.setLockid(lock.getLockid());
+    handler.invoke(null, heartbeatMethod, new Object[] {heartbeatRequest});
+
+    Method unlockMethod = ThriftHiveMetastore.Iface.class.getMethod("unlock", UnlockRequest.class);
+    handler.invoke(null, unlockMethod, new Object[] {new UnlockRequest(lock.getLockid())});
+
+    String rendered = observability.metrics().render();
+
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"acquire\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"acquired\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"check_lock\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"hit\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"heartbeat\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"touched\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"heartbeat\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"txn_forwarded\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"unlock\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"released\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_store_info{store_mode=\"in_memory\"} 1.0"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_locks_active{store_mode=\"in_memory\"} 0.0"));
+  }
+
+  @Test
   public void syntheticReadLocksCanFailOverAcrossProxyInstancesViaZooKeeperStore() throws Throwable {
     try (TestingServer zooKeeper = new TestingServer()) {
       ProxyConfig config = new ProxyConfig(
@@ -738,13 +813,16 @@ public class RoutingMetaStoreHandlerTest {
       LinkedHashMap<String, CatalogBackend> backendsB = new LinkedHashMap<>();
       backendsB.put("catalog1", defaultBackendB);
       backendsB.put("catalog2", nonDefaultBackendB);
+      ProxyObservability observabilityA = new ProxyObservability(config);
+      ProxyObservability observabilityB = new ProxyObservability(config);
 
       try (CatalogRouter routerA = new CatalogRouter(config, backendsA);
            CatalogRouter routerB = new CatalogRouter(config, backendsB);
-           RoutingMetaStoreHandler secondProxy = new RoutingMetaStoreHandler(config, routerB, null)) {
+           RoutingMetaStoreHandler secondProxy =
+               new RoutingMetaStoreHandler(config, routerB, null, observabilityB)) {
         Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
         LockResponse lock;
-        RoutingMetaStoreHandler firstProxy = new RoutingMetaStoreHandler(config, routerA, null);
+        RoutingMetaStoreHandler firstProxy = new RoutingMetaStoreHandler(config, routerA, null, observabilityA);
         try {
           lock = (LockResponse) firstProxy.invoke(
               null,
@@ -779,6 +857,16 @@ public class RoutingMetaStoreHandlerTest {
         Assert.assertThrows(
             NoSuchLockException.class,
             () -> secondProxy.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
+
+        String rendered = observabilityB.metrics().render();
+        Assert.assertTrue(rendered.contains(
+            "hms_proxy_synthetic_read_lock_handoffs_total{operation=\"check_lock\",catalog=\"catalog2\",store_mode=\"zookeeper\"} 1"));
+        Assert.assertTrue(rendered.contains(
+            "hms_proxy_synthetic_read_lock_handoffs_total{operation=\"heartbeat\",catalog=\"catalog2\",store_mode=\"zookeeper\"} 1"));
+        Assert.assertTrue(rendered.contains(
+            "hms_proxy_synthetic_read_lock_handoffs_total{operation=\"release_txn\",catalog=\"all\",store_mode=\"zookeeper\"} 1"));
+        Assert.assertTrue(rendered.contains(
+            "hms_proxy_synthetic_read_lock_store_info{store_mode=\"zookeeper\"} 1.0"));
       }
     }
   }

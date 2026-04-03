@@ -16,6 +16,7 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
       String catalogName,
       String backendDbName,
       String externalDbName,
+      String ownerInstanceId,
       long createdAtMs
   ) {
     long lockId = SyntheticReadLockManager.lockIdForSequence(nextSequence.getAndIncrement());
@@ -25,6 +26,7 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
         catalogName,
         backendDbName,
         externalDbName,
+        ownerInstanceId,
         createdAtMs);
     locks.put(lockId, state);
     if (txnId > 0) {
@@ -45,39 +47,67 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
 
   @Override
   public void releaseLock(long lockId) {
-    removeLock(locks.remove(lockId));
+    removeLock(locks.get(lockId));
   }
 
   @Override
-  public void releaseTxn(long txnId) {
+  public ReleaseSummary releaseTxn(long txnId, String currentInstanceId) {
     if (txnId <= 0) {
-      return;
+      return new ReleaseSummary(0L, 0L);
     }
     Set<Long> lockIds = txnLocks.remove(txnId);
     if (lockIds == null) {
-      return;
+      return new ReleaseSummary(0L, 0L);
     }
+    long releasedCount = 0L;
+    long remoteOwnerCount = 0L;
     for (Long lockId : lockIds) {
-      locks.remove(lockId);
+      SyntheticReadLockManager.SyntheticLockState state = locks.remove(lockId);
+      if (state == null) {
+        continue;
+      }
+      releasedCount++;
+      if (!state.ownerInstanceId().equals(currentInstanceId)) {
+        remoteOwnerCount++;
+      }
     }
+    return new ReleaseSummary(releasedCount, remoteOwnerCount);
   }
 
   @Override
-  public void cleanupExpiredLocks(long nowMs, long timeoutMs) {
+  public CleanupSummary cleanupExpiredLocks(long nowMs, long timeoutMs, String currentInstanceId) {
+    long expiredCount = 0L;
+    long remoteOwnerCount = 0L;
     for (SyntheticReadLockManager.SyntheticLockState state : locks.values()) {
       if (state.isExpired(nowMs, timeoutMs)) {
-        removeLock(state);
+        SyntheticReadLockManager.SyntheticLockState removed = removeLock(state);
+        if (removed != null) {
+          expiredCount++;
+          if (!removed.ownerInstanceId().equals(currentInstanceId)) {
+            remoteOwnerCount++;
+          }
+        }
       }
     }
+    return new CleanupSummary(expiredCount, remoteOwnerCount);
   }
 
-  private void removeLock(SyntheticReadLockManager.SyntheticLockState state) {
-    if (state == null || !locks.remove(state.lockId(), state) || state.txnId() <= 0) {
-      return;
+  @Override
+  public long activeLockCount() {
+    return locks.size();
+  }
+
+  private SyntheticReadLockManager.SyntheticLockState removeLock(SyntheticReadLockManager.SyntheticLockState state) {
+    if (state == null || !locks.remove(state.lockId(), state)) {
+      return null;
+    }
+    if (state.txnId() <= 0) {
+      return state;
     }
     txnLocks.computeIfPresent(state.txnId(), (ignored, lockIds) -> {
       lockIds.remove(state.lockId());
       return lockIds.isEmpty() ? null : lockIds;
     });
+    return state;
   }
 }
