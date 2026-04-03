@@ -60,6 +60,43 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       "get_schema_with_environment_context",
       "get_table_names_by_filter"
   );
+  private static final List<String> DB_FIRST_STRING_METHODS = List.of(
+      "update_creation_metadata",
+      "append_partition",
+      "append_partition_with_environment_context",
+      "append_partition_by_name",
+      "append_partition_by_name_with_environment_context",
+      "drop_partition",
+      "drop_partition_with_environment_context",
+      "drop_partition_by_name",
+      "drop_partition_by_name_with_environment_context",
+      "get_partition",
+      "get_partition_with_auth",
+      "get_partition_by_name",
+      "get_partitions",
+      "get_partitions_with_auth",
+      "get_partitions_pspec",
+      "get_partition_names",
+      "get_partitions_ps",
+      "get_partitions_ps_with_auth",
+      "get_partition_names_ps",
+      "get_partitions_by_filter",
+      "get_part_specs_by_filter",
+      "get_num_partitions_by_filter",
+      "get_partitions_by_names",
+      "markPartitionForEvent",
+      "isPartitionMarkedForEvent",
+      "get_table_column_statistics",
+      "get_partition_column_statistics",
+      "delete_partition_column_statistics",
+      "delete_table_column_statistics",
+      "drop_function",
+      "alter_function",
+      "get_functions",
+      "get_function",
+      "get_lock_materialization_rebuild",
+      "heartbeat_lock_materialization_rebuild"
+  );
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final FrontDoorSecurity frontDoorSecurity;
@@ -393,7 +430,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
       return federationLayer.externalizeResult(result, extractedNamespace);
     }
-    if (args.length > 1 && args[0] instanceof String dbName && args[1] instanceof String) {
+    if (DB_FIRST_STRING_METHODS.contains(methodName)
+        && args.length > 1
+        && args[0] instanceof String dbName
+        && args[1] instanceof String) {
       CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
       currentObservation().recordNamespace(namespace);
       recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);

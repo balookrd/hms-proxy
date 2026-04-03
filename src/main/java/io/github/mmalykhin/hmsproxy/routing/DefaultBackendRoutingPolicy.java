@@ -26,9 +26,12 @@ public final class DefaultBackendRoutingPolicy {
         routes,
         Policy.SERVICE_READS,
         List.of(
+            "getMetaConf",
             "get_current_notificationEventId",
             "get_next_notification",
             "get_notification_events_count",
+            "get_all_functions",
+            "get_metastore_db_uuid",
             "get_open_txns",
             "get_open_txns_info",
             "show_locks",
