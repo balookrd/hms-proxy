@@ -14,7 +14,8 @@ public record ProxyConfig(
     CompatibilityConfig compatibility,
     FederationConfig federation,
     TransactionalDdlGuardConfig transactionalDdlGuard,
-    ManagementConfig management
+    ManagementConfig management,
+    SyntheticReadLockStoreConfig syntheticReadLockStore
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -31,6 +32,9 @@ public record ProxyConfig(
     management = management == null
         ? new ManagementConfig(false, server.bindHost(), server.port() + 1000)
         : management;
+    syntheticReadLockStore = syntheticReadLockStore == null
+        ? new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null)
+        : syntheticReadLockStore;
   }
 
   public ProxyConfig(
@@ -44,7 +48,34 @@ public record ProxyConfig(
         new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility,
+      FederationConfig federation,
+      TransactionalDdlGuardConfig transactionalDdlGuard,
+      ManagementConfig management
+  ) {
+    this(
+        server,
+        security,
+        catalogDbSeparator,
+        defaultCatalog,
+        catalogs,
+        backend,
+        compatibility,
+        federation,
+        transactionalDdlGuard,
+        management,
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
   }
 
   public ProxyConfig(
@@ -58,7 +89,8 @@ public record ProxyConfig(
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
   }
 
   public ProxyConfig(
@@ -76,7 +108,8 @@ public record ProxyConfig(
             ViewTextRewriteMode.DISABLED,
             false),
         transactionalDdlGuard,
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
   }
 
   public ProxyConfig(
@@ -91,7 +124,8 @@ public record ProxyConfig(
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
   }
 
   public ProxyConfig(
@@ -107,7 +141,8 @@ public record ProxyConfig(
     this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
         federation,
         transactionalDdlGuard,
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000));
+        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
   }
 
   public record ServerConfig(
@@ -243,10 +278,48 @@ public record ProxyConfig(
   ) {
   }
 
+  public record SyntheticReadLockStoreConfig(
+      SyntheticReadLockStoreMode mode,
+      SyntheticReadLockStoreZooKeeperConfig zooKeeper
+  ) {
+    public SyntheticReadLockStoreConfig {
+      mode = mode == null ? SyntheticReadLockStoreMode.IN_MEMORY : mode;
+      zooKeeper = zooKeeper == null
+          ? new SyntheticReadLockStoreZooKeeperConfig(null, "/hms-proxy-synthetic-read-locks", 15_000, 60_000, 1_000, 3)
+          : zooKeeper;
+    }
+
+    public boolean zooKeeperEnabled() {
+      return mode == SyntheticReadLockStoreMode.ZOOKEEPER;
+    }
+  }
+
+  public record SyntheticReadLockStoreZooKeeperConfig(
+      String connectString,
+      String znode,
+      int connectionTimeoutMs,
+      int sessionTimeoutMs,
+      int baseSleepMs,
+      int maxRetries
+  ) {
+    public SyntheticReadLockStoreZooKeeperConfig {
+      znode = (znode == null || znode.isBlank()) ? "/hms-proxy-synthetic-read-locks" : znode;
+      connectionTimeoutMs = connectionTimeoutMs <= 0 ? 15_000 : connectionTimeoutMs;
+      sessionTimeoutMs = sessionTimeoutMs <= 0 ? 60_000 : sessionTimeoutMs;
+      baseSleepMs = baseSleepMs <= 0 ? 1_000 : baseSleepMs;
+      maxRetries = maxRetries <= 0 ? 3 : maxRetries;
+    }
+  }
+
   public enum TransactionalDdlGuardMode {
     DISABLED,
     REJECT,
     REWRITE
+  }
+
+  public enum SyntheticReadLockStoreMode {
+    IN_MEMORY,
+    ZOOKEEPER
   }
 
   public enum CatalogAccessMode {

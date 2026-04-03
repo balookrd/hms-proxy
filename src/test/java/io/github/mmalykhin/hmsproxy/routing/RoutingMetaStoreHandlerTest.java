@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
@@ -667,6 +668,119 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertThrows(
         NoSuchLockException.class,
         () -> handler.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
+  }
+
+  @Test
+  public void syntheticReadLocksCanFailOverAcrossProxyInstancesViaZooKeeperStore() throws Throwable {
+    try (TestingServer zooKeeper = new TestingServer()) {
+      ProxyConfig config = new ProxyConfig(
+          new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+          new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+          "__",
+          "catalog1",
+          Map.of(
+              "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+              "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+          new ProxyConfig.BackendConfig(Map.of()),
+          new ProxyConfig.CompatibilityConfig(false),
+          new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false),
+          new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()),
+          new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083),
+          syntheticReadLockStoreConfig(zooKeeper.getConnectString()));
+
+      AtomicInteger firstProxyBackendCalls = new AtomicInteger();
+      CatalogBackend defaultBackendA = newBackend(
+          config,
+          config.catalogs().get("catalog1"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(
+              config,
+              config.catalogs().get("catalog1"),
+              newSession((proxy, method, args) -> {
+                firstProxyBackendCalls.incrementAndGet();
+                throw new UnsupportedOperationException(method.getName());
+              })));
+      CatalogBackend nonDefaultBackendA = newBackend(
+          config,
+          config.catalogs().get("catalog2"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+
+      AtomicReference<HeartbeatRequest> capturedHeartbeat = new AtomicReference<>();
+      AtomicInteger secondProxyCommitCalls = new AtomicInteger();
+      CatalogBackend defaultBackendB = newBackend(
+          config,
+          config.catalogs().get("catalog1"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(
+              config,
+              config.catalogs().get("catalog1"),
+              newSession((proxy, method, args) -> {
+                if ("heartbeat".equals(method.getName())) {
+                  capturedHeartbeat.set((HeartbeatRequest) args[0]);
+                  return null;
+                }
+                if ("commit_txn".equals(method.getName())) {
+                  secondProxyCommitCalls.incrementAndGet();
+                  return null;
+                }
+                throw new UnsupportedOperationException(method.getName());
+              })));
+      CatalogBackend nonDefaultBackendB = newBackend(
+          config,
+          config.catalogs().get("catalog2"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+
+      LinkedHashMap<String, CatalogBackend> backendsA = new LinkedHashMap<>();
+      backendsA.put("catalog1", defaultBackendA);
+      backendsA.put("catalog2", nonDefaultBackendA);
+      LinkedHashMap<String, CatalogBackend> backendsB = new LinkedHashMap<>();
+      backendsB.put("catalog1", defaultBackendB);
+      backendsB.put("catalog2", nonDefaultBackendB);
+
+      try (CatalogRouter routerA = new CatalogRouter(config, backendsA);
+           CatalogRouter routerB = new CatalogRouter(config, backendsB);
+           RoutingMetaStoreHandler secondProxy = new RoutingMetaStoreHandler(config, routerB, null)) {
+        Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+        LockResponse lock;
+        RoutingMetaStoreHandler firstProxy = new RoutingMetaStoreHandler(config, routerA, null);
+        try {
+          lock = (LockResponse) firstProxy.invoke(
+              null,
+              lockMethod,
+              new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 88L)});
+        } finally {
+          firstProxy.close();
+        }
+
+        Method checkLockMethod = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+        CheckLockRequest checkRequest = new CheckLockRequest(lock.getLockid());
+        checkRequest.setTxnid(88L);
+        LockResponse checked = (LockResponse) secondProxy.invoke(null, checkLockMethod, new Object[] {checkRequest});
+
+        Assert.assertEquals(LockState.ACQUIRED, checked.getState());
+
+        Method heartbeatMethod = ThriftHiveMetastore.Iface.class.getMethod("heartbeat", HeartbeatRequest.class);
+        HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
+        heartbeatRequest.setTxnid(88L);
+        heartbeatRequest.setLockid(lock.getLockid());
+        secondProxy.invoke(null, heartbeatMethod, new Object[] {heartbeatRequest});
+
+        Assert.assertNotNull(capturedHeartbeat.get());
+        Assert.assertEquals(88L, capturedHeartbeat.get().getTxnid());
+        Assert.assertFalse(capturedHeartbeat.get().isSetLockid());
+
+        Method commitMethod = ThriftHiveMetastore.Iface.class.getMethod("commit_txn", CommitTxnRequest.class);
+        secondProxy.invoke(null, commitMethod, new Object[] {new CommitTxnRequest(88L)});
+
+        Assert.assertEquals(1, secondProxyCommitCalls.get());
+        Assert.assertEquals(0, firstProxyBackendCalls.get());
+        Assert.assertThrows(
+            NoSuchLockException.class,
+            () -> secondProxy.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
+      }
+    }
   }
 
   @Test
@@ -1561,6 +1675,18 @@ public class RoutingMetaStoreHandlerTest {
     request.getComponent().get(0).setOperationType(DataOperationType.SELECT);
     request.getComponent().get(0).setIsTransactional(false);
     return request;
+  }
+
+  private static ProxyConfig.SyntheticReadLockStoreConfig syntheticReadLockStoreConfig(String connectString) {
+    return new ProxyConfig.SyntheticReadLockStoreConfig(
+        ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER,
+        new ProxyConfig.SyntheticReadLockStoreZooKeeperConfig(
+            connectString,
+            "/hms-proxy-test-synthetic-read-locks",
+            15_000,
+            60_000,
+            250,
+            3));
   }
 
   private static final class TestBackendAdapter extends AbstractBackendAdapter {
