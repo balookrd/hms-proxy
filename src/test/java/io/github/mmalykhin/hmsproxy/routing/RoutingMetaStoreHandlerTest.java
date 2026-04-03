@@ -27,7 +27,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
+import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TApplicationException;
@@ -108,6 +110,9 @@ public class RoutingMetaStoreHandlerTest {
 
   @Test
   public void serviceReadMethodsUseDefaultBackendCompatibilityPath() {
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("getMetaConf"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
+    Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_metastore_db_uuid"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_open_txns"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_open_txns_info"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("show_locks"));
@@ -135,11 +140,215 @@ public class RoutingMetaStoreHandlerTest {
 
   @Test
   public void removedPrefixBasedMethodsNoLongerUseDefaultBackendPath() {
-    Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_role_names"));
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_token_identifiers"));
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_master_keys"));
     Assert.assertFalse(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("list_roles"));
+  }
+
+  @Test
+  public void getAllFunctionsWithoutCatalogContextUsesDefaultBackend() throws Throwable {
+    GetAllFunctionsResponse backendResponse = new GetAllFunctionsResponse();
+    backendResponse.setFunctions(List.of());
+
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_all_functions".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        return backendResponse;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_functions");
+
+    Object result = handler.invoke(null, method, new Object[0]);
+
+    Assert.assertSame(backendResponse, result);
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void getMetaConfWithoutCatalogContextUsesDefaultBackend() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("getMetaConf".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        Assert.assertEquals("metastore.thrift.uris", args[0]);
+        return "thrift://backend";
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("getMetaConf", String.class);
+
+    Object result = handler.invoke(null, method, new Object[] {"metastore.thrift.uris"});
+
+    Assert.assertEquals("thrift://backend", result);
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void getMetastoreDbUuidWithoutCatalogContextUsesDefaultBackend() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_metastore_db_uuid".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        return "uuid-1";
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_metastore_db_uuid");
+
+    Object result = handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals("uuid-1", result);
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void dropFunctionRoutesByExplicitDbFirstMethodAllowlist() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("drop_function".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        Assert.assertEquals("sales", args[0]);
+        Assert.assertEquals("f_events", args[1]);
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("drop_function", String.class, String.class);
+
+    Object result = handler.invoke(null, method, new Object[] {"catalog2__sales", "f_events"});
+
+    Assert.assertNull(result);
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("setMetaConf", String.class, String.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {"metastore.thrift.uris", "thrift://override"}));
+
+    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+  }
+
+  @Test
+  public void grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "grant_role",
+        String.class,
+        String.class,
+        PrincipalType.class,
+        String.class,
+        PrincipalType.class,
+        boolean.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            method,
+            new Object[] {"admin_role", "alice", PrincipalType.USER, "hive", PrincipalType.USER, false}));
+
+    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+  }
+
+  @Test
+  public void revokeRoleWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "revoke_role",
+        String.class,
+        String.class,
+        PrincipalType.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {"admin_role", "alice", PrincipalType.USER}));
+
+    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+  }
+
+  @Test
+  public void addTokenWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("add_token", String.class, String.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {"token-id", "payload"}));
+
+    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
   }
 
   @Test
