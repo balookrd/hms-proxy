@@ -36,7 +36,7 @@ impersonation of the authenticated Kerberos caller.
 | Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
 | Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
-| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` read locks on non-default catalogs can use the proxy's synthetic read-lock shim, but this is still not a distributed ACID coordinator. |
+| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator. |
 | Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured, including namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token`. |
 | Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog definitions are managed in proxy config, not through client RPCs. |
 | HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
@@ -57,7 +57,7 @@ individual thrift method names.
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Supported when the matching Hortonworks front-door and backend runtime jars are configured. |
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
 | HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
-| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; treat this as a single-catalog control plane unless you validated otherwise. |
+| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT` and `NO_TXN` DDL locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
 | Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
 | Clients attempting global writes without a resolvable catalog or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
 
@@ -67,8 +67,9 @@ individual thrift method names.
 - this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
 - in practice this means ACID write lifecycle is supported only for the default catalog unless the
   request payload itself carries routable namespace information such as `dbName` or `fullTableName`
-- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks for non-default catalogs so
-  HiveServer2 read paths stop depending on backend txn state alignment
+- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks and eligible non-transactional
+  `NO_TXN` DDL locks for non-default catalogs so HiveServer2 read and non-ACID DDL paths stop
+  depending on backend txn state alignment
 - that synthetic lock state is in-memory by default and can be moved to ZooKeeper for multi-instance
   proxy failover, but it still does not make ACID writes or write-id coordination multi-catalog safe
 - Hive ACID, locks, tokens, and other truly global metastore operations still need careful
@@ -189,11 +190,14 @@ Metric semantics:
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
-- `hms_proxy_synthetic_read_lock_events_total` tracks synthetic read-lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
+- `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
 - `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend
 - `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
+
+Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
+non-transactional `NO_TXN` DDL locks on non-default catalogs.
 
 The bundled Grafana dashboard at `monitoring/grafana/hms-proxy-dashboard.json` includes panels for
 synthetic lock activity, handoffs, store failures, and active lock counts, plus a `store_mode`
@@ -584,10 +588,11 @@ delegation-token store config. If `get_delegation_token` fails with
 
 ### ZooKeeper storage for synthetic read locks
 
-The proxy also has a narrow synthetic lock shim for non-ACID HiveServer2 read paths on
-non-default catalogs. It only covers synthetic `SHARED_READ` `SELECT` locks that the
-proxy serves locally when backend txn ids do not line up across catalogs. This does not
-turn the proxy into a distributed ACID coordinator.
+The proxy also has a narrow synthetic lock shim for non-default catalogs. It covers
+non-ACID `SHARED_READ` `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks
+such as `CREATE TABLE` and partition rename/drop flows that Hive still runs through the
+txn/lock APIs. The proxy serves those locks locally when backend txn ids do not line up
+across catalogs. This does not turn the proxy into a distributed ACID coordinator.
 
 By default that synthetic lock state is kept in memory, which is fine for a single proxy
 instance. For HA / load-balanced deployments you can persist it in ZooKeeper so
@@ -726,6 +731,7 @@ For the scenarios in [SMOKE.md](SMOKE.md), the repo now includes a runnable dire
 client:
 
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
+- `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
 
 The current smoke coverage is summarized in the [SMOKE.md](SMOKE.md) test matrix by:
@@ -770,6 +776,44 @@ That mode performs:
 - `get_valid_write_ids`
 - `commit_txn`
 
+The `lock` mode is for direct lock lifecycle smoke, especially the synthetic shim on
+non-default catalogs. It opens one txn, acquires the requested lock, runs `check_lock`,
+optionally sends `heartbeat`, optionally calls `unlock`, and then aborts or commits the txn.
+
+Example `CREATE TABLE`-style DB lock on a non-default catalog:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --lock-type SHARED_READ \
+  --lock-level DB \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
+Example partition rename/drop style lock on a non-default catalog:
+
+```bash
+java \
+  --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+  -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --table smoke_managed_tbl \
+  --partition p=2026-04-01 \
+  --lock-type EXCLUSIVE \
+  --lock-level PARTITION \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
 The `notification` mode is for Hortonworks-only `add_write_notification_log`, so it also needs
 the HDP standalone metastore jar:
 
@@ -798,5 +842,7 @@ Useful notes:
 - `--server-principal` must be the proxy front-door principal, not the backend HMS principal
 - `--client-principal` and `--keytab` are the Kerberos credentials used by this smoke client
 - extra HiveConf overrides can be passed via repeated `--conf key=value`
+- `lock` is the quickest way to reproduce non-default catalog `NO_TXN` shim cases such as
+  `CREATE TABLE` and partition rename/drop without going through Beeline
 - `notification` should succeed for a Hortonworks-routed catalog and fail with
   `requires a Hortonworks backend runtime` for an Apache-routed catalog

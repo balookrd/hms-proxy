@@ -25,6 +25,8 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Hortonworks-routed traffic. |
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Apache-routed traffic. |
 | Direct HMS smoke CLI `txn` | any | mixed backends | `KERBEROS` | same txn family plus authenticated front door | Should pass when Kerberos login and, if enabled, backend impersonation are configured correctly. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `SHARED_READ` + `DB` + `NO_TXN` | Should pass; confirms the synthetic shim for `CREATE TABLE`-style non-transactional DDL locks. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail with an explicit `requires a Hortonworks backend runtime` style error. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
@@ -196,7 +198,9 @@ drop table smoke_txn_tbl;
 ```
 
 Expected:
-- managed DDL/DML works for the routed backend, including insert + select + partition rename
+- managed DDL/DML works for the routed backend, including create table, insert + select, and partition rename
+- on a non-default catalog, `CREATE TABLE` and partition rename exercise the synthetic `NO_TXN`
+  lock shim, so failures there should be investigated as lock-routing issues rather than SQL parsing
 - `external` tables keep an explicit custom `LOCATION`
 - `external` and `transactional='true'` variants also allow insert + select where supported
 - `transactional='true'` tables are accepted only where the backend supports ACID table creation
@@ -258,7 +262,50 @@ Expected:
   and stay queryable through the proxy
 - if the backend does not support materialized views, the failure is explicit rather than silent
 
-**9. Notification/ACID path**
+**9. Direct Synthetic Lock Smoke**
+
+These checks complement the Beeline DDL steps above and reproduce the problematic cross-catalog
+lock lifecycle directly through HMS thrift. Run them against a catalog that is non-default from the
+proxy point of view. In the examples below, assume `apache` is not `routing.default-catalog`.
+
+Practical runner:
+- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
+- see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
+
+Create-table style DB lock:
+
+```bash
+java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --lock-type SHARED_READ \
+  --lock-level DB \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
+Partition rename/drop style lock:
+
+```bash
+java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --table smoke_managed_tbl \
+  --partition p=2026-04-01 \
+  --lock-type EXCLUSIVE \
+  --lock-level PARTITION \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
+Expected:
+- the client prints `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, and `abort_txn`
+- the lock is returned as `ACQUIRED` or at worst `WAITING`, but not with `NoSuchTxnException`
+- the second command should be run after the managed-table DDL block created and renamed the partition
+
+**10. Notification/ACID path**
 
 These checks are best done not only through Beeline, but also through a direct HMS thrift client,
 because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
@@ -290,7 +337,7 @@ Expected:
 - `add_write_notification_log` works only for the Hortonworks backend catalog
 - proxy logs contain `trace stage=backend-request` / `backend-response` for `add_write_notification_log`
 
-**10. Negative check: Hortonworks front -> Apache backend notification path**
+**11. Negative check: Hortonworks front -> Apache backend notification path**
 
 Send `add_write_notification_log` through an HMS thrift client to a database/table that routes to
 the Apache backend.
@@ -300,7 +347,7 @@ Expected:
 - there is no silent success
 - no side notification traffic appears on the Apache backend
 
-**11. Mixed Runtime Switching Check**
+**12. Mixed Runtime Switching Check**
 
 In a single client session, run in sequence:
 - read/DDL on `hdp__default`
@@ -312,7 +359,7 @@ Expected:
 - one catalog runtime does not “stick” to another
 - namespace rewrite remains correct after notification/ACID calls
 
-**12. What To Watch In Proxy Logs**
+**13. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `Routing config: defaultCatalog=...`

@@ -905,7 +905,7 @@ public class RoutingMetaStoreHandlerTest {
 
   @Test
   public void syntheticReadLocksCanFailOverAcrossProxyInstancesViaZooKeeperStore() throws Throwable {
-    try (TestingServer zooKeeper = new TestingServer()) {
+    try (TestingServer zooKeeper = startTestingServerOrSkip()) {
       ProxyConfig config = new ProxyConfig(
           new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
           new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
@@ -1971,6 +1971,39 @@ public class RoutingMetaStoreHandlerTest {
             60_000,
             250,
             3));
+  }
+
+  private static TestingServer startTestingServerOrSkip() throws Exception {
+    try {
+      return new TestingServer();
+    } catch (Throwable t) {
+      if (isLocalPortBindRestriction(t)) {
+        Assume.assumeTrue(
+            "Skipping ZooKeeper integration test because embedded TestingServer cannot bind a local port in this environment",
+            false);
+      }
+      if (t instanceof Exception exception) {
+        throw exception;
+      }
+      throw (Error) t;
+    }
+  }
+
+  private static boolean isLocalPortBindRestriction(Throwable error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof SocketException socketException) {
+        String message = socketException.getMessage();
+        if (message != null && (
+            message.contains("Operation not permitted")
+                || message.contains("Permission denied")
+                || message.contains("Can't assign requested address"))) {
+          return true;
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static final class TestBackendAdapter extends AbstractBackendAdapter {

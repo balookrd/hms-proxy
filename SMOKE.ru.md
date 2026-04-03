@@ -25,6 +25,8 @@ degraded-режиме или падать явно, ещё до детальны
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Должно проходить; это проверка default-catalog txn path для Hortonworks-routed трафика. |
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Должно проходить; это проверка default-catalog txn path для Apache-routed трафика. |
 | Direct HMS smoke CLI `txn` | любой | смешанные backend | `KERBEROS` | то же txn family + аутентифицированный фронт | Должно проходить, если корректно настроены Kerberos login и, при необходимости, backend impersonation. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `SHARED_READ` + `DB` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле `CREATE TABLE`. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле partition rename/drop. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно проходить только если и front door, и routed backend имеют совместимый Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать с явной ошибкой уровня `requires a Hortonworks backend runtime`. |
 | Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
@@ -202,7 +204,9 @@ drop table smoke_txn_tbl;
 ```
 
 Ожидание:
-- managed DDL/DML проходит в нужный routed backend, включая insert + select + rename partition
+- managed DDL/DML проходит в нужный routed backend, включая create table, insert + select и rename partition
+- на non-default catalog `CREATE TABLE` и rename partition проходят через synthetic `NO_TXN`
+  lock shim, поэтому их падение стоит трактовать как проблему lock routing, а не SQL parser
 - у `external` таблиц сохраняется явно заданный `LOCATION`
 - для `external` и `transactional='true'` тоже есть явная проверка insert + select там, где backend это поддерживает
 - таблицы с `transactional='true'` создаются только там, где backend поддерживает ACID
@@ -266,7 +270,50 @@ drop materialized view if exists smoke_mv_local;
   и продолжают работать через proxy
 - если backend не поддерживает materialized views, ошибка явная, без silent success
 
-**9. Notification / ACID path**
+**9. Direct Synthetic Lock Smoke**
+
+Эти проверки дополняют Beeline DDL шаги выше и напрямую воспроизводят проблемный
+cross-catalog lock lifecycle через HMS thrift. Запускать их нужно на каталоге, который для
+proxy является non-default. Ниже для примера считается, что `apache` не равен `routing.default-catalog`.
+
+Практически:
+- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
+- примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.ru.md](README.ru.md)
+
+DB lock в стиле `CREATE TABLE`:
+
+```bash
+java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --lock-type SHARED_READ \
+  --lock-level DB \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
+Partition lock в стиле rename/drop:
+
+```bash
+java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
+  io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock \
+  --uri thrift://proxy-host:9083 \
+  --db apache__default \
+  --table smoke_managed_tbl \
+  --partition p=2026-04-01 \
+  --lock-type EXCLUSIVE \
+  --lock-level PARTITION \
+  --operation-type NO_TXN \
+  --transactional false
+```
+
+Ожидание:
+- клиент печатает `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock` и `abort_txn`
+- lock возвращается как `ACQUIRED` или в худшем случае `WAITING`, но не падает с `NoSuchTxnException`
+- второй запуск имеет смысл делать после managed-table сценария выше, где уже созданы таблица и partition
+
+**10. Notification / ACID path**
 
 Эти проверки лучше делать не только через Beeline, но и прямым HMS thrift client, потому что
 `add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
@@ -300,7 +347,7 @@ drop materialized view if exists smoke_mv_local;
 - в логах proxy видны `trace stage=backend-request` / `backend-response` для
   `add_write_notification_log`
 
-**10. Negative check: Hortonworks front -> Apache backend notification path**
+**11. Negative check: Hortonworks front -> Apache backend notification path**
 
 Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
 маршрутизируется в Apache backend.
@@ -310,7 +357,7 @@ drop materialized view if exists smoke_mv_local;
 - нет silent success
 - в Apache backend не появляется побочный notification traffic
 
-**11. Проверка после mixed runtime переключений**
+**12. Проверка после mixed runtime переключений**
 
 В одной клиентской сессии последовательно выполнить:
 - read/DDL на `hdp__default`
@@ -322,7 +369,7 @@ drop materialized view if exists smoke_mv_local;
 - runtime одного каталога не “залипает” на другой
 - namespace rewrite остаётся корректным после notification/ACID вызова
 
-**11. Что смотреть в логах proxy**
+**13. Что смотреть в логах proxy**
 
 Ищи:
 - `Starting HMS proxy`
