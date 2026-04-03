@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.frontend;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -57,6 +58,32 @@ public class HortonworksFrontendBridgeTest {
     Object table = response.getClass().getMethod("getTable").invoke(response);
     Assert.assertEquals("sales", table.getClass().getMethod("getDbName").invoke(table));
     Assert.assertEquals("events", table.getClass().getMethod("getTableName").invoke(table));
+  }
+
+  @Test
+  public void bridgeConvertsApacheThriftExceptionsToHdpTypes() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException("missing table");
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
+
+    InvocationTargetException error = Assert.assertThrows(
+        InvocationTargetException.class,
+        () -> method.invoke(bridge.handlerProxy(), request));
+
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.NoSuchObjectException", error.getCause().getClass().getName());
+    Assert.assertEquals("missing table", error.getCause().getMessage());
+    Assert.assertSame(bridge.classLoader(), error.getCause().getClass().getClassLoader());
   }
 
   @Test
