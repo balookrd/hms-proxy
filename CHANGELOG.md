@@ -11,6 +11,8 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 ### Added
 
 - Added a synthetic proxy read-lock shim for non-ACID `SELECT` flows on non-default catalogs.
+- Added direct smoke coverage for synthetic non-transactional `NO_TXN` lock flows, including
+  `CREATE TABLE`-style DB locks and partition rename/drop style locks on non-default catalogs.
 - Added ZooKeeper-backed persistence for synthetic read-lock state so transactions can continue
   through another proxy instance after failover.
 - Added synthetic lock observability: Prometheus metrics, active-lock gauges, handoff counters,
@@ -24,13 +26,18 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 ### Fixed
 
 - Fixed namespace-less HMS routing policy and documented its current behavior.
+- Fixed synthetic lock handling for non-transactional `NO_TXN` DDL locks on non-default catalogs,
+  including `CREATE TABLE` and partition rename flows routed through Hive txn/lock APIs.
 - Ensured front-door security starts before backend runtimes.
 - Avoided UGI fallback before the front-door keytab login is established.
 - Configured ZooKeeper SASL JAAS before token manager startup.
+- Fixed the ZooKeeper integration test so environments that cannot bind local ports now skip the
+  embedded `TestingServer` case instead of failing the whole suite.
 
 ### Docs
 
-- Documented ZooKeeper token-store credentials, overrides, and namespace-less routing behavior.
+- Documented ZooKeeper token-store credentials, overrides, namespace-less routing behavior, and the
+  expanded synthetic `NO_TXN` lock smoke scenarios.
 
 ## 2026-04-02
 
