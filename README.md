@@ -85,6 +85,11 @@ mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 
 Build version is computed from git for every commit in the form `0.1.<git-distance>-<short-sha>`.
 
+GitHub Actions publishes prerelease builds automatically:
+- every push to `main` creates a `build-<project.version>` tag and attaches the built jars to a prerelease
+- a nightly run is scheduled for `00:00 UTC` every day and publishes a `nightly-YYYYMMDD` prerelease from the current `main` head
+- each prerelease also gets auto-generated GitHub release notes for that tag
+
 ## Run
 
 ```bash
