@@ -70,6 +70,36 @@ public class FederationLayerTest {
     Assert.assertEquals("select * from catalog2__sales.orders", routed.getViewExpandedText());
   }
 
+  @Test
+  public void exposurePolicyMatchesDatabaseAndTableRegexCaseInsensitively() throws Exception {
+    FederationLayer layer = federationLayer(exposureConfig(
+        ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+        java.util.List.of("sales", "finance"),
+        Map.of("sales", java.util.List.of("orders_.*"))));
+    CatalogRouter.ResolvedNamespace salesNamespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog1", "sales", "sales");
+
+    Assert.assertTrue(layer.isDatabaseExposed("catalog1", "Finance"));
+    Assert.assertFalse(layer.isDatabaseExposed("catalog1", "hidden"));
+    Assert.assertTrue(layer.isTableExposed(salesNamespace, "Orders_2024"));
+    Assert.assertFalse(layer.isTableExposed(salesNamespace, "secret"));
+  }
+
+  @Test
+  public void tableRulesCanExposeDatabaseWhenDenyByDefaultIsEnabled() throws Exception {
+    FederationLayer layer = federationLayer(exposureConfig(
+        ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+        java.util.List.of(),
+        Map.of("sales", java.util.List.of("orders"))));
+    CatalogRouter.ResolvedNamespace salesNamespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog1", "sales", "sales");
+
+    Assert.assertTrue(layer.isDatabaseExposed("catalog1", "sales"));
+    Assert.assertFalse(layer.isDatabaseExposed("catalog1", "finance"));
+    Assert.assertTrue(layer.isTableExposed(salesNamespace, "orders"));
+    Assert.assertFalse(layer.isTableExposed(salesNamespace, "events"));
+  }
+
   @SuppressWarnings("unchecked")
   private static FederationLayer federationLayer(ProxyConfig config) throws Exception {
     Constructor<CatalogRouter> constructor =
@@ -124,6 +154,50 @@ public class FederationLayerTest {
             false,
             ProxyConfig.ViewTextRewriteMode.REWRITE,
             preserveOriginalViewText),
+        new ProxyConfig.TransactionalDdlGuardConfig(
+            ProxyConfig.TransactionalDdlGuardMode.DISABLED,
+            java.util.List.of()),
+        new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083));
+  }
+
+  private static ProxyConfig exposureConfig(
+      ProxyConfig.CatalogExposureMode exposeMode,
+      java.util.List<String> exposeDbPatterns,
+      Map<String, java.util.List<String>> exposeTablePatterns
+  ) {
+    return new ProxyConfig(
+        new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64),
+        new ProxyConfig.SecurityConfig(
+            ProxyConfig.SecurityMode.NONE,
+            null,
+            null,
+            null,
+            null,
+            false,
+            Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            new ProxyConfig.CatalogConfig(
+                "catalog1",
+                "catalog1",
+                "file:///warehouse/catalog1",
+                false,
+                ProxyConfig.CatalogAccessMode.READ_WRITE,
+                java.util.List.of(),
+                exposeMode,
+                exposeDbPatterns,
+                exposeTablePatterns,
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://hms1:9083"))),
+        new ProxyConfig.BackendConfig(Map.of()),
+        new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false),
+        new ProxyConfig.FederationConfig(
+            false,
+            ProxyConfig.ViewTextRewriteMode.DISABLED,
+            false),
         new ProxyConfig.TransactionalDdlGuardConfig(
             ProxyConfig.TransactionalDdlGuardMode.DISABLED,
             java.util.List.of()),

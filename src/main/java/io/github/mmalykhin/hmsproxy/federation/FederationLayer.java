@@ -14,11 +14,13 @@ public final class FederationLayer {
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final ViewDefinitionCompatibility viewDefinitionCompatibility;
+  private final ExposurePolicy exposurePolicy;
 
   public FederationLayer(ProxyConfig config, CatalogRouter router) {
     this.config = config;
     this.router = router;
     this.viewDefinitionCompatibility = new ViewDefinitionCompatibility(config, router);
+    this.exposurePolicy = new ExposurePolicy(config);
   }
 
   public boolean preserveBackendCatalogName() {
@@ -43,6 +45,22 @@ public final class FederationLayer {
 
   public Optional<CatalogRouter.ResolvedNamespace> resolvePattern(String dbPattern) {
     return router.resolvePattern(dbPattern);
+  }
+
+  public boolean isDatabaseExposed(CatalogRouter.ResolvedNamespace namespace) {
+    return isDatabaseExposed(namespace.catalogName(), namespace.backendDbName());
+  }
+
+  public boolean isDatabaseExposed(String catalogName, String backendDbName) {
+    return exposurePolicy.isDatabaseExposed(catalogName, backendDbName);
+  }
+
+  public boolean isTableExposed(CatalogRouter.ResolvedNamespace namespace, String tableName) {
+    return exposurePolicy.isTableExposed(namespace.catalogName(), namespace.backendDbName(), tableName);
+  }
+
+  public boolean isTableExposed(String catalogName, String backendDbName, String tableName) {
+    return exposurePolicy.isTableExposed(catalogName, backendDbName, tableName);
   }
 
   public Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
