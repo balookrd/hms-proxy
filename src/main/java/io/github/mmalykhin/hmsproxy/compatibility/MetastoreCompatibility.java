@@ -4,10 +4,13 @@ import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -35,6 +38,44 @@ public final class MetastoreCompatibility {
       Pattern.compile("(hive|hdfs|mapred|metastore).*");
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
+  private static final Map<String, CompatibleConfigKey> CONFIG_KEY_EXACT_INDEX;
+  private static final Map<String, List<CompatibleConfigKey>> CONFIG_KEY_SUFFIX_INDEX;
+
+  static {
+    Map<String, CompatibleConfigKey> exact = new HashMap<>();
+    Map<String, List<CompatibleConfigKey>> suffix = new HashMap<>();
+    for (MetastoreConf.ConfVars confVar : MetastoreConf.ConfVars.values()) {
+      CompatibleConfigKey key = new CompatibleConfigKey(
+          confVar.getVarname(),
+          confVar.getHiveName(),
+          defaultValueAsString(confVar.getDefaultVal()));
+      exact.put(key.metastoreName(), key);
+      exact.put(key.hiveName(), key);
+      // Index every trailing suffix of both names, but count each ConfVar at most once
+      // per suffix to preserve the "unique match" semantics of the original scan.
+      Set<String> seenSuffixes = new HashSet<>();
+      indexAllSuffixes(suffix, key.metastoreName(), key, seenSuffixes);
+      indexAllSuffixes(suffix, key.hiveName(), key, seenSuffixes);
+    }
+    CONFIG_KEY_EXACT_INDEX = Map.copyOf(exact);
+    CONFIG_KEY_SUFFIX_INDEX = Map.copyOf(suffix);
+  }
+
+  private static void indexAllSuffixes(
+      Map<String, List<CompatibleConfigKey>> index,
+      String name,
+      CompatibleConfigKey key,
+      Set<String> seenSuffixes
+  ) {
+    int dot = name.indexOf('.');
+    while (dot >= 0 && dot + 1 < name.length()) {
+      String sfx = name.substring(dot + 1);
+      if (seenSuffixes.add(sfx)) {
+        index.computeIfAbsent(sfx, ignored -> new ArrayList<>()).add(key);
+      }
+      dot = name.indexOf('.', dot + 1);
+    }
+  }
 
   private MetastoreCompatibility() {
   }
@@ -175,22 +216,15 @@ public final class MetastoreCompatibility {
   }
 
   private static Optional<CompatibleConfigKey> resolveCompatibleConfigKey(String requestedName) {
-    List<CompatibleConfigKey> suffixMatches = new ArrayList<>();
-    for (MetastoreConf.ConfVars confVar : MetastoreConf.ConfVars.values()) {
-      CompatibleConfigKey candidate = new CompatibleConfigKey(
-          confVar.getVarname(),
-          confVar.getHiveName(),
-          defaultValueAsString(confVar.getDefaultVal()));
-      if (requestedName.equals(candidate.metastoreName()) || requestedName.equals(candidate.hiveName())) {
-        return Optional.of(candidate);
-      }
-      if (candidate.metastoreName().endsWith("." + requestedName)
-          || candidate.hiveName().endsWith("." + requestedName)) {
-        suffixMatches.add(candidate);
-      }
+    CompatibleConfigKey exact = CONFIG_KEY_EXACT_INDEX.get(requestedName);
+    if (exact != null) {
+      return Optional.of(exact);
     }
-
-    return suffixMatches.size() == 1 ? Optional.of(suffixMatches.get(0)) : Optional.empty();
+    List<CompatibleConfigKey> suffixMatches = CONFIG_KEY_SUFFIX_INDEX.get(requestedName);
+    if (suffixMatches != null && suffixMatches.size() == 1) {
+      return Optional.of(suffixMatches.get(0));
+    }
+    return Optional.empty();
   }
 
   private static String defaultValueAsString(Object defaultValue) {

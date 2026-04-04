@@ -73,7 +73,8 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
         .forPath(locksRootPath + "/lock-", serialize(provisional));
     long lockId = SyntheticReadLockManager.lockIdForSequence(parseSequence(createdPath));
     SyntheticReadLockManager.SyntheticLockState state = provisional.withLockId(lockId);
-    client.setData().forPath(createdPath, serialize(state));
+    // version(0): the node was just created, so its ZK version is guaranteed to be 0.
+    client.setData().withVersion(0).forPath(createdPath, serialize(state));
     return state;
   }
 
@@ -81,7 +82,13 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   public SyntheticReadLockManager.SyntheticLockState get(long lockId) throws Exception {
     String path = lockPath(lockId);
     try {
-      return deserialize(client.getData().forPath(path));
+      SyntheticReadLockManager.SyntheticLockState state = deserialize(client.getData().forPath(path));
+      // Guard against provisional nodes left by a proxy that crashed between create() and setData().
+      // Such nodes contain lockId=0 and must be treated as non-existent.
+      if (state.lockId() != lockId) {
+        return null;
+      }
+      return state;
     } catch (KeeperException.NoNodeException ignored) {
       return null;
     }
@@ -90,7 +97,8 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   @Override
   public void touch(long lockId, long nowMs) throws Exception {
     String path = lockPath(lockId);
-    for (int attempt = 0; attempt < 4; attempt++) {
+    int maxAttempts = 8;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
       Stat stat = new Stat();
       byte[] data;
       try {
@@ -107,6 +115,8 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
         // Another proxy already refreshed the same synthetic lock; retry with the new version.
       }
     }
+    LOG.warn("Synthetic read lock {} heartbeat was not persisted after {} attempts due to concurrent updates",
+        lockId, maxAttempts);
   }
 
   @Override
