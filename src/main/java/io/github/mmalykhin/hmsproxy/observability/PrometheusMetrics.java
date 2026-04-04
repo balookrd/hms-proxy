@@ -34,7 +34,7 @@ public final class PrometheusMetrics {
       List.of("method", "from_api", "to_api"));
   private final Counter routingAmbiguousTotal = new Counter(
       "hms_proxy_routing_ambiguous_total",
-      "Requests rejected because routing resolved multiple conflicting namespaces",
+      "Requests safely failed because deterministic routing detected conflicting namespaces",
       List.of());
   private final Counter defaultCatalogRoutedTotal = new Counter(
       "hms_proxy_default_catalog_routed_total",

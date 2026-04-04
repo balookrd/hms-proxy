@@ -18,9 +18,13 @@ final class CapabilityMatrixData {
   static final Path MATRIX_PATH = Path.of("capabilities.yaml");
   static final Path README_PATH = Path.of("README.md");
   static final Path README_RU_PATH = Path.of("README.ru.md");
+  static final Path COMPATIBILITY_DOC_PATH = Path.of("COMPATIBILITY.md");
+  static final Path COMPATIBILITY_DOC_RU_PATH = Path.of("COMPATIBILITY.ru.md");
   static final String BEGIN_MARKER = "<!-- BEGIN GENERATED: capability-matrix -->";
   static final String END_MARKER = "<!-- END GENERATED: capability-matrix -->";
-  private static final Set<String> ALLOWED_STATUS_VALUES = Set.of("supported", "degraded", "rejected", "passthrough");
+  static final String METHOD_BEGIN_MARKER = "<!-- BEGIN GENERATED: method-compatibility-matrix -->";
+  static final String METHOD_END_MARKER = "<!-- END GENERATED: method-compatibility-matrix -->";
+  private static final Set<String> ALLOWED_STATUS_VALUES = Set.of("supported", "degraded", "rejected", "passthrough", "unsafe");
 
   private CapabilityMatrixData() {
   }
@@ -42,7 +46,12 @@ final class CapabilityMatrixData {
       for (Map<String, Object> capabilityMap : capabilityMaps) {
         capabilities.add(parseCapability(capabilityMap));
       }
-      return new CapabilityMatrix(schemaVersion, List.copyOf(capabilities));
+      List<Map<String, Object>> methodMatrixMaps = listOfMapsOptional(root, "method_matrix");
+      List<MethodMatrixRow> methodMatrixRows = new ArrayList<>();
+      for (Map<String, Object> methodMatrixMap : methodMatrixMaps) {
+        methodMatrixRows.add(parseMethodMatrixRow(methodMatrixMap));
+      }
+      return new CapabilityMatrix(schemaVersion, List.copyOf(capabilities), List.copyOf(methodMatrixRows));
     }
   }
 
@@ -80,19 +89,60 @@ final class CapabilityMatrixData {
     return builder.toString().trim();
   }
 
-  static String syncReadme(String readmeContent, CapabilityMatrix matrix, Language language) {
-    String generatedBlock = BEGIN_MARKER + "\n"
-        + renderMarkdownTable(matrix, language) + "\n"
-        + END_MARKER;
-    int begin = readmeContent.indexOf(BEGIN_MARKER);
-    int end = readmeContent.indexOf(END_MARKER);
-    if (begin < 0 || end < 0 || end < begin) {
-      throw new IllegalArgumentException("Missing capability matrix markers in README content");
+  static String renderMethodCompatibilityMarkdownTable(CapabilityMatrix matrix, Language language) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("| ")
+        .append(language == Language.EN ? "Method(s)" : "Метод(ы)")
+        .append(" | ")
+        .append(language == Language.EN ? "Apache backend" : "Apache backend")
+        .append(" | ")
+        .append(language == Language.EN ? "HDP backend" : "HDP backend")
+        .append(" | ")
+        .append(language == Language.EN ? "Frontend profile support" : "Поддержка front-door profile")
+        .append(" | ")
+        .append(language == Language.EN ? "Routing mode" : "Режим маршрутизации")
+        .append(" | ")
+        .append(language == Language.EN ? "Fallback strategy" : "Стратегия fallback")
+        .append(" | ")
+        .append(language == Language.EN ? "Semantic risk flag" : "Флаг semantic-risk")
+        .append(" |\n");
+    builder.append("| --- | --- | --- | --- | --- | --- | --- |\n");
+    for (MethodMatrixRow row : matrix.methodMatrixRows()) {
+      builder.append("| ")
+          .append(escapeCell(row.method().value(language)))
+          .append(" | ")
+          .append(escapeCell(formatSupportCell(row.apacheBackend(), language)))
+          .append(" | ")
+          .append(escapeCell(formatSupportCell(row.hdpBackend(), language)))
+          .append(" | ")
+          .append(escapeCell(row.frontDoorSupport().value(language)))
+          .append(" | ")
+          .append(escapeCell(row.routingMode().value(language)))
+          .append(" | ")
+          .append(escapeCell(row.fallbackStrategy().value(language)))
+          .append(" | ")
+          .append(escapeCell(row.semanticRisk().value(language)))
+          .append(" |\n");
     }
-    int endInclusive = end + END_MARKER.length();
-    return readmeContent.substring(0, begin)
-        + generatedBlock
-        + readmeContent.substring(endInclusive);
+    return builder.toString().trim();
+  }
+
+  static String syncReadme(String readmeContent, CapabilityMatrix matrix, Language language) {
+    return syncBlock(
+        readmeContent,
+        BEGIN_MARKER,
+        END_MARKER,
+        renderMarkdownTable(matrix, language),
+        "README content");
+  }
+
+  static String syncMethodCompatibilityDoc(String docContent, CapabilityMatrix matrix, Language language) {
+    return syncBlock(
+        docContent,
+        METHOD_BEGIN_MARKER,
+        METHOD_END_MARKER,
+        renderMethodCompatibilityMarkdownTable(matrix, language),
+        "method compatibility doc content");
   }
 
   private static Capability parseCapability(Map<String, Object> map) {
@@ -113,9 +163,46 @@ final class CapabilityMatrixData {
         stringList(map, "smoke_tests"));
   }
 
+  private static MethodMatrixRow parseMethodMatrixRow(Map<String, Object> map) {
+    String id = stringValue(map, "id");
+    return new MethodMatrixRow(
+        id,
+        parseLocalizedText(map, "method"),
+        parseSupportCell(map, "apache_backend"),
+        parseSupportCell(map, "hdp_backend"),
+        parseLocalizedText(map, "front_door_support"),
+        parseLocalizedText(map, "routing_mode"),
+        parseLocalizedText(map, "fallback_strategy"),
+        parseLocalizedText(map, "semantic_risk"),
+        stringList(map, "smoke_tests"));
+  }
+
   @SuppressWarnings("unchecked")
   private static List<Map<String, Object>> listOfMaps(Map<?, ?> map, String key) {
     Object value = map.get(key);
+    if (!(value instanceof List<?> rawList)) {
+      throw new IllegalArgumentException("Expected list at key '" + key + "'");
+    }
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (Object entry : rawList) {
+      if (!(entry instanceof Map<?, ?> rawMap)) {
+        throw new IllegalArgumentException("Expected mapping entries under '" + key + "'");
+      }
+      Map<String, Object> converted = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> item : rawMap.entrySet()) {
+        converted.put(String.valueOf(item.getKey()), item.getValue());
+      }
+      result.add(converted);
+    }
+    return result;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<Map<String, Object>> listOfMapsOptional(Map<?, ?> map, String key) {
+    Object value = map.get(key);
+    if (value == null) {
+      return List.of();
+    }
     if (!(value instanceof List<?> rawList)) {
       throw new IllegalArgumentException("Expected list at key '" + key + "'");
     }
@@ -141,6 +228,17 @@ final class CapabilityMatrixData {
   private static LocalizedText parseLocalizedText(Map<String, Object> map, String key) {
     Map<String, Object> section = section(map, key);
     return new LocalizedText(stringValue(section, "en"), stringValue(section, "ru"));
+  }
+
+  private static SupportCell parseSupportCell(Map<String, Object> map, String key) {
+    Map<String, Object> section = section(map, key);
+    String status = stringValue(section, "status");
+    if (!ALLOWED_STATUS_VALUES.contains(status)) {
+      throw new IllegalArgumentException("Unsupported support status '" + status + "' in section '" + key + "'");
+    }
+    return new SupportCell(
+        status,
+        new LocalizedText(stringValue(section, "en"), stringValue(section, "ru")));
   }
 
   private static LocalizedList parseLocalizedList(Map<String, Object> map, String key) {
@@ -197,9 +295,35 @@ final class CapabilityMatrixData {
     return value.replace("|", "\\|").replace("\n", "<br>");
   }
 
-  record CapabilityMatrix(int schemaVersion, List<Capability> capabilities) {
+  private static String formatSupportCell(SupportCell supportCell, Language language) {
+    return "`" + supportCell.status() + "`: " + supportCell.detail().value(language);
+  }
+
+  private static String syncBlock(
+      String content,
+      String beginMarker,
+      String endMarker,
+      String renderedTable,
+      String contentDescription
+  ) {
+    String generatedBlock = beginMarker + "\n"
+        + renderedTable + "\n"
+        + endMarker;
+    int begin = content.indexOf(beginMarker);
+    int end = content.indexOf(endMarker);
+    if (begin < 0 || end < 0 || end < begin) {
+      throw new IllegalArgumentException("Missing generated block markers in " + contentDescription);
+    }
+    int endInclusive = end + endMarker.length();
+    return content.substring(0, begin)
+        + generatedBlock
+        + content.substring(endInclusive);
+  }
+
+  record CapabilityMatrix(int schemaVersion, List<Capability> capabilities, List<MethodMatrixRow> methodMatrixRows) {
     CapabilityMatrix {
       capabilities = List.copyOf(capabilities);
+      methodMatrixRows = List.copyOf(methodMatrixRows);
     }
   }
 
@@ -216,6 +340,31 @@ final class CapabilityMatrixData {
   ) {
     Capability {
       smokeTests = List.copyOf(smokeTests);
+    }
+  }
+
+  record MethodMatrixRow(
+      String id,
+      LocalizedText method,
+      SupportCell apacheBackend,
+      SupportCell hdpBackend,
+      LocalizedText frontDoorSupport,
+      LocalizedText routingMode,
+      LocalizedText fallbackStrategy,
+      LocalizedText semanticRisk,
+      List<String> smokeTests
+  ) {
+    MethodMatrixRow {
+      smokeTests = List.copyOf(smokeTests);
+    }
+  }
+
+  record SupportCell(String status, LocalizedText detail) {
+    SupportCell {
+      if (status == null || status.isBlank()) {
+        throw new IllegalArgumentException("Expected non-blank support status");
+      }
+      detail = Objects.requireNonNull(detail, "detail");
     }
   }
 
