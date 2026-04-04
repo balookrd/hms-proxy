@@ -5,10 +5,12 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -49,18 +51,29 @@ public final class MetastoreCompatibility {
           defaultValueAsString(confVar.getDefaultVal()));
       exact.put(key.metastoreName(), key);
       exact.put(key.hiveName(), key);
-      indexSuffix(suffix, key.metastoreName(), key);
-      indexSuffix(suffix, key.hiveName(), key);
+      // Index every trailing suffix of both names, but count each ConfVar at most once
+      // per suffix to preserve the "unique match" semantics of the original scan.
+      Set<String> seenSuffixes = new HashSet<>();
+      indexAllSuffixes(suffix, key.metastoreName(), key, seenSuffixes);
+      indexAllSuffixes(suffix, key.hiveName(), key, seenSuffixes);
     }
     CONFIG_KEY_EXACT_INDEX = Map.copyOf(exact);
     CONFIG_KEY_SUFFIX_INDEX = Map.copyOf(suffix);
   }
 
-  private static void indexSuffix(Map<String, List<CompatibleConfigKey>> index, String name, CompatibleConfigKey key) {
-    int dot = name.lastIndexOf('.');
-    if (dot >= 0 && dot + 1 < name.length()) {
-      String shortName = name.substring(dot + 1);
-      index.computeIfAbsent(shortName, ignored -> new ArrayList<>()).add(key);
+  private static void indexAllSuffixes(
+      Map<String, List<CompatibleConfigKey>> index,
+      String name,
+      CompatibleConfigKey key,
+      Set<String> seenSuffixes
+  ) {
+    int dot = name.indexOf('.');
+    while (dot >= 0 && dot + 1 < name.length()) {
+      String sfx = name.substring(dot + 1);
+      if (seenSuffixes.add(sfx)) {
+        index.computeIfAbsent(sfx, ignored -> new ArrayList<>()).add(key);
+      }
+      dot = name.indexOf('.', dot + 1);
     }
   }
 
@@ -87,14 +100,9 @@ public final class MetastoreCompatibility {
     if (!hasFallback(methodName)) {
       return false;
     }
-    if (cause instanceof TApplicationException || cause instanceof TTransportException) {
-      return true;
-    }
-    if (cause instanceof MetaException) {
-      Throwable root = cause.getCause();
-      return root instanceof TApplicationException || root instanceof TTransportException;
-    }
-    return false;
+    return cause instanceof TApplicationException
+        || cause instanceof TTransportException
+        || cause instanceof MetaException;
   }
 
   public static Optional<Object> fallback(String methodName, Throwable cause) {
