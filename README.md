@@ -305,6 +305,8 @@ catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
 Rules:
 
 - regexes are matched case-insensitively
+- matching is done against backend names, not externalized proxy names
+- matching uses the whole string; `sales` matches only `sales`, while `sales_.*` matches `sales_eu`
 - `catalog.<name>.expose-db-patterns` is an allowlist for backend database names inside that catalog
 - `catalog.<name>.expose-table-patterns.<dbRegex>` is an allowlist for table names inside databases whose backend db name matches `<dbRegex>`
 - table rules narrow visibility for matching databases; unmatched tables are filtered out
@@ -313,6 +315,37 @@ Rules:
 
 The filter is applied on metadata read paths such as `get_all_databases`, `get_databases`,
 `get_table*`, `get_tables*`, `get_table_meta`, and Hortonworks `get_tables_ext`.
+
+Behavior by API shape:
+
+- list-style RPCs such as `get_all_databases`, `get_all_tables`, `get_tables`, `get_table_meta`, and `get_tables_ext` silently drop hidden objects from the response
+- direct lookups such as `get_database`, `get_table`, and `get_table_req` fail as "not found" when the target object is filtered out
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}` counts both hidden databases and hidden tables
+
+Examples:
+
+```properties
+# 1. Publish only one database during migration
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales
+
+# 2. Publish one database, but only selected tables inside it
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-table-patterns.sales=orders_.*,customers
+
+# 3. Keep the catalog open by default, but narrow one sensitive database
+catalog.catalog1.expose-mode=ALLOW_ALL
+catalog.catalog1.expose-table-patterns.audit=.*_public
+```
+
+What those examples mean:
+
+- example 1 exposes only backend db `sales`
+- example 2 makes backend db `sales` visible and exposes only tables matching `orders_.*` plus `customers`
+- example 3 leaves all databases visible, but in backend db `audit` returns only tables matching `.*_public`
+
+For non-default catalogs, remember that filters still use backend db names such as `sales`, not
+external names like `catalog2__sales`.
 
 ## Transactional DDL guard
 

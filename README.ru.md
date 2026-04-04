@@ -297,6 +297,8 @@ catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
 Правила:
 
 - regex сопоставляются case-insensitively
+- матчинг идёт по backend names, а не по externalized proxy names
+- сопоставление делается по всей строке: `sales` совпадает только с `sales`, а `sales_.*` совпадёт с `sales_eu`
 - `catalog.<name>.expose-db-patterns` задаёт allowlist для backend database names внутри каталога
 - `catalog.<name>.expose-table-patterns.<dbRegex>` задаёт allowlist для таблиц внутри баз, чьё backend db name совпало с `<dbRegex>`
 - table rules сужают видимость таблиц внутри совпавших баз; unmatched tables отфильтровываются
@@ -305,6 +307,37 @@ catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
 
 Фильтр применяется на metadata read-path’ах вроде `get_all_databases`, `get_databases`,
 `get_table*`, `get_tables*`, `get_table_meta` и Hortonworks `get_tables_ext`.
+
+Поведение по типу API:
+
+- list-style RPC вроде `get_all_databases`, `get_all_tables`, `get_tables`, `get_table_meta` и `get_tables_ext` молча убирают скрытые объекты из ответа
+- direct lookup вроде `get_database`, `get_table` и `get_table_req` возвращает "not found", если целевой объект отфильтрован
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}` считает и скрытые базы, и скрытые таблицы
+
+Примеры:
+
+```properties
+# 1. Во время миграции публикуем только одну базу
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales
+
+# 2. Публикуем одну базу, но только часть таблиц внутри неё
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-table-patterns.sales=orders_.*,customers
+
+# 3. Каталог по умолчанию открыт, но одну чувствительную базу сужаем
+catalog.catalog1.expose-mode=ALLOW_ALL
+catalog.catalog1.expose-table-patterns.audit=.*_public
+```
+
+Что это означает:
+
+- в примере 1 видна только backend db `sales`
+- в примере 2 backend db `sales` становится видимой, но внутри неё доступны только таблицы, совпавшие с `orders_.*`, плюс `customers`
+- в примере 3 все базы остаются видимыми, но в backend db `audit` возвращаются только таблицы, совпавшие с `.*_public`
+
+Для non-default catalog помните, что фильтры всё равно матчятся по backend db names вроде `sales`,
+а не по внешним именам вроде `catalog2__sales`.
 
 ## Guard для transactional DDL
 
