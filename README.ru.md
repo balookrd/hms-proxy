@@ -84,6 +84,11 @@ mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 
 Версия сборки теперь вычисляется из git на каждом коммите в формате `0.1.<git-distance>-<short-sha>`.
 
+GitHub Actions автоматически публикует prerelease-сборки:
+- каждый push в `main` создаёт тег `build-<project.version>` и прикладывает собранные jar-файлы к prerelease
+- nightly-запуск выполняется каждый день в `00:00 UTC` и публикует prerelease `nightly-YYYYMMDD` с актуального `main`
+- для каждого prerelease GitHub автоматически генерирует release notes по соответствующему тегу
+
 ## Запуск
 
 ```bash
