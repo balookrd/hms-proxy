@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      major_minor:
+        description: 'Release major.minor version, for example 1.7'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ inputs.major_minor }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Validate release input
+        env:
+          MAJOR_MINOR: ${{ inputs.major_minor }}
+        run: |
+          if [[ ! "${MAJOR_MINOR}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "major_minor must have the form X.Y, for example 1.7" >&2
+            exit 1
+          fi
+
+      - name: Compute release version
+        id: version
+        env:
+          MAJOR_MINOR: ${{ inputs.major_minor }}
+        run: |
+          max_patch=-1
+
+          while IFS= read -r tag; do
+            version="${tag#v}"
+
+            if [[ ! "${version}" =~ ^${MAJOR_MINOR}\.[0-9]+$ ]]; then
+              continue
+            fi
+
+            patch="${version##*.}"
+            if (( patch > max_patch )); then
+              max_patch="${patch}"
+            fi
+          done < <(git tag --list "v${MAJOR_MINOR}.*" | sort -V)
+
+          next_patch=$((max_patch + 1))
+          release_version="${MAJOR_MINOR}.${next_patch}"
+          tag_name="v${release_version}"
+
+          if git rev-parse "${tag_name}" >/dev/null 2>&1; then
+            echo "Tag ${tag_name} already exists" >&2
+            exit 1
+          fi
+
+          {
+            echo "release_version=${release_version}"
+            echo "tag_name=${tag_name}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests
+        run: mvn -B test
+
+      - name: Build jars
+        run: mvn -B -DskipTests package
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hms-proxy-release-${{ steps.version.outputs.release_version }}
+          path: |
+            target/*.jar
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          target_commitish: main
+          name: Release ${{ steps.version.outputs.release_version }}
+          body: |
+            Manual release for version `${{ steps.version.outputs.release_version }}` from `main`.
+          prerelease: false
+          make_latest: true
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            target/*.jar

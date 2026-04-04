@@ -89,6 +89,11 @@ GitHub Actions автоматически публикует prerelease-сбор
 - nightly-запуск выполняется каждый день в `00:00 UTC` и публикует prerelease `nightly-YYYYMMDD` с актуального `main`
 - для каждого prerelease GitHub автоматически генерирует release notes по соответствующему тегу
 
+Ручные релизы публикуются через workflow `Release`:
+- запускается через `workflow_dispatch`
+- передаётся только `major_minor`, например `1.7`
+- workflow сам вычисляет следующий patch и публикует GitHub release с тегом вида `v1.7.0`, `v1.7.1` и далее
+
 ## Запуск
 
 ```bash
