@@ -18,7 +18,8 @@ public record ProxyConfig(
     TransactionalDdlGuardConfig transactionalDdlGuard,
     ManagementConfig management,
     SyntheticReadLockStoreConfig syntheticReadLockStore,
-    RateLimitConfig rateLimit
+    RateLimitConfig rateLimit,
+    LatencyRoutingConfig latencyRouting
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -39,6 +40,7 @@ public record ProxyConfig(
         ? new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null)
         : syntheticReadLockStore;
     rateLimit = rateLimit == null ? RateLimitConfig.disabled() : rateLimit;
+    latencyRouting = latencyRouting == null ? LatencyRoutingConfig.disabled() : latencyRouting;
   }
 
   public ProxyConfig(
@@ -54,7 +56,8 @@ public record ProxyConfig(
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -81,7 +84,8 @@ public record ProxyConfig(
         transactionalDdlGuard,
         management,
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -97,7 +101,8 @@ public record ProxyConfig(
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -117,7 +122,8 @@ public record ProxyConfig(
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -134,7 +140,8 @@ public record ProxyConfig(
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -152,7 +159,8 @@ public record ProxyConfig(
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
         new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
   }
 
   public ProxyConfig(
@@ -180,7 +188,38 @@ public record ProxyConfig(
         transactionalDdlGuard,
         management,
         syntheticReadLockStore,
-        RateLimitConfig.disabled());
+        RateLimitConfig.disabled(),
+        LatencyRoutingConfig.disabled());
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility,
+      FederationConfig federation,
+      TransactionalDdlGuardConfig transactionalDdlGuard,
+      ManagementConfig management,
+      SyntheticReadLockStoreConfig syntheticReadLockStore,
+      RateLimitConfig rateLimit
+  ) {
+    this(
+        server,
+        security,
+        catalogDbSeparator,
+        defaultCatalog,
+        catalogs,
+        backend,
+        compatibility,
+        federation,
+        transactionalDdlGuard,
+        management,
+        syntheticReadLockStore,
+        rateLimit,
+        LatencyRoutingConfig.disabled());
   }
 
   public record ServerConfig(
@@ -230,13 +269,15 @@ public record ProxyConfig(
       Map<String, List<String>> exposeTablePatterns,
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
-      Map<String, String> hiveConf
+      Map<String, String> hiveConf,
+      long latencyBudgetMs
   ) {
     public CatalogConfig {
       accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
       exposeMode = exposeMode == null ? CatalogExposureMode.ALLOW_ALL : exposeMode;
       writeDbWhitelist = writeDbWhitelist == null ? List.of() : List.copyOf(writeDbWhitelist);
       exposeDbPatterns = exposeDbPatterns == null ? List.of() : List.copyOf(exposeDbPatterns);
+      latencyBudgetMs = Math.max(latencyBudgetMs, 0L);
       Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
       for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
         copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -268,7 +309,38 @@ public record ProxyConfig(
           Map.of(),
           runtimeProfile,
           backendStandaloneMetastoreJar,
-          hiveConf);
+          hiveConf,
+          0L);
+    }
+
+    public CatalogConfig(
+        String name,
+        String description,
+        String locationUri,
+        boolean impersonationEnabled,
+        CatalogAccessMode accessMode,
+        List<String> writeDbWhitelist,
+        CatalogExposureMode exposeMode,
+        List<String> exposeDbPatterns,
+        Map<String, List<String>> exposeTablePatterns,
+        MetastoreRuntimeProfile runtimeProfile,
+        String backendStandaloneMetastoreJar,
+        Map<String, String> hiveConf
+    ) {
+      this(
+          name,
+          description,
+          locationUri,
+          impersonationEnabled,
+          accessMode,
+          writeDbWhitelist,
+          exposeMode,
+          exposeDbPatterns,
+          exposeTablePatterns,
+          runtimeProfile,
+          backendStandaloneMetastoreJar,
+          hiveConf,
+          0L);
     }
   }
 
@@ -448,6 +520,95 @@ public record ProxyConfig(
     public boolean enabled() {
       return requestsPerSecond > 0 && burst > 0;
     }
+  }
+
+  public record LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy
+  ) {
+    public LatencyRoutingConfig {
+      backendStatePolling =
+          backendStatePolling == null ? new BackendStatePollingConfig(false, 10_000) : backendStatePolling;
+      adaptiveTimeout = adaptiveTimeout == null
+          ? new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d)
+          : adaptiveTimeout;
+      circuitBreaker = circuitBreaker == null ? new CircuitBreakerConfig(false, 3, 30_000L) : circuitBreaker;
+      hedgedRead = hedgedRead == null ? new HedgedReadConfig(false, 8) : hedgedRead;
+      degradedRoutingPolicy =
+          degradedRoutingPolicy == null ? DegradedRoutingPolicy.STRICT : degradedRoutingPolicy;
+    }
+
+    public static LatencyRoutingConfig disabled() {
+      return new LatencyRoutingConfig(
+          new BackendStatePollingConfig(false, 10_000),
+          new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
+          new CircuitBreakerConfig(false, 3, 30_000L),
+          new HedgedReadConfig(false, 8),
+          DegradedRoutingPolicy.STRICT);
+    }
+  }
+
+  public record BackendStatePollingConfig(
+      boolean enabled,
+      int intervalMs
+  ) {
+    public BackendStatePollingConfig {
+      intervalMs = intervalMs <= 0 ? 10_000 : intervalMs;
+    }
+  }
+
+  public record AdaptiveTimeoutConfig(
+      boolean enabled,
+      long initialTimeoutMs,
+      long minTimeoutMs,
+      long maxTimeoutMs,
+      double multiplier,
+      double alpha
+  ) {
+    public AdaptiveTimeoutConfig {
+      initialTimeoutMs = initialTimeoutMs <= 0 ? 5_000L : initialTimeoutMs;
+      minTimeoutMs = minTimeoutMs <= 0 ? 1_000L : minTimeoutMs;
+      maxTimeoutMs = maxTimeoutMs <= 0 ? 60_000L : maxTimeoutMs;
+      if (maxTimeoutMs < minTimeoutMs) {
+        maxTimeoutMs = minTimeoutMs;
+      }
+      if (initialTimeoutMs < minTimeoutMs) {
+        initialTimeoutMs = minTimeoutMs;
+      }
+      if (initialTimeoutMs > maxTimeoutMs) {
+        initialTimeoutMs = maxTimeoutMs;
+      }
+      multiplier = multiplier <= 1.0d ? 4.0d : multiplier;
+      alpha = alpha <= 0.0d || alpha > 1.0d ? 0.2d : alpha;
+    }
+  }
+
+  public record CircuitBreakerConfig(
+      boolean enabled,
+      int failureThreshold,
+      long openStateMs
+  ) {
+    public CircuitBreakerConfig {
+      failureThreshold = failureThreshold <= 0 ? 3 : failureThreshold;
+      openStateMs = openStateMs <= 0 ? 30_000L : openStateMs;
+    }
+  }
+
+  public record HedgedReadConfig(
+      boolean enabled,
+      int maxParallelism
+  ) {
+    public HedgedReadConfig {
+      maxParallelism = maxParallelism <= 0 ? 8 : maxParallelism;
+    }
+  }
+
+  public enum DegradedRoutingPolicy {
+    STRICT,
+    SAFE_FANOUT_READS
   }
 
   public record SyntheticReadLockStoreConfig(

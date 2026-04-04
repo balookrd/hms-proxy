@@ -10,6 +10,9 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Добавлено
 
+- Добавлен latency-aware routing backend'ов с per-catalog latency budget, adaptive timeout,
+  circuit breaker с half-open retry, optional backend-state polling и degraded routing для safe
+  read-only fanout RPC.
 - Добавлена request overload protection на основе token-bucket rate limits для client principal,
   source IP, source CIDR pool, HMS method families, catalog и high-risk RPC classes.
 - Добавлены отдельные защитные классы для `write`, `ddl`, `txn` и `lock` RPC.
@@ -18,6 +21,8 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Документация
 
+- Задокументированы latency-aware routing knobs, per-catalog latency budget и расширенный payload
+  `/readyz` в обоих README и в example properties.
 - Задокументированы конфигурация overload protection и её operating model в обоих README и в
   example properties.
 

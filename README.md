@@ -137,6 +137,28 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 - Hive ACID, locks, tokens, and other truly global metastore operations still need careful
   validation in your environment before turning them on behind a multi-catalog proxy
 
+## Latency-aware backend routing
+
+The proxy can also apply optional latency-aware backend handling for slow or intermittently failing
+metastores. This layer is disabled by default, so existing deployments keep the previous routing
+behavior until you opt in.
+
+When enabled, the proxy can:
+
+- keep a per-catalog latency budget via `catalog.<name>.latency-budget-ms`
+- track per-backend latency EWMA and derive adaptive backend socket timeouts from recent response times
+- open a circuit after repeated transport or time-budget failures, then allow a half-open retry after
+  `routing.circuit-breaker.open-state-ms`
+- poll backend readiness in the background instead of only probing on demand through `/readyz`
+- run only safe read-only fanout RPCs in parallel when `routing.hedged-read.enabled=true`
+- omit degraded backends from those safe fanout reads when
+  `routing.degraded-routing-policy=SAFE_FANOUT_READS`
+
+This is intentionally narrow in scope: hedged reads and degraded omission apply only to safe
+read-only fanout methods, currently `get_all_databases`, `get_databases`, and `get_table_meta`.
+Single-backend writes and namespace-sensitive mutations still follow the deterministic routing model
+described above and do not race multiple metastores.
+
 ## Build
 
 ```bash
@@ -224,9 +246,14 @@ response includes:
 - overall readiness status
 - backend connectivity summary
 - per-backend `connected`, `degraded`, `lastSuccessEpochSecond`, `lastFailureEpochSecond`,
-  `lastProbeEpochSecond`, and `lastError`
+  `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`, `baselineTimeoutMs`,
+  `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`, `consecutiveFailures`,
+  `circuitRetryAtEpochMs`, and `lastError`
 - Kerberos status for the front door and outbound backend credentials
 - Kerberos TGT freshness via `tgtExpiresAtEpochSecond` and `secondsUntilExpiry` when available
+
+If `routing.backend-state-polling.enabled=true`, readiness reflects the most recent background probe
+results. Otherwise `/readyz` measures backend probe latency on demand and returns the same fields.
 
 ### Prometheus metrics
 
@@ -869,6 +896,13 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
+Per catalog you can also define a latency budget for the latency-aware routing layer:
+
+```properties
+catalog.catalog1.latency-budget-ms=1500
+catalog.catalog2.latency-budget-ms=5000
+```
+
 And you can independently restrict which metadata is visible from each backend:
 
 ```properties
@@ -893,6 +927,32 @@ Exposure modes:
 This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
 the metastore URI and Kerberos settings.
 
+**Latency-aware routing** — optional backend-state polling, adaptive timeouts, circuit breaking,
+safe hedged fanout reads, and degraded omission are configured with `routing.*` properties:
+
+```properties
+routing.backend-state-polling.enabled=true
+routing.backend-state-polling.interval-ms=10000
+routing.adaptive-timeout.enabled=true
+routing.adaptive-timeout.initial-ms=5000
+routing.adaptive-timeout.min-ms=1000
+routing.adaptive-timeout.max-ms=60000
+routing.adaptive-timeout.multiplier=4.0
+routing.adaptive-timeout.alpha=0.2
+routing.circuit-breaker.enabled=true
+routing.circuit-breaker.failure-threshold=3
+routing.circuit-breaker.open-state-ms=30000
+routing.hedged-read.enabled=true
+routing.hedged-read.max-parallelism=8
+routing.degraded-routing-policy=SAFE_FANOUT_READS
+```
+
+The adaptive timeout starts from `routing.adaptive-timeout.initial-ms`, then follows backend
+latency EWMA within the configured min/max bounds. Transport failures and latency-budget breaches
+count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
+the proxy fails fast for that backend until the open window expires, then lets one half-open retry
+decide whether to close or reopen the circuit.
+
 When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
 connections using `security.client-principal` and `security.client-keytab`. If those are omitted,
 it falls back to `security.server-principal` and `security.keytab`.
@@ -915,14 +975,21 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 
 catalogs=catalog1,catalog2
 routing.default-catalog=catalog1
+routing.backend-state-polling.enabled=true
+routing.adaptive-timeout.enabled=true
+routing.circuit-breaker.enabled=true
+routing.hedged-read.enabled=true
+routing.degraded-routing-policy=SAFE_FANOUT_READS
 
 catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
 catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+catalog.catalog1.latency-budget-ms=1500
 
 catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
 catalog.catalog2.conf.hive.metastore.sasl.enabled=true
 catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
+catalog.catalog2.latency-budget-ms=5000
 ```
 
 ## Manual HMS smoke client

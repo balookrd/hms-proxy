@@ -8,6 +8,7 @@ import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.AuditLogUtil;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
+import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
@@ -23,6 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.AbortTxnsRequest;
@@ -60,6 +63,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final TransactionalTableMutationGuard transactionalTableMutationGuard;
   private final SyntheticReadLockManager syntheticReadLockManager;
   private final RequestRateLimiter requestRateLimiter;
+  private final BackendRoutingController backendRoutingController;
   private final long aliveSince;
 
   public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
@@ -81,6 +85,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
     this.syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
     this.requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
+    this.backendRoutingController = new BackendRoutingController(config, router, observability);
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -203,6 +208,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   @Override
   public void close() throws MetaException {
     syntheticReadLockManager.close();
+    backendRoutingController.close();
   }
 
   @Override
@@ -299,15 +305,27 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private Object handleGetAllDatabases(Method method) throws Throwable {
     currentObservation().recordFanout();
     List<String> databases = new ArrayList<>();
-    for (CatalogBackend backend : router.backends()) {
-      @SuppressWarnings("unchecked")
-      List<String> backendDatabases = (List<String>) invokeBackend(backend, method, null);
+    for (FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
+        method.getName(),
+        (backend, impersonation, requestId) -> {
+          @SuppressWarnings("unchecked")
+          List<String> result = (List<String>) invokeBackend(
+              backend,
+              method,
+              null,
+              impersonation,
+              requestId,
+              false,
+              false);
+          return result;
+        })) {
+      List<String> backendDatabases = fanoutResult.value();
       for (String database : backendDatabases) {
-        if (!federationLayer.isDatabaseExposed(backend.name(), database)) {
-          recordFilteredObject(method.getName(), backend.name(), "database");
+        if (!federationLayer.isDatabaseExposed(fanoutResult.backend().name(), database)) {
+          recordFilteredObject(method.getName(), fanoutResult.backend().name(), "database");
           continue;
         }
-        databases.add(federationLayer.externalDatabaseName(backend.name(), database));
+        databases.add(federationLayer.externalDatabaseName(fanoutResult.backend().name(), database));
       }
     }
     return databases;
@@ -334,16 +352,27 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     currentObservation().recordFanout();
     List<String> databases = new ArrayList<>();
-    for (CatalogBackend backend : router.backends()) {
-      @SuppressWarnings("unchecked")
-      List<String> backendDatabases =
-          (List<String>) invokeBackend(backend, method, new Object[] {pattern});
+    for (FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
+        method.getName(),
+        (backend, impersonation, requestId) -> {
+          @SuppressWarnings("unchecked")
+          List<String> result = (List<String>) invokeBackend(
+              backend,
+              method,
+              new Object[] {pattern},
+              impersonation,
+              requestId,
+              false,
+              false);
+          return result;
+        })) {
+      List<String> backendDatabases = fanoutResult.value();
       for (String database : backendDatabases) {
-        if (!federationLayer.isDatabaseExposed(backend.name(), database)) {
-          recordFilteredObject(method.getName(), backend.name(), "database");
+        if (!federationLayer.isDatabaseExposed(fanoutResult.backend().name(), database)) {
+          recordFilteredObject(method.getName(), fanoutResult.backend().name(), "database");
           continue;
         }
-        databases.add(federationLayer.externalDatabaseName(backend.name(), database));
+        databases.add(federationLayer.externalDatabaseName(fanoutResult.backend().name(), database));
       }
     }
     return databases;
@@ -374,18 +403,32 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     currentObservation().recordFanout();
     List<TableMeta> results = new ArrayList<>();
-    for (CatalogBackend backend : router.backends()) {
-      @SuppressWarnings("unchecked")
-      List<TableMeta> backendResults =
-          (List<TableMeta>) invokeBackend(backend, method, new Object[] {dbPattern, tablePattern, tableTypes});
+    for (FanoutBackendResult<List<TableMeta>> fanoutResult : invokeFanoutRead(
+        method.getName(),
+        (backend, impersonation, requestId) -> {
+          @SuppressWarnings("unchecked")
+          List<TableMeta> result = (List<TableMeta>) invokeBackend(
+              backend,
+              method,
+              new Object[] {dbPattern, tablePattern, tableTypes},
+              impersonation,
+              requestId,
+              false,
+              false);
+          return result;
+        })) {
+      List<TableMeta> backendResults = fanoutResult.value();
       for (TableMeta result : backendResults) {
-        if (!federationLayer.isTableExposed(backend.name(), result.getDbName(), result.getTableName())) {
-          recordFilteredObject(method.getName(), backend.name(), "table");
+        if (!federationLayer.isTableExposed(
+            fanoutResult.backend().name(),
+            result.getDbName(),
+            result.getTableName())) {
+          recordFilteredObject(method.getName(), fanoutResult.backend().name(), "table");
           continue;
         }
         results.add(NamespaceTranslator.externalizeTableMeta(
             result,
-            router.resolveCatalog(backend.name(), result.getDbName()),
+            router.resolveCatalog(fanoutResult.backend().name(), result.getDbName()),
             federationLayer.preserveBackendCatalogName()));
       }
     }
@@ -613,112 +656,52 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
-    long startedAt = System.nanoTime();
-    Long requestId = currentRequestId();
-    ImpersonationContext impersonation = currentImpersonation().orElse(null);
-    try {
-      enforceCatalogRateLimit(method.getName(), backend.name());
-      currentObservation().recordBackend(backend.name());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
-            requestId,
-            backend.name(),
-            method.getName(),
-            impersonation == null ? "-" : impersonation.userName(),
-            DebugLogUtil.formatArgs(args));
-      }
-      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
-        LOG.info("requestId={} trace stage=backend-request catalog={} method={} impersonationUser={} summary={}",
-            requestId,
-            backend.name(),
-            method.getName(),
-            impersonation == null ? "-" : impersonation.userName(),
-            WriteTraceUtil.summarizeArgs(args));
-      }
-      Object result = backend.invoke(method, args, impersonation);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
-            requestId, backend.name(), method.getName(), elapsedMillis(startedAt),
-            DebugLogUtil.formatValue(result));
-      }
-      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
-        LOG.info("requestId={} trace stage=backend-response catalog={} method={} elapsedMs={} summary={}",
-            requestId,
-            backend.name(),
-            method.getName(),
-            elapsedMillis(startedAt),
-            WriteTraceUtil.summarizeResult(result));
-      }
-      observability.runtimeState().recordBackendSuccess(backend.name());
-      return result;
-    } catch (Throwable cause) {
-      observability.metrics().recordBackendFailure(backend.name(), cause);
-      observability.runtimeState().recordBackendFailure(backend.name(), cause);
-      Optional<Object> compatibilityFallback = compatibilityLayer.fallback(method.getName(), cause);
-      if (compatibilityFallback.isPresent()) {
-        currentObservation().markFallback();
-        observability.metrics().recordBackendFallback(
-            method.getName(),
-            backend.runtimeProfile().name(),
-            compatibilityLayer.frontendRuntimeProfile().name());
-        LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
-            requestId, backend.name(), method.getName(), cause);
-        return compatibilityFallback.get();
-      }
-      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(method.getName())) {
-        LOG.info("requestId={} trace stage=backend-error catalog={} method={} elapsedMs={} error={}",
-            requestId,
-            backend.name(),
-            method.getName(),
-            elapsedMillis(startedAt),
-            cause.toString());
-      }
-      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
-          requestId, backend.name(), method.getName(), elapsedMillis(startedAt), cause.toString(), cause);
-      throw normalizeBackendFailure(method, backend.name(), cause);
-    }
+    return invokeBackend(
+        backend,
+        method,
+        args,
+        currentImpersonation().orElse(null),
+        currentRequestId(),
+        true,
+        true);
+  }
+
+  private Object invokeBackend(
+      CatalogBackend backend,
+      Method method,
+      Object[] args,
+      ImpersonationContext impersonation,
+      long requestId,
+      boolean recordObservation,
+      boolean enforceRateLimit
+  ) throws Throwable {
+    return performBackendCall(
+        backend,
+        method.getName(),
+        args,
+        impersonation,
+        requestId,
+        recordObservation,
+        enforceRateLimit,
+        true,
+        () -> backend.invoke(method, args, impersonation),
+        method);
   }
 
   private Object invokeBackendRequest(CatalogBackend backend, Object request, String methodName) throws Throwable {
-    long startedAt = System.nanoTime();
-    Long requestId = currentRequestId();
+    long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
-    try {
-      enforceCatalogRateLimit(methodName, backend.name());
-      currentObservation().recordBackend(backend.name());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
-            requestId,
-            backend.name(),
-            methodName,
-            impersonation == null ? "-" : impersonation.userName(),
-            DebugLogUtil.formatArgs(new Object[] {request}));
-      }
-      Object adapted = backend.invokeRequest(methodName, request, impersonation);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
-            requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(adapted));
-      }
-      observability.runtimeState().recordBackendSuccess(backend.name());
-      return adapted;
-    } catch (Throwable cause) {
-      observability.metrics().recordBackendFailure(backend.name(), cause);
-      observability.runtimeState().recordBackendFailure(backend.name(), cause);
-      Optional<Object> compatibilityFallback = compatibilityLayer.fallback(methodName, cause);
-      if (compatibilityFallback.isPresent()) {
-        currentObservation().markFallback();
-        observability.metrics().recordBackendFallback(
-            methodName,
-            backend.runtimeProfile().name(),
-            compatibilityLayer.frontendRuntimeProfile().name());
-        LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
-            requestId, backend.name(), methodName, cause);
-        return compatibilityFallback.get();
-      }
-      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
-          requestId, backend.name(), methodName, elapsedMillis(startedAt), cause.toString(), cause);
-      throw cause;
-    }
+    return performBackendCall(
+        backend,
+        methodName,
+        new Object[] {request},
+        impersonation,
+        requestId,
+        true,
+        true,
+        true,
+        () -> backend.invokeRequest(methodName, request, impersonation),
+        null);
   }
 
   private Object invokeBackendNamed(CatalogBackend backend, String methodName, Object request) throws Throwable {
@@ -731,38 +714,268 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       Class<?>[] parameterTypes,
       Object[] args
   ) throws Throwable {
-    long startedAt = System.nanoTime();
-    Long requestId = currentRequestId();
+    long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
-    try {
+    return performBackendCall(
+        backend,
+        methodName,
+        args,
+        impersonation,
+        requestId,
+        true,
+        true,
+        false,
+        () -> backend.invokeRawByName(methodName, parameterTypes, args, impersonation),
+        null);
+  }
+
+  private Object performBackendCall(
+      CatalogBackend backend,
+      String methodName,
+      Object[] args,
+      ImpersonationContext impersonation,
+      long requestId,
+      boolean recordObservation,
+      boolean enforceRateLimit,
+      boolean allowCompatibilityFallback,
+      BackendCall call,
+      Method declaredMethod
+  ) throws Throwable {
+    long startedAt = System.nanoTime();
+    if (enforceRateLimit) {
       enforceCatalogRateLimit(methodName, backend.name());
+    }
+    if (recordObservation) {
       currentObservation().recordBackend(backend.name());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
-            requestId,
-            backend.name(),
-            methodName,
-            impersonation == null ? "-" : impersonation.userName(),
-            DebugLogUtil.formatArgs(args));
-      }
-      Object result = backend.invokeRawByName(
+    }
+
+    ProxyRuntimeState.BackendCallAdmission admission = backendRoutingController.admit(backend);
+    if (!admission.allowed()) {
+      Throwable rejection = backendUnavailableException(backend, methodName, admission);
+      return maybeCompatibilityFallback(
+          backend,
           methodName,
-          parameterTypes,
-          args,
-          impersonation);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
-            requestId, backend.name(), methodName, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
-      }
-      observability.runtimeState().recordBackendSuccess(backend.name());
+          requestId,
+          allowCompatibilityFallback,
+          rejection,
+          declaredMethod);
+    }
+
+    try {
+      logBackendRequest(requestId, backend, methodName, impersonation, args);
+      Object result = call.call();
+      long elapsedMs = elapsedMillis(startedAt);
+      logBackendResponse(requestId, backend, methodName, elapsedMs, result);
+      backendRoutingController.recordSuccess(backend, elapsedMs);
       return result;
     } catch (Throwable cause) {
+      long elapsedMs = elapsedMillis(startedAt);
       observability.metrics().recordBackendFailure(backend.name(), cause);
-      observability.runtimeState().recordBackendFailure(backend.name(), cause);
-      LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
-          requestId, backend.name(), methodName, elapsedMillis(startedAt), cause.toString(), cause);
+      backendRoutingController.recordFailure(backend, cause, elapsedMs);
+      Optional<Object> compatibilityFallback =
+          allowCompatibilityFallback ? compatibilityLayer.fallback(methodName, cause) : Optional.empty();
+      if (compatibilityFallback.isPresent()) {
+        currentObservation().markFallback();
+        observability.metrics().recordBackendFallback(
+            methodName,
+            backend.runtimeProfile().name(),
+            compatibilityLayer.frontendRuntimeProfile().name());
+        LOG.warn("requestId={} backend catalog={} failed compatibility method {}, returning fallback",
+            requestId, backend.name(), methodName, cause);
+        return compatibilityFallback.get();
+      }
+      logBackendError(requestId, backend, methodName, elapsedMs, cause);
+      if (declaredMethod != null) {
+        throw normalizeBackendFailure(declaredMethod, backend.name(), cause);
+      }
       throw cause;
     }
+  }
+
+  private Object maybeCompatibilityFallback(
+      CatalogBackend backend,
+      String methodName,
+      long requestId,
+      boolean allowCompatibilityFallback,
+      Throwable cause,
+      Method declaredMethod
+  ) throws Throwable {
+    Optional<Object> compatibilityFallback =
+        allowCompatibilityFallback ? compatibilityLayer.fallback(methodName, cause) : Optional.empty();
+    if (compatibilityFallback.isPresent()) {
+      currentObservation().markFallback();
+      observability.metrics().recordBackendFallback(
+          methodName,
+          backend.runtimeProfile().name(),
+          compatibilityLayer.frontendRuntimeProfile().name());
+      LOG.warn("requestId={} backend catalog={} served compatibility fallback after fast rejection in method {}",
+          requestId, backend.name(), methodName, cause);
+      return compatibilityFallback.get();
+    }
+    if (declaredMethod != null) {
+      throw normalizeBackendFailure(declaredMethod, backend.name(), cause);
+    }
+    throw cause;
+  }
+
+  private void logBackendRequest(
+      long requestId,
+      CatalogBackend backend,
+      String methodName,
+      ImpersonationContext impersonation,
+      Object[] args
+  ) {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
+          requestId,
+          backend.name(),
+          methodName,
+          impersonation == null ? "-" : impersonation.userName(),
+          DebugLogUtil.formatArgs(args));
+    }
+    if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(methodName)) {
+      LOG.info("requestId={} trace stage=backend-request catalog={} method={} impersonationUser={} summary={}",
+          requestId,
+          backend.name(),
+          methodName,
+          impersonation == null ? "-" : impersonation.userName(),
+          WriteTraceUtil.summarizeArgs(args));
+    }
+  }
+
+  private void logBackendResponse(
+      long requestId,
+      CatalogBackend backend,
+      String methodName,
+      long elapsedMs,
+      Object result
+  ) {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
+          requestId, backend.name(), methodName, elapsedMs, DebugLogUtil.formatValue(result));
+    }
+    if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(methodName)) {
+      LOG.info("requestId={} trace stage=backend-response catalog={} method={} elapsedMs={} summary={}",
+          requestId,
+          backend.name(),
+          methodName,
+          elapsedMs,
+          WriteTraceUtil.summarizeResult(result));
+    }
+  }
+
+  private void logBackendError(
+      long requestId,
+      CatalogBackend backend,
+      String methodName,
+      long elapsedMs,
+      Throwable cause
+  ) {
+    if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(methodName)) {
+      LOG.info("requestId={} trace stage=backend-error catalog={} method={} elapsedMs={} error={}",
+          requestId,
+          backend.name(),
+          methodName,
+          elapsedMs,
+          cause.toString());
+    }
+    LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
+        requestId, backend.name(), methodName, elapsedMs, cause.toString(), cause);
+  }
+
+  private MetaException backendUnavailableException(
+      CatalogBackend backend,
+      String methodName,
+      ProxyRuntimeState.BackendCallAdmission admission
+  ) {
+    String reason = admission.rejectionReason() == null ? "backend unavailable" : admission.rejectionReason();
+    String message = "Backend catalog '" + backend.name() + "' rejected method '" + methodName + "' because "
+        + reason;
+    if (admission.retryAtEpochMs() > 0L) {
+      long retryInMs = Math.max(0L, admission.retryAtEpochMs() - System.currentTimeMillis());
+      message += "; next retry window in " + retryInMs + "ms";
+    }
+    return metaException(message);
+  }
+
+  private <T> List<FanoutBackendResult<T>> invokeFanoutRead(String methodName, FanoutBackendCall<T> call)
+      throws Throwable {
+    List<CatalogBackend> backends = new ArrayList<>(router.backends());
+    for (CatalogBackend backend : backends) {
+      enforceCatalogRateLimit(methodName, backend.name());
+    }
+    ImpersonationContext impersonation = currentImpersonation().orElse(null);
+    long requestId = currentRequestId();
+    return backendRoutingController.hedgedReadEnabled(methodName)
+        ? invokeParallelFanoutRead(methodName, backends, impersonation, requestId, call)
+        : invokeSequentialFanoutRead(methodName, backends, impersonation, requestId, call);
+  }
+
+  private <T> List<FanoutBackendResult<T>> invokeSequentialFanoutRead(
+      String methodName,
+      List<CatalogBackend> backends,
+      ImpersonationContext impersonation,
+      long requestId,
+      FanoutBackendCall<T> call
+  ) throws Throwable {
+    List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
+    for (CatalogBackend backend : backends) {
+      try {
+        results.add(new FanoutBackendResult<>(backend, call.call(backend, impersonation, requestId)));
+      } catch (Throwable error) {
+        handleFanoutFailure(methodName, backend, requestId, error);
+      }
+    }
+    return results;
+  }
+
+  private <T> List<FanoutBackendResult<T>> invokeParallelFanoutRead(
+      String methodName,
+      List<CatalogBackend> backends,
+      ImpersonationContext impersonation,
+      long requestId,
+      FanoutBackendCall<T> call
+  ) throws Throwable {
+    List<Future<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
+    for (CatalogBackend backend : backends) {
+      futures.add(backendRoutingController.fanoutExecutor().submit(() -> {
+        try {
+          return FanoutTaskResult.success(backend, call.call(backend, impersonation, requestId));
+        } catch (Throwable error) {
+          return FanoutTaskResult.failure(backend, error);
+        }
+      }));
+    }
+
+    List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
+    for (Future<FanoutTaskResult<T>> future : futures) {
+      FanoutTaskResult<T> taskResult;
+      try {
+        taskResult = future.get();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw metaException("Interrupted while waiting for fanout backend response");
+      } catch (ExecutionException e) {
+        Throwable cause = e.getCause() == null ? e : e.getCause();
+        throw metaException("Fanout backend execution failed: " + cause.getMessage());
+      }
+      if (taskResult.error() != null) {
+        handleFanoutFailure(methodName, taskResult.backend(), requestId, taskResult.error());
+        continue;
+      }
+      results.add(new FanoutBackendResult<>(taskResult.backend(), taskResult.value()));
+    }
+    return results;
+  }
+
+  private void handleFanoutFailure(String methodName, CatalogBackend backend, long requestId, Throwable error)
+      throws Throwable {
+    if (!backendRoutingController.shouldDegradeSafeFanout(methodName, error)) {
+      throw error;
+    }
+    currentObservation().markDegraded();
+    LOG.warn("requestId={} omitting degraded backend catalog={} from safe fanout method={}",
+        requestId, backend.name(), methodName, error);
   }
 
   private static Object cloneWriteNotificationLogRequest(Object request) throws ReflectiveOperationException {
@@ -1197,6 +1410,29 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     return federationLayer.externalizeResult(result, extractedNamespace);
   }
 
+  @FunctionalInterface
+  private interface BackendCall {
+    Object call() throws Throwable;
+  }
+
+  @FunctionalInterface
+  private interface FanoutBackendCall<T> {
+    T call(CatalogBackend backend, ImpersonationContext impersonation, long requestId) throws Throwable;
+  }
+
+  private record FanoutBackendResult<T>(CatalogBackend backend, T value) {
+  }
+
+  private record FanoutTaskResult<T>(CatalogBackend backend, T value, Throwable error) {
+    private static <T> FanoutTaskResult<T> success(CatalogBackend backend, T value) {
+      return new FanoutTaskResult<>(backend, value, null);
+    }
+
+    private static <T> FanoutTaskResult<T> failure(CatalogBackend backend, Throwable error) {
+      return new FanoutTaskResult<>(backend, null, error);
+    }
+  }
+
   private static final class RequestObservation {
     private final String method;
     private final String operationClass;
@@ -1274,6 +1510,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     private void markFallback() {
       status = "fallback";
       fallback = true;
+    }
+
+    private void markDegraded() {
+      if (!"fallback".equals(status) && !"throttled".equals(status)) {
+        status = "degraded";
+      }
     }
 
     private void markError() {

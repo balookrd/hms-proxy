@@ -136,6 +136,30 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
   non-ACID DDL path не зависели от рассинхрона backend txn state
 - этот synthetic lock state по умолчанию хранится в памяти, а для multi-instance failover может
   быть вынесен в ZooKeeper, но это не делает multi-catalog ACID writes безопасными
+- Hive ACID, lock, token и другие по-настоящему global metastore операции всё ещё требуют
+  отдельной валидации в вашей среде перед включением их за multi-catalog proxy
+
+## Latency-aware routing backend'ов
+
+Proxy умеет опционально включать latency-aware обработку медленных или нестабильных backend
+metastore. Этот слой по умолчанию выключен, поэтому существующие deployment не меняют поведение,
+пока ты явно не включишь новые настройки.
+
+Когда он включён, proxy может:
+
+- держать per-catalog latency budget через `catalog.<name>.latency-budget-ms`
+- считать per-backend latency EWMA и на его основе подбирать adaptive backend socket timeout
+- открывать circuit после повторяющихся transport failure или time-budget breach и затем давать
+  half-open retry после `routing.circuit-breaker.open-state-ms`
+- polling'ом обновлять backend readiness в фоне, а не только во время запроса к `/readyz`
+- запускать в parallel только безопасные read-only fanout RPC при `routing.hedged-read.enabled=true`
+- исключать degraded backend из таких safe fanout read при
+  `routing.degraded-routing-policy=SAFE_FANOUT_READS`
+
+Это намеренно узкий механизм: hedged read и degraded omission применяются только к безопасным
+read-only fanout method, сейчас это `get_all_databases`, `get_databases` и `get_table_meta`.
+Single-backend write и namespace-sensitive mutation по-прежнему идут по детерминированной
+маршрутизации выше и не race'ят несколько metastore одновременно.
 
 ## Сборка
 
@@ -223,9 +247,14 @@ curl -s http://127.0.0.1:19083/metrics
 - общий статус readiness
 - summary по backend connectivity
 - по каждому backend поля `connected`, `degraded`, `lastSuccessEpochSecond`,
-  `lastFailureEpochSecond`, `lastProbeEpochSecond` и `lastError`
+  `lastFailureEpochSecond`, `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`,
+  `baselineTimeoutMs`, `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`,
+  `consecutiveFailures`, `circuitRetryAtEpochMs` и `lastError`
 - Kerberos status для front door и outbound backend credentials
 - TGT freshness через `tgtExpiresAtEpochSecond` и `secondsUntilExpiry`, когда эти данные доступны
+
+Если включён `routing.backend-state-polling.enabled=true`, readiness отражает результат последних
+фоновых probe. Иначе `/readyz` сам делает on-demand probe backend'ов и возвращает те же поля.
 
 ### Prometheus метрики
 
@@ -792,6 +821,13 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
+Для каждого каталога можно отдельно задать latency budget для latency-aware routing слоя:
+
+```properties
+catalog.catalog1.latency-budget-ms=1500
+catalog.catalog2.latency-budget-ms=5000
+```
+
 И независимо от write-policy можно ограничить видимость метаданных:
 
 ```properties
@@ -812,6 +848,33 @@ catalog.catalog1.expose-table-patterns.sales=orders_.*,events
 - `ALLOW_ALL`: поведение по умолчанию для `catalog.<name>.expose-mode`
 - `DENY_BY_DEFAULT`: metadata скрывается, если объект не совпал с
   `catalog.<name>.expose-db-patterns` или `catalog.<name>.expose-table-patterns.<dbRegex>`
+
+Latency-aware routing, background backend polling, adaptive timeout, circuit breaker, safe hedged
+fanout read и degraded omission настраиваются через `routing.*` properties:
+
+```properties
+routing.backend-state-polling.enabled=true
+routing.backend-state-polling.interval-ms=10000
+routing.adaptive-timeout.enabled=true
+routing.adaptive-timeout.initial-ms=5000
+routing.adaptive-timeout.min-ms=1000
+routing.adaptive-timeout.max-ms=60000
+routing.adaptive-timeout.multiplier=4.0
+routing.adaptive-timeout.alpha=0.2
+routing.circuit-breaker.enabled=true
+routing.circuit-breaker.failure-threshold=3
+routing.circuit-breaker.open-state-ms=30000
+routing.hedged-read.enabled=true
+routing.hedged-read.max-parallelism=8
+routing.degraded-routing-policy=SAFE_FANOUT_READS
+```
+
+Adaptive timeout стартует с `routing.adaptive-timeout.initial-ms`, затем следует за backend
+latency EWMA в заданных min/max пределах. Transport failure и превышение latency budget
+учитываются в circuit breaker. Когда backend достигает
+`routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
+open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
+открывает его.
 
 ## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
 
@@ -835,6 +898,11 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 security.impersonation-enabled=true
 
 catalogs=hdp,apache
+routing.backend-state-polling.enabled=true
+routing.adaptive-timeout.enabled=true
+routing.circuit-breaker.enabled=true
+routing.hedged-read.enabled=true
+routing.degraded-routing-policy=SAFE_FANOUT_READS
 
 catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
@@ -842,12 +910,14 @@ catalog.hdp.impersonation-enabled=true
 catalog.hdp.conf.hive.metastore.uris=thrift://hdp-hms.example.com:9083
 catalog.hdp.conf.hive.metastore.sasl.enabled=true
 catalog.hdp.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.hdp.latency-budget-ms=1500
 
 catalog.apache.runtime-profile=APACHE_3_1_3
 catalog.apache.impersonation-enabled=true
 catalog.apache.conf.hive.metastore.uris=thrift://apache-hms.example.com:9083
 catalog.apache.conf.hive.metastore.sasl.enabled=true
 catalog.apache.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.apache.latency-budget-ms=5000
 ```
 
 ## Ручной HMS smoke client

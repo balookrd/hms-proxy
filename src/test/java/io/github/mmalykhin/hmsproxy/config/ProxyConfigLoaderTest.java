@@ -966,4 +966,55 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsLatencyRoutingConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          routing.backend-state-polling.enabled=true
+          routing.backend-state-polling.interval-ms=7500
+          routing.adaptive-timeout.enabled=true
+          routing.adaptive-timeout.initial-ms=4000
+          routing.adaptive-timeout.min-ms=1200
+          routing.adaptive-timeout.max-ms=25000
+          routing.adaptive-timeout.multiplier=3.5
+          routing.adaptive-timeout.alpha=0.4
+          routing.circuit-breaker.enabled=true
+          routing.circuit-breaker.failure-threshold=5
+          routing.circuit-breaker.open-state-ms=45000
+          routing.hedged-read.enabled=true
+          routing.hedged-read.max-parallelism=4
+          routing.degraded-routing-policy=safe_fanout_reads
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.latency-budget-ms=850
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.latencyRouting().backendStatePolling().enabled());
+      Assert.assertEquals(7500, config.latencyRouting().backendStatePolling().intervalMs());
+      Assert.assertTrue(config.latencyRouting().adaptiveTimeout().enabled());
+      Assert.assertEquals(4000L, config.latencyRouting().adaptiveTimeout().initialTimeoutMs());
+      Assert.assertEquals(1200L, config.latencyRouting().adaptiveTimeout().minTimeoutMs());
+      Assert.assertEquals(25000L, config.latencyRouting().adaptiveTimeout().maxTimeoutMs());
+      Assert.assertEquals(3.5d, config.latencyRouting().adaptiveTimeout().multiplier(), 0.0001d);
+      Assert.assertEquals(0.4d, config.latencyRouting().adaptiveTimeout().alpha(), 0.0001d);
+      Assert.assertTrue(config.latencyRouting().circuitBreaker().enabled());
+      Assert.assertEquals(5, config.latencyRouting().circuitBreaker().failureThreshold());
+      Assert.assertEquals(45000L, config.latencyRouting().circuitBreaker().openStateMs());
+      Assert.assertTrue(config.latencyRouting().hedgedRead().enabled());
+      Assert.assertEquals(2, config.latencyRouting().hedgedRead().maxParallelism());
+      Assert.assertEquals(
+          ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS,
+          config.latencyRouting().degradedRoutingPolicy());
+      Assert.assertEquals(850L, config.catalogs().get("catalog1").latencyBudgetMs());
+      Assert.assertEquals(0L, config.catalogs().get("catalog2").latencyBudgetMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

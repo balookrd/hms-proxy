@@ -116,6 +116,32 @@ public final class ProxyConfigLoader {
         getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.base-sleep-ms", 1_000);
     int syntheticReadLockMaxRetries =
         getPositiveInt(properties, "synthetic-read-lock.store.zookeeper.max-retries", 3);
+    boolean backendStatePollingEnabled =
+        Boolean.parseBoolean(get(properties, "routing.backend-state-polling.enabled", "false"));
+    int backendStatePollingIntervalMs =
+        getPositiveInt(properties, "routing.backend-state-polling.interval-ms", 10_000);
+    boolean adaptiveTimeoutEnabled =
+        Boolean.parseBoolean(get(properties, "routing.adaptive-timeout.enabled", "false"));
+    long adaptiveTimeoutInitialMs =
+        getPositiveLong(properties, "routing.adaptive-timeout.initial-ms", 5_000L);
+    long adaptiveTimeoutMinMs =
+        getPositiveLong(properties, "routing.adaptive-timeout.min-ms", 1_000L);
+    long adaptiveTimeoutMaxMs =
+        getPositiveLong(properties, "routing.adaptive-timeout.max-ms", 60_000L);
+    double adaptiveTimeoutMultiplier =
+        getPositiveDouble(properties, "routing.adaptive-timeout.multiplier", 4.0d);
+    double adaptiveTimeoutAlpha =
+        getBoundedDouble(properties, "routing.adaptive-timeout.alpha", 0.2d, 0.0d, 1.0d);
+    boolean circuitBreakerEnabled =
+        Boolean.parseBoolean(get(properties, "routing.circuit-breaker.enabled", "false"));
+    int circuitBreakerFailureThreshold =
+        getPositiveInt(properties, "routing.circuit-breaker.failure-threshold", 3);
+    long circuitBreakerOpenStateMs =
+        getPositiveLong(properties, "routing.circuit-breaker.open-state-ms", 30_000L);
+    boolean hedgedReadEnabled =
+        Boolean.parseBoolean(get(properties, "routing.hedged-read.enabled", "false"));
+    ProxyConfig.DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
+        trimToNull(properties.getProperty("routing.degraded-routing-policy")));
 
     ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
         get(properties, "security.mode", "NONE").trim().toUpperCase());
@@ -160,6 +186,7 @@ public final class ProxyConfigLoader {
           trimToNull(properties.getProperty(prefix + "runtime-profile")));
       String catalogBackendStandaloneMetastoreJar =
           trimToNull(properties.getProperty(prefix + "backend-standalone-metastore-jar"));
+      long latencyBudgetMs = getNonNegativeLong(properties, prefix + "latency-budget-ms", 0L);
       Map<String, String> hiveConfOverrides = properties.stringPropertyNames().stream()
           .filter(name -> name.startsWith(prefix + "conf."))
           .sorted()
@@ -187,7 +214,8 @@ public final class ProxyConfigLoader {
           catalogExposeTablePatterns,
           catalogRuntimeProfile,
           catalogBackendStandaloneMetastoreJar,
-          hiveConf));
+          hiveConf,
+          latencyBudgetMs));
     }
 
     String defaultCatalog = trimToNull(properties.getProperty("routing.default-catalog"));
@@ -294,6 +322,26 @@ public final class ProxyConfigLoader {
         methodFamilyRateLimits,
         catalogRateLimits,
         rpcClassRateLimits);
+    ProxyConfig.LatencyRoutingConfig latencyRouting = new ProxyConfig.LatencyRoutingConfig(
+        new ProxyConfig.BackendStatePollingConfig(backendStatePollingEnabled, backendStatePollingIntervalMs),
+        new ProxyConfig.AdaptiveTimeoutConfig(
+            adaptiveTimeoutEnabled,
+            adaptiveTimeoutInitialMs,
+            adaptiveTimeoutMinMs,
+            adaptiveTimeoutMaxMs,
+            adaptiveTimeoutMultiplier,
+            adaptiveTimeoutAlpha),
+        new ProxyConfig.CircuitBreakerConfig(
+            circuitBreakerEnabled,
+            circuitBreakerFailureThreshold,
+            circuitBreakerOpenStateMs),
+        new ProxyConfig.HedgedReadConfig(
+            hedgedReadEnabled,
+            Math.max(1, Math.min(catalogs.size(), getPositiveInt(
+                properties,
+                "routing.hedged-read.max-parallelism",
+                Math.max(1, catalogs.size()))))),
+        degradedRoutingPolicy);
     return new ProxyConfig(
         server,
         security,
@@ -306,7 +354,8 @@ public final class ProxyConfigLoader {
         transactionalDdlGuard,
         management,
         syntheticReadLockStore,
-        rateLimit);
+        rateLimit,
+        latencyRouting);
   }
 
   private static Map<String, ProxyConfig.SourceCidrRateLimitConfig> parseSourceCidrRateLimits(Properties properties) {
@@ -436,6 +485,69 @@ public final class ProxyConfigLoader {
     return value;
   }
 
+  private static long getLong(Properties properties, String key, long defaultValue) {
+    String value = trimToNull(properties.getProperty(key));
+    if (value == null) {
+      return defaultValue;
+    }
+    try {
+      return Long.parseLong(value);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid long value for property " + key + ": " + value, e);
+    }
+  }
+
+  private static long getNonNegativeLong(Properties properties, String key, long defaultValue) {
+    long value = getLong(properties, key, defaultValue);
+    if (value < 0L) {
+      throw new IllegalArgumentException(key + " must be >= 0, got: " + value);
+    }
+    return value;
+  }
+
+  private static long getPositiveLong(Properties properties, String key, long defaultValue) {
+    long value = getLong(properties, key, defaultValue);
+    if (value < 1L) {
+      throw new IllegalArgumentException(key + " must be >= 1, got: " + value);
+    }
+    return value;
+  }
+
+  private static double getDouble(Properties properties, String key, double defaultValue) {
+    String value = trimToNull(properties.getProperty(key));
+    if (value == null) {
+      return defaultValue;
+    }
+    try {
+      return Double.parseDouble(value);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid floating point value for property " + key + ": " + value, e);
+    }
+  }
+
+  private static double getPositiveDouble(Properties properties, String key, double defaultValue) {
+    double value = getDouble(properties, key, defaultValue);
+    if (value <= 0.0d) {
+      throw new IllegalArgumentException(key + " must be > 0, got: " + value);
+    }
+    return value;
+  }
+
+  private static double getBoundedDouble(
+      Properties properties,
+      String key,
+      double defaultValue,
+      double minExclusive,
+      double maxInclusive
+  ) {
+    double value = getDouble(properties, key, defaultValue);
+    if (value <= minExclusive || value > maxInclusive) {
+      throw new IllegalArgumentException(
+          key + " must be > " + minExclusive + " and <= " + maxInclusive + ", got: " + value);
+    }
+    return value;
+  }
+
   private static boolean hasConfiguredPrefix(Properties properties, String prefix) {
     return properties.stringPropertyNames().stream().anyMatch(name -> name.startsWith(prefix));
   }
@@ -541,6 +653,20 @@ public final class ProxyConfigLoader {
       throw new IllegalArgumentException(
           "Invalid value for federation.view-text-rewrite.mode: " + value
               + ". Expected one of: DISABLED, REWRITE",
+          e);
+    }
+  }
+
+  private static ProxyConfig.DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {
+    if (value == null) {
+      return ProxyConfig.DegradedRoutingPolicy.STRICT;
+    }
+    try {
+      return ProxyConfig.DegradedRoutingPolicy.valueOf(value.trim().toUpperCase(Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for routing.degraded-routing-policy: " + value
+              + ". Expected one of: STRICT, SAFE_FANOUT_READS",
           e);
     }
   }

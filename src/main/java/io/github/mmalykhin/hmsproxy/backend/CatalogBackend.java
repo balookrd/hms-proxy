@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.routing.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +19,8 @@ import org.slf4j.LoggerFactory;
 public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
   private static final int MAX_IMPERSONATION_CLIENTS = 128;
+  private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
+  private static final long SOCKET_TIMEOUT_RECONNECT_DELTA_MS = 1_000L;
 
   private final ProxyConfig proxyConfig;
   private final ProxyConfig.CatalogConfig config;
@@ -26,6 +29,7 @@ public final class CatalogBackend implements AutoCloseable {
   private final BackendAdapter adapter;
   private final BackendRuntime runtime;
   private final Catalog catalog;
+  private long appliedClientTimeoutMs;
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
@@ -41,6 +45,7 @@ public final class CatalogBackend implements AutoCloseable {
     this.adapter = adapter;
     this.runtime = runtime;
     this.catalog = catalog;
+    this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(hiveConf.get(SOCKET_TIMEOUT_KEY), 0L);
   }
 
   public static CatalogBackend open(ProxyConfig proxyConfig, ProxyConfig.CatalogConfig catalogConfig)
@@ -92,6 +97,21 @@ public final class CatalogBackend implements AutoCloseable {
 
   public void checkConnectivity() throws Throwable {
     invokeRawByName("getStatus", new Class<?>[0], new Object[0], null);
+  }
+
+  public synchronized void ensureClientSocketTimeout(long timeoutMs) throws MetaException {
+    if (timeoutMs <= 0 || !shouldReconnectForTimeout(timeoutMs)) {
+      return;
+    }
+    hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
+    runtime.reconnectShared(adapter);
+    for (ImpersonationClient client : impersonationClients.values()) {
+      client.closeQuietly();
+    }
+    impersonationClients.clear();
+    appliedClientTimeoutMs = timeoutMs;
+    LOG.info("Backend catalog '{}' applied adaptive socket timeout {}",
+        config.name(), TimeoutValueParser.formatDurationMs(timeoutMs));
   }
 
   public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
@@ -181,6 +201,13 @@ public final class CatalogBackend implements AutoCloseable {
 
   private static boolean backendKerberosEnabled(ProxyConfig.CatalogConfig catalogConfig) {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
+  }
+
+  private boolean shouldReconnectForTimeout(long timeoutMs) {
+    if (appliedClientTimeoutMs <= 0L) {
+      return true;
+    }
+    return Math.abs(timeoutMs - appliedClientTimeoutMs) >= SOCKET_TIMEOUT_RECONNECT_DELTA_MS;
   }
 
   public static void closeQuietly(AutoCloseable closeable, String description) {

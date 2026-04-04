@@ -13,6 +13,7 @@ import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
+import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
@@ -196,6 +197,151 @@ public class RoutingMetaStoreHandlerTest {
       Assert.assertTrue(e.getMessage().contains("catalog 'catalog1'"));
     }
     Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void safeFanoutReadsCanOmitDegradedBackendResults() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new ProxyConfig.LatencyRoutingConfig(
+            new ProxyConfig.BackendStatePollingConfig(false, 10_000),
+            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
+            new ProxyConfig.HedgedReadConfig(true, 2),
+            ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("sales");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                throw new TTransportException("catalog2 unavailable");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals(List.of("sales"), result);
+    Assert.assertEquals("degraded", observability.runtimeState().backendStatus("catalog2").degraded() ? "degraded" : "ok");
+    Assert.assertTrue(observability.metrics().render().contains(
+        "hms_proxy_requests_total{method=\"get_all_databases\",catalog=\"all\",backend=\"fanout\",status=\"degraded\"} 1"));
+  }
+
+  @Test
+  public void circuitBreakerFailsFastAndHalfOpenRetryRecovers() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.LatencyRoutingConfig(
+            new ProxyConfig.BackendStatePollingConfig(false, 10_000),
+            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new ProxyConfig.CircuitBreakerConfig(true, 1, 150L),
+            new ProxyConfig.HedgedReadConfig(false, 1),
+            ProxyConfig.DegradedRoutingPolicy.STRICT));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_database".equals(method.getName())) {
+        if (backendCalls.incrementAndGet() <= 2) {
+          throw new TTransportException("backend down");
+        }
+        Database database = new Database();
+        database.setName("sales");
+        return database;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null, observability);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+
+    Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {"sales"}));
+
+    MetaException fastReject = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {"sales"}));
+    Assert.assertTrue(fastReject.getMessage().contains("circuit_open"));
+    Assert.assertEquals(2, backendCalls.get());
+
+    Thread.sleep(220L);
+
+    Database database = (Database) handler.invoke(null, method, new Object[] {"sales"});
+
+    Assert.assertEquals("sales", database.getName());
+    Assert.assertEquals(3, backendCalls.get());
+    Assert.assertEquals(
+        ProxyRuntimeState.CircuitState.CLOSED,
+        observability.runtimeState().backendStatus("catalog1").circuitState());
+  }
+
+  @Test
+  public void backendStatePollingUpdatesProbeStatus() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.LatencyRoutingConfig(
+            new ProxyConfig.BackendStatePollingConfig(true, 50),
+            new ProxyConfig.AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
+            new ProxyConfig.CircuitBreakerConfig(false, 3, 30_000L),
+            new ProxyConfig.HedgedReadConfig(false, 1),
+            ProxyConfig.DegradedRoutingPolicy.STRICT));
+
+    AtomicInteger probeCalls = new AtomicInteger();
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("getStatus".equals(method.getName())) {
+                probeCalls.incrementAndGet();
+                return null;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    ProxyObservability observability = new ProxyObservability(config);
+
+    try (RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null, observability)) {
+      Thread.sleep(180L);
+    }
+
+    Assert.assertTrue(probeCalls.get() >= 2);
+    Assert.assertTrue(observability.runtimeState().backendStatus("catalog1").lastProbeEpochSecond() > 0L);
   }
 
   @Test
@@ -2091,7 +2237,32 @@ public class RoutingMetaStoreHandlerTest {
         BackendRuntime.SessionFactory.class,
         BackendInvocationSession.class);
     ctor.setAccessible(true);
-    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, null, session);
+    BackendRuntime.SessionFactory sessionFactory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig ignoredProxyConfig,
+          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          HiveConf ignoredHiveConf,
+          boolean ignoredBackendKerberosEnabled,
+          MetastoreRuntimeProfile ignoredRuntimeProfile
+      ) {
+        return session;
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig ignoredProxyConfig,
+          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          HiveConf ignoredHiveConf,
+          boolean ignoredBackendKerberosEnabled,
+          MetastoreRuntimeProfile ignoredRuntimeProfile,
+          String ignoredUserName,
+          List<String> ignoredGroupNames
+      ) {
+        return session;
+      }
+    };
+    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, sessionFactory, session);
   }
 
   private static BackendInvocationSession newSession() throws Exception {
@@ -2158,6 +2329,26 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083),
         new ProxyConfig.SyntheticReadLockStoreConfig(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, null),
         rateLimit);
+  }
+
+  private static ProxyConfig latencyAwareConfig(
+      Map<String, ProxyConfig.CatalogConfig> catalogs,
+      ProxyConfig.LatencyRoutingConfig latencyRouting
+  ) {
+    return new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        catalogs,
+        new ProxyConfig.BackendConfig(Map.of()),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()),
+        new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083),
+        new ProxyConfig.SyntheticReadLockStoreConfig(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, null),
+        ProxyConfig.RateLimitConfig.disabled(),
+        latencyRouting);
   }
 
   private static RoutingMetaStoreHandler accessModeHandler(

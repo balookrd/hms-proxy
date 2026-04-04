@@ -83,22 +83,34 @@ public final class ManagementHttpServer implements AutoCloseable {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-      boolean backendConnectivity = true;
-      for (CatalogBackend backend : router.backends()) {
-        try {
-          backend.checkConnectivity();
-          observability.runtimeState().recordBackendProbeSuccess(backend.name());
-        } catch (Throwable error) {
-          backendConnectivity = false;
-          observability.runtimeState().recordBackendProbeFailure(backend.name(), error);
+      if (!config.latencyRouting().backendStatePolling().enabled()) {
+        for (CatalogBackend backend : router.backends()) {
+          try {
+            long startedAt = System.nanoTime();
+            backend.checkConnectivity();
+            observability.runtimeState().recordBackendProbeSuccess(
+                backend.name(),
+                (System.nanoTime() - startedAt) / 1_000_000L,
+                config.latencyRouting());
+          } catch (Throwable error) {
+            observability.runtimeState().recordBackendProbeFailure(
+                backend.name(),
+                error,
+                config.latencyRouting());
+          }
         }
       }
 
       KerberosHealthProbe.KerberosStatus frontDoorKerberos = configKerberosStatus();
       KerberosHealthProbe.KerberosStatus backendKerberos = backendKerberosStatus();
-      boolean ready = backendConnectivity && frontDoorKerberos.healthy() && backendKerberos.healthy();
-
       List<ProxyRuntimeState.BackendRuntimeStatus> statuses = observability.runtimeState().backendStatuses();
+      boolean backendConnectivity = statuses.stream().allMatch(ProxyRuntimeState.BackendRuntimeStatus::connected);
+      boolean ready = statuses.stream().allMatch(status ->
+          status.connected()
+              && !status.degraded()
+              && status.circuitState() == ProxyRuntimeState.CircuitState.CLOSED)
+          && frontDoorKerberos.healthy()
+          && backendKerberos.healthy();
       StringBuilder body = new StringBuilder(512);
       body.append("{\"status\":\"").append(ready ? "ready" : "degraded").append("\",")
           .append("\"alive\":true,")
@@ -119,6 +131,14 @@ public final class ManagementHttpServer implements AutoCloseable {
             .append("\"lastSuccessEpochSecond\":").append(status.lastSuccessEpochSecond()).append(',')
             .append("\"lastFailureEpochSecond\":").append(status.lastFailureEpochSecond()).append(',')
             .append("\"lastProbeEpochSecond\":").append(status.lastProbeEpochSecond()).append(',')
+            .append("\"lastLatencyMs\":").append(status.lastLatencyMs()).append(',')
+            .append("\"latencyEwmaMs\":").append(status.latencyEwmaMs()).append(',')
+            .append("\"baselineTimeoutMs\":").append(status.baselineTimeoutMs()).append(',')
+            .append("\"adaptiveTimeoutMs\":").append(status.adaptiveTimeoutMs()).append(',')
+            .append("\"latencyBudgetMs\":").append(status.latencyBudgetMs()).append(',')
+            .append("\"circuitState\":\"").append(status.circuitState()).append("\",")
+            .append("\"consecutiveFailures\":").append(status.consecutiveFailures()).append(',')
+            .append("\"circuitRetryAtEpochMs\":").append(status.circuitRetryAtEpochMs()).append(',')
             .append("\"lastError\":");
         if (status.lastError() == null) {
           body.append("null");
