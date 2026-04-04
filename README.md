@@ -90,6 +90,11 @@ GitHub Actions publishes prerelease builds automatically:
 - a nightly run is scheduled for `00:00 UTC` every day and publishes a `nightly-YYYYMMDD` prerelease from the current `main` head
 - each prerelease also gets auto-generated GitHub release notes for that tag
 
+Manual releases are published through the `Release` workflow:
+- start it with `workflow_dispatch`
+- pass only `major_minor` such as `1.7`
+- the workflow computes the next patch version automatically and publishes a GitHub release tag like `v1.7.0`, `v1.7.1`, and so on
+
 ## Run
 
 ```bash
