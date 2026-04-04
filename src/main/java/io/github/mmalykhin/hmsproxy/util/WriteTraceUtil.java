@@ -1,10 +1,10 @@
 package io.github.mmalykhin.hmsproxy.util;
 
+import io.github.mmalykhin.hmsproxy.routing.HmsOperationRegistry;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.Database;
@@ -21,36 +21,6 @@ import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.TableValidWriteIds;
 
 public final class WriteTraceUtil {
-  private static final Set<String> TRACE_METHODS = Set.of(
-      "get_database",
-      "get_table",
-      "get_table_req",
-      "get_valid_write_ids",
-      "open_txns",
-      "allocate_table_write_ids",
-      "lock",
-      "check_lock",
-      "commit_txn",
-      "rollback_txn",
-      "abort_txn",
-      "add_write_notification_log",
-      "heartbeat",
-      "heartbeat_txn_range",
-      "truncate_table",
-      "alter_table",
-      "alter_table_with_environment_context",
-      "add_partition",
-      "add_partitions",
-      "add_partitions_req",
-      "append_partition",
-      "append_partition_by_name",
-      "alter_partition",
-      "alter_partitions",
-      "rename_partition",
-      "set_aggr_stats_for",
-      "update_table_column_statistics",
-      "update_partition_column_statistics"
-  );
   private static final List<String> TABLE_PARAMETER_KEYS = List.of(
       "EXTERNAL",
       "TRANSLATED_TO_EXTERNAL",
@@ -69,7 +39,7 @@ public final class WriteTraceUtil {
   }
 
   public static boolean shouldTrace(String methodName) {
-    return TRACE_METHODS.contains(methodName);
+    return HmsOperationRegistry.describe(methodName).trace();
   }
 
   public static String summarizeArgs(Object[] args) {

@@ -1,38 +1,9 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import java.util.List;
-import java.util.Locale;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 
 final class CatalogAccessModeGuard {
-  private static final List<String> READ_PREFIXES = List.of("get_", "list_", "show_");
-  private static final List<String> WRITE_PREFIXES = List.of(
-      "create_",
-      "alter_",
-      "drop_",
-      "truncate_",
-      "append_",
-      "add_",
-      "set_",
-      "update_",
-      "delete_",
-      "remove_",
-      "grant_",
-      "revoke_",
-      "rename_",
-      "exchange_",
-      "open_",
-      "commit_",
-      "abort_",
-      "rollback_",
-      "allocate_",
-      "lock",
-      "unlock",
-      "heartbeat",
-      "compact_",
-      "mark_");
-
   private CatalogAccessModeGuard() {
   }
 
@@ -71,24 +42,7 @@ final class CatalogAccessModeGuard {
   }
 
   static boolean isWriteOperation(String methodName) {
-    if (methodName == null || methodName.isBlank()) {
-      return false;
-    }
-    String normalized = methodName.toLowerCase(Locale.ROOT);
-    if (normalized.equals("addwritenotificationlog")) {
-      return true;
-    }
-    for (String prefix : READ_PREFIXES) {
-      if (normalized.startsWith(prefix)) {
-        return false;
-      }
-    }
-    for (String prefix : WRITE_PREFIXES) {
-      if (normalized.startsWith(prefix)) {
-        return true;
-      }
-    }
-    return false;
+    return HmsOperationRegistry.describe(methodName).mutating();
   }
 
   private static String normalizeDbName(String backendDbName) {

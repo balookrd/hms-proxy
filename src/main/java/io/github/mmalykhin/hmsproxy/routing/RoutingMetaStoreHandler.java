@@ -49,92 +49,6 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
   private static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
   private static final ThreadLocal<RequestObservation> REQUEST_OBSERVATION = new ThreadLocal<>();
-  private static final List<String> DB_STRING_METHODS = List.of(
-      "get_database",
-      "drop_database",
-      "alter_database",
-      "get_all_tables",
-      "get_tables",
-      "get_tables_by_type",
-      "get_materialized_views_for_rewriting",
-      "get_table",
-      "get_table_objects_by_name",
-      "truncate_table",
-      "drop_table",
-      "drop_table_with_environment_context",
-      "get_fields",
-      "get_fields_with_environment_context",
-      "get_schema",
-      "get_schema_with_environment_context",
-      "get_table_names_by_filter"
-  );
-  private static final List<String> DB_FIRST_STRING_METHODS = List.of(
-      "update_creation_metadata",
-      "append_partition",
-      "append_partition_with_environment_context",
-      "append_partition_by_name",
-      "append_partition_by_name_with_environment_context",
-      "drop_partition",
-      "drop_partition_with_environment_context",
-      "drop_partition_by_name",
-      "drop_partition_by_name_with_environment_context",
-      "get_partition",
-      "get_partition_with_auth",
-      "get_partition_by_name",
-      "get_partitions",
-      "get_partitions_with_auth",
-      "get_partitions_pspec",
-      "get_partition_names",
-      "get_partitions_ps",
-      "get_partitions_ps_with_auth",
-      "get_partition_names_ps",
-      "get_partitions_by_filter",
-      "get_part_specs_by_filter",
-      "get_num_partitions_by_filter",
-      "get_partitions_by_names",
-      "markPartitionForEvent",
-      "isPartitionMarkedForEvent",
-      "get_table_column_statistics",
-      "get_partition_column_statistics",
-      "delete_partition_column_statistics",
-      "delete_table_column_statistics",
-      "drop_function",
-      "alter_function",
-      "get_functions",
-      "get_function",
-      "get_lock_materialization_rebuild",
-      "heartbeat_lock_materialization_rebuild"
-  );
-  private static final List<String> TABLE_NAME_LIST_METHODS = List.of(
-      "get_all_tables",
-      "get_tables",
-      "get_tables_by_type",
-      "get_materialized_views_for_rewriting",
-      "get_table_names_by_filter"
-  );
-  private static final List<String> EXACT_TABLE_READ_METHODS = List.of(
-      "get_table",
-      "get_fields",
-      "get_fields_with_environment_context",
-      "get_schema",
-      "get_schema_with_environment_context",
-      "get_partition",
-      "get_partition_with_auth",
-      "get_partition_by_name",
-      "get_partitions",
-      "get_partitions_with_auth",
-      "get_partitions_pspec",
-      "get_partition_names",
-      "get_partitions_ps",
-      "get_partitions_ps_with_auth",
-      "get_partition_names_ps",
-      "get_partitions_by_filter",
-      "get_part_specs_by_filter",
-      "get_num_partitions_by_filter",
-      "get_partitions_by_names",
-      "get_table_column_statistics",
-      "get_partition_column_statistics"
-  );
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final FrontDoorSecurity frontDoorSecurity;
@@ -216,7 +130,8 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
         case "get_catalog" -> handleGetCatalog(args);
         case "get_config_value" -> handleGetConfigValue(method, args);
         case "create_catalog", "alter_catalog", "drop_catalog" ->
-            throw metaException("Catalog definitions are managed by proxy config, not via HMS API");
+            throw metaException("Catalog definitions are policy-owned by proxy config; HMS API catalog mutations"
+                + " are disabled to preserve explicit namespace ownership");
         case "get_all_databases" -> handleGetAllDatabases(method);
         case "get_databases" -> handleGetDatabases(method, args);
         case "lock" -> handleLock(method, args);
@@ -597,59 +512,28 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
     String methodName = method.getName();
+    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
     if (args == null || args.length == 0) {
       return invokeGlobal(method, args);
     }
-
-    if (DB_STRING_METHODS.contains(methodName) && args[0] instanceof String dbName) {
-      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
-      currentObservation().recordNamespace(namespace);
-      recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
-      validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
-      validateReadExposure(methodName, namespace, args);
-      Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
-      Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      result = filterReadResult(methodName, namespace, result);
-      return federationLayer.externalizeResult(result, namespace);
-    }
-
-    CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
-    if (extractedNamespace != null) {
-      currentObservation().recordNamespace(extractedNamespace);
-      validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
-      validateReadExposure(methodName, extractedNamespace, args);
-      Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
-      Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
-      result = filterReadResult(methodName, extractedNamespace, result);
-      return federationLayer.externalizeResult(result, extractedNamespace);
-    }
-    if (DB_FIRST_STRING_METHODS.contains(methodName)
-        && args.length > 1
-        && args[0] instanceof String dbName
-        && args[1] instanceof String) {
-      CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
-      currentObservation().recordNamespace(namespace);
-      recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
-      validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
-      validateReadExposure(methodName, namespace, args);
-      Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
-      Object result = invokeBackend(namespace.backend(), method, routedArgs);
-      result = filterReadResult(methodName, namespace, result);
-      return federationLayer.externalizeResult(result, namespace);
-    }
-
-    return invokeGlobal(method, args);
+    return switch (operation.namespaceStrategy()) {
+      case NONE -> invokeGlobal(method, args);
+      case DB_STRING_ARG0 -> routeByDbStringArgument(method, args);
+      case DB_FIRST_STRING_ARG0 -> routeByDbFirstStringArguments(method, args);
+      case EXTRACT_FROM_ARGS -> routeByExtractedNamespace(method, args);
+    };
   }
 
   private Object invokeGlobal(Method method, Object[] args) throws Throwable {
     Optional<Object> compatibilityFallback = compatibilityLayer.fallback(
         method.getName(),
-        metaException("Operation " + method.getName() + " has no catalog context"));
+        metaException("Operation " + method.getName()
+            + " does not carry explicit namespace ownership for deterministic routing"));
     if (!DefaultBackendRoutingPolicy.routesToDefaultBackend(method.getName())
         && !router.singleCatalog()
         && compatibilityFallback.isPresent()) {
       currentObservation().markFallback();
-      LOG.warn("requestId={} method={} has no catalog context, returning compatibility fallback",
+      LOG.warn("requestId={} method={} has no explicit namespace ownership, returning compatibility fallback",
           currentRequestId(), method.getName());
       return compatibilityFallback.get();
     }
@@ -661,7 +545,8 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
     if (!router.singleCatalog()) {
       throw metaException("Operation " + method.getName()
-          + " has no catalog context; use explicit catalog.db naming or a catalog-aware request");
+          + " requires explicit namespace ownership for deterministic routing; use explicit catalog.db naming"
+          + " or a catalog-aware request so the proxy can fail safely instead of guessing a target catalog");
     }
     currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
     observability.metrics().recordDefaultCatalogRoute(method.getName());
@@ -870,11 +755,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
       throws TException {
-    if (CatalogAccessModeGuard.isWriteOperation(methodName)) {
+    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    if (operation.mutating()) {
       return;
     }
     validateExposedDatabaseAccess(methodName, namespace);
-    String tableName = extractExplicitTableReadName(methodName, args);
+    String tableName = extractExplicitTableReadName(operation, args);
     if (tableName != null) {
       validateExposedTableAccess(methodName, namespace, tableName);
     }
@@ -907,19 +793,16 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private Object filterReadResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
       throws TException {
-    if (CatalogAccessModeGuard.isWriteOperation(methodName) || result == null) {
+    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    if (operation.mutating() || result == null) {
       return result;
     }
-    if (TABLE_NAME_LIST_METHODS.contains(methodName)) {
-      return filterTableNameList(methodName, namespace, result);
-    }
-    if ("get_table".equals(methodName) || "get_table_req".equals(methodName)) {
-      return filterSingleTableResult(methodName, namespace, result);
-    }
-    if ("get_table_objects_by_name".equals(methodName) || "get_table_objects_by_name_req".equals(methodName)) {
-      return filterTableCollectionResult(methodName, namespace, result);
-    }
-    return result;
+    return switch (operation.readResultFilterKind()) {
+      case NONE -> result;
+      case TABLE_NAME_LIST -> filterTableNameList(methodName, namespace, result);
+      case SINGLE_TABLE -> filterSingleTableResult(methodName, namespace, result);
+      case TABLE_COLLECTION -> filterTableCollectionResult(methodName, namespace, result);
+    };
   }
 
   private Object filterSingleTableResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
@@ -979,17 +862,18 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     observability.metrics().recordFilteredObject(methodName, catalogName, objectType);
   }
 
-  private static String extractExplicitTableReadName(String methodName, Object[] args) {
+  private static String extractExplicitTableReadName(
+      HmsOperationRegistry.OperationMetadata operation,
+      Object[] args
+  ) {
     if (args == null || args.length == 0) {
       return null;
     }
-    if ("get_table_req".equals(methodName) && args[0] instanceof GetTableRequest request) {
-      return blankToNull(request.getTblName());
-    }
-    if (!EXACT_TABLE_READ_METHODS.contains(methodName) || args.length < 2 || !(args[1] instanceof String tableName)) {
-      return null;
-    }
-    return blankToNull(tableName);
+    return switch (operation.tableExposureMode()) {
+      case NONE -> null;
+      case TABLE_REQUEST -> args[0] instanceof GetTableRequest request ? blankToNull(request.getTblName()) : null;
+      case TABLE_ARG1 -> args.length >= 2 && args[1] instanceof String tableName ? blankToNull(tableName) : null;
+    };
   }
 
   private static String extractTableName(Object value) {
@@ -1227,6 +1111,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     fields.put("event", "hms_proxy_audit");
     fields.put("requestId", requestId);
     fields.put("method", observation.method());
+    fields.put("operationClass", observation.operationClass());
     fields.put("catalog", observation.catalog());
     fields.put("backend", observation.backend());
     fields.put("status", observation.status());
@@ -1245,8 +1130,53 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     return observation == null ? new RequestObservation("unknown") : observation;
   }
 
+  private Object routeByDbStringArgument(Method method, Object[] args) throws Throwable {
+    if (!(args[0] instanceof String dbName)) {
+      return invokeGlobal(method, args);
+    }
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+    currentObservation().recordNamespace(namespace);
+    recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
+    validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
+    validateReadExposure(method.getName(), namespace, args);
+    Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
+    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    result = filterReadResult(method.getName(), namespace, result);
+    return federationLayer.externalizeResult(result, namespace);
+  }
+
+  private Object routeByDbFirstStringArguments(Method method, Object[] args) throws Throwable {
+    if (args.length <= 1 || !(args[0] instanceof String dbName) || !(args[1] instanceof String)) {
+      return invokeGlobal(method, args);
+    }
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+    currentObservation().recordNamespace(namespace);
+    recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
+    validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
+    validateReadExposure(method.getName(), namespace, args);
+    Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
+    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    result = filterReadResult(method.getName(), namespace, result);
+    return federationLayer.externalizeResult(result, namespace);
+  }
+
+  private Object routeByExtractedNamespace(Method method, Object[] args) throws Throwable {
+    CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
+    if (extractedNamespace == null) {
+      return invokeGlobal(method, args);
+    }
+    currentObservation().recordNamespace(extractedNamespace);
+    validateCatalogAccess(extractedNamespace.backend(), method.getName(), extractedNamespace.backendDbName());
+    validateReadExposure(method.getName(), extractedNamespace, args);
+    Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
+    Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
+    result = filterReadResult(method.getName(), extractedNamespace, result);
+    return federationLayer.externalizeResult(result, extractedNamespace);
+  }
+
   private static final class RequestObservation {
     private final String method;
+    private final String operationClass;
     private String catalog = "none";
     private String backend = "none";
     private String status = "ok";
@@ -1257,6 +1187,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     private RequestObservation(String method) {
       this.method = method;
+      this.operationClass = HmsOperationRegistry.describe(method).operationClass().wireName();
     }
 
     private String method() {
@@ -1273,6 +1204,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     private String status() {
       return status;
+    }
+
+    private String operationClass() {
+      return operationClass;
     }
 
     private boolean routed() {

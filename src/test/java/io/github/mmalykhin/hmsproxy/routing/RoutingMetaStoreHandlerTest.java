@@ -315,7 +315,7 @@ public class RoutingMetaStoreHandlerTest {
         MetaException.class,
         () -> handler.invoke(null, method, new Object[] {"metastore.thrift.uris", "thrift://override"}));
 
-    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+    Assert.assertTrue(error.getMessage().contains("requires explicit namespace ownership"));
   }
 
   @Test
@@ -338,7 +338,7 @@ public class RoutingMetaStoreHandlerTest {
             method,
             new Object[] {"admin_role", "alice", PrincipalType.USER, "hive", PrincipalType.USER, false}));
 
-    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+    Assert.assertTrue(error.getMessage().contains("requires explicit namespace ownership"));
   }
 
   @Test
@@ -355,7 +355,7 @@ public class RoutingMetaStoreHandlerTest {
         MetaException.class,
         () -> handler.invoke(null, method, new Object[] {"admin_role", "alice", PrincipalType.USER}));
 
-    Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+    Assert.assertTrue(error.getMessage().contains("requires explicit namespace ownership"));
   }
 
   @Test
@@ -1996,7 +1996,7 @@ public class RoutingMetaStoreHandlerTest {
     }
 
     MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, args));
-    Assert.assertTrue(error.getMessage().contains("managed by proxy config"));
+    Assert.assertTrue(error.getMessage().contains("policy-owned by proxy config"));
   }
 
   private static Object childTable(ClassLoader classLoader, String dbName, String tableName) throws Exception {
