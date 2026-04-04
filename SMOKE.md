@@ -31,6 +31,10 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail with an explicit `requires a Hortonworks backend runtime` style error. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
 
+Practical automation:
+- for the Beeline / HS2 blocks below, you can automate them with `scripts/run-real-installation-smoke-simple.sh --scenario sql`
+- for the Beeline / HS2 blocks below with Kerberos, use `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+
 **1. Basic Front-Door Check**
 ```sql
 set -v;
@@ -269,6 +273,8 @@ lock lifecycle directly through HMS thrift. Run them against a catalog that is n
 proxy point of view. In the examples below, assume `apache` is not `routing.default-catalog`.
 
 Practical runner:
+- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario locks`
+- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
 - build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
 
@@ -311,6 +317,9 @@ These checks are best done not only through Beeline, but also through a direct H
 because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
 
 Practical runner:
+- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario all`
+- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
+- set `HMS_SMOKE_TXN_SECONDARY_*` if you want the runner to validate both default Hortonworks and default Apache txn targets
 - build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
 - `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
@@ -346,6 +355,11 @@ Expected:
 - the proxy returns an explicit `requires a Hortonworks backend runtime` error
 - there is no silent success
 - no side notification traffic appears on the Apache backend
+
+Practical runner:
+- set `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
+- then run `scripts/run-real-installation-smoke-simple.sh --scenario notification` or
+  `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
 **12. Mixed Runtime Switching Check**
 

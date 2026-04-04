@@ -47,12 +47,20 @@ impersonation of the authenticated Kerberos caller.
 
 This matrix is the public contract for how to think about the proxy. It is intentionally grouped by
 client shape, advertised front door, backend runtime, auth mode, and method family rather than by
-individual thrift method names.
+individual thrift method names. The table is generated from [capabilities.yaml](capabilities.yaml)
+and each capability row is linked to smoke-test coverage in the test suite.
 
+Refresh the generated table with:
+
+```bash
+mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true test
+```
+
+<!-- BEGIN GENERATED: capability-matrix -->
 | Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
 | --- | --- | --- | --- | --- | --- |
 | Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` or `KERBEROS` | catalog-aware reads/writes, legacy `catalog<separator>db` routing, view rewrite | Supported as the baseline deployment. |
-| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | read paths and selected metadata writes that can fall back from `*_req` APIs | Supported with compatibility downgrade; some calls are degraded to legacy RPCs. |
+| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | read paths, selected metadata writes that can fall back from `*_req` APIs | Supported with compatibility downgrade; some calls are degraded to legacy RPCs. |
 | Hortonworks clients that only expect a Hortonworks front-door identity via `getVersion()` | `HORTONWORKS_*` without standalone jar | `APACHE_3_1_3` or Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | overlapping Apache/HDP method families | Supported when changing the advertised profile is enough for the client. |
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Supported when the matching Hortonworks front-door and backend runtime jars are configured. |
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
@@ -60,6 +68,7 @@ individual thrift method names.
 | HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT` and `NO_TXN` DDL locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
 | Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
 | Clients attempting global writes without a resolvable catalog or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
+<!-- END GENERATED: capability-matrix -->
 
 ## Scope notes
 
@@ -176,6 +185,7 @@ Current Prometheus metrics:
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}`
 - `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
 - `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
 - `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
@@ -200,6 +210,7 @@ Metric semantics:
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+- `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
@@ -271,6 +282,37 @@ routing.catalog-db-separator=__
 ```
 
 With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
+
+### Selective federation exposure
+
+You can publish only part of a backend namespace while keeping routing and write policy unchanged.
+This is useful for gradual migration, safer multi-tenant rollout, and avoiding accidental metadata
+exposure.
+
+Per catalog:
+
+```properties
+# Backward-compatible default
+catalog.catalog1.expose-mode=ALLOW_ALL
+
+# Safer rollout mode: only matched objects are visible
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales,finance_.*
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
+```
+
+Rules:
+
+- regexes are matched case-insensitively
+- `catalog.<name>.expose-db-patterns` is an allowlist for backend database names inside that catalog
+- `catalog.<name>.expose-table-patterns.<dbRegex>` is an allowlist for table names inside databases whose backend db name matches `<dbRegex>`
+- table rules narrow visibility for matching databases; unmatched tables are filtered out
+- with `DENY_BY_DEFAULT`, databases without a matching db rule or table rule are hidden
+- a matching table rule can expose a database even when no db-level rule is present, but only matching tables inside that database stay visible
+
+The filter is applied on metadata read paths such as `get_all_databases`, `get_databases`,
+`get_table*`, `get_tables*`, `get_table_meta`, and Hortonworks `get_tables_ext`.
 
 ## Transactional DDL guard
 
@@ -693,12 +735,26 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
+And you can independently restrict which metadata is visible from each backend:
+
+```properties
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+```
+
 Supported modes:
 
 - `READ_WRITE`: default behavior
 - `READ_ONLY`: only read RPCs are allowed for that catalog
 - `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
   `catalog.<name>.write-db-whitelist`
+
+Exposure modes:
+
+- `ALLOW_ALL`: default metadata exposure behavior for `catalog.<name>.expose-mode`
+- `DENY_BY_DEFAULT`: metadata is hidden unless matched by `catalog.<name>.expose-db-patterns` or
+  `catalog.<name>.expose-table-patterns.<dbRegex>`
 
 This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
 the metastore URI and Kerberos settings.
@@ -856,3 +912,53 @@ Useful notes:
   `CREATE TABLE` and partition rename/drop without going through Beeline
 - `notification` should succeed for a Hortonworks-routed catalog and fail with
   `requires a Hortonworks backend runtime` for an Apache-routed catalog
+
+### Automated Real-installation Smoke
+
+For repeated checks on a real proxy installation, use separate runners for `simple` and `kerberos`
+front doors:
+
+- [`scripts/run-real-installation-smoke-simple.sh`](scripts/run-real-installation-smoke-simple.sh)
+- [`scripts/run-real-installation-smoke-kerberos.sh`](scripts/run-real-installation-smoke-kerberos.sh)
+
+They wrap the same smoke client and run a fail-fast scenario of:
+
+- optional Beeline / HiveServer2 SQL smoke from [SMOKE.md](SMOKE.md)
+- direct txn/ACID smoke
+- non-default catalog DB lock smoke
+- optional partition lock smoke
+- optional Hortonworks notification smoke
+
+Start from the matching example config:
+
+```bash
+cp scripts/hms-real-installation-smoke.simple.env.example scripts/hms-real-installation-smoke.simple.env
+cp scripts/hms-real-installation-smoke.kerberos.env.example scripts/hms-real-installation-smoke.kerberos.env
+```
+
+Then edit the relevant `HMS_SMOKE_*` values and run:
+
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario all
+scripts/run-real-installation-smoke-kerberos.sh --scenario all
+```
+
+Or run a narrower slice:
+
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario sql
+scripts/run-real-installation-smoke-simple.sh --scenario locks
+scripts/run-real-installation-smoke-kerberos.sh --scenario notification
+```
+
+Notes:
+
+- by default the runner picks the newest `target/hms-proxy-*-fat.jar`
+- you can override the jar path with `HMS_SMOKE_FAT_JAR`
+- if `HMS_SMOKE_BEELINE_JDBC_URL` is configured, `all` also runs the Beeline / HiveServer2 SQL smoke from `SMOKE.md`
+- SQL smoke uses `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE` and can optionally run transactional SQL and materialized-view checks
+- if `HMS_SMOKE_TXN_SECONDARY_DB` and `HMS_SMOKE_TXN_SECONDARY_TABLE` are set, the runner executes a second direct txn smoke target
+- if `HMS_SMOKE_NOTIFICATION_*` is not configured, the notification step is skipped in `all`
+- if `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE` are set, the runner also executes the negative Apache-backend notification check from `SMOKE.md`
+- the simple runner auto-loads `scripts/hms-real-installation-smoke.simple.env` when it exists
+- the Kerberos runner auto-loads `scripts/hms-real-installation-smoke.kerberos.env` when it exists

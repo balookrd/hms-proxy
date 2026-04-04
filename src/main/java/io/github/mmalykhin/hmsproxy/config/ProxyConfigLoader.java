@@ -8,10 +8,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.stream.Collectors;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 public final class ProxyConfigLoader {
   private ProxyConfigLoader() {
@@ -138,6 +141,11 @@ public final class ProxyConfigLoader {
       ProxyConfig.CatalogAccessMode catalogAccessMode = parseCatalogAccessMode(
           trimToNull(properties.getProperty(prefix + "access-mode")));
       String[] catalogWriteDbWhitelist = splitCsv(get(properties, prefix + "write-db-whitelist", ""));
+      ProxyConfig.CatalogExposureMode catalogExposureMode = parseCatalogExposureMode(
+          trimToNull(properties.getProperty(prefix + "expose-mode")));
+      String[] catalogExposeDbPatterns = splitCsv(get(properties, prefix + "expose-db-patterns", ""));
+      validateRegexList(prefix + "expose-db-patterns", catalogExposeDbPatterns);
+      Map<String, List<String>> catalogExposeTablePatterns = parseExposeTablePatterns(properties, prefix);
       MetastoreRuntimeProfile catalogRuntimeProfile = parseRuntimeProfile(
           trimToNull(properties.getProperty(prefix + "runtime-profile")));
       String catalogBackendStandaloneMetastoreJar =
@@ -164,6 +172,9 @@ public final class ProxyConfigLoader {
           catalogImpersonationEnabled,
           catalogAccessMode,
           Arrays.asList(catalogWriteDbWhitelist),
+          catalogExposureMode,
+          Arrays.asList(catalogExposeDbPatterns),
+          catalogExposeTablePatterns,
           catalogRuntimeProfile,
           catalogBackendStandaloneMetastoreJar,
           hiveConf));
@@ -383,6 +394,20 @@ public final class ProxyConfigLoader {
     }
   }
 
+  private static ProxyConfig.CatalogExposureMode parseCatalogExposureMode(String value) {
+    if (value == null) {
+      return ProxyConfig.CatalogExposureMode.ALLOW_ALL;
+    }
+    try {
+      return ProxyConfig.CatalogExposureMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for catalog.<name>.expose-mode: " + value
+              + ". Expected one of: ALLOW_ALL, DENY_BY_DEFAULT",
+          e);
+    }
+  }
+
   private static ProxyConfig.ViewTextRewriteMode parseViewTextRewriteMode(String value) {
     if (value == null) {
       return ProxyConfig.ViewTextRewriteMode.DISABLED;
@@ -393,6 +418,45 @@ public final class ProxyConfigLoader {
       throw new IllegalArgumentException(
           "Invalid value for federation.view-text-rewrite.mode: " + value
               + ". Expected one of: DISABLED, REWRITE",
+          e);
+    }
+  }
+
+  private static Map<String, List<String>> parseExposeTablePatterns(Properties properties, String prefix) {
+    String propertyPrefix = prefix + "expose-table-patterns.";
+    Map<String, List<String>> patterns = new LinkedHashMap<>();
+    for (String propertyName : properties.stringPropertyNames().stream()
+        .filter(name -> name.startsWith(propertyPrefix))
+        .sorted()
+        .toList()) {
+      String dbPattern = trimToNull(propertyName.substring(propertyPrefix.length()));
+      if (dbPattern == null) {
+        throw new IllegalArgumentException(propertyName + " must not have a blank database pattern suffix");
+      }
+      String rawValue = properties.getProperty(propertyName);
+      String[] tablePatterns = splitCsv(get(properties, propertyName, ""));
+      if (rawValue != null && tablePatterns.length == 0) {
+        throw new IllegalArgumentException(propertyName + " must define at least one table regex");
+      }
+      validateRegex(propertyName + " (db pattern)", dbPattern);
+      validateRegexList(propertyName, tablePatterns);
+      patterns.put(dbPattern, Arrays.asList(tablePatterns));
+    }
+    return patterns;
+  }
+
+  private static void validateRegexList(String propertyName, String[] patterns) {
+    for (String pattern : patterns) {
+      validateRegex(propertyName, pattern);
+    }
+  }
+
+  private static void validateRegex(String propertyName, String pattern) {
+    try {
+      Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
+    } catch (PatternSyntaxException e) {
+      throw new IllegalArgumentException(
+          "Invalid regex for " + propertyName + ": " + pattern + " - " + e.getMessage(),
           e);
     }
   }

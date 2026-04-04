@@ -36,6 +36,7 @@ import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.thrift.TException;
@@ -103,6 +104,36 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       "get_function",
       "get_lock_materialization_rebuild",
       "heartbeat_lock_materialization_rebuild"
+  );
+  private static final List<String> TABLE_NAME_LIST_METHODS = List.of(
+      "get_all_tables",
+      "get_tables",
+      "get_tables_by_type",
+      "get_materialized_views_for_rewriting",
+      "get_table_names_by_filter"
+  );
+  private static final List<String> EXACT_TABLE_READ_METHODS = List.of(
+      "get_table",
+      "get_fields",
+      "get_fields_with_environment_context",
+      "get_schema",
+      "get_schema_with_environment_context",
+      "get_partition",
+      "get_partition_with_auth",
+      "get_partition_by_name",
+      "get_partitions",
+      "get_partitions_with_auth",
+      "get_partitions_pspec",
+      "get_partition_names",
+      "get_partitions_ps",
+      "get_partitions_ps_with_auth",
+      "get_partition_names_ps",
+      "get_partitions_by_filter",
+      "get_part_specs_by_filter",
+      "get_num_partitions_by_filter",
+      "get_partitions_by_names",
+      "get_table_column_statistics",
+      "get_partition_column_statistics"
   );
   private final ProxyConfig config;
   private final CatalogRouter router;
@@ -285,13 +316,17 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
               + "'");
     }
     validateCatalogAccess(backend, "get_tables_ext", namespace.backendDbName());
+    validateExposedDatabaseAccess("get_tables_ext", namespace);
     Object routedRequest = request.getClass().getConstructor(request.getClass()).newInstance(request);
     routedRequest.getClass().getMethod("setDatabase", String.class).invoke(routedRequest, namespace.backendDbName());
     String internalCatalog = NamespaceTranslator.internalCatalogName(catalogName, dbName, namespace,
         federationLayer.preserveBackendCatalogName());
     routedRequest.getClass().getMethod("setCatalog", String.class)
         .invoke(routedRequest, internalCatalog == null ? catalogName : internalCatalog);
-    return invokeBackendNamed(backend, "get_tables_ext", routedRequest);
+    return filterTableCollectionResult(
+        "get_tables_ext",
+        namespace,
+        invokeBackendNamed(backend, "get_tables_ext", routedRequest));
   }
 
   @Override
@@ -314,6 +349,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       for (Object table : tables) {
         String dbName = NamespaceTranslator.extractDbName(table);
         CatalogRouter.ResolvedNamespace namespace = router.resolveCatalog(config.defaultCatalog(), dbName);
+        String tableName = extractTableName(table);
+        if (!federationLayer.isDatabaseExposed(namespace)
+            || (tableName != null && !federationLayer.isTableExposed(namespace, tableName))) {
+          recordFilteredObject("get_all_materialized_view_objects_for_rewriting", namespace.catalogName(), "table");
+          continue;
+        }
         externalized.add(federationLayer.externalizeResult(table, namespace));
       }
       return externalized;
@@ -338,6 +379,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       @SuppressWarnings("unchecked")
       List<String> backendDatabases = (List<String>) invokeBackend(backend, method, null);
       for (String database : backendDatabases) {
+        if (!federationLayer.isDatabaseExposed(backend.name(), database)) {
+          recordFilteredObject(method.getName(), backend.name(), "database");
+          continue;
+        }
         databases.add(federationLayer.externalDatabaseName(backend.name(), database));
       }
     }
@@ -352,9 +397,15 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       @SuppressWarnings("unchecked")
       List<String> backendDatabases =
           (List<String>) invokeBackend(resolved.backend(), method, new Object[] {resolved.backendDbName()});
-      return backendDatabases.stream()
-          .map(db -> federationLayer.externalDatabaseName(resolved.catalogName(), db))
-          .toList();
+      List<String> databases = new ArrayList<>();
+      for (String backendDatabase : backendDatabases) {
+        if (!federationLayer.isDatabaseExposed(resolved.catalogName(), backendDatabase)) {
+          recordFilteredObject(method.getName(), resolved.catalogName(), "database");
+          continue;
+        }
+        databases.add(federationLayer.externalDatabaseName(resolved.catalogName(), backendDatabase));
+      }
+      return databases;
     }
 
     currentObservation().recordFanout();
@@ -364,6 +415,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       List<String> backendDatabases =
           (List<String>) invokeBackend(backend, method, new Object[] {pattern});
       for (String database : backendDatabases) {
+        if (!federationLayer.isDatabaseExposed(backend.name(), database)) {
+          recordFilteredObject(method.getName(), backend.name(), "database");
+          continue;
+        }
         databases.add(federationLayer.externalDatabaseName(backend.name(), database));
       }
     }
@@ -382,9 +437,15 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
           resolved.backend(), method, new Object[] {resolved.backendDbName(), tablePattern, tableTypes});
-      return backendResults.stream()
-          .map(result -> federationLayer.externalizeTableMeta(result, resolved))
-          .toList();
+      List<TableMeta> results = new ArrayList<>();
+      for (TableMeta result : backendResults) {
+        if (!federationLayer.isTableExposed(resolved, result.getTableName())) {
+          recordFilteredObject(method.getName(), resolved.catalogName(), "table");
+          continue;
+        }
+        results.add(federationLayer.externalizeTableMeta(result, resolved));
+      }
+      return results;
     }
 
     currentObservation().recordFanout();
@@ -394,6 +455,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       List<TableMeta> backendResults =
           (List<TableMeta>) invokeBackend(backend, method, new Object[] {dbPattern, tablePattern, tableTypes});
       for (TableMeta result : backendResults) {
+        if (!federationLayer.isTableExposed(backend.name(), result.getDbName(), result.getTableName())) {
+          recordFilteredObject(method.getName(), backend.name(), "table");
+          continue;
+        }
         results.add(NamespaceTranslator.externalizeTableMeta(
             result,
             router.resolveCatalog(backend.name(), result.getDbName()),
@@ -410,8 +475,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit(method.getName(), request.getCatName(), request.getDbName(), namespace);
     CatalogBackend backend = namespace.backend();
+    validateExposedDatabaseAccess(method.getName(), namespace);
+    validateExposedTableAccess(method.getName(), namespace, request.getTblName());
     GetTableRequest routedRequest = (GetTableRequest) federationLayer.internalizeTableRequest(request, namespace);
     Object result = invokeBackendRequest(backend, routedRequest, method.getName());
+    result = filterSingleTableResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
 
@@ -422,8 +490,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit(method.getName(), request.getCatName(), request.getDbName(), namespace);
     CatalogBackend backend = namespace.backend();
+    validateExposedDatabaseAccess(method.getName(), namespace);
     GetTablesRequest routedRequest = (GetTablesRequest) federationLayer.internalizeTablesRequest(request, namespace);
     Object result = invokeBackendRequest(backend, routedRequest, method.getName());
+    result = filterTableCollectionResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
 
@@ -536,8 +606,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       currentObservation().recordNamespace(namespace);
       recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
       validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
+      validateReadExposure(methodName, namespace, args);
       Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
+      result = filterReadResult(methodName, namespace, result);
       return federationLayer.externalizeResult(result, namespace);
     }
 
@@ -545,8 +617,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     if (extractedNamespace != null) {
       currentObservation().recordNamespace(extractedNamespace);
       validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
+      validateReadExposure(methodName, extractedNamespace, args);
       Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
       Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
+      result = filterReadResult(methodName, extractedNamespace, result);
       return federationLayer.externalizeResult(result, extractedNamespace);
     }
     if (DB_FIRST_STRING_METHODS.contains(methodName)
@@ -557,8 +631,10 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       currentObservation().recordNamespace(namespace);
       recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
       validateCatalogAccess(namespace.backend(), methodName, namespace.backendDbName());
+      validateReadExposure(methodName, namespace, args);
       Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
       Object result = invokeBackend(namespace.backend(), method, routedArgs);
+      result = filterReadResult(methodName, namespace, result);
       return federationLayer.externalizeResult(result, namespace);
     }
 
@@ -790,6 +866,196 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
   private static Object cloneWriteNotificationLogRequest(Object request) throws ReflectiveOperationException {
     return request.getClass().getConstructor(request.getClass()).newInstance(request);
+  }
+
+  private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
+      throws TException {
+    if (CatalogAccessModeGuard.isWriteOperation(methodName)) {
+      return;
+    }
+    validateExposedDatabaseAccess(methodName, namespace);
+    String tableName = extractExplicitTableReadName(methodName, args);
+    if (tableName != null) {
+      validateExposedTableAccess(methodName, namespace, tableName);
+    }
+  }
+
+  private void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
+      throws NoSuchObjectException {
+    if (federationLayer.isDatabaseExposed(namespace)) {
+      return;
+    }
+    recordFilteredObject(methodName, namespace.catalogName(), "database");
+    throw new NoSuchObjectException(
+        "Database '" + namespace.externalDbName() + "' is not exposed by proxy catalog '"
+            + namespace.catalogName() + "'");
+  }
+
+  private void validateExposedTableAccess(
+      String methodName,
+      CatalogRouter.ResolvedNamespace namespace,
+      String tableName
+  ) throws NoSuchObjectException {
+    if (federationLayer.isTableExposed(namespace, tableName)) {
+      return;
+    }
+    recordFilteredObject(methodName, namespace.catalogName(), "table");
+    throw new NoSuchObjectException(
+        "Table '" + namespace.externalDbName() + "." + tableName + "' is not exposed by proxy catalog '"
+            + namespace.catalogName() + "'");
+  }
+
+  private Object filterReadResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
+      throws TException {
+    if (CatalogAccessModeGuard.isWriteOperation(methodName) || result == null) {
+      return result;
+    }
+    if (TABLE_NAME_LIST_METHODS.contains(methodName)) {
+      return filterTableNameList(methodName, namespace, result);
+    }
+    if ("get_table".equals(methodName) || "get_table_req".equals(methodName)) {
+      return filterSingleTableResult(methodName, namespace, result);
+    }
+    if ("get_table_objects_by_name".equals(methodName) || "get_table_objects_by_name_req".equals(methodName)) {
+      return filterTableCollectionResult(methodName, namespace, result);
+    }
+    return result;
+  }
+
+  private Object filterSingleTableResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
+      throws TException {
+    Object tableCarrier = result instanceof Table ? result : tryInvokeNoArgs(result, "getTable");
+    String tableName = extractTableName(tableCarrier);
+    if (tableName != null) {
+      validateExposedTableAccess(methodName, namespace, tableName);
+    }
+    return result;
+  }
+
+  private Object filterTableCollectionResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
+      throws TException {
+    if (result instanceof List<?> list) {
+      return filterTableObjectList(methodName, namespace, list);
+    }
+    Object tables = tryInvokeNoArgs(result, "getTables");
+    if (tables instanceof List<?> list) {
+      tryInvokeSetList(result, "setTables", filterTableObjectList(methodName, namespace, list));
+    }
+    return result;
+  }
+
+  private List<Object> filterTableObjectList(String methodName, CatalogRouter.ResolvedNamespace namespace, List<?> tables) {
+    List<Object> filtered = new ArrayList<>(tables.size());
+    for (Object candidate : tables) {
+      String tableName = extractTableName(candidate);
+      if (tableName != null && !federationLayer.isTableExposed(namespace, tableName)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        continue;
+      }
+      filtered.add(candidate);
+    }
+    return filtered;
+  }
+
+  private Object filterTableNameList(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result) {
+    if (!(result instanceof List<?> names)) {
+      return result;
+    }
+    List<String> filtered = new ArrayList<>(names.size());
+    for (Object candidate : names) {
+      if (!(candidate instanceof String tableName)) {
+        continue;
+      }
+      if (!federationLayer.isTableExposed(namespace, tableName)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        continue;
+      }
+      filtered.add(tableName);
+    }
+    return filtered;
+  }
+
+  private void recordFilteredObject(String methodName, String catalogName, String objectType) {
+    observability.metrics().recordFilteredObject(methodName, catalogName, objectType);
+  }
+
+  private static String extractExplicitTableReadName(String methodName, Object[] args) {
+    if (args == null || args.length == 0) {
+      return null;
+    }
+    if ("get_table_req".equals(methodName) && args[0] instanceof GetTableRequest request) {
+      return blankToNull(request.getTblName());
+    }
+    if (!EXACT_TABLE_READ_METHODS.contains(methodName) || args.length < 2 || !(args[1] instanceof String tableName)) {
+      return null;
+    }
+    return blankToNull(tableName);
+  }
+
+  private static String extractTableName(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Table table) {
+      return blankToNull(table.getTableName());
+    }
+    String directName = blankToNull(readStringProperty(value, "getTableName"));
+    if (directName != null) {
+      return directName;
+    }
+    directName = blankToNull(readStringProperty(value, "getTblName"));
+    if (directName != null) {
+      return directName;
+    }
+    directName = blankToNull(readStringProperty(value, "getName"));
+    if (directName != null) {
+      return directName;
+    }
+    String fullTableName = blankToNull(readStringProperty(value, "getFullTableName"));
+    if (fullTableName == null) {
+      fullTableName = blankToNull(readStringProperty(value, "getFull_table_name"));
+    }
+    if (fullTableName == null) {
+      return null;
+    }
+    int separator = fullTableName.lastIndexOf('.');
+    return separator >= 0 && separator + 1 < fullTableName.length()
+        ? blankToNull(fullTableName.substring(separator + 1))
+        : blankToNull(fullTableName);
+  }
+
+  private static Object tryInvokeNoArgs(Object target, String methodName) {
+    if (target == null) {
+      return null;
+    }
+    try {
+      return target.getClass().getMethod(methodName).invoke(target);
+    } catch (ReflectiveOperationException ignored) {
+      return null;
+    }
+  }
+
+  private static void tryInvokeSetList(Object target, String methodName, List<?> values) {
+    if (target == null) {
+      return;
+    }
+    try {
+      target.getClass().getMethod(methodName, List.class).invoke(target, values);
+    } catch (ReflectiveOperationException ignored) {
+    }
+  }
+
+  private static String readStringProperty(Object target, String methodName) {
+    Object value = tryInvokeNoArgs(target, methodName);
+    return value instanceof String stringValue ? stringValue : null;
+  }
+
+  private static String blankToNull(String value) {
+    if (value == null) {
+      return null;
+    }
+    String normalized = value.trim();
+    return normalized.isEmpty() ? null : normalized;
   }
 
   private void validateCatalogAccess(CatalogBackend backend, String methodName, String backendDbName)

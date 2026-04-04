@@ -205,6 +205,34 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsCatalogExposureConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.expose-mode=deny_by_default
+          catalog.catalog1.expose-db-patterns=sales,finance_.*
+          catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+          catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT, config.catalogs().get("catalog1").exposeMode());
+      Assert.assertEquals(List.of("sales", "finance_.*"), config.catalogs().get("catalog1").exposeDbPatterns());
+      Assert.assertEquals(
+          List.of("orders_.*", "events"),
+          config.catalogs().get("catalog1").exposeTablePatterns().get("sales"));
+      Assert.assertEquals(
+          List.of("audit_.*"),
+          config.catalogs().get("catalog1").exposeTablePatterns().get("finance_.*"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void rejectsInvalidViewTextRewriteMode() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
@@ -218,6 +246,26 @@ public class ProxyConfigLoaderTest {
         Assert.fail("Expected IllegalArgumentException for invalid view text rewrite mode");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("federation.view-text-rewrite.mode"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsInvalidCatalogExposureRegex() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.expose-db-patterns=[
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for invalid expose-db-patterns regex");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("expose-db-patterns"));
       }
     } finally {
       Files.deleteIfExists(file);

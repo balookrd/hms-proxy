@@ -40,6 +40,10 @@ public final class PrometheusMetrics {
       "hms_proxy_default_catalog_routed_total",
       "Requests routed to the default catalog because no explicit catalog namespace was provided",
       List.of("method"));
+  private final Counter filteredObjectsTotal = new Counter(
+      "hms_proxy_filtered_objects_total",
+      "Metadata objects hidden by selective federation filters grouped by method, catalog, and object type",
+      List.of("method", "catalog", "object_type"));
   private final Counter syntheticReadLockEventsTotal = new Counter(
       "hms_proxy_synthetic_read_lock_events_total",
       "Synthetic read-lock shim lifecycle events grouped by operation, catalog, store mode, and result",
@@ -82,6 +86,17 @@ public final class PrometheusMetrics {
 
   public void recordDefaultCatalogRoute(String method) {
     defaultCatalogRoutedTotal.inc(labels("method", method));
+  }
+
+  public void recordFilteredObject(String method, String catalog, String objectType) {
+    recordFilteredObject(method, catalog, objectType, 1L);
+  }
+
+  public void recordFilteredObject(String method, String catalog, String objectType, long count) {
+    filteredObjectsTotal.add(labels(
+        "method", method,
+        "catalog", catalog,
+        "object_type", objectType), count);
   }
 
   public void recordSyntheticReadLockEvent(
@@ -144,6 +159,7 @@ public final class PrometheusMetrics {
     backendFallbackTotal.renderInto(builder);
     routingAmbiguousTotal.renderInto(builder);
     defaultCatalogRoutedTotal.renderInto(builder);
+    filteredObjectsTotal.renderInto(builder);
     syntheticReadLockEventsTotal.renderInto(builder);
     syntheticReadLockStoreFailuresTotal.renderInto(builder);
     syntheticReadLockHandoffsTotal.renderInto(builder);
