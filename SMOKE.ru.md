@@ -31,6 +31,10 @@ degraded-режиме или падать явно, ещё до детальны
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать с явной ошибкой уровня `requires a Hortonworks backend runtime`. |
 | Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
 
+Практическая автоматизация:
+- для Beeline / HS2 шагов ниже можно использовать `scripts/run-real-installation-smoke-simple.sh --scenario sql`
+- для Beeline / HS2 шагов ниже с Kerberos используй `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+
 **1. Базовая проверка фронта**
 
 ```sql
@@ -277,6 +281,8 @@ cross-catalog lock lifecycle через HMS thrift. Запускать их ну
 proxy является non-default. Ниже для примера считается, что `apache` не равен `routing.default-catalog`.
 
 Практически:
+- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario locks`
+- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
 - собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.ru.md](README.ru.md)
 
@@ -319,6 +325,9 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 `add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
 
 Практически это можно запускать готовым клиентом из репозитория:
+- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario all`
+- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
+- если нужно провалидировать и default Hortonworks, и default Apache txn target, задай `HMS_SMOKE_TXN_SECONDARY_*`
 - собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
 - режим `txn` покрывает `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
@@ -348,6 +357,11 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
   `add_write_notification_log`
 
 **11. Negative check: Hortonworks front -> Apache backend notification path**
+
+Практически:
+- задай `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
+- затем запусти `scripts/run-real-installation-smoke-simple.sh --scenario notification` или
+  `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
 Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
 маршрутизируется в Apache backend.

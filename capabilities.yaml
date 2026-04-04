@@ -1,0 +1,404 @@
+schema_version: 1
+capabilities:
+  - id: apache_baseline
+    status: supported
+    client:
+      en: >-
+        Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
+      ru: >-
+        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
+        request wrappers
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - catalog-aware reads/writes
+        - legacy `catalog<separator>db` routing
+        - view rewrite
+      ru:
+        - catalog-aware read/write
+        - legacy `catalog<separator>db` routing
+        - view rewrite
+    expected_result:
+      en: Supported as the baseline deployment.
+      ru: Базовый полностью поддержанный сценарий.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultRewritesMaterializedViewTextForClientNamespace
+  - id: apache_frontdoor_to_hdp_backend_downgrade
+    status: degraded
+    client:
+      en: >-
+        Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
+      ru: >-
+        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
+        request wrappers
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    backend:
+      runtime_profiles:
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: Hortonworks `3.1.0.x`
+      ru: Hortonworks `3.1.0.x`
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - read paths
+        - selected metadata writes that can fall back from `*_req` APIs
+      ru:
+        - read path
+        - часть metadata write, где возможен fallback с `*_req` API
+    expected_result:
+      en: >-
+        Supported with compatibility downgrade; some calls are degraded to
+        legacy RPCs.
+      ru: >-
+        Поддержано через compatibility downgrade; часть вызовов работает в
+        degraded-режиме через legacy RPC.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
+      - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestCachesUnsupportedWrapperAndSkipsSecondProbe
+  - id: hdp_frontdoor_identity_only
+    status: supported
+    client:
+      en: >-
+        Hortonworks clients that only expect a Hortonworks front-door identity
+        via `getVersion()`
+      ru: >-
+        Hortonworks клиенты, которым достаточно Hortonworks identity на фронте
+        через `getVersion()`
+    front_door:
+      profiles:
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: "`HORTONWORKS_*` without standalone jar"
+      ru: "`HORTONWORKS_*` без standalone jar"
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: "`APACHE_3_1_3` or Hortonworks `3.1.0.x`"
+      ru: "`APACHE_3_1_3` или Hortonworks `3.1.0.x`"
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - overlapping Apache/HDP method families
+      ru:
+        - пересекающиеся Apache/HDP method families
+    expected_result:
+      en: Supported when changing the advertised profile is enough for the client.
+      ru: >-
+        Поддержано, если клиенту достаточно только смены advertised profile.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getVersionUsesConfiguredFrontendProfile
+      - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
+  - id: hdp_only_methods_with_matching_runtime
+    status: supported
+    client:
+      en: Hortonworks clients that call HDP-only thrift request-wrapper methods
+      ru: Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы
+    front_door:
+      profiles:
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      requires_standalone_metastore_jar: true
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    backend:
+      runtime_profiles:
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: Hortonworks `3.1.0.x`
+      ru: Hortonworks `3.1.0.x`
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - mapped HDP-only methods
+        - runtime-specific passthrough methods
+      ru:
+        - mapped HDP-only methods
+        - runtime-specific passthrough methods
+    expected_result:
+      en: >-
+        Supported when the matching Hortonworks front-door and backend runtime
+        jars are configured.
+      ru: >-
+        Поддержано при наличии совместимых Hortonworks front-door и backend
+        runtime jar.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+  - id: hdp_only_methods_rejected_without_matching_runtime
+    status: rejected
+    client:
+      en: Hortonworks clients that call HDP-only thrift request-wrapper methods
+      ru: Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы
+    front_door:
+      profiles:
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      requires_standalone_metastore_jar: true
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - HDP-only passthrough methods such as `add_write_notification_log`
+      ru:
+        - HDP-only passthrough методы вроде `add_write_notification_log`
+    expected_result:
+      en: >-
+        Rejected explicitly when the target backend does not provide a
+        compatible Hortonworks runtime.
+      ru: >-
+        Явно отклоняется, если target backend не даёт совместимый Hortonworks
+        runtime.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRejectsNonHortonworksBackendRuntime
+  - id: hs2_multicatalog_namespace_rewrite
+    status: supported
+    client:
+      en: HiveServer2 / Beeline SQL workloads across multiple catalogs
+      ru: HiveServer2 / Beeline SQL workloads через несколько каталогов
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: "`APACHE_3_1_3` or `HORTONWORKS_*`"
+      ru: "`APACHE_3_1_3` или `HORTONWORKS_*`"
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      mixed: true
+      en: mixed Apache + Hortonworks backends
+      ru: смешанные Apache + Hortonworks backend
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - reads
+        - DDL/DML
+        - namespace rewrite
+        - optional view rewrite
+      ru:
+        - read
+        - DDL/DML
+        - namespace rewrite
+        - optional view rewrite
+    expected_result:
+      en: Supported as long as routing can resolve the target catalog.
+      ru: >-
+        Поддержано, пока routing может однозначно вычислить целевой каталог.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#lockRoutesByNamespaceAndRewritesNestedDbName
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
+  - id: txn_lock_without_namespace_degraded
+    status: degraded
+    client:
+      en: >-
+        HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without
+        namespace in the payload
+      ru: >-
+        HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC
+        без namespace в payload
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      wildcard: true
+      en: any
+      ru: любой
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      mixed: true
+      en: mixed Apache + Hortonworks backends
+      ru: смешанные Apache + Hortonworks backend
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - "`open_txns`"
+        - "`commit_txn`"
+        - "`abort_txn`"
+        - "`check_lock`"
+        - "`unlock`"
+        - "`heartbeat`"
+      ru:
+        - "`open_txns`"
+        - "`commit_txn`"
+        - "`abort_txn`"
+        - "`check_lock`"
+        - "`unlock`"
+        - "`heartbeat`"
+    expected_result:
+      en: >-
+        Degraded: pinned to `routing.default-catalog`; eligible non-ACID
+        `SELECT` and `NO_TXN` DDL locks can still be synthesized on
+        non-default catalogs, but otherwise treat this as a single-catalog
+        control plane unless you validated otherwise.
+      ru: >-
+        Degraded: идут в `routing.default-catalog`; допустимые non-ACID
+        `SELECT` и `NO_TXN` DDL lock всё же могут синтетически обслуживаться
+        на non-default catalog, но в остальном это стоит считать
+        single-catalog control plane, пока не проведена отдельная валидация.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
+  - id: kerberos_frontdoor_with_impersonation
+    status: supported
+    client:
+      en: >-
+        Kerberized HiveServer2 / HMS clients that require end-user identity on
+        the backend
+      ru: >-
+        Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity
+        на backend
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      wildcard: true
+      en: any
+      ru: любой
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      wildcard: true
+      en: any
+      ru: любой
+    auth:
+      modes:
+        - KERBEROS
+      impersonation: optional
+      en: "`KERBEROS` with optional impersonation"
+      ru: "`KERBEROS` с optional impersonation"
+    method_families:
+      en:
+        - front-door SASL
+        - local delegation-token issuance
+        - backend `set_ugi()` impersonation
+      ru:
+        - front-door SASL
+        - local delegation-token issuance
+        - backend `set_ugi()` impersonation
+    expected_result:
+      en: >-
+        Supported when proxy-user rules and backend impersonation permissions
+        are configured correctly.
+      ru: >-
+        Поддержано, если правильно настроены proxy-user rules и backend
+        impersonation permissions.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.config.ProxyConfigLoaderTest#loadsImpersonationFlag
+      - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#localDelegationTokenHandlingRequiresKerberosFrontDoor
+  - id: ambiguous_global_writes_and_catalog_registry_rejected
+    status: rejected
+    client:
+      en: >-
+        Clients attempting global writes without a resolvable catalog or
+        dynamic catalog registry management
+      ru: >-
+        Клиенты, которые пытаются делать global write без resolvable catalog
+        или динамически управлять registry каталогов
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      wildcard: true
+      en: any
+      ru: любой
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      wildcard: true
+      en: any
+      ru: любой
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - ambiguous writes
+        - "`create_catalog`"
+        - "`drop_catalog`"
+      ru:
+        - ambiguous writes
+        - "`create_catalog`"
+        - "`drop_catalog`"
+    expected_result:
+      en: Rejected by design.
+      ru: Rejected by design.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#catalogManagementRpcsAreRejected
