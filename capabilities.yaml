@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 capabilities:
   - id: apache_baseline
     status: supported
@@ -359,11 +359,11 @@ capabilities:
     status: rejected
     client:
       en: >-
-        Clients attempting global writes without a resolvable catalog or
+        Clients attempting mutations without explicit namespace ownership or
         dynamic catalog registry management
       ru: >-
-        Клиенты, которые пытаются делать global write без resolvable catalog
-        или динамически управлять registry каталогов
+        Клиенты, которые пытаются делать mutation без explicit namespace
+        ownership или динамически управлять registry каталогов
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -388,17 +388,560 @@ capabilities:
       ru: "`NONE` или `KERBEROS`"
     method_families:
       en:
-        - ambiguous writes
+        - policy-guarded ambiguous mutations
         - "`create_catalog`"
         - "`drop_catalog`"
       ru:
-        - ambiguous writes
+        - policy-guarded ambiguous mutations
         - "`create_catalog`"
         - "`drop_catalog`"
     expected_result:
-      en: Rejected by design.
-      ru: Rejected by design.
+      en: >-
+        Safely failed by design to preserve deterministic routing, explicit
+        namespace ownership, and no silent split-brain writes.
+      ru: >-
+        Безопасно отклоняется по design, чтобы сохранить deterministic
+        routing, explicit namespace ownership и не допустить silent
+        split-brain writes.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#catalogManagementRpcsAreRejected
+method_matrix:
+  - id: object_scoped_reads_and_writes
+    method:
+      en: >-
+        Direct object RPCs such as `get_database`, `get_table`, `create_table`,
+        `alter_table`, `drop_table`, `drop_function`
+      ru: >-
+        Прямые object RPC вроде `get_database`, `get_table`, `create_table`,
+        `alter_table`, `drop_table`, `drop_function`
+    apache_backend:
+      status: supported
+      en: Native Apache HMS handling once one catalog is resolved.
+      ru: Нативная Apache HMS обработка, как только запрос разрешился в один catalog.
+    hdp_backend:
+      status: supported
+      en: Same routing model for overlapping Apache RPCs on Hortonworks backends.
+      ru: Та же routing-модель для пересекающихся Apache RPC на Hortonworks backend.
+    front_door_support:
+      en: >-
+        `APACHE_3_1_3`; overlapping RPCs also work through `HORTONWORKS_*`
+        front doors
+      ru: >-
+        `APACHE_3_1_3`; пересекающиеся RPC также работают через
+        `HORTONWORKS_*` front door
+    routing_mode:
+      en: >-
+        Prefer explicit proxy `catName`, then externalized `dbName` /
+        `fullTableName`, else `routing.default-catalog`
+      ru: >-
+        Сначала явный proxy `catName`, затем externalized `dbName` /
+        `fullTableName`, иначе `routing.default-catalog`
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: Low, as long as the request resolves one catalog unambiguously.
+      ru: Низкий, пока запрос однозначно разрешается в один catalog.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+
+  - id: list_and_discovery_reads
+    method:
+      en: >-
+        List/discovery reads such as `get_all_databases`, `get_databases`,
+        `get_all_tables`, `get_tables`, `get_table_meta`
+      ru: >-
+        List/discovery read RPC вроде `get_all_databases`, `get_databases`,
+        `get_all_tables`, `get_tables`, `get_table_meta`
+    apache_backend:
+      status: supported
+      en: Fanout/list aggregation works across Apache backends.
+      ru: Fanout/list aggregation работает поверх Apache backend.
+    hdp_backend:
+      status: supported
+      en: Same fanout/list aggregation model across Hortonworks backends.
+      ru: Та же модель fanout/list aggregation работает и на Hortonworks backend.
+    front_door_support:
+      en: Any front-door profile that exposes the overlapping RPCs.
+      ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
+    routing_mode:
+      en: >-
+        Fan out across eligible catalogs when no namespace is present; route to
+        one backend when `dbName` or `fullTableName` resolves a catalog
+      ru: >-
+        Fanout по подходящим catalog при отсутствии namespace; один backend,
+        если `dbName` или `fullTableName` разрешает catalog
+    fallback_strategy:
+      en: None beyond namespace externalization and optional selective exposure filtering.
+      ru: >-
+        Нет, кроме namespace externalization и optional selective exposure
+        filtering.
+    semantic_risk:
+      en: >-
+        Low; list results can be filtered and merged across catalogs, so expect
+        externalized names instead of raw backend names
+      ru: >-
+        Низкий; list results могут фильтроваться и объединяться между
+        каталогами, поэтому клиент видит externalized names, а не сырые
+        backend names
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
+
+  - id: apache_request_wrappers_to_hdp_backend
+    method:
+      en: "`get_database_req`, `get_table_req`, `get_table_objects_by_name_req`"
+      ru: "`get_database_req`, `get_table_req`, `get_table_objects_by_name_req`"
+    apache_backend:
+      status: supported
+      en: Native Apache request-wrapper handling.
+      ru: Нативная обработка Apache request-wrapper методов.
+    hdp_backend:
+      status: degraded
+      en: >-
+        Retries legacy `get_database`, `get_table`, or
+        `get_table_objects_by_name` when the wrapper API is missing
+      ru: >-
+        Повторяет вызов через legacy `get_database`, `get_table` или
+        `get_table_objects_by_name`, если wrapper API отсутствует
+    front_door_support:
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    routing_mode:
+      en: Same namespace routing as the equivalent direct object RPCs.
+      ru: Та же namespace-маршрутизация, что и у эквивалентных direct object RPC.
+    fallback_strategy:
+      en: >-
+        Backend adapter caches unsupported wrappers and downgrades to the legacy
+        method on subsequent calls
+      ru: >-
+        Backend adapter кеширует unsupported wrapper и затем сразу
+        деградирует к legacy методу на следующих вызовах
+    semantic_risk:
+      en: Low; metadata semantics stay aligned, but the call path becomes legacy.
+      ru: >-
+        Низкий; metadata semantics сохраняются, но call path становится legacy.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
+
+  - id: default_catalog_service_reads
+    method:
+      en: "`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`"
+      ru: "`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`"
+    apache_backend:
+      status: degraded
+      en: Served from `routing.default-catalog` only.
+      ru: Обслуживаются только из `routing.default-catalog`.
+    hdp_backend:
+      status: degraded
+      en: Served from `routing.default-catalog` only.
+      ru: Обслуживаются только из `routing.default-catalog`.
+    front_door_support:
+      en: Any front-door profile that exposes the overlapping RPCs.
+      ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
+    routing_mode:
+      en: Default-catalog pin because the RPC has no catalog namespace.
+      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: Medium; callers only see one catalog's global service state.
+      ru: Средний; клиент видит только global service state одного catalog.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getMetaConfWithoutCatalogContextUsesDefaultBackend
+
+  - id: compatibility_service_reads
+    method:
+      en: >-
+        `get_current_notificationEventId`, `get_next_notification`,
+        `get_notification_events_count`, `get_open_txns`,
+        `get_open_txns_info`, `show_locks`, `show_compact`,
+        `get_active_resource_plan`, `get_all_resource_plans`,
+        `get_runtime_stats`
+      ru: >-
+        `get_current_notificationEventId`, `get_next_notification`,
+        `get_notification_events_count`, `get_open_txns`,
+        `get_open_txns_info`, `show_locks`, `show_compact`,
+        `get_active_resource_plan`, `get_all_resource_plans`,
+        `get_runtime_stats`
+    apache_backend:
+      status: degraded
+      en: Default-catalog scoped and may emit compatibility empty responses.
+      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+    hdp_backend:
+      status: degraded
+      en: Default-catalog scoped and may emit compatibility empty responses.
+      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+    front_door_support:
+      en: Any front-door profile that exposes the overlapping RPCs.
+      ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
+    routing_mode:
+      en: Default-catalog pin because the RPC has no catalog namespace.
+      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+    fallback_strategy:
+      en: >-
+        Return an empty or synthetic compatibility response on
+        `TApplicationException`, transport failure, or `MetaException`
+      ru: >-
+        Возвращает empty или synthetic compatibility response при
+        `TApplicationException`, transport failure или `MetaException`
+    semantic_risk:
+      en: >-
+        Medium; callers can observe lossy control-plane state instead of a hard
+        failure, so monitoring and automation should be validated explicitly
+      ru: >-
+        Средний; вместо hard failure клиент может увидеть lossy control-plane
+        state, поэтому monitoring и automation нужно отдельно валидировать
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#notificationMethodsHaveCompatibilityFallbacks
+
+  - id: txn_lock_lifecycle_without_namespace
+    method:
+      en: >-
+        `open_txns`, `commit_txn`, `abort_txn`, `abort_txns`, `check_lock`,
+        `unlock`, `heartbeat`, `heartbeat_txn_range`
+      ru: >-
+        `open_txns`, `commit_txn`, `abort_txn`, `abort_txns`, `check_lock`,
+        `unlock`, `heartbeat`, `heartbeat_txn_range`
+    apache_backend:
+      status: degraded
+      en: >-
+        Pinned to `routing.default-catalog`; synthetic lock shim only helps
+        non-ACID `SELECT` and eligible `NO_TXN` DDL locks on non-default
+        catalogs
+      ru: >-
+        Пинятся к `routing.default-catalog`; synthetic lock shim помогает
+        только для non-ACID `SELECT` и допустимых `NO_TXN` DDL lock на
+        non-default catalog
+    hdp_backend:
+      status: degraded
+      en: Same default-catalog control-plane constraint on Hortonworks backends.
+      ru: То же ограничение default-catalog control plane на Hortonworks backend.
+    front_door_support:
+      en: Any front-door profile.
+      ru: Любой front-door profile.
+    routing_mode:
+      en: Default-catalog pin once only ids remain in the payload.
+      ru: Пин в default-catalog, как только в payload остаются только ids.
+    fallback_strategy:
+      en: >-
+        Synthetic read-lock shim for eligible non-default-catalog lock cases,
+        otherwise the normal default-backend txn/lock lifecycle
+      ru: >-
+        Synthetic read-lock shim для допустимых non-default-catalog lock cases,
+        в остальных случаях обычный default-backend txn/lock lifecycle
+    semantic_risk:
+      en: >-
+        High; treat this as a single-catalog control plane unless you validated
+        the exact workload end to end
+      ru: >-
+        Высокий; считай это single-catalog control plane, пока не провалидирован
+        точный workload end to end
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
+
+  - id: acid_object_payload_rpcs
+    method:
+      en: >-
+        `get_valid_write_ids`, `allocate_table_write_ids`, `compact`,
+        `compact2`, `add_dynamic_partitions`, `fire_listener_event`,
+        `repl_tbl_writeid_state`
+      ru: >-
+        `get_valid_write_ids`, `allocate_table_write_ids`, `compact`,
+        `compact2`, `add_dynamic_partitions`, `fire_listener_event`,
+        `repl_tbl_writeid_state`
+    apache_backend:
+      status: unsafe
+      en: Routed by payload namespace when one can be extracted.
+      ru: Маршрутизируются по payload namespace, если его удаётся извлечь.
+    hdp_backend:
+      status: unsafe
+      en: Same payload-based routing, but backend/runtime semantics still need validation.
+      ru: >-
+        Та же payload-based маршрутизация, но backend/runtime semantics всё
+        равно требуют отдельной валидации
+    front_door_support:
+      en: Any front-door profile that exposes the RPC.
+      ru: Любой front-door profile, который экспортирует RPC.
+    routing_mode:
+      en: >-
+        Extract `dbName` or `fullTableName` from the payload; if no object
+        namespace survives, fall back to the default-catalog lifecycle rules
+      ru: >-
+        Извлечь `dbName` или `fullTableName` из payload; если object namespace
+        не остаётся, перейти к правилам default-catalog lifecycle
+    fallback_strategy:
+      en: No semantic downgrade beyond payload extraction.
+      ru: Нет semantic downgrade, кроме самого payload extraction.
+    semantic_risk:
+      en: >-
+        High; ACID and write-id semantics are not guaranteed safe across
+        catalogs, so treat these RPCs as production-unsafe until validated
+      ru: >-
+        Высокий; ACID и write-id semantics не гарантированно безопасны между
+        каталогами, поэтому эти RPC стоит считать production-unsafe до
+        отдельной валидации
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#lockRoutesByNamespaceAndRewritesNestedDbName
+
+  - id: hdp_frontdoor_bridge_safe_mappings
+    method:
+      en: >-
+        `get_database_req`, `truncate_table_req`, `alter_table_req`,
+        `alter_partitions_req`, `rename_partition_req`,
+        `get_partitions_by_names_req`,
+        `update_table_column_statistics_req`,
+        `update_partition_column_statistics_req`
+      ru: >-
+        `get_database_req`, `truncate_table_req`, `alter_table_req`,
+        `alter_partitions_req`, `rename_partition_req`,
+        `get_partitions_by_names_req`,
+        `update_table_column_statistics_req`,
+        `update_partition_column_statistics_req`
+    apache_backend:
+      status: supported
+      en: Frontend bridge adapts the HDP wrapper to Apache handler equivalents.
+      ru: Frontend bridge адаптирует HDP wrapper к Apache handler equivalents.
+    hdp_backend:
+      status: supported
+      en: Same bridge on the front door, then normal routing to the resolved backend.
+      ru: >-
+        Тот же bridge на front door, после чего выполняется обычная
+        маршрутизация в разрешённый backend
+    front_door_support:
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    routing_mode:
+      en: Follows the bridged Apache equivalent for namespace and default-catalog policy.
+      ru: >-
+        Следует логике bridged Apache equivalent для namespace и
+        default-catalog policy
+    fallback_strategy:
+      en: Frontend bridge rewrites the request and, when needed, the response type.
+      ru: >-
+        Frontend bridge переписывает request и, при необходимости,
+        response type
+    semantic_risk:
+      en: Low for request shapes that have a safe Apache mapping.
+      ru: Низкий для тех request shapes, у которых есть safe Apache mapping.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
+
+  - id: hdp_frontdoor_create_table_req
+    method:
+      en: "`create_table_req`"
+      ru: "`create_table_req`"
+    apache_backend:
+      status: degraded
+      en: >-
+        Bridged to `create_table`, `create_table_with_environment_context`, or
+        `create_table_with_constraints`; rejected when one request mixes
+        constraints with `envContext`
+      ru: >-
+        Мостится в `create_table`,
+        `create_table_with_environment_context` или
+        `create_table_with_constraints`; отклоняется, если один request
+        одновременно несёт constraints и `envContext`
+    hdp_backend:
+      status: degraded
+      en: Same bridge behavior before routing to the resolved backend.
+      ru: То же bridge-поведение до маршрутизации в разрешённый backend.
+    front_door_support:
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    routing_mode:
+      en: Namespace is taken from the table object after bridge conversion.
+      ru: Namespace берётся из table object после bridge conversion.
+    fallback_strategy:
+      en: >-
+        Frontend bridge picks the safest Apache equivalent and rejects request
+        shapes without a safe mapping
+      ru: >-
+        Frontend bridge выбирает самый безопасный Apache equivalent и
+        отклоняет request shapes без safe mapping
+    semantic_risk:
+      en: Medium; ordinary shapes are fine, but mixed constraint + envContext requests fail explicitly.
+      ru: >-
+        Средний; обычные request shapes проходят, но смешанные
+        constraint + envContext запросы падают явно
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeMapsCreateTableReqToCreateTableWithEnvironmentContext
+
+  - id: hdp_add_write_notification_log
+    method:
+      en: "`add_write_notification_log`"
+      ru: "`add_write_notification_log`"
+    apache_backend:
+      status: rejected
+      en: Apache backends do not provide a compatible Hortonworks extension runtime.
+      ru: Apache backend не дают совместимый Hortonworks extension runtime.
+    hdp_backend:
+      status: supported
+      en: Direct Hortonworks passthrough to the resolved Hortonworks backend.
+      ru: Прямой Hortonworks passthrough в разрешённый Hortonworks backend.
+    front_door_support:
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    routing_mode:
+      en: Explicit namespace routing to one resolved catalog/backend.
+      ru: Явная namespace-маршрутизация в один разрешённый catalog/backend.
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: Low when the target backend runtime is explicitly Hortonworks.
+      ru: Низкий, если target backend runtime явно Hortonworks.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+
+  - id: hdp_get_tables_ext
+    method:
+      en: "`get_tables_ext`"
+      ru: "`get_tables_ext`"
+    apache_backend:
+      status: rejected
+      en: Apache backends do not implement this Hortonworks-only RPC.
+      ru: Apache backend не реализуют этот Hortonworks-only RPC.
+    hdp_backend:
+      status: supported
+      en: >-
+        Direct Hortonworks passthrough only to
+        `HORTONWORKS_3_1_0_3_1_5_6150_1`
+      ru: >-
+        Прямой Hortonworks passthrough только к
+        `HORTONWORKS_3_1_0_3_1_5_6150_1`
+    front_door_support:
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    routing_mode:
+      en: Explicit namespace routing to one resolved catalog/backend.
+      ru: Явная namespace-маршрутизация в один разрешённый catalog/backend.
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: Low; the main risk is runtime mismatch, which is rejected explicitly.
+      ru: Низкий; основной риск — runtime mismatch, и он отклоняется явно.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+
+  - id: hdp_get_all_materialized_view_objects_for_rewriting
+    method:
+      en: "`get_all_materialized_view_objects_for_rewriting`"
+      ru: "`get_all_materialized_view_objects_for_rewriting`"
+    apache_backend:
+      status: rejected
+      en: Apache backends do not implement this Hortonworks-only RPC.
+      ru: Apache backend не реализуют этот Hortonworks-only RPC.
+    hdp_backend:
+      status: supported
+      en: >-
+        Direct Hortonworks passthrough only to
+        `HORTONWORKS_3_1_0_3_1_5_6150_1`
+      ru: >-
+        Прямой Hortonworks passthrough только к
+        `HORTONWORKS_3_1_0_3_1_5_6150_1`
+    front_door_support:
+      en: "`HORTONWORKS_*` with standalone jar"
+      ru: "`HORTONWORKS_*` с standalone jar"
+    routing_mode:
+      en: Pinned to `routing.default-catalog`.
+      ru: Пинится к `routing.default-catalog`.
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: >-
+        Medium; the call is default-catalog scoped and materialized-view rewrite
+        semantics remain runtime-specific
+      ru: >-
+        Средний; вызов scoped через default-catalog, а semantics materialized
+        view rewrite остаются runtime-specific
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+
+  - id: ambiguous_global_writes
+    method:
+      en: >-
+        `setMetaConf`, `grant_role`, `revoke_role`, and other namespace-less
+        service writes
+      ru: >-
+        `setMetaConf`, `grant_role`, `revoke_role` и другие namespace-less
+        service write RPC
+    apache_backend:
+      status: rejected
+      en: >-
+        Safely failed when the request does not resolve exactly one catalog
+        under the routing policy.
+      ru: >-
+        Безопасно отклоняются, если запрос не разрешается ровно в один
+        catalog в рамках routing policy.
+    hdp_backend:
+      status: rejected
+      en: >-
+        Safely failed when the request does not resolve exactly one catalog
+        under the routing policy.
+      ru: >-
+        Безопасно отклоняются, если запрос не разрешается ровно в один
+        catalog в рамках routing policy.
+    front_door_support:
+      en: Any front-door profile.
+      ru: Любой front-door profile.
+    routing_mode:
+      en: >-
+        No guessed routing; the mutation must resolve one owned namespace or
+        fail safely up front
+      ru: >-
+        Никакой guessed routing; mutation должен разрешиться ровно в один
+        owned namespace, иначе запрос безопасно отклоняется сразу
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: >-
+        Blocked by design to guarantee deterministic routing and prevent silent
+        split-brain writes or drifting global state.
+      ru: >-
+        Заблокировано по design, чтобы гарантировать deterministic routing и
+        не допустить silent split-brain writes или drift global state
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+
+  - id: catalog_registry_rpcs
+    method:
+      en: "`create_catalog`, `alter_catalog`, `drop_catalog`"
+      ru: "`create_catalog`, `alter_catalog`, `drop_catalog`"
+    apache_backend:
+      status: rejected
+      en: >-
+        Catalog registry is policy-owned by config, not runtime-managed through
+        client RPCs.
+      ru: >-
+        Registry catalog policy-owned конфигом, а не runtime client RPC.
+    hdp_backend:
+      status: rejected
+      en: >-
+        Catalog registry is policy-owned by config, not runtime-managed through
+        client RPCs.
+      ru: >-
+        Registry catalog policy-owned конфигом, а не runtime client RPC.
+    front_door_support:
+      en: Any front-door profile.
+      ru: Любой front-door profile.
+    routing_mode:
+      en: No routing; catalog registry changes are never proxied.
+      ru: Нет маршрутизации; изменения registry catalog никогда не проксируются.
+    fallback_strategy:
+      en: None.
+      ru: Нет.
+    semantic_risk:
+      en: >-
+        Blocked by design so namespace ownership stays explicit and centrally
+        governed.
+      ru: >-
+        Заблокировано по design, чтобы namespace ownership оставался явным и
+        централизованно управляемым.
+    smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#catalogManagementRpcsAreRejected

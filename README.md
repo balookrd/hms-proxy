@@ -4,28 +4,78 @@
 
 Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
 
-Java proxy for Hive Metastore that exposes one external HMS Thrift endpoint and routes
-requests to multiple backend metastores by catalog.
+HMS Proxy is a catalog-aware Hive Metastore federation and compatibility proxy for mixed
+Apache Hive and Hortonworks Data Platform environments.
 
-## Primary scenarios
+It gives you one production-facing HMS Thrift endpoint that can federate catalogs across
+multiple backend metastores, bridge Apache/HDP API differences, and establish a clear
+security boundary between clients and backend HMS services.
 
-### 1. Multi-catalog federation
+## Three pillars
+
+### 1. Federation
 
 Use one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients, while
 routing requests to multiple backend metastores by explicit `catName` or by legacy
 `catalog<separator>db` database names.
 
-### 2. Apache ↔ HDP compatibility bridge
+This lets you centralize catalog-aware routing and selective exposure without forcing clients to
+understand backend metastore layout.
+
+### 2. Compatibility bridge
 
 Expose an Apache Hive Metastore `3.1.3` front door, downgrade selected calls for older
 Hortonworks `3.1.0.x` backends, and optionally present the proxy itself as a Hortonworks
 front door through an HDP `standalone-metastore` jar.
 
-### 3. Kerberized proxy for HS2/HMS
+This makes the proxy a practical bridge for mixed Apache/HDP estates and staged migrations, not
+just a request router.
+
+### 3. Security boundary
 
 Run the proxy as the security boundary between clients and backend metastores with optional
 Kerberos/SASL on the front door, optional outbound Kerberos to backends, and optional
 impersonation of the authenticated Kerberos caller.
+
+This keeps authentication, identity propagation, and backend exposure policy concentrated in one
+place.
+
+## Canonical routing model
+
+Two naming layers appear throughout this README:
+
+| Term | Meaning |
+| --- | --- |
+| External name | The client-facing proxy namespace. Examples: `catName=catalog2`, `catalogName=catalog2`, legacy `dbName=catalog2__sales`. |
+| Internal name | The real names on the selected backend HMS. Example: backend `catName=hive`, `dbName=sales`. |
+| Default catalog | `routing.default-catalog`, used when a request does not carry a trustworthy catalog hint. |
+| Ambiguous request | The request carries conflicting catalog hints, or a multi-catalog write does not resolve to exactly one catalog. |
+
+Routing is then decided like this:
+
+| Request shape | How the proxy picks a backend | What happens without namespace |
+| --- | --- | --- |
+| Object-scoped reads and writes | Prefer explicit proxy `catName`. Otherwise parse external `dbName` / `fullTableName` such as `catalog2__sales`. Otherwise use `routing.default-catalog` for compatibility. | Routed to `routing.default-catalog`. |
+| Session-level and global reads | Use `routing.default-catalog`. | Routed to `routing.default-catalog`. |
+| ACID RPCs whose payload still names an object | Route by that payload, for example `dbName` or `fullTableName` in `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, or `add_dynamic_partitions`. | If no routable object namespace remains, fall through to the next row. |
+| Txn / lock lifecycle RPCs that only carry ids | Pin to `routing.default-catalog`, for example `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, and `heartbeat`. | Routed to `routing.default-catalog`; non-ACID `SELECT` and eligible `NO_TXN` DDL locks on non-default catalogs can use the synthetic shim. |
+| Global writes and catalog-registry changes | Require exactly one owned namespace in a multi-catalog deployment. | If that ownership is ambiguous, the proxy fails safely instead of guessing a target catalog. |
+
+If a request carries a backend `catName` such as `hive` instead of a proxy catalog id, the proxy
+treats that field as non-authoritative for compatibility and falls back to `dbName` or
+`routing.default-catalog`.
+
+For mutations, the proxy prefers policy-driven guarantees over best-effort guessing: deterministic
+routing, explicit namespace ownership, no silent split-brain writes, and safe failure when a
+mutation stays ambiguous.
+
+These switches change client-visible names or SQL text, not backend selection:
+
+| Switch | Effect |
+| --- | --- |
+| `routing.catalog-db-separator` | Changes the external legacy spelling, for example `catalog2__sales` instead of `catalog2.sales`. |
+| `federation.preserve-backend-catalog-name=true` | Returns backend `catName` / `catalogName` such as `hive`, but routing still follows the external `dbName` or explicit proxy catalog. |
+| `federation.view-text-rewrite.mode=rewrite` | Rewrites view SQL between external and internal names; it does not change backend selection for the RPC itself. |
 
 ## RPC behavior matrix
 
@@ -37,8 +87,8 @@ impersonation of the authenticated Kerberos caller.
 | Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
 | ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator. |
-| Global write operations without clear catalog context | rejected | Proxy fails the request when more than one catalog is configured, including namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token`. |
-| Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog definitions are managed in proxy config, not through client RPCs. |
+| Global write operations without clear catalog context | rejected | Proxy enforces deterministic routing and explicit namespace ownership: namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token` fail safely instead of guessing a catalog. |
+| Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog ownership is policy-managed in proxy config, not delegated to client RPCs. |
 | HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
 | HDP-only methods that require a matching Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Forwarded only to compatible Hortonworks backends/front doors when configured. |
 | HDP-only methods without a safe Apache mapping | rejected | Proxy fails explicitly instead of returning a misleading success response. |
@@ -49,6 +99,9 @@ This matrix is the public contract for how to think about the proxy. It is inten
 client shape, advertised front door, backend runtime, auth mode, and method family rather than by
 individual thrift method names. The table is generated from [capabilities.yaml](capabilities.yaml)
 and each capability row is linked to smoke-test coverage in the test suite.
+
+For a method-level spreadsheet view of backend support, routing mode, fallback strategy, and
+semantic risk, see [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Refresh the generated table with:
 
@@ -67,13 +120,13 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
 | HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT` and `NO_TXN` DDL locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
 | Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
-| Clients attempting global writes without a resolvable catalog or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
+| Clients attempting mutations without explicit namespace ownership or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Safely failed by design to preserve deterministic routing, explicit namespace ownership, and no silent split-brain writes. |
 <!-- END GENERATED: capability-matrix -->
 
 ## Scope notes
 
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
-- this keeps Spark/Hive compatibility while still avoiding ambiguous metadata writes
+- this keeps Spark/Hive compatibility while still preserving deterministic routing and avoiding silent split-brain metadata writes
 - in practice this means ACID write lifecycle is supported only for the default catalog unless the
   request payload itself carries routable namespace information such as `dbName` or `fullTableName`
 - the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks and eligible non-transactional
@@ -208,7 +261,7 @@ Metric semantics:
 - `catalog=all, backend=fanout` means a request was broadcast to multiple backends
 - `hms_proxy_backend_failures_total` counts backend-side invocation failures grouped by backend and exception type
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
-- `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
+- `hms_proxy_routing_ambiguous_total` counts requests that safely failed because the proxy saw conflicting namespace hints and refused to guess
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
 - `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
@@ -228,13 +281,14 @@ templating variable for quickly switching between `in_memory` and `zookeeper` vi
 
 The proxy emits one structured audit log record per request through the logger
 `io.github.mmalykhin.hmsproxy.audit`. Each record is a single-line JSON object with fields such as
-`requestId`, `method`, `catalog`, `backend`, `status`, `durationMs`, `remoteAddress`,
-`authenticatedUser`, `routed`, `fanout`, `fallback`, and `defaultCatalogRouted`.
+`requestId`, `method`, `operationClass`, `catalog`, `backend`, `status`, `durationMs`,
+`remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback`, and
+`defaultCatalogRouted`.
 
 Example:
 
 ```json
-{"event":"hms_proxy_audit","requestId":42,"method":"get_table","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
+{"event":"hms_proxy_audit","requestId":42,"method":"get_table","operationClass":"metadata_read","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
 ```
 
 ### Grafana dashboard
@@ -242,46 +296,6 @@ Example:
 A ready-to-import Grafana dashboard is included in
 `monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
 fallbacks, default-catalog routing, and ambiguous routing events.
-
-## Routing model
-
-- Catalog-aware HMS clients can send `catName=dbCatalog, dbName=sales`
-- Legacy HMS clients can use database names like `catalog1.sales`
-- `get_all_databases()` returns prefixed names like `catalog1.sales`
-- table objects returned to legacy callers are rewritten back to external names
-- if a request carries a non-proxy `catName` such as Hive's default `hive`, the proxy falls back
-  to `dbName`/default-catalog routing for compatibility
-- ACID requests that include routable namespace in the payload, for example
-  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
-  `add_dynamic_partitions`, `fire_listener_event`, or `repl_tbl_writeid_state`, are routed by that
-  payload
-- ACID/txn/lock lifecycle requests that only carry ids, for example `open_txns`, `commit_txn`,
-  `abort_txn`, `check_lock`, `unlock`, or `heartbeat`, are pinned to `routing.default-catalog`
-- by default, externalized HMS objects use proxy catalog ids in `catName`/`catalogName`
-- for older HiveServer2 flows, you can enable `federation.preserve-backend-catalog-name=true`
-  so externalized HMS objects keep the backend catalog name such as `hive` while `dbName`
-  still uses the proxy namespace like `catalog2__default`
-- optional view-definition rewrite can also translate `viewExpandedText` and `viewOriginalText`
-  for `VIRTUAL_VIEW` / `MATERIALIZED_VIEW` table objects:
-
-```properties
-federation.view-text-rewrite.mode=rewrite
-federation.view-text-rewrite.preserve-original-text=true
-```
-
-With `mode=rewrite`, the proxy rewrites `catalog<separator>db.table` references in view SQL on the
-way to the backend, and rewrites the current catalog's backend db references back to the external
-namespace on the way out. If `preserve-original-text=true`, only `viewExpandedText` is rewritten
-while `viewOriginalText` is left untouched.
-
-The catalog/database separator is configurable:
-
-```properties
-# Optional, defaults to "."
-routing.catalog-db-separator=__
-```
-
-With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
 
 ### Selective federation exposure
 
@@ -515,6 +529,8 @@ Recommended example:
 routing.catalog-db-separator=__
 ```
 
+This only changes the external legacy spelling from the canonical routing model above.
+
 If HiveServer2 metadata writes behave differently through the proxy than directly against the
 backend HMS, try enabling:
 
@@ -522,8 +538,8 @@ backend HMS, try enabling:
 federation.preserve-backend-catalog-name=true
 ```
 
-This keeps `catName`/`catalogName` from the backend, typically `hive`, while still routing by the
-externalized `dbName`.
+This only changes the returned `catName`/`catalogName`, typically to backend values such as
+`hive`. Backend selection still follows the canonical routing model above.
 
 If your workloads depend on Hive views or materialized views across multiple catalogs, also test
 with:
@@ -533,8 +549,8 @@ federation.view-text-rewrite.mode=rewrite
 federation.view-text-rewrite.preserve-original-text=true
 ```
 
-That combination preserves the user-facing `viewOriginalText` while still rewriting
-`viewExpandedText` for backend compatibility.
+That combination rewrites view SQL between external and internal names while preserving the
+user-facing `viewOriginalText`. It does not change backend selection for the RPC itself.
 
 Then a non-default catalog is used through the external database name:
 
