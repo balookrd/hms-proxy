@@ -65,6 +65,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final RequestRateLimiter requestRateLimiter;
   private final BackendRoutingController backendRoutingController;
   private final long aliveSince;
+  private final boolean anyImpersonationEnabled;
 
   public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
     this(config, router, frontDoorSecurity, new ProxyObservability(config));
@@ -87,6 +88,8 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
     this.backendRoutingController = new BackendRoutingController(config, router, observability);
     this.aliveSince = System.currentTimeMillis() / 1000L;
+    this.anyImpersonationEnabled = config.catalogs().values().stream()
+        .anyMatch(ProxyConfig.CatalogConfig::impersonationEnabled);
   }
 
   @SuppressWarnings("unchecked")
@@ -1244,7 +1247,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   }
 
   private Optional<ImpersonationContext> currentImpersonation() throws MetaException {
-    if (config.catalogs().values().stream().noneMatch(ProxyConfig.CatalogConfig::impersonationEnabled)) {
+    if (!anyImpersonationEnabled) {
       return Optional.empty();
     }
 

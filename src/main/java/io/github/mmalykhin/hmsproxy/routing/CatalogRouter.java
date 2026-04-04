@@ -19,10 +19,25 @@ public final class CatalogRouter implements AutoCloseable {
 
   public static CatalogRouter open(ProxyConfig config) throws MetaException {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
-    for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
-      backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue()));
+    try {
+      for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
+        backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue()));
+      }
+      return new CatalogRouter(config, backends);
+    } catch (Throwable t) {
+      for (CatalogBackend backend : backends.values()) {
+        CatalogBackend.closeQuietly(backend, "backend catalog '" + backend.name() + "'");
+      }
+      if (t instanceof MetaException me) {
+        throw me;
+      }
+      if (t instanceof RuntimeException re) {
+        throw re;
+      }
+      MetaException metaException = new MetaException("Failed to open catalog backends: " + t.getMessage());
+      metaException.initCause(t);
+      throw metaException;
     }
-    return new CatalogRouter(config, backends);
   }
 
   public Collection<CatalogBackend> backends() {

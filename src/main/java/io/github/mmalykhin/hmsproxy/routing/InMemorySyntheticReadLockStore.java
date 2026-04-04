@@ -47,7 +47,10 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
 
   @Override
   public void releaseLock(long lockId) {
-    removeLock(locks.get(lockId));
+    SyntheticReadLockManager.SyntheticLockState removed = locks.remove(lockId);
+    if (removed != null) {
+      removeTxnRef(removed);
+    }
   }
 
   @Override
@@ -101,13 +104,17 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
     if (state == null || !locks.remove(state.lockId(), state)) {
       return null;
     }
+    removeTxnRef(state);
+    return state;
+  }
+
+  private void removeTxnRef(SyntheticReadLockManager.SyntheticLockState state) {
     if (state.txnId() <= 0) {
-      return state;
+      return;
     }
     txnLocks.computeIfPresent(state.txnId(), (ignored, lockIds) -> {
       lockIds.remove(state.lockId());
       return lockIds.isEmpty() ? null : lockIds;
     });
-    return state;
   }
 }

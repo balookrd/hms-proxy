@@ -83,9 +83,21 @@ public final class BackendRoutingController implements AutoCloseable {
   public void close() {
     if (pollingExecutor != null) {
       pollingExecutor.shutdownNow();
+      awaitTerminationQuietly(pollingExecutor, "backend-poll");
     }
     if (fanoutExecutor != null) {
       fanoutExecutor.shutdownNow();
+      awaitTerminationQuietly(fanoutExecutor, "fanout");
+    }
+  }
+
+  private static void awaitTerminationQuietly(ExecutorService executor, String name) {
+    try {
+      if (!executor.awaitTermination(5L, TimeUnit.SECONDS)) {
+        LOG.warn("Executor '{}' did not terminate within 5s after shutdown", name);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 

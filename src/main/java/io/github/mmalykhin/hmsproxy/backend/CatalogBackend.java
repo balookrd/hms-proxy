@@ -106,7 +106,7 @@ public final class CatalogBackend implements AutoCloseable {
     hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
     runtime.reconnectShared(adapter);
     for (ImpersonationClient client : impersonationClients.values()) {
-      client.closeQuietly();
+      client.evict();
     }
     impersonationClients.clear();
     appliedClientTimeoutMs = timeoutMs;
@@ -251,6 +251,7 @@ public final class CatalogBackend implements AutoCloseable {
     private final String userName;
     private final List<String> groupNames;
     private BackendInvocationSession session;
+    private volatile boolean evicted;
 
     private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
       this.userName = userName;
@@ -267,6 +268,9 @@ public final class CatalogBackend implements AutoCloseable {
       } catch (Throwable cause) {
         if (!(cause instanceof org.apache.thrift.TApplicationException)
             && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
+          throw cause;
+        }
+        if (evicted) {
           throw cause;
         }
         LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
@@ -294,6 +298,9 @@ public final class CatalogBackend implements AutoCloseable {
             && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
           throw cause;
         }
+        if (evicted) {
+          throw cause;
+        }
         LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
             config.name(), userName, methodName, cause);
         reconnect();
@@ -316,6 +323,11 @@ public final class CatalogBackend implements AutoCloseable {
         LOG.warn("Failed to close cached impersonation client for user '{}' in catalog '{}'",
             userName, config.name(), e);
       }
+    }
+
+    private void evict() {
+      evicted = true;
+      closeQuietly();
     }
 
     private void open() throws MetaException {
