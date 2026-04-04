@@ -13,6 +13,7 @@ public class PrometheusMetricsTest {
     metrics.recordBackendFallback("get_table", "APACHE_3_1_3", "HORTONWORKS_3_1_0_3_1_0_78");
     metrics.recordRoutingAmbiguous();
     metrics.recordDefaultCatalogRoute("get_table");
+    metrics.recordRateLimited("principal", "default", "get_table", "metadata_read", "catalog1");
     metrics.recordFilteredObject("get_all_tables", "catalog1", "table", 2L);
     metrics.recordSyntheticReadLockEvent("acquire", "catalog2", "zookeeper", "acquired");
     metrics.recordSyntheticReadLockEvent("cleanup", "all", "zookeeper", "expired", 2L);
@@ -29,6 +30,7 @@ public class PrometheusMetricsTest {
     Assert.assertTrue(rendered.contains("hms_proxy_backend_fallback_total{method=\"get_table\",from_api=\"APACHE_3_1_3\",to_api=\"HORTONWORKS_3_1_0_3_1_0_78\"} 1"));
     Assert.assertTrue(rendered.contains("hms_proxy_routing_ambiguous_total 1"));
     Assert.assertTrue(rendered.contains("hms_proxy_default_catalog_routed_total{method=\"get_table\"} 1"));
+    Assert.assertTrue(rendered.contains("hms_proxy_rate_limited_total{dimension=\"principal\",scope=\"default\",method=\"get_table\",method_family=\"metadata_read\",catalog=\"catalog1\"} 1"));
     Assert.assertTrue(rendered.contains("hms_proxy_filtered_objects_total{method=\"get_all_tables\",catalog=\"catalog1\",object_type=\"table\"} 2"));
     Assert.assertTrue(rendered.contains("hms_proxy_synthetic_read_lock_events_total{operation=\"acquire\",catalog=\"catalog2\",store_mode=\"zookeeper\",result=\"acquired\"} 1"));
     Assert.assertTrue(rendered.contains("hms_proxy_synthetic_read_lock_events_total{operation=\"cleanup\",catalog=\"all\",store_mode=\"zookeeper\",result=\"expired\"} 2"));

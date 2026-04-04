@@ -17,7 +17,8 @@ public record ProxyConfig(
     FederationConfig federation,
     TransactionalDdlGuardConfig transactionalDdlGuard,
     ManagementConfig management,
-    SyntheticReadLockStoreConfig syntheticReadLockStore
+    SyntheticReadLockStoreConfig syntheticReadLockStore,
+    RateLimitConfig rateLimit
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -37,6 +38,7 @@ public record ProxyConfig(
     syntheticReadLockStore = syntheticReadLockStore == null
         ? new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null)
         : syntheticReadLockStore;
+    rateLimit = rateLimit == null ? RateLimitConfig.disabled() : rateLimit;
   }
 
   public ProxyConfig(
@@ -51,7 +53,8 @@ public record ProxyConfig(
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
   }
 
   public ProxyConfig(
@@ -77,7 +80,8 @@ public record ProxyConfig(
         federation,
         transactionalDdlGuard,
         management,
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
   }
 
   public ProxyConfig(
@@ -92,7 +96,8 @@ public record ProxyConfig(
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
   }
 
   public ProxyConfig(
@@ -111,7 +116,8 @@ public record ProxyConfig(
             false),
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
   }
 
   public ProxyConfig(
@@ -127,7 +133,8 @@ public record ProxyConfig(
         new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
         new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
   }
 
   public ProxyConfig(
@@ -144,7 +151,36 @@ public record ProxyConfig(
         federation,
         transactionalDdlGuard,
         new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null));
+        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
+        RateLimitConfig.disabled());
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility,
+      FederationConfig federation,
+      TransactionalDdlGuardConfig transactionalDdlGuard,
+      ManagementConfig management,
+      SyntheticReadLockStoreConfig syntheticReadLockStore
+  ) {
+    this(
+        server,
+        security,
+        catalogDbSeparator,
+        defaultCatalog,
+        catalogs,
+        backend,
+        compatibility,
+        federation,
+        transactionalDdlGuard,
+        management,
+        syntheticReadLockStore,
+        RateLimitConfig.disabled());
   }
 
   public record ServerConfig(
@@ -314,6 +350,104 @@ public record ProxyConfig(
       String bindHost,
       int port
   ) {
+  }
+
+  public record RateLimitConfig(
+      RateLimitPolicyConfig principal,
+      RateLimitPolicyConfig source,
+      Map<String, SourceCidrRateLimitConfig> sourceCidrs,
+      Map<String, RateLimitPolicyConfig> methodFamilies,
+      Map<String, RateLimitPolicyConfig> catalogs,
+      Map<String, RateLimitPolicyConfig> rpcClasses
+  ) {
+    public RateLimitConfig {
+      principal = principal == null ? RateLimitPolicyConfig.disabled() : principal;
+      source = source == null ? RateLimitPolicyConfig.disabled() : source;
+      sourceCidrs = copySourceCidrs(sourceCidrs);
+      methodFamilies = copyPolicies(methodFamilies);
+      catalogs = copyPolicies(catalogs);
+      rpcClasses = copyPolicies(rpcClasses);
+    }
+
+    public static RateLimitConfig disabled() {
+      return new RateLimitConfig(
+          RateLimitPolicyConfig.disabled(),
+          RateLimitPolicyConfig.disabled(),
+          Map.of(),
+          Map.of(),
+          Map.of(),
+          Map.of());
+    }
+
+    public boolean enabled() {
+      return principal.enabled()
+          || source.enabled()
+          || hasEnabledPolicies(sourceCidrs.values().stream().map(SourceCidrRateLimitConfig::policy).toList())
+          || hasEnabledPolicies(methodFamilies.values())
+          || hasEnabledPolicies(catalogs.values())
+          || hasEnabledPolicies(rpcClasses.values());
+    }
+
+    private static Map<String, SourceCidrRateLimitConfig> copySourceCidrs(
+        Map<String, SourceCidrRateLimitConfig> sourceCidrs
+    ) {
+      if (sourceCidrs == null || sourceCidrs.isEmpty()) {
+        return Map.of();
+      }
+      Map<String, SourceCidrRateLimitConfig> copied = new LinkedHashMap<>();
+      sourceCidrs.forEach((name, config) -> copied.put(name, config));
+      return Collections.unmodifiableMap(copied);
+    }
+
+    private static Map<String, RateLimitPolicyConfig> copyPolicies(Map<String, RateLimitPolicyConfig> policies) {
+      if (policies == null || policies.isEmpty()) {
+        return Map.of();
+      }
+      Map<String, RateLimitPolicyConfig> copied = new LinkedHashMap<>();
+      policies.forEach((name, config) -> copied.put(name, config == null ? RateLimitPolicyConfig.disabled() : config));
+      return Collections.unmodifiableMap(copied);
+    }
+
+    private static boolean hasEnabledPolicies(Iterable<RateLimitPolicyConfig> policies) {
+      for (RateLimitPolicyConfig policy : policies) {
+        if (policy != null && policy.enabled()) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  public record SourceCidrRateLimitConfig(
+      List<String> cidrRules,
+      RateLimitPolicyConfig policy
+  ) {
+    public SourceCidrRateLimitConfig {
+      cidrRules = cidrRules == null ? List.of() : List.copyOf(cidrRules);
+      policy = policy == null ? RateLimitPolicyConfig.disabled() : policy;
+    }
+
+    public boolean enabled() {
+      return !cidrRules.isEmpty() && policy.enabled();
+    }
+  }
+
+  public record RateLimitPolicyConfig(
+      int requestsPerSecond,
+      int burst
+  ) {
+    public RateLimitPolicyConfig {
+      requestsPerSecond = Math.max(requestsPerSecond, 0);
+      burst = burst <= 0 ? requestsPerSecond : burst;
+    }
+
+    public static RateLimitPolicyConfig disabled() {
+      return new RateLimitPolicyConfig(0, 0);
+    }
+
+    public boolean enabled() {
+      return requestsPerSecond > 0 && burst > 0;
+    }
   }
 
   public record SyntheticReadLockStoreConfig(

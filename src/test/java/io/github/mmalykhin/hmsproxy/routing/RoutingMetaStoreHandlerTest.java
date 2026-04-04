@@ -129,6 +129,76 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void rateLimitRejectsRepeatedPrincipalRequestsAndExportsMetrics() throws Throwable {
+    ProxyConfig config = rateLimitedConfig(new ProxyConfig.RateLimitConfig(
+        new ProxyConfig.RateLimitPolicyConfig(1, 1),
+        ProxyConfig.RateLimitPolicyConfig.disabled(),
+        Map.of(),
+        Map.of(),
+        Map.of(),
+        Map.of()));
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, routerFor(config), null, observability);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("getName");
+
+    String previousRemoteUser = ClientRequestContext.setRemoteUser("hs2/host@EXAMPLE.COM");
+    try {
+      Assert.assertEquals("test", handler.invoke(null, method, new Object[0]));
+      try {
+        handler.invoke(null, method, new Object[0]);
+        Assert.fail("Expected rate limit for repeated principal");
+      } catch (RateLimitExceededException e) {
+        Assert.assertTrue(e.getMessage().contains("principal"));
+      }
+    } finally {
+      ClientRequestContext.restoreRemoteUser(previousRemoteUser);
+    }
+
+    String rendered = observability.metrics().render();
+    Assert.assertTrue(rendered.contains("hms_proxy_requests_total{method=\"getName\",catalog=\"none\",backend=\"none\",status=\"throttled\"} 1"));
+    Assert.assertTrue(rendered.contains("hms_proxy_rate_limited_total{dimension=\"principal\",scope=\"default\",method=\"getName\",method_family=\"admin_introspection\",catalog=\"none\"} 1"));
+  }
+
+  @Test
+  public void rateLimitRejectsRepeatedCatalogRequestsBeforeSecondBackendCall() throws Throwable {
+    ProxyConfig config = rateLimitedConfig(new ProxyConfig.RateLimitConfig(
+        ProxyConfig.RateLimitPolicyConfig.disabled(),
+        ProxyConfig.RateLimitPolicyConfig.disabled(),
+        Map.of(),
+        Map.of(),
+        Map.of("catalog1", new ProxyConfig.RateLimitPolicyConfig(1, 1)),
+        Map.of()));
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_database".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        Database database = new Database();
+        database.setName("sales");
+        return database;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+
+    handler.invoke(null, method, new Object[] {"catalog1__sales"});
+    Assert.assertEquals(1, backendCalls.get());
+    try {
+      handler.invoke(null, method, new Object[] {"catalog1__sales"});
+      Assert.fail("Expected catalog rate limit");
+    } catch (RateLimitExceededException e) {
+      Assert.assertTrue(e.getMessage().contains("catalog 'catalog1'"));
+    }
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
   public void serviceReadMethodsUseDefaultBackendCompatibilityPath() {
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("getMetaConf"));
     Assert.assertTrue(RoutingMetaStoreHandler.isDefaultBackendGlobalMethod("get_all_functions"));
@@ -2072,6 +2142,22 @@ public class RoutingMetaStoreHandlerTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     return new RoutingMetaStoreHandler(config, router, null);
+  }
+
+  private static ProxyConfig rateLimitedConfig(ProxyConfig.RateLimitConfig rateLimit) {
+    return new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.BackendConfig(Map.of()),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()),
+        new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083),
+        new ProxyConfig.SyntheticReadLockStoreConfig(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, null),
+        rateLimit);
   }
 
   private static RoutingMetaStoreHandler accessModeHandler(

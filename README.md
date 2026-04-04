@@ -257,12 +257,13 @@ scrape_configs:
 
 Metric semantics:
 
-- `status` in `hms_proxy_requests_total` is one of `ok`, `error`, or `fallback`
+- `status` in `hms_proxy_requests_total` is one of `ok`, `error`, `fallback`, or `throttled`
 - `catalog=all, backend=fanout` means a request was broadcast to multiple backends
 - `hms_proxy_backend_failures_total` counts backend-side invocation failures grouped by backend and exception type
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests that safely failed because the proxy saw conflicting namespace hints and refused to guess
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+- `hms_proxy_rate_limited_total` counts requests rejected by overload protection with labels for the limiting dimension, configured scope, method family, and resolved catalog
 - `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
@@ -396,6 +397,90 @@ guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 
 If `guard.transactional-ddl.client-addresses` is set, the rule is evaluated only for matching
 clients. If it is omitted, all clients are covered.
+
+## Rate limiting / overload protection
+
+The proxy can also reject bursts before they become backend overload. This protection is local to
+each proxy instance and uses token-bucket limits with:
+
+- a steady refill rate via `requests-per-second`
+- an optional short burst allowance via `burst`
+- independent buckets, so a request must pass every configured scope that applies to it
+
+Supported scopes:
+
+- per authenticated client principal: `rate-limit.principal.*`
+- per exact source IP: `rate-limit.source.*`
+- per source CIDR rule: `rate-limit.source-cidr.<name>.*`
+- per HMS method family: `rate-limit.method-family.<family>.*`
+- per logical catalog: `rate-limit.catalog.<catalog>.*`
+- per high-risk RPC class: `rate-limit.rpc-class.<class>.*`
+
+Supported method families:
+
+- `metadata_read`
+- `metadata_write`
+- `service_global_read`
+- `service_global_write`
+- `acid_namespace_bound_write`
+- `acid_id_bound_lifecycle`
+- `admin_introspection`
+- `compatibility_only_rpc`
+
+Supported RPC classes:
+
+- `write`
+- `ddl`
+- `txn`
+- `lock`
+
+Important behavior:
+
+- per-principal limits apply only when the front door exposes an authenticated user, for example Kerberos/SASL
+- `rate-limit.source-cidr.<name>` is an aggregate bucket for the whole configured CIDR rule, not a separate bucket per IP
+- if one source IP matches several CIDR rules, all matching rules are enforced
+- per-catalog limits are enforced when the request actually resolves or touches a catalog/backend; fanout reads can therefore consume more than one catalog bucket
+- one RPC can match several classes at once, for example a lock/txn write can count toward `write`, `txn`, and `lock`
+- when a limit is exceeded the client receives a `MetaException` and the request is recorded with `status="throttled"`
+
+Example:
+
+```properties
+# Per authenticated principal
+rate-limit.principal.requests-per-second=60
+rate-limit.principal.burst=120
+
+# Per exact source IP
+rate-limit.source.requests-per-second=30
+rate-limit.source.burst=60
+
+# Aggregate bucket for a whole subnet or pool
+rate-limit.source-cidr.hs2-pool.cidrs=10.10.0.0/16,10.20.0.0/16
+rate-limit.source-cidr.hs2-pool.requests-per-second=200
+rate-limit.source-cidr.hs2-pool.burst=300
+
+# Method-family shaping
+rate-limit.method-family.metadata_read.requests-per-second=600
+rate-limit.method-family.metadata_read.burst=1000
+
+# Per catalog
+rate-limit.catalog.catalog1.requests-per-second=300
+rate-limit.catalog.catalog2.requests-per-second=120
+
+# Extra protection for high-risk RPC classes
+rate-limit.rpc-class.write.requests-per-second=80
+rate-limit.rpc-class.ddl.requests-per-second=15
+rate-limit.rpc-class.txn.requests-per-second=30
+rate-limit.rpc-class.lock.requests-per-second=50
+```
+
+Recommended production starting point:
+
+- use `principal` for runaway HS2 sessions or bad end users
+- use `source` and `source-cidr` for tooling, scanners, or large client pools
+- use `method-family.metadata_read` to cap scan-heavy metadata discovery
+- use `catalog.<name>` to keep one hot catalog from starving the others
+- keep stricter limits on `ddl`, `txn`, and `lock` than on plain metadata reads
 
 You can also choose which HMS version the proxy advertises on the front door:
 

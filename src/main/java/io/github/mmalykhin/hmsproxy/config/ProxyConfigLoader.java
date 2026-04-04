@@ -1,22 +1,32 @@
 package io.github.mmalykhin.hmsproxy.config;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.routing.HmsOperationRegistry;
 import io.github.mmalykhin.hmsproxy.security.ClientAddressMatcher;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public final class ProxyConfigLoader {
+  private static final Set<String> SUPPORTED_RATE_LIMIT_METHOD_FAMILIES =
+      Arrays.stream(HmsOperationRegistry.OperationClass.values())
+          .map(HmsOperationRegistry.OperationClass::wireName)
+          .collect(Collectors.toUnmodifiableSet());
+  private static final Set<String> SUPPORTED_RATE_LIMIT_RPC_CLASSES = Set.of("write", "ddl", "txn", "lock");
+
   private ProxyConfigLoader() {
   }
 
@@ -260,6 +270,30 @@ public final class ProxyConfigLoader {
     }
     ProxyConfig.SyntheticReadLockStoreConfig syntheticReadLockStore =
         new ProxyConfig.SyntheticReadLockStoreConfig(syntheticReadLockStoreMode, syntheticReadLockZooKeeper);
+    ProxyConfig.RateLimitPolicyConfig principalRateLimit =
+        parseRateLimitPolicy(properties, "rate-limit.principal");
+    ProxyConfig.RateLimitPolicyConfig sourceRateLimit =
+        parseRateLimitPolicy(properties, "rate-limit.source");
+    Map<String, ProxyConfig.SourceCidrRateLimitConfig> sourceCidrRateLimits =
+        parseSourceCidrRateLimits(properties);
+    Map<String, ProxyConfig.RateLimitPolicyConfig> methodFamilyRateLimits =
+        parseRateLimitPolicies(properties, "rate-limit.method-family.", SUPPORTED_RATE_LIMIT_METHOD_FAMILIES, true);
+    Map<String, ProxyConfig.RateLimitPolicyConfig> catalogRateLimits =
+        parseRateLimitPolicies(properties, "rate-limit.catalog.", null, false);
+    for (String catalogName : catalogRateLimits.keySet()) {
+      if (!catalogs.containsKey(catalogName)) {
+        throw new IllegalArgumentException("Unknown rate-limit.catalog entry: " + catalogName);
+      }
+    }
+    Map<String, ProxyConfig.RateLimitPolicyConfig> rpcClassRateLimits =
+        parseRateLimitPolicies(properties, "rate-limit.rpc-class.", SUPPORTED_RATE_LIMIT_RPC_CLASSES, true);
+    ProxyConfig.RateLimitConfig rateLimit = new ProxyConfig.RateLimitConfig(
+        principalRateLimit,
+        sourceRateLimit,
+        sourceCidrRateLimits,
+        methodFamilyRateLimits,
+        catalogRateLimits,
+        rpcClassRateLimits);
     return new ProxyConfig(
         server,
         security,
@@ -271,7 +305,88 @@ public final class ProxyConfigLoader {
         federation,
         transactionalDdlGuard,
         management,
-        syntheticReadLockStore);
+        syntheticReadLockStore,
+        rateLimit);
+  }
+
+  private static Map<String, ProxyConfig.SourceCidrRateLimitConfig> parseSourceCidrRateLimits(Properties properties) {
+    String prefix = "rate-limit.source-cidr.";
+    Map<String, ProxyConfig.SourceCidrRateLimitConfig> parsed = new LinkedHashMap<>();
+    for (String ruleName : scopedNames(properties, prefix)) {
+      String baseKey = prefix + ruleName;
+      List<String> cidrRules = Arrays.asList(splitCsv(get(properties, baseKey + ".cidrs", "")));
+      ProxyConfig.RateLimitPolicyConfig policy = parseRateLimitPolicy(properties, baseKey);
+      if (cidrRules.isEmpty() && !policy.enabled()) {
+        continue;
+      }
+      if (cidrRules.isEmpty()) {
+        throw new IllegalArgumentException("Missing required property: " + baseKey + ".cidrs");
+      }
+      ClientAddressMatcher.parseAll(cidrRules);
+      if (!policy.enabled()) {
+        throw new IllegalArgumentException(
+            baseKey + ".requests-per-second must be >= 1 when " + baseKey + " is configured");
+      }
+      parsed.put(ruleName, new ProxyConfig.SourceCidrRateLimitConfig(cidrRules, policy));
+    }
+    return parsed;
+  }
+
+  private static Map<String, ProxyConfig.RateLimitPolicyConfig> parseRateLimitPolicies(
+      Properties properties,
+      String prefix,
+      Set<String> allowedNames,
+      boolean normalizeToLowerCase
+  ) {
+    Map<String, ProxyConfig.RateLimitPolicyConfig> parsed = new LinkedHashMap<>();
+    for (String rawName : scopedNames(properties, prefix)) {
+      String normalizedName = normalizeToLowerCase ? rawName.toLowerCase(Locale.ROOT) : rawName;
+      if (allowedNames != null && !allowedNames.contains(normalizedName)) {
+        throw new IllegalArgumentException("Unsupported rate-limit scope '" + rawName + "' under " + prefix);
+      }
+      ProxyConfig.RateLimitPolicyConfig policy = parseRateLimitPolicy(properties, prefix + rawName);
+      if (policy.enabled()) {
+        parsed.put(normalizedName, policy);
+      }
+    }
+    return parsed;
+  }
+
+  private static ProxyConfig.RateLimitPolicyConfig parseRateLimitPolicy(Properties properties, String baseKey) {
+    boolean rateConfigured = properties.containsKey(baseKey + ".requests-per-second");
+    boolean burstConfigured = properties.containsKey(baseKey + ".burst");
+    int requestsPerSecond = getNonNegativeInt(properties, baseKey + ".requests-per-second", 0);
+    int burst = getNonNegativeInt(properties, baseKey + ".burst", 0);
+    if (!rateConfigured && !burstConfigured) {
+      return ProxyConfig.RateLimitPolicyConfig.disabled();
+    }
+    if (requestsPerSecond < 1) {
+      throw new IllegalArgumentException(baseKey + ".requests-per-second must be >= 1");
+    }
+    if (burstConfigured && burst < 1) {
+      throw new IllegalArgumentException(baseKey + ".burst must be >= 1");
+    }
+    return new ProxyConfig.RateLimitPolicyConfig(requestsPerSecond, burst);
+  }
+
+  private static List<String> scopedNames(Properties properties, String prefix) {
+    return properties.stringPropertyNames().stream()
+        .filter(name -> name.startsWith(prefix))
+        .map(name -> extractScopedName(name, prefix))
+        .filter(Objects::nonNull)
+        .collect(Collectors.toCollection(LinkedHashSet::new))
+        .stream()
+        .sorted()
+        .toList();
+  }
+
+  private static String extractScopedName(String propertyName, String prefix) {
+    String suffix = propertyName.substring(prefix.length());
+    int separatorIndex = suffix.lastIndexOf('.');
+    if (separatorIndex <= 0) {
+      return null;
+    }
+    return suffix.substring(0, separatorIndex);
   }
 
   private static String[] splitCsv(String value) {
@@ -303,6 +418,14 @@ public final class ProxyConfigLoader {
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("Invalid integer value for property " + key + ": " + value, e);
     }
+  }
+
+  private static int getNonNegativeInt(Properties properties, String key, int defaultValue) {
+    int value = getInt(properties, key, defaultValue);
+    if (value < 0) {
+      throw new IllegalArgumentException(key + " must be >= 0, got: " + value);
+    }
+    return value;
   }
 
   private static int getPositiveInt(Properties properties, String key, int defaultValue) {

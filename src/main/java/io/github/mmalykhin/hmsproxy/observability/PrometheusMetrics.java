@@ -40,6 +40,10 @@ public final class PrometheusMetrics {
       "hms_proxy_default_catalog_routed_total",
       "Requests routed to the default catalog because no explicit catalog namespace was provided",
       List.of("method"));
+  private final Counter rateLimitedTotal = new Counter(
+      "hms_proxy_rate_limited_total",
+      "Requests rejected by proxy overload protection grouped by limiting dimension, scope, method family, and catalog",
+      List.of("dimension", "scope", "method", "method_family", "catalog"));
   private final Counter filteredObjectsTotal = new Counter(
       "hms_proxy_filtered_objects_total",
       "Metadata objects hidden by selective federation filters grouped by method, catalog, and object type",
@@ -86,6 +90,21 @@ public final class PrometheusMetrics {
 
   public void recordDefaultCatalogRoute(String method) {
     defaultCatalogRoutedTotal.inc(labels("method", method));
+  }
+
+  public void recordRateLimited(
+      String dimension,
+      String scope,
+      String method,
+      String methodFamily,
+      String catalog
+  ) {
+    rateLimitedTotal.inc(labels(
+        "dimension", dimension,
+        "scope", scope,
+        "method", method,
+        "method_family", methodFamily,
+        "catalog", catalog));
   }
 
   public void recordFilteredObject(String method, String catalog, String objectType) {
@@ -159,6 +178,7 @@ public final class PrometheusMetrics {
     backendFallbackTotal.renderInto(builder);
     routingAmbiguousTotal.renderInto(builder);
     defaultCatalogRoutedTotal.renderInto(builder);
+    rateLimitedTotal.renderInto(builder);
     filteredObjectsTotal.renderInto(builder);
     syntheticReadLockEventsTotal.renderInto(builder);
     syntheticReadLockStoreFailuresTotal.renderInto(builder);

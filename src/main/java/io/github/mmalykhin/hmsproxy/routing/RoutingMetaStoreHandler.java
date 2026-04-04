@@ -17,10 +17,12 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.AbortTxnsRequest;
@@ -57,6 +59,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final FederationLayer federationLayer;
   private final TransactionalTableMutationGuard transactionalTableMutationGuard;
   private final SyntheticReadLockManager syntheticReadLockManager;
+  private final RequestRateLimiter requestRateLimiter;
   private final long aliveSince;
 
   public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
@@ -77,6 +80,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.federationLayer = new FederationLayer(config, router);
     this.transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
     this.syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
+    this.requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
     this.aliveSince = System.currentTimeMillis() / 1000L;
   }
 
@@ -118,6 +122,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
 
     try {
+      requestRateLimiter.enforceRequest(name);
       transactionalTableMutationGuard.validate(name, args);
       Object result = switch (name) {
         case "getName" -> config.server().name();
@@ -158,7 +163,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       }
       return result;
     } catch (Throwable throwable) {
-      observation.markError();
+      if (throwable instanceof RateLimitExceededException) {
+        observation.markThrottled();
+      } else {
+        observation.markError();
+      }
       long elapsedMs = elapsedMillis(startedAt);
       LOG.debug("requestId={} client-error method={} elapsedMs={} error={}",
           requestId, name, elapsedMs, throwable.toString(), throwable);
@@ -419,6 +428,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
           syntheticReadLockManager.tryAcquire((LockRequest) args[0], namespace);
       if (syntheticState != null) {
         currentObservation().recordNamespace(namespace);
+        enforceCatalogRateLimit(method.getName(), namespace.catalogName());
         currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
         LockResponse response = syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
         if (LOG.isInfoEnabled()) {
@@ -442,6 +452,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       return routeByNamespaceOrFail(method, args);
     }
     currentObservation().recordNamespace(syntheticState.namespace(router));
+    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     return syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
   }
@@ -453,6 +464,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       return routeByNamespaceOrFail(method, args);
     }
     currentObservation().recordNamespace(syntheticState.namespace(router));
+    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     syntheticReadLockManager.releaseLock(syntheticState);
     return null;
@@ -465,6 +477,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       return routeByNamespaceOrFail(method, args);
     }
     currentObservation().recordNamespace(syntheticState.namespace(router));
+    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     syntheticReadLockManager.touch(syntheticState);
 
@@ -604,6 +617,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     Long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
     try {
+      enforceCatalogRateLimit(method.getName(), backend.name());
       currentObservation().recordBackend(backend.name());
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
@@ -670,6 +684,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     Long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
     try {
+      enforceCatalogRateLimit(methodName, backend.name());
       currentObservation().recordBackend(backend.name());
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
@@ -720,6 +735,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     Long requestId = currentRequestId();
     ImpersonationContext impersonation = currentImpersonation().orElse(null);
     try {
+      enforceCatalogRateLimit(methodName, backend.name());
       currentObservation().recordBackend(backend.name());
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} proxy-call catalog={} method={} impersonationUser={} args={}",
@@ -1103,6 +1119,13 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
   }
 
+  private void enforceCatalogRateLimit(String methodName, String catalogName) throws RateLimitExceededException {
+    if (!currentObservation().shouldRateLimitCatalog(catalogName)) {
+      return;
+    }
+    requestRateLimiter.enforceCatalog(methodName, catalogName);
+  }
+
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
     if (!AUDIT_LOG.isInfoEnabled()) {
       return;
@@ -1177,6 +1200,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private static final class RequestObservation {
     private final String method;
     private final String operationClass;
+    private final Set<String> rateLimitedCatalogs = new LinkedHashSet<>();
     private String catalog = "none";
     private String backend = "none";
     private String status = "ok";
@@ -1253,13 +1277,24 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     }
 
     private void markError() {
-      if (!"fallback".equals(status)) {
+      if (!"fallback".equals(status) && !"throttled".equals(status)) {
         status = "error";
       }
     }
 
+    private void markThrottled() {
+      status = "throttled";
+    }
+
     private void markDefaultCatalogRoute() {
       defaultCatalogRouted = true;
+    }
+
+    private boolean shouldRateLimitCatalog(String catalogName) {
+      if (catalogName == null || catalogName.isBlank()) {
+        return false;
+      }
+      return rateLimitedCatalogs.add(catalogName);
     }
   }
 }

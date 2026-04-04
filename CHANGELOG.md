@@ -1,10 +1,25 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-03`. The project has not published tagged releases yet, so entries are grouped by commit
+`2026-04-04`. The project has not published tagged releases yet, so entries are grouped by commit
 date and focused on user-visible changes.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-04-04
+
+### Added
+
+- Added request overload protection with token-bucket rate limits for client principal, source IP,
+  source CIDR pools, HMS method families, catalogs, and high-risk RPC classes.
+- Added dedicated protection classes for `write`, `ddl`, `txn`, and `lock` RPCs.
+- Added Prometheus visibility for throttled requests via `hms_proxy_rate_limited_total` and
+  `status="throttled"` in `hms_proxy_requests_total`.
+
+### Docs
+
+- Documented overload-protection configuration and operating model in both READMEs and the example
+  properties file.
 
 ## 2026-04-03
 

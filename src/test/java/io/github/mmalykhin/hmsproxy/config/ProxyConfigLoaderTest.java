@@ -233,6 +233,70 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsRateLimitConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          rate-limit.principal.requests-per-second=40
+          rate-limit.principal.burst=80
+          rate-limit.source.requests-per-second=25
+          rate-limit.source-cidr.corp.cidrs=10.10.0.0/16,10.20.0.0/16
+          rate-limit.source-cidr.corp.requests-per-second=100
+          rate-limit.source-cidr.corp.burst=120
+          rate-limit.method-family.metadata_read.requests-per-second=300
+          rate-limit.catalog.catalog1.requests-per-second=200
+          rate-limit.catalog.catalog2.requests-per-second=150
+          rate-limit.catalog.catalog2.burst=300
+          rate-limit.rpc-class.txn.requests-per-second=35
+          rate-limit.rpc-class.lock.requests-per-second=50
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.rateLimit().enabled());
+      Assert.assertEquals(40, config.rateLimit().principal().requestsPerSecond());
+      Assert.assertEquals(80, config.rateLimit().principal().burst());
+      Assert.assertEquals(25, config.rateLimit().source().requestsPerSecond());
+      Assert.assertEquals(25, config.rateLimit().source().burst());
+      Assert.assertEquals(
+          List.of("10.10.0.0/16", "10.20.0.0/16"),
+          config.rateLimit().sourceCidrs().get("corp").cidrRules());
+      Assert.assertEquals(100, config.rateLimit().sourceCidrs().get("corp").policy().requestsPerSecond());
+      Assert.assertEquals(300, config.rateLimit().methodFamilies().get("metadata_read").requestsPerSecond());
+      Assert.assertEquals(200, config.rateLimit().catalogs().get("catalog1").requestsPerSecond());
+      Assert.assertEquals(300, config.rateLimit().catalogs().get("catalog2").burst());
+      Assert.assertEquals(35, config.rateLimit().rpcClasses().get("txn").requestsPerSecond());
+      Assert.assertEquals(50, config.rateLimit().rpcClasses().get("lock").requestsPerSecond());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsUnknownRateLimitCatalog() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          rate-limit.catalog.catalog2.requests-per-second=50
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for unknown rate-limit catalog");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("rate-limit.catalog"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void rejectsInvalidViewTextRewriteMode() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

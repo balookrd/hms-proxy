@@ -256,12 +256,13 @@ scrape_configs:
 
 Семантика метрик:
 
-- `status` в `hms_proxy_requests_total` принимает значения `ok`, `error` или `fallback`
+- `status` в `hms_proxy_requests_total` принимает значения `ok`, `error`, `fallback` или `throttled`
 - `catalog=all, backend=fanout` означает, что запрос был отправлен сразу в несколько backend
 - `hms_proxy_backend_failures_total` считает backend-side ошибки вызова с группировкой по backend и exception type
 - `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
 - `hms_proxy_routing_ambiguous_total` считает запросы, которые proxy безопасно отклонил из-за conflicting namespace hints вместо угадывания маршрута
 - `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+- `hms_proxy_rate_limited_total` считает запросы, отклонённые overload protection, с лейблами по limiting dimension, configured scope, method family и resolved catalog
 - `hms_proxy_filtered_objects_total` считает базы или таблицы, скрытые selective federation rules до возврата клиенту
 - `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` считает ошибки in-memory или ZooKeeper store с группировкой по операции и exception type
@@ -395,6 +396,90 @@ guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 
 Если `guard.transactional-ddl.client-addresses` задан, проверка применяется только к совпавшим
 клиентам. Если не задан, проверка действует для всех клиентов.
+
+## Rate limiting / overload protection
+
+Proxy также умеет отсеивать bursts до того, как они превратятся в backend overload. Эта защита
+работает локально на каждом proxy instance и использует token-bucket лимиты с:
+
+- постоянной скоростью пополнения через `requests-per-second`
+- опциональным allowance для короткого burst через `burst`
+- независимыми bucket, так что запрос должен пройти все настроенные scope, которые к нему относятся
+
+Поддерживаемые scope:
+
+- per authenticated client principal: `rate-limit.principal.*`
+- per exact source IP: `rate-limit.source.*`
+- per source CIDR rule: `rate-limit.source-cidr.<name>.*`
+- per HMS method family: `rate-limit.method-family.<family>.*`
+- per logical catalog: `rate-limit.catalog.<catalog>.*`
+- per high-risk RPC class: `rate-limit.rpc-class.<class>.*`
+
+Поддерживаемые method families:
+
+- `metadata_read`
+- `metadata_write`
+- `service_global_read`
+- `service_global_write`
+- `acid_namespace_bound_write`
+- `acid_id_bound_lifecycle`
+- `admin_introspection`
+- `compatibility_only_rpc`
+
+Поддерживаемые RPC classes:
+
+- `write`
+- `ddl`
+- `txn`
+- `lock`
+
+Важное поведение:
+
+- per-principal лимиты срабатывают только когда front door даёт authenticated user, например через Kerberos/SASL
+- `rate-limit.source-cidr.<name>` это aggregate bucket на всё правило CIDR, а не отдельный bucket на каждый IP
+- если один source IP совпал сразу с несколькими CIDR rule, применяются все совпавшие rule
+- per-catalog лимиты срабатывают в момент, когда запрос реально resolve'ится или касается конкретного catalog/backend; значит fanout read может расходовать несколько catalog bucket
+- один RPC может одновременно попасть в несколько classes, например lock/txn write может считаться сразу в `write`, `txn` и `lock`
+- при превышении лимита клиент получает `MetaException`, а запрос записывается со `status="throttled"`
+
+Пример:
+
+```properties
+# Per authenticated principal
+rate-limit.principal.requests-per-second=60
+rate-limit.principal.burst=120
+
+# Per exact source IP
+rate-limit.source.requests-per-second=30
+rate-limit.source.burst=60
+
+# Aggregate bucket на целую подсеть или клиентский pool
+rate-limit.source-cidr.hs2-pool.cidrs=10.10.0.0/16,10.20.0.0/16
+rate-limit.source-cidr.hs2-pool.requests-per-second=200
+rate-limit.source-cidr.hs2-pool.burst=300
+
+# Shaping по семейству методов
+rate-limit.method-family.metadata_read.requests-per-second=600
+rate-limit.method-family.metadata_read.burst=1000
+
+# Per catalog
+rate-limit.catalog.catalog1.requests-per-second=300
+rate-limit.catalog.catalog2.requests-per-second=120
+
+# Дополнительная защита для high-risk RPC classes
+rate-limit.rpc-class.write.requests-per-second=80
+rate-limit.rpc-class.ddl.requests-per-second=15
+rate-limit.rpc-class.txn.requests-per-second=30
+rate-limit.rpc-class.lock.requests-per-second=50
+```
+
+Нормальная production starting point:
+
+- используй `principal` против runaway HS2 session или плохих end-user
+- используй `source` и `source-cidr` против tooling, scanner и больших client pool
+- используй `method-family.metadata_read`, чтобы ограничить scan-heavy metadata discovery
+- используй `catalog.<name>`, чтобы один hot catalog не выедал остальные
+- для `ddl`, `txn` и `lock` обычно стоит держать лимиты строже, чем для обычных metadata read
 
 ## Frontend profile и runtime jars
 
