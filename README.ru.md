@@ -47,11 +47,20 @@ Kerberos пользователя.
 
 Это публичная сводка того, как позиционировать proxy. Матрица сгруппирована не по отдельным thrift
 методам, а по типу клиента, advertised front door, backend runtime, auth mode и семействам методов.
+Таблица генерируется из [capabilities.yaml](capabilities.yaml), а каждая capability привязана к
+smoke-тестам в test suite.
 
-| Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
+Обновить сгенерированную таблицу можно так:
+
+```bash
+mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true test
+```
+
+<!-- BEGIN GENERATED: capability-matrix -->
+| Версия клиента | Профиль front door | Профиль backend | Режим auth | Семейства методов | Ожидаемый результат |
 | --- | --- | --- | --- | --- | --- |
 | Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` или `KERBEROS` | catalog-aware read/write, legacy `catalog<separator>db` routing, view rewrite | Базовый полностью поддержанный сценарий. |
-| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | read path и часть metadata write, где возможен fallback с `*_req` API | Поддержано через compatibility downgrade; часть вызовов работает в degraded-режиме через legacy RPC. |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | read path, часть metadata write, где возможен fallback с `*_req` API | Поддержано через compatibility downgrade; часть вызовов работает в degraded-режиме через legacy RPC. |
 | Hortonworks клиенты, которым достаточно Hortonworks identity на фронте через `getVersion()` | `HORTONWORKS_*` без standalone jar | `APACHE_3_1_3` или Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | пересекающиеся Apache/HDP method families | Поддержано, если клиенту достаточно только смены advertised profile. |
 | Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Поддержано при наличии совместимых Hortonworks front-door и backend runtime jar. |
 | Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | HDP-only passthrough методы вроде `add_write_notification_log` | Явно отклоняется, если target backend не даёт совместимый Hortonworks runtime. |
@@ -59,6 +68,7 @@ Kerberos пользователя.
 | HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC без namespace в payload | любой | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: идут в `routing.default-catalog`; допустимые non-ACID `SELECT` и `NO_TXN` DDL lock всё же могут синтетически обслуживаться на non-default catalog, но в остальном это стоит считать single-catalog control plane, пока не проведена отдельная валидация. |
 | Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
 | Клиенты, которые пытаются делать global write без resolvable catalog или динамически управлять registry каталогов | любой | любой | `NONE` или `KERBEROS` | ambiguous writes, `create_catalog`, `drop_catalog` | Rejected by design. |
+<!-- END GENERATED: capability-matrix -->
 
 ## Важные оговорки
 
@@ -774,3 +784,52 @@ java \
   `CREATE TABLE` и partition rename/drop без Beeline
 - `notification` должен проходить для Hortonworks-routed каталога и падать с
   `requires a Hortonworks backend runtime` для Apache-routed каталога
+
+### Automated Real-installation Smoke
+
+Для регулярных проверок на реальной инсталляции теперь есть два отдельных runner'а:
+
+- [`scripts/run-real-installation-smoke-simple.sh`](scripts/run-real-installation-smoke-simple.sh)
+- [`scripts/run-real-installation-smoke-kerberos.sh`](scripts/run-real-installation-smoke-kerberos.sh)
+
+Это обёртки над тем же smoke client, которые fail-fast запускают сценарий из:
+
+- optional Beeline / HiveServer2 SQL smoke из [SMOKE.ru.md](SMOKE.ru.md)
+- direct txn/ACID smoke
+- DB lock smoke на non-default catalog
+- optional partition lock smoke
+- optional Hortonworks notification smoke
+
+Стартовать удобнее с соответствующего example-конфига:
+
+```bash
+cp scripts/hms-real-installation-smoke.simple.env.example scripts/hms-real-installation-smoke.simple.env
+cp scripts/hms-real-installation-smoke.kerberos.env.example scripts/hms-real-installation-smoke.kerberos.env
+```
+
+Дальше поправь `HMS_SMOKE_*` значения и запускай:
+
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario all
+scripts/run-real-installation-smoke-kerberos.sh --scenario all
+```
+
+Либо более узкий прогон:
+
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario sql
+scripts/run-real-installation-smoke-simple.sh --scenario locks
+scripts/run-real-installation-smoke-kerberos.sh --scenario notification
+```
+
+Что важно:
+
+- по умолчанию runner берёт самый свежий `target/hms-proxy-*-fat.jar`
+- путь к jar можно переопределить через `HMS_SMOKE_FAT_JAR`
+- если задан `HMS_SMOKE_BEELINE_JDBC_URL`, в `all` дополнительно запускается Beeline / HiveServer2 SQL smoke из `SMOKE.ru.md`
+- SQL smoke использует `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE` и при необходимости умеет запускать transactional SQL и materialized-view checks
+- если заданы `HMS_SMOKE_TXN_SECONDARY_DB` и `HMS_SMOKE_TXN_SECONDARY_TABLE`, runner делает второй direct txn smoke
+- если `HMS_SMOKE_NOTIFICATION_*` не настроены, notification шаг в `all` будет пропущен
+- если заданы `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`, runner дополнительно запускает negative notification check для Apache backend из `SMOKE.ru.md`
+- simple runner автоматически подхватывает `scripts/hms-real-installation-smoke.simple.env`
+- Kerberos runner автоматически подхватывает `scripts/hms-real-installation-smoke.kerberos.env`

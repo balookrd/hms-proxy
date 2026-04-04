@@ -20,6 +20,7 @@ import java.lang.reflect.Method;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,11 +31,13 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
+import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
+import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
@@ -42,9 +45,11 @@ import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.LockState;
 import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.thrift.TApplicationException;
@@ -351,6 +356,16 @@ public class RoutingMetaStoreHandlerTest {
         () -> handler.invoke(null, method, new Object[] {"admin_role", "alice", PrincipalType.USER}));
 
     Assert.assertTrue(error.getMessage().contains("has no catalog context"));
+  }
+
+  @Test
+  public void catalogManagementRpcsAreRejected() throws Throwable {
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+
+    assertCatalogManagementRejected(handler, "create_catalog");
+    assertCatalogManagementRejected(handler, "alter_catalog");
+    assertCatalogManagementRejected(handler, "drop_catalog");
   }
 
   @Test
@@ -1460,6 +1475,172 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void getAllDatabasesFiltersHiddenDatabasesByExposurePolicy() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfigWithExposure(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of("sales", "finance"),
+                Map.of(),
+                Map.of("hive.metastore.uris", "thrift://one"))));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_all_databases".equals(method.getName())) {
+        return List.of("sales", "hidden", "Finance");
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals(List.of("sales", "Finance"), result);
+  }
+
+  @Test
+  public void getTableRejectsHiddenTableByExposurePolicyWithoutBackendCall() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfigWithExposure(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of(),
+                Map.of("sales", List.of("orders")),
+                Map.of("hive.metastore.uris", "thrift://one"))));
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      return table("sales", "secret", Map.of());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+
+    NoSuchObjectException error = Assert.assertThrows(
+        NoSuchObjectException.class,
+        () -> handler.invoke(null, method, new Object[] {"sales", "secret"}));
+
+    Assert.assertTrue(error.getMessage().contains("not exposed"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void getAllTablesFiltersHiddenTablesByExposurePolicyCaseInsensitively() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfigWithExposure(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of(),
+                Map.of("sales", List.of("orders")),
+                Map.of("hive.metastore.uris", "thrift://one"))));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_all_tables".equals(method.getName())) {
+        return List.of("Orders", "secret");
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_tables", String.class);
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[] {"sales"});
+
+    Assert.assertEquals(List.of("Orders"), result);
+  }
+
+  @Test
+  public void getTableMetaFiltersHiddenTablesByExposurePolicy() throws Throwable {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfigWithExposure(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of(),
+                Map.of("sales", List.of("orders")),
+                Map.of("hive.metastore.uris", "thrift://one"))));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_table_meta".equals(method.getName())) {
+        return List.of(
+            new TableMeta("sales", "Orders", "MANAGED_TABLE"),
+            new TableMeta("sales", "secret", "MANAGED_TABLE"));
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Method method =
+        ThriftHiveMetastore.Iface.class.getMethod("get_table_meta", String.class, String.class, List.class);
+
+    @SuppressWarnings("unchecked")
+    List<TableMeta> result =
+        (List<TableMeta>) handler.invoke(null, method, new Object[] {"sales", "*", List.of()});
+
+    Assert.assertEquals(1, result.size());
+    Assert.assertEquals("Orders", result.get(0).getTableName());
+  }
+
+  @Test
   public void addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();
@@ -1611,6 +1792,69 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void getTablesExtFiltersHiddenTablesByExposurePolicy() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog2",
+        Map.of(
+            "catalog2",
+            catalogConfigWithExposure(
+                "catalog2",
+                "c2",
+                MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+                HDP_6150_JAR.toString(),
+                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of(),
+                Map.of("sales", List.of("events")),
+                Map.of("hive.metastore.uris", "thrift://two"))),
+        new ProxyConfig.CompatibilityConfig(
+            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+            HDP_6150_JAR.toString(),
+            HDP_6150_JAR.toString(),
+            false));
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_6150_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        (proxy, method, args) -> {
+          if ("get_tables_ext".equals(method.getName())) {
+            Object request = args[0];
+            Class<?> infoClass = request.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.ExtendedTableInfo");
+            return List.of(
+                infoClass.getConstructor(String.class).newInstance("events"),
+                infoClass.getConstructor(String.class).newInstance("secret"));
+          }
+          if ("getVersion".equals(method.getName())) {
+            return "3.1.0.3.1.5.6150-1";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog2", hdpBackend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_6150_JAR.toUri().toURL()},
+        RoutingMetaStoreHandlerTest.class.getClassLoader());
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.GetTablesExtRequest", true, classLoader);
+    Object request = requestClass.getConstructor(String.class, String.class, String.class, int.class)
+        .newInstance("catalog2", "sales", "*", 10);
+
+    Object response = handler.getTablesExt(request);
+
+    Assert.assertEquals(1, ((List<?>) response).size());
+    Object tableInfo = ((List<?>) response).get(0);
+    Assert.assertEquals("events", tableInfo.getClass().getMethod("getTblName").invoke(tableInfo));
+  }
+
+  @Test
   public void getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
 
@@ -1737,6 +1981,22 @@ public class RoutingMetaStoreHandlerTest {
         Catalog.class);
     ctor.setAccessible(true);
     return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), adapter, runtime, catalog);
+  }
+
+  private static void assertCatalogManagementRejected(RoutingMetaStoreHandler handler, String methodName) throws Throwable {
+    Method method = Arrays.stream(ThriftHiveMetastore.Iface.class.getMethods())
+        .filter(candidate -> candidate.getName().equals(methodName))
+        .findFirst()
+        .orElseThrow(() -> new IllegalStateException("No HMS method found for " + methodName));
+
+    Object[] args = new Object[method.getParameterCount()];
+    Class<?>[] parameterTypes = method.getParameterTypes();
+    for (int index = 0; index < parameterTypes.length; index++) {
+      args[index] = placeholderArgument(parameterTypes[index], methodName);
+    }
+
+    MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, args));
+    Assert.assertTrue(error.getMessage().contains("managed by proxy config"));
   }
 
   private static Object childTable(ClassLoader classLoader, String dbName, String tableName) throws Exception {
@@ -1891,6 +2151,47 @@ public class RoutingMetaStoreHandlerTest {
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf);
+  }
+
+  private static ProxyConfig.CatalogConfig catalogConfigWithExposure(
+      String name,
+      String description,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      ProxyConfig.CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      Map<String, String> hiveConf
+  ) {
+    return new ProxyConfig.CatalogConfig(
+        name,
+        description,
+        "file:///" + description,
+        false,
+        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        List.of(),
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf);
+  }
+
+  private static Object placeholderArgument(Class<?> parameterType, String methodName) throws Exception {
+    if (parameterType == String.class) {
+      return "catalog2";
+    }
+    if (parameterType == Catalog.class) {
+      Catalog catalog = new Catalog();
+      catalog.setName("catalog2");
+      catalog.setLocationUri("file:///catalog2");
+      return catalog;
+    }
+    if (parameterType.isPrimitive()) {
+      throw new IllegalArgumentException("Unsupported primitive parameter for " + methodName + ": " + parameterType);
+    }
+    return parameterType.getConstructor().newInstance();
   }
 
   private static Table table(String dbName, String tableName, Map<String, String> parameters) {
