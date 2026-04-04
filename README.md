@@ -185,6 +185,7 @@ Current Prometheus metrics:
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}`
 - `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
 - `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
 - `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
@@ -209,6 +210,7 @@ Metric semantics:
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests rejected because the proxy saw conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+- `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
@@ -280,6 +282,37 @@ routing.catalog-db-separator=__
 ```
 
 With that setting, legacy names become `catalog1__sales` instead of `catalog1.sales`.
+
+### Selective federation exposure
+
+You can publish only part of a backend namespace while keeping routing and write policy unchanged.
+This is useful for gradual migration, safer multi-tenant rollout, and avoiding accidental metadata
+exposure.
+
+Per catalog:
+
+```properties
+# Backward-compatible default
+catalog.catalog1.expose-mode=ALLOW_ALL
+
+# Safer rollout mode: only matched objects are visible
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales,finance_.*
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
+```
+
+Rules:
+
+- regexes are matched case-insensitively
+- `catalog.<name>.expose-db-patterns` is an allowlist for backend database names inside that catalog
+- `catalog.<name>.expose-table-patterns.<dbRegex>` is an allowlist for table names inside databases whose backend db name matches `<dbRegex>`
+- table rules narrow visibility for matching databases; unmatched tables are filtered out
+- with `DENY_BY_DEFAULT`, databases without a matching db rule or table rule are hidden
+- a matching table rule can expose a database even when no db-level rule is present, but only matching tables inside that database stay visible
+
+The filter is applied on metadata read paths such as `get_all_databases`, `get_databases`,
+`get_table*`, `get_tables*`, `get_table_meta`, and Hortonworks `get_tables_ext`.
 
 ## Transactional DDL guard
 
@@ -702,12 +735,26 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
+And you can independently restrict which metadata is visible from each backend:
+
+```properties
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+```
+
 Supported modes:
 
 - `READ_WRITE`: default behavior
 - `READ_ONLY`: only read RPCs are allowed for that catalog
 - `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
   `catalog.<name>.write-db-whitelist`
+
+Exposure modes:
+
+- `ALLOW_ALL`: default metadata exposure behavior for `catalog.<name>.expose-mode`
+- `DENY_BY_DEFAULT`: metadata is hidden unless matched by `catalog.<name>.expose-db-patterns` or
+  `catalog.<name>.expose-table-patterns.<dbRegex>`
 
 This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
 the metastore URI and Kerberos settings.

@@ -184,6 +184,7 @@ curl -s http://127.0.0.1:19083/metrics
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}`
 - `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
 - `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
 - `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
@@ -208,6 +209,7 @@ scrape_configs:
 - `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
 - `hms_proxy_routing_ambiguous_total` считает запросы, отклонённые из-за conflicting namespace hints
 - `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+- `hms_proxy_filtered_objects_total` считает базы или таблицы, скрытые selective federation rules до возврата клиенту
 - `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` считает ошибки in-memory или ZooKeeper store с группировкой по операции и exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` считает случаи, когда synthetic lock, открытый через один proxy instance, продолжает обслуживаться через другой instance
@@ -272,6 +274,37 @@ routing.catalog-db-separator=__
 ```
 
 Тогда legacy names будут выглядеть как `catalog1__sales`, а не `catalog1.sales`.
+
+### Selective federation exposure
+
+Можно публиковать только часть namespace backend-каталога, не меняя routing и write-policy.
+Это удобно для постепенной миграции, безопасного multi-tenant rollout и снижения риска
+случайного раскрытия метаданных.
+
+На каталог:
+
+```properties
+# Обратная совместимость по умолчанию
+catalog.catalog1.expose-mode=ALLOW_ALL
+
+# Более безопасный rollout: видны только объекты, попавшие в allowlist
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales,finance_.*
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
+```
+
+Правила:
+
+- regex сопоставляются case-insensitively
+- `catalog.<name>.expose-db-patterns` задаёт allowlist для backend database names внутри каталога
+- `catalog.<name>.expose-table-patterns.<dbRegex>` задаёт allowlist для таблиц внутри баз, чьё backend db name совпало с `<dbRegex>`
+- table rules сужают видимость таблиц внутри совпавших баз; unmatched tables отфильтровываются
+- при `DENY_BY_DEFAULT` базы без совпавшего db rule или table rule скрываются
+- совпавший table rule может сделать базу видимой даже без db-level rule, но внутри неё будут видны только совпавшие таблицы
+
+Фильтр применяется на metadata read-path’ах вроде `get_all_databases`, `get_databases`,
+`get_table*`, `get_tables*`, `get_table_meta` и Hortonworks `get_tables_ext`.
 
 ## Guard для transactional DDL
 
@@ -618,12 +651,26 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
+И независимо от write-policy можно ограничить видимость метаданных:
+
+```properties
+catalog.catalog1.expose-mode=DENY_BY_DEFAULT
+catalog.catalog1.expose-db-patterns=sales
+catalog.catalog1.expose-table-patterns.sales=orders_.*,events
+```
+
 Поддерживаются режимы:
 
 - `READ_WRITE`: поведение по умолчанию
 - `READ_ONLY`: для каталога разрешены только read RPC
 - `READ_WRITE_DB_WHITELIST`: write RPC разрешены только для баз из
   `catalog.<name>.write-db-whitelist`
+
+Режимы selective exposure:
+
+- `ALLOW_ALL`: поведение по умолчанию для `catalog.<name>.expose-mode`
+- `DENY_BY_DEFAULT`: metadata скрывается, если объект не совпал с
+  `catalog.<name>.expose-db-patterns` или `catalog.<name>.expose-table-patterns.<dbRegex>`
 
 ## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
 
