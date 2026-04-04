@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
@@ -20,6 +23,12 @@ public final class NamespaceTranslator {
     EXTERNALIZE,
     INTERNALIZE
   }
+
+  /** Cache: Class → "metaDataMap" static Field */
+  private static final ConcurrentMap<Class<?>, Field> METADATA_FIELD_CACHE = new ConcurrentHashMap<>();
+  /** Cache: Class → getterName → Optional<Method> (empty = method absent on this class) */
+  private static final ConcurrentMap<Class<?>, ConcurrentMap<String, Optional<Method>>> METHOD_CACHE =
+      new ConcurrentHashMap<>();
 
   private NamespaceTranslator() {
   }
@@ -279,7 +288,13 @@ public final class NamespaceTranslator {
   @SuppressWarnings("unchecked")
   private static List<TFieldIdEnum> thriftFieldIds(TBase<?, ?> thriftValue) {
     try {
-      Field metadataField = thriftValue.getClass().getField("metaDataMap");
+      Field metadataField = METADATA_FIELD_CACHE.computeIfAbsent(thriftValue.getClass(), cls -> {
+        try {
+          return cls.getField("metaDataMap");
+        } catch (NoSuchFieldException e) {
+          throw new IllegalStateException("Unable to locate metaDataMap on " + cls.getName(), e);
+        }
+      });
       Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
       List<TFieldIdEnum> fieldIds = new ArrayList<>();
       for (Object fieldId : metadata.keySet()) {
@@ -289,7 +304,7 @@ public final class NamespaceTranslator {
         }
       }
       return fieldIds;
-    } catch (NoSuchFieldException | IllegalAccessException e) {
+    } catch (IllegalAccessException e) {
       throw new IllegalStateException(
           "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
     }
@@ -539,12 +554,21 @@ public final class NamespaceTranslator {
   }
 
   private static String readStringProperty(Object target, String... getterNames) {
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
     for (String getterName : getterNames) {
+      Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
+        try {
+          return Optional.of(target.getClass().getMethod(name));
+        } catch (NoSuchMethodException ignored) {
+          return Optional.empty();
+        }
+      });
+      if (cached.isEmpty()) {
+        continue;
+      }
       try {
-        Method method = target.getClass().getMethod(getterName);
-        return (String) method.invoke(target);
-      } catch (NoSuchMethodException ignored) {
-        // Try the next compatible getter.
+        return (String) cached.get().invoke(target);
       } catch (IllegalAccessException | InvocationTargetException e) {
         throw new IllegalStateException(
             "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
@@ -558,7 +582,13 @@ public final class NamespaceTranslator {
       return false;
     }
     try {
-      Field metadataField = thriftValue.getClass().getField("metaDataMap");
+      Field metadataField = METADATA_FIELD_CACHE.computeIfAbsent(thriftValue.getClass(), cls -> {
+        try {
+          return cls.getField("metaDataMap");
+        } catch (NoSuchFieldException e) {
+          throw new IllegalStateException("Unable to locate metaDataMap on " + cls.getName(), e);
+        }
+      });
       Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
       for (Map.Entry<?, ?> entry : metadata.entrySet()) {
         TFieldIdEnum fieldId = (TFieldIdEnum) entry.getKey();
@@ -569,7 +599,7 @@ public final class NamespaceTranslator {
         return fieldMetaData.requirementType == TFieldRequirementType.REQUIRED;
       }
       return false;
-    } catch (NoSuchFieldException | IllegalAccessException e) {
+    } catch (IllegalAccessException e) {
       throw new IllegalStateException(
           "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
     }
@@ -577,15 +607,21 @@ public final class NamespaceTranslator {
 
   @SuppressWarnings("unchecked")
   private static List<String> readStringListProperty(Object target, String getterName) {
-    try {
-      Method method = target.getClass().getMethod(getterName);
-      Object value = method.invoke(target);
-      if (value == null) {
-        return null;
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
+      try {
+        return Optional.of(target.getClass().getMethod(name));
+      } catch (NoSuchMethodException ignored) {
+        return Optional.empty();
       }
-      return (List<String>) value;
-    } catch (NoSuchMethodException ignored) {
+    });
+    if (cached.isEmpty()) {
       return null;
+    }
+    try {
+      Object value = cached.get().invoke(target);
+      return value == null ? null : (List<String>) value;
     } catch (IllegalAccessException | InvocationTargetException e) {
       throw new IllegalStateException(
           "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
@@ -593,11 +629,22 @@ public final class NamespaceTranslator {
   }
 
   private static void maybeInvoke(Object target, String methodName, String argument) {
+    // Use a distinct cache key to separate no-arg getters from single-String setters.
+    String cacheKey = methodName + "(String)";
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
+      try {
+        return Optional.of(target.getClass().getMethod(methodName, String.class));
+      } catch (NoSuchMethodException ignoredEx) {
+        return Optional.empty();
+      }
+    });
+    if (cached.isEmpty()) {
+      return;
+    }
     try {
-      Method method = target.getClass().getMethod(methodName, String.class);
-      method.invoke(target, argument);
-    } catch (NoSuchMethodException ignored) {
-      // Namespace propagation is best-effort for thrift DTOs with compatible setters.
+      cached.get().invoke(target, argument);
     } catch (IllegalAccessException | InvocationTargetException e) {
       throw new IllegalStateException(
           "Unable to invoke " + methodName + " on " + target.getClass().getName(), e);
@@ -612,11 +659,21 @@ public final class NamespaceTranslator {
     if (values == null) {
       return;
     }
+    String cacheKey = "setFullTableNames(List)";
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
+      try {
+        return Optional.of(target.getClass().getMethod("setFullTableNames", List.class));
+      } catch (NoSuchMethodException ignoredEx) {
+        return Optional.empty();
+      }
+    });
+    if (cached.isEmpty()) {
+      return;
+    }
     try {
-      Method method = target.getClass().getMethod("setFullTableNames", List.class);
-      method.invoke(target, values);
-    } catch (NoSuchMethodException ignored) {
-      // Namespace propagation is best-effort for thrift DTOs with compatible setters.
+      cached.get().invoke(target, values);
     } catch (IllegalAccessException | InvocationTargetException e) {
       throw new IllegalStateException(
           "Unable to invoke setFullTableNames on " + target.getClass().getName(), e);

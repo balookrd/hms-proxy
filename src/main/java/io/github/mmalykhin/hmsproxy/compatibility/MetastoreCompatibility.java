@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +36,33 @@ public final class MetastoreCompatibility {
       Pattern.compile("(hive|hdfs|mapred|metastore).*");
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
   private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
+  private static final Map<String, CompatibleConfigKey> CONFIG_KEY_EXACT_INDEX;
+  private static final Map<String, List<CompatibleConfigKey>> CONFIG_KEY_SUFFIX_INDEX;
+
+  static {
+    Map<String, CompatibleConfigKey> exact = new HashMap<>();
+    Map<String, List<CompatibleConfigKey>> suffix = new HashMap<>();
+    for (MetastoreConf.ConfVars confVar : MetastoreConf.ConfVars.values()) {
+      CompatibleConfigKey key = new CompatibleConfigKey(
+          confVar.getVarname(),
+          confVar.getHiveName(),
+          defaultValueAsString(confVar.getDefaultVal()));
+      exact.put(key.metastoreName(), key);
+      exact.put(key.hiveName(), key);
+      indexSuffix(suffix, key.metastoreName(), key);
+      indexSuffix(suffix, key.hiveName(), key);
+    }
+    CONFIG_KEY_EXACT_INDEX = Map.copyOf(exact);
+    CONFIG_KEY_SUFFIX_INDEX = Map.copyOf(suffix);
+  }
+
+  private static void indexSuffix(Map<String, List<CompatibleConfigKey>> index, String name, CompatibleConfigKey key) {
+    int dot = name.lastIndexOf('.');
+    if (dot >= 0 && dot + 1 < name.length()) {
+      String shortName = name.substring(dot + 1);
+      index.computeIfAbsent(shortName, ignored -> new ArrayList<>()).add(key);
+    }
+  }
 
   private MetastoreCompatibility() {
   }
@@ -59,9 +87,14 @@ public final class MetastoreCompatibility {
     if (!hasFallback(methodName)) {
       return false;
     }
-    return cause instanceof TApplicationException
-        || cause instanceof TTransportException
-        || cause instanceof MetaException;
+    if (cause instanceof TApplicationException || cause instanceof TTransportException) {
+      return true;
+    }
+    if (cause instanceof MetaException) {
+      Throwable root = cause.getCause();
+      return root instanceof TApplicationException || root instanceof TTransportException;
+    }
+    return false;
   }
 
   public static Optional<Object> fallback(String methodName, Throwable cause) {
@@ -175,22 +208,15 @@ public final class MetastoreCompatibility {
   }
 
   private static Optional<CompatibleConfigKey> resolveCompatibleConfigKey(String requestedName) {
-    List<CompatibleConfigKey> suffixMatches = new ArrayList<>();
-    for (MetastoreConf.ConfVars confVar : MetastoreConf.ConfVars.values()) {
-      CompatibleConfigKey candidate = new CompatibleConfigKey(
-          confVar.getVarname(),
-          confVar.getHiveName(),
-          defaultValueAsString(confVar.getDefaultVal()));
-      if (requestedName.equals(candidate.metastoreName()) || requestedName.equals(candidate.hiveName())) {
-        return Optional.of(candidate);
-      }
-      if (candidate.metastoreName().endsWith("." + requestedName)
-          || candidate.hiveName().endsWith("." + requestedName)) {
-        suffixMatches.add(candidate);
-      }
+    CompatibleConfigKey exact = CONFIG_KEY_EXACT_INDEX.get(requestedName);
+    if (exact != null) {
+      return Optional.of(exact);
     }
-
-    return suffixMatches.size() == 1 ? Optional.of(suffixMatches.get(0)) : Optional.empty();
+    List<CompatibleConfigKey> suffixMatches = CONFIG_KEY_SUFFIX_INDEX.get(requestedName);
+    if (suffixMatches != null && suffixMatches.size() == 1) {
+      return Optional.of(suffixMatches.get(0));
+    }
+    return Optional.empty();
   }
 
   private static String defaultValueAsString(Object defaultValue) {

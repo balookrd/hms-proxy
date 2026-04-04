@@ -6,6 +6,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public final class HmsOperationRegistry {
   private static final Set<String> READ_PREFIXES = Set.of("get_", "list_", "show_");
@@ -42,6 +44,7 @@ public final class HmsOperationRegistry {
   private static final Map<String, ReadResultFilterKind> RESULT_FILTER_OVERRIDES = buildResultFilterOverrides();
   private static final Map<String, DefaultBackendRoutingPolicy.Policy> DEFAULT_BACKEND_POLICY_OVERRIDES =
       buildDefaultBackendPolicyOverrides();
+  private static final ConcurrentMap<String, OperationMetadata> DESCRIBE_CACHE = new ConcurrentHashMap<>();
   private static final Set<String> TRACE_METHOD_OVERRIDES = Set.of(
       "get_database",
       "get_table",
@@ -76,6 +79,10 @@ public final class HmsOperationRegistry {
   }
 
   public static OperationMetadata describe(String methodName) {
+    return DESCRIBE_CACHE.computeIfAbsent(methodName == null ? "" : methodName, HmsOperationRegistry::compute);
+  }
+
+  private static OperationMetadata compute(String methodName) {
     String normalizedMethod = normalizeMethod(methodName);
     OperationClass operationClass = OPERATION_CLASS_OVERRIDES.getOrDefault(
         normalizedMethod,
