@@ -15,6 +15,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
+import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -668,7 +669,7 @@ public class RoutingMetaStoreHandlerTest {
           CatalogBackend backend,
           Method backendMethod,
           Object[] args,
-          RoutingMetaStoreHandler.ImpersonationContext impersonation
+          ImpersonationContext impersonation
       ) throws Throwable {
         throw new TApplicationException(TApplicationException.INTERNAL_ERROR, "backend lock failed");
       }
@@ -678,7 +679,7 @@ public class RoutingMetaStoreHandlerTest {
           CatalogBackend backend,
           String methodName,
           Object request,
-          RoutingMetaStoreHandler.ImpersonationContext impersonation
+          ImpersonationContext impersonation
       ) throws Throwable {
         throw new UnsupportedOperationException(methodName);
       }
@@ -2594,7 +2595,7 @@ public class RoutingMetaStoreHandlerTest {
         CatalogBackend backend,
         String methodName,
         Object request,
-        RoutingMetaStoreHandler.ImpersonationContext impersonation
+        ImpersonationContext impersonation
     ) throws Throwable {
       return super.invokeRequest(backend, methodName, request, impersonation);
     }

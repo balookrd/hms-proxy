@@ -5,10 +5,12 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
@@ -36,11 +38,21 @@ public final class BackendRoutingController implements AutoCloseable {
     this.pollingExecutor = config.latencyRouting().backendStatePolling().enabled()
         ? Executors.newSingleThreadScheduledExecutor(namedThreadFactory("hms-proxy-backend-poll"))
         : null;
-    this.fanoutExecutor = config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1
-        ? Executors.newFixedThreadPool(
-            Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size()),
-            namedThreadFactory("hms-proxy-fanout"))
-        : null;
+    if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
+      int poolSize = Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size());
+      // Bound the queue to the number of backends: each request submits at most backends.size() tasks.
+      // CallerRunsPolicy provides back-pressure when all worker slots are occupied.
+      this.fanoutExecutor = new ThreadPoolExecutor(
+          poolSize,
+          poolSize,
+          0L,
+          TimeUnit.MILLISECONDS,
+          new ArrayBlockingQueue<>(router.backends().size()),
+          namedThreadFactory("hms-proxy-fanout"),
+          new ThreadPoolExecutor.CallerRunsPolicy());
+    } else {
+      this.fanoutExecutor = null;
+    }
     startPollingIfEnabled();
   }
 
