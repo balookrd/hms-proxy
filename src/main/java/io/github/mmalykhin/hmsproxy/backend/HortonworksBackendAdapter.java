@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import java.util.Collections;
 import java.util.Map;
 import java.util.List;
@@ -58,7 +58,7 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
       CatalogBackend backend,
       String methodName,
       Object request,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws Throwable {
     RequestCompatibilityHandler compatibilityHandler = REQUEST_COMPATIBILITY_HANDLERS.get(methodName);
     if (compatibilityHandler == null) {
@@ -94,7 +94,7 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
     Object invoke(
         CatalogBackend backend,
         Object request,
-        RoutingMetaStoreHandler.ImpersonationContext impersonation
+        ImpersonationContext impersonation
     ) throws Throwable;
   }
 }
