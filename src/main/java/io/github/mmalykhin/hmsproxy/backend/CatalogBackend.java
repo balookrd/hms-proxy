@@ -3,7 +3,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.routing.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
@@ -114,7 +114,7 @@ public final class CatalogBackend implements AutoCloseable {
         config.name(), TimeoutValueParser.formatDurationMs(timeoutMs));
   }
 
-  public Object invoke(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invoke(Method method, Object[] args, ImpersonationContext impersonation)
       throws Throwable {
     return adapter.invoke(this, method, args, impersonation);
   }
@@ -122,13 +122,13 @@ public final class CatalogBackend implements AutoCloseable {
   public Object invokeRequest(
       String methodName,
       Object request,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   )
       throws Throwable {
     return adapter.invokeRequest(this, methodName, request, impersonation);
   }
 
-  public Object invokeRaw(Method method, Object[] args, RoutingMetaStoreHandler.ImpersonationContext impersonation)
+  public Object invokeRaw(Method method, Object[] args, ImpersonationContext impersonation)
       throws Throwable {
     if (impersonation != null && config.impersonationEnabled()) {
       return invokeWithImpersonation(method, args, impersonation);
@@ -144,7 +144,7 @@ public final class CatalogBackend implements AutoCloseable {
       String methodName,
       Class<?>[] parameterTypes,
       Object[] args,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws Throwable {
     if (impersonation != null && config.impersonationEnabled()) {
       return impersonationClient(impersonation).invokeByName(methodName, parameterTypes, args);
@@ -185,7 +185,7 @@ public final class CatalogBackend implements AutoCloseable {
   private Object invokeWithImpersonation(
       Method method,
       Object[] args,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws Throwable {
     return impersonationClient(impersonation).invoke(method, args);
   }
@@ -222,7 +222,7 @@ public final class CatalogBackend implements AutoCloseable {
   }
 
   private synchronized ImpersonationClient impersonationClient(
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws MetaException {
     ImpersonationClient client = impersonationClients.get(impersonation.userName());
     if (client != null) {

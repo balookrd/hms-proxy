@@ -2,7 +2,8 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import java.lang.reflect.Method;
 
 public abstract class AbstractBackendAdapter implements BackendAdapter {
@@ -21,7 +22,7 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
       CatalogBackend backend,
       Method method,
       Object[] args,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws Throwable {
     return backend.invokeRaw(method, args, impersonation);
   }
@@ -31,7 +32,7 @@ public abstract class AbstractBackendAdapter implements BackendAdapter {
       CatalogBackend backend,
       String methodName,
       Object request,
-      RoutingMetaStoreHandler.ImpersonationContext impersonation
+      ImpersonationContext impersonation
   ) throws Throwable {
     return backend.invokeRawByName(
         methodName,
