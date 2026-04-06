@@ -391,9 +391,7 @@ public final class HmsOperationRegistry {
         "check_lock",
         "unlock",
         "heartbeat",
-        "heartbeat_txn_range",
-        "allocate_table_write_ids",
-        "get_valid_write_ids"));
+        "heartbeat_txn_range"));
     register(overrides, DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION,
         List.of("partition_name_has_valid_characters"));
     return Map.copyOf(overrides);

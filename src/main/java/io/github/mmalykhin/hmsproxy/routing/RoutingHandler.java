@@ -386,13 +386,63 @@ final class RoutingHandler implements InvocationHandler {
     if (extractedNamespace == null) {
       return invokeGlobal(method, args);
     }
+    String methodName = method.getName();
+    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
     RequestContext.currentObservation().recordNamespace(extractedNamespace);
-    validateCatalogAccess(extractedNamespace.backend(), method.getName(), extractedNamespace.backendDbName());
-    validateReadExposure(method.getName(), extractedNamespace, args);
+    validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
+    validateReadExposure(methodName, extractedNamespace, args);
+    validateAcidNotOnNonDefaultCatalog(operation, extractedNamespace, methodName);
+    validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
     Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
-    result = filterReadResult(method.getName(), extractedNamespace, result);
+    result = filterReadResult(methodName, extractedNamespace, result);
     return federationLayer.externalizeResult(result, extractedNamespace);
+  }
+
+  private void validateAcidNotOnNonDefaultCatalog(
+      HmsOperationRegistry.OperationMetadata operation,
+      CatalogRouter.ResolvedNamespace namespace,
+      String methodName
+  ) throws MetaException {
+    if (operation.operationClass() != HmsOperationRegistry.OperationClass.ACID_NAMESPACE_BOUND_WRITE) {
+      return;
+    }
+    if (namespace.catalogName().equals(config.defaultCatalog())) {
+      return;
+    }
+    throw new MetaException(
+        "ACID transactional operation '" + methodName + "' is not supported for non-default catalog '"
+            + namespace.catalogName() + "'. Transaction management is only available in the default catalog '"
+            + config.defaultCatalog() + "'");
+  }
+
+  private void validateTransactionalTableCreationOnDefaultCatalog(
+      String methodName,
+      CatalogRouter.ResolvedNamespace namespace,
+      Object[] args
+  ) throws MetaException {
+    if (namespace.catalogName().equals(config.defaultCatalog())) {
+      return;
+    }
+    if (!methodName.startsWith("create_table")) {
+      return;
+    }
+    if (args == null) {
+      return;
+    }
+    for (Object arg : args) {
+      if (arg instanceof Table table) {
+        java.util.Map<String, String> params = table.getParameters();
+        if (params != null && "true".equalsIgnoreCase(params.get("transactional"))) {
+          throw new MetaException(
+              "Cannot create transactional table '"
+                  + table.getDbName() + "." + table.getTableName()
+                  + "' in non-default catalog '" + namespace.catalogName()
+                  + "'. Transactional (ACID) tables are only supported in the default catalog '"
+                  + config.defaultCatalog() + "'");
+        }
+      }
+    }
   }
 
   private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
