@@ -399,12 +399,22 @@ final class RoutingHandler implements InvocationHandler {
     return federationLayer.externalizeResult(result, extractedNamespace);
   }
 
+  /**
+   * Methods that require the TxnHandler that owns the transaction and therefore must be routed
+   * to the default catalog regardless of which catalog owns the table. Other ACID_NAMESPACE_BOUND_WRITE
+   * operations (e.g. lock, compact) are legitimately namespace-bound and may target any catalog.
+   */
+  private static final java.util.Set<String> TXN_HANDLER_REQUIRED_METHODS = java.util.Set.of(
+      "allocate_table_write_ids",
+      "get_valid_write_ids"
+  );
+
   private void validateAcidNotOnNonDefaultCatalog(
       HmsOperationRegistry.OperationMetadata operation,
       CatalogRouter.ResolvedNamespace namespace,
       String methodName
   ) throws MetaException {
-    if (operation.operationClass() != HmsOperationRegistry.OperationClass.ACID_NAMESPACE_BOUND_WRITE) {
+    if (!TXN_HANDLER_REQUIRED_METHODS.contains(methodName)) {
       return;
     }
     if (namespace.catalogName().equals(config.defaultCatalog())) {
