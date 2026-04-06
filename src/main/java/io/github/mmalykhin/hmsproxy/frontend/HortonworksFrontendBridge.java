@@ -106,7 +106,11 @@ public final class HortonworksFrontendBridge {
         return method.invoke(this, args);
       }
       if (ADAPTED_HDP_ONLY_METHODS.contains(method.getName())) {
-        return invokeHdpOnly(method, args);
+        try {
+          return invokeHdpOnly(method, args);
+        } catch (Throwable t) {
+          throw convertThrowable(t);
+        }
       }
 
       Method apacheMethod = findApacheMethod(method.getName(), method.getParameterCount());
