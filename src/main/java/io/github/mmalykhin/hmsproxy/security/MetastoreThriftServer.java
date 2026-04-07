@@ -65,17 +65,27 @@ public final class MetastoreThriftServer {
   private static TTransportFactory unwrappingSaslFactory(TTransportFactory delegate) {
     return new TTransportFactory() {
       @Override
-      public TTransport getTransport(TTransport base) throws TTransportException {
+      public TTransport getTransport(TTransport base) {
         try {
           return delegate.getTransport(base);
         } catch (RuntimeException e) {
           if (e.getCause() instanceof TTransportException) {
-            throw (TTransportException) e.getCause();
+            // TTransportFactory.getTransport() does not declare TTransportException, but
+            // TThreadPoolServer catches it by type at runtime. Sneaky-throw the underlying
+            // TTransportException so TThreadPoolServer handles it silently instead of
+            // logging a spurious ERROR for benign connections (e.g. TCP health probes)
+            // that send no SASL data.
+            MetastoreThriftServer.<RuntimeException>sneakyThrow(e.getCause());
           }
           throw e;
         }
       }
     };
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <E extends Throwable> void sneakyThrow(Throwable t) throws E {
+    throw (E) t;
   }
 
   public void serve() {
