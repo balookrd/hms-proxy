@@ -129,14 +129,14 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject
+          guard.transactional-ddl.mode=reject_transactional
           guard.transactional-ddl.client-addresses=10.10.0.0/16,192.168.1.20
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of("10.10.0.0/16", "192.168.1.20"),
           config.transactionalDdlGuard().clientAddressRules());
     } finally {
@@ -151,13 +151,13 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject
+          guard.transactional-ddl.mode=reject_transactional
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of(), config.transactionalDdlGuard().clientAddressRules());
     } finally {
       Files.deleteIfExists(file);
@@ -171,13 +171,13 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=rewrite
+          guard.transactional-ddl.mode=rewrite_transactional_to_external
           guard.transactional-ddl.client-addresses=10.10.0.0/16
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REWRITE, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of("10.10.0.0/16"), config.transactionalDdlGuard().clientAddressRules());
     } finally {
       Files.deleteIfExists(file);
@@ -363,7 +363,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject
+          guard.transactional-ddl.mode=reject_transactional
           guard.transactional-ddl.client-addresses=10.10.0.0/99
           """);
       try {

@@ -592,7 +592,9 @@ public final class ProxyConfigLoader {
       return ProxyConfig.TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase());
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
-          "Invalid value for guard.transactional-ddl.mode: " + value + ". Expected one of: reject, rewrite", e);
+          "Invalid value for guard.transactional-ddl.mode: " + value
+              + ". Expected one of: reject_transactional, rewrite_transactional_to_external,"
+              + " rewrite_to_non_transactional, rewrite_managed_to_external", e);
     }
   }
 

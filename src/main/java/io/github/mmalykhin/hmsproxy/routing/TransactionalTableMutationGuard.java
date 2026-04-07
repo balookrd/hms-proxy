@@ -32,12 +32,26 @@ final class TransactionalTableMutationGuard {
     }
 
     Table table = findTable(args);
-    if (table == null || !isManagedTable(table) || !isBlockedTransactionalMutation(table.getParameters())) {
+    if (table == null || !isManagedTable(table)) {
       return;
     }
 
-    if (config.rewriteEnabled()) {
+    if (config.rewriteManagedToExternalEnabled()) {
       rewriteToExternal(table);
+      return;
+    }
+
+    if (!isBlockedTransactionalMutation(table.getParameters())) {
+      return;
+    }
+
+    if (config.rewriteTransactionalToExternalEnabled()) {
+      rewriteToExternal(table);
+      return;
+    }
+
+    if (config.rewriteToNonTransactionalEnabled()) {
+      rewriteToNonTransactional(table);
       return;
     }
 
@@ -92,6 +106,16 @@ final class TransactionalTableMutationGuard {
   private static boolean isManagedTable(Table table) {
     String tableType = table.getTableType();
     return tableType != null && "MANAGED_TABLE".equalsIgnoreCase(tableType.trim());
+  }
+
+  private static void rewriteToNonTransactional(Table table) {
+    Map<String, String> parameters = new LinkedHashMap<>();
+    if (table.getParameters() != null) {
+      parameters.putAll(table.getParameters());
+    }
+    parameters.remove("transactional");
+    parameters.remove("transactional_properties");
+    table.setParameters(parameters);
   }
 
   private static void rewriteToExternal(Table table) {

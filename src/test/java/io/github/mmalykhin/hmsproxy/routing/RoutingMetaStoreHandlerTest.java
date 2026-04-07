@@ -1452,7 +1452,7 @@ public class RoutingMetaStoreHandlerTest {
         "catalog1",
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of()));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of()));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -1486,7 +1486,7 @@ public class RoutingMetaStoreHandlerTest {
         "catalog1",
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -1539,7 +1539,7 @@ public class RoutingMetaStoreHandlerTest {
         "catalog1",
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of()));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of()));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -1600,7 +1600,7 @@ public class RoutingMetaStoreHandlerTest {
         "catalog1",
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE, List.of("10.20.0.0/16")));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
@@ -1634,6 +1634,274 @@ public class RoutingMetaStoreHandlerTest {
     } finally {
       ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
     }
+  }
+
+  @Test
+  public void transactionalDdlRewriteToNonTransactionalStripsTransactionalParams() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of(
+        "transactional", "true",
+        "transactional_properties", "insert_only",
+        "owner", "etl"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("MANAGED_TABLE", capturedTable.get().getTableType());
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional_properties"));
+    Assert.assertEquals("etl", capturedTable.get().getParameters().get("owner"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("EXTERNAL"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("external.table.purge"));
+  }
+
+  @Test
+  public void transactionalDdlRewriteToNonTransactionalDoesNotApplyToNonTransactionalManagedTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("MANAGED_TABLE", capturedTable.get().getTableType());
+    Assert.assertEquals("etl", capturedTable.get().getParameters().get("owner"));
+  }
+
+  @Test
+  public void transactionalDdlRewriteToNonTransactionalDoesNotApplyToExternalTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("EXTERNAL_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+    Assert.assertEquals("true", capturedTable.get().getParameters().get("transactional"));
+  }
+
+  @Test
+  public void transactionalDdlRewriteManagedToExternalAppliesToAllManagedTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+    Assert.assertEquals("TRUE", capturedTable.get().getParameters().get("EXTERNAL"));
+    Assert.assertEquals("true", capturedTable.get().getParameters().get("external.table.purge"));
+    Assert.assertEquals("etl", capturedTable.get().getParameters().get("owner"));
+  }
+
+  @Test
+  public void transactionalDdlRewriteManagedToExternalAlsoAppliesToTransactionalManagedTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of(
+        "transactional", "true",
+        "transactional_properties", "insert_only",
+        "owner", "etl"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+    Assert.assertEquals("TRUE", capturedTable.get().getParameters().get("EXTERNAL"));
+    Assert.assertEquals("true", capturedTable.get().getParameters().get("external.table.purge"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional_properties"));
+    Assert.assertEquals("etl", capturedTable.get().getParameters().get("owner"));
+  }
+
+  @Test
+  public void transactionalDdlRewriteManagedToExternalDoesNotApplyToExternalTables() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
+    table.setTableType("EXTERNAL_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("external.table.purge"));
   }
 
   @Test
@@ -2294,7 +2562,7 @@ public class RoutingMetaStoreHandlerTest {
         "catalog1",
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.CompatibilityConfig(false),
-        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT, List.of(clientAddressRule)));
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of(clientAddressRule)));
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
       backendCalls.incrementAndGet();
