@@ -9,6 +9,8 @@ import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.TServerSocket;
+import org.apache.thrift.transport.TTransport;
+import org.apache.thrift.transport.TTransportException;
 import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,7 +35,7 @@ public final class MetastoreThriftServer {
 
     TTransportFactory transportFactory = new TTransportFactory();
     if (frontDoorSecurity != null) {
-      transportFactory = frontDoorSecurity.createTransportFactory();
+      transportFactory = unwrappingSaslFactory(frontDoorSecurity.createTransportFactory());
       processor = frontDoorSecurity.wrapProcessor(processor);
       LOG.info("Kerberos/SASL enabled with principal {}", config.security().serverPrincipal());
       LOG.info("Front door delegation-token DIGEST auth is enabled");
@@ -52,6 +54,28 @@ public final class MetastoreThriftServer {
     // Hive's thrift bridge uses this principal to validate inbound Kerberos/SASL clients for the
     // proxy listener itself. Backend credentials are configured separately via client-principal.
     return security.serverPrincipal();
+  }
+
+  /**
+   * Wraps a SASL transport factory to unwrap RuntimeExceptions caused by TSaslTransportException
+   * back into TTransportException. TThreadPoolServer catches TTransportException silently, but
+   * logs RuntimeException at ERROR. The underlying cause (client connected without sending SASL
+   * data, e.g. a TCP-level health probe) is benign and not worth alarming on.
+   */
+  private static TTransportFactory unwrappingSaslFactory(TTransportFactory delegate) {
+    return new TTransportFactory() {
+      @Override
+      public TTransport getTransport(TTransport base) throws TTransportException {
+        try {
+          return delegate.getTransport(base);
+        } catch (RuntimeException e) {
+          if (e.getCause() instanceof TTransportException) {
+            throw (TTransportException) e.getCause();
+          }
+          throw e;
+        }
+      }
+    };
   }
 
   public void serve() {
