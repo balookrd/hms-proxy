@@ -111,7 +111,8 @@ create external table if not exists smoke_external_tbl (
   ds string
 )
 stored as parquet
-location '/tmp/hms-proxy-smoke/hdp/external/smoke_external_tbl';
+location '/tmp/hms-proxy-smoke/hdp/external/smoke_external_tbl'
+tblproperties ('external.table.purge'='true');
 
 alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
 
@@ -173,7 +174,8 @@ create external table if not exists smoke_external_tbl (
   ds string
 )
 stored as parquet
-location '/tmp/hms-proxy-smoke/apache/external/smoke_external_tbl';
+location '/tmp/hms-proxy-smoke/apache/external/smoke_external_tbl'
+tblproperties ('external.table.purge'='true');
 
 alter table smoke_external_tbl set tblproperties ('smoke'='true', 'table_kind'='external');
 
