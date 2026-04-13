@@ -1085,7 +1085,8 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario notification
 - по умолчанию runner берёт самый свежий `target/hms-proxy-*-fat.jar`
 - путь к jar можно переопределить через `HMS_SMOKE_FAT_JAR`
 - если задан `HMS_SMOKE_BEELINE_JDBC_URL`, в `all` дополнительно запускается Beeline / HiveServer2 SQL smoke из `SMOKE.ru.md`
-- SQL smoke использует `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE` и при необходимости умеет запускать transactional SQL и materialized-view checks
+- SQL smoke использует `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE`, по умолчанию проверяет view rewrite и permanent UDF, а при необходимости умеет запускать transactional SQL и materialized-view checks
+- если proxy специально поднят без `federation.view-text-rewrite.mode=rewrite`, выставь `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false`; для UDF можно выставить `HMS_SMOKE_SQL_RUN_UDF=false` или переопределить `HMS_SMOKE_SQL_UDF_CLASS` вместе с `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT`, если HS2 classpath отличается
 - если заданы `HMS_SMOKE_TXN_SECONDARY_DB` и `HMS_SMOKE_TXN_SECONDARY_TABLE`, runner делает второй direct txn smoke
 - если `HMS_SMOKE_NOTIFICATION_*` не настроены, notification шаг в `all` будет пропущен
 - если заданы `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`, runner дополнительно запускает negative notification check для Apache backend из `SMOKE.ru.md`

@@ -79,6 +79,10 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_HDP_READ_TABLE               required for SQL smoke
   HMS_SMOKE_APACHE_READ_TABLE            required for SQL smoke
   HMS_SMOKE_SQL_EXTERNAL_ROOT            default: /tmp/hms-proxy-smoke
+  HMS_SMOKE_SQL_RUN_VIEW_REWRITE         default: true
+  HMS_SMOKE_SQL_RUN_UDF                  default: true
+  HMS_SMOKE_SQL_UDF_CLASS                default: org.apache.hadoop.hive.ql.udf.UDFReverse
+  HMS_SMOKE_SQL_UDF_EXPECTED_RESULT      default: yxorp
   HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW    default: false
   HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL    default: false
   HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL default: false
@@ -501,6 +505,10 @@ run_sql_smoke() {
   local hdp_catalog="${HMS_SMOKE_HDP_CATALOG:-hdp}"
   local apache_catalog="${HMS_SMOKE_APACHE_CATALOG:-apache}"
   local external_root="${HMS_SMOKE_SQL_EXTERNAL_ROOT:-/tmp/hms-proxy-smoke}"
+  local run_view_rewrite="${HMS_SMOKE_SQL_RUN_VIEW_REWRITE:-true}"
+  local run_udf="${HMS_SMOKE_SQL_RUN_UDF:-true}"
+  local udf_class="${HMS_SMOKE_SQL_UDF_CLASS:-org.apache.hadoop.hive.ql.udf.UDFReverse}"
+  local udf_expected_result="${HMS_SMOKE_SQL_UDF_EXPECTED_RESULT:-yxorp}"
   local run_id=""
   run_id="$(date +%Y%m%d%H%M%S)"
   local managed_hdp="smoke_managed_hdp_${run_id}"
@@ -509,6 +517,7 @@ run_sql_smoke() {
   local external_apache="smoke_external_apache_${run_id}"
   local txn_hdp="smoke_txn_hdp_${run_id}"
   local txn_apache="smoke_txn_apache_${run_id}"
+  local udf_apache="smoke_udf_apache_${run_id}"
   local view_local="smoke_view_local_${run_id}"
   local view_cross="smoke_view_cross_${run_id}"
   local mv_local="smoke_mv_local_${run_id}"
@@ -628,7 +637,8 @@ drop table ${txn_apache};
 EOF
   fi
 
-  cat >> "${sql_file}" <<EOF
+  if [[ "${run_view_rewrite}" == "true" ]]; then
+    cat >> "${sql_file}" <<EOF
 
 use ${hdp_catalog}__default;
 create or replace view ${view_local} as
@@ -644,9 +654,27 @@ select count(*) as ${view_cross}_count from ${view_cross};
 drop view if exists ${view_cross};
 drop view if exists ${view_local};
 EOF
+  else
+    log "skipping view rewrite SQL smoke because HMS_SMOKE_SQL_RUN_VIEW_REWRITE=${run_view_rewrite}"
+  fi
 
-  if [[ "${HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW:-false}" == "true" ]]; then
+  if [[ "${run_udf}" == "true" ]]; then
     cat >> "${sql_file}" <<EOF
+
+use ${apache_catalog}__default;
+drop function if exists ${udf_apache};
+create function ${udf_apache} as '${udf_class}';
+show functions like '${udf_apache}';
+select ${udf_apache}('proxy') as ${udf_apache}_value;
+drop function if exists ${udf_apache};
+EOF
+  else
+    log "skipping permanent UDF SQL smoke because HMS_SMOKE_SQL_RUN_UDF=${run_udf}"
+  fi
+
+  if [[ "${run_view_rewrite}" == "true" && "${HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW:-false}" == "true" ]]; then
+    cat >> "${sql_file}" <<EOF
+use ${hdp_catalog}__default;
 create materialized view if not exists ${mv_local} as
 select * from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE};
 show create table ${mv_local};
@@ -670,8 +698,14 @@ EOF
   assert_file_contains "${output_file}" "${hdp_catalog}__default"
   assert_file_contains "${output_file}" "${apache_catalog}__default"
   assert_file_contains "${output_file}" "2026-04-01"
-  assert_file_contains "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
-  assert_file_contains "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
+  if [[ "${run_view_rewrite}" == "true" ]]; then
+    assert_file_contains "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
+    assert_file_contains "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
+  fi
+  if [[ "${run_udf}" == "true" ]]; then
+    assert_file_contains "${output_file}" "${udf_apache}"
+    assert_file_contains "${output_file}" "${udf_expected_result}"
+  fi
 }
 
 parse_args() {

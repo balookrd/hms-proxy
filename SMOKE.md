@@ -21,7 +21,7 @@ running the detailed Beeline or direct HMS steps below.
 | --- | --- | --- | --- | --- | --- |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | reads, namespace switching, DDL/DML | Should pass through one proxy endpoint with correct cross-catalog routing. |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | reads, namespace switching, DDL/DML | Same as above, plus front-door SASL/Kerberos must succeed. |
-| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | views, cross-catalog view rewrite, materialized views | Should pass when view rewrite is enabled; unsupported MV backends must fail explicitly. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | views, cross-catalog view rewrite, permanent UDFs, materialized views | Should pass when view rewrite is enabled and the chosen UDF class is available on the HS2 classpath; unsupported MV backends must fail explicitly. |
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Hortonworks-routed traffic. |
 | Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Apache-routed traffic. |
 | Direct HMS smoke CLI `txn` | any | mixed backends | `KERBEROS` | same txn family plus authenticated front door | Should pass when Kerberos login and, if enabled, backend impersonation are configured correctly. |
@@ -224,11 +224,16 @@ select count(*) from some_table;
 Expected:
 - commands reach the correct backend without namespace errors
 
-**8. Views and Materialized Views**
+**8. Views, Materialized Views, and UDFs**
 
 Run this block with `federation.view-text-rewrite.mode=rewrite`. If you need the original client SQL
 to stay byte-for-byte visible through HMS, also set
 `federation.view-text-rewrite.preserve-original-text=true`.
+
+The automated runner keeps the view block enabled by default with
+`HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
+`HMS_SMOKE_SQL_RUN_UDF=true` and uses `HMS_SMOKE_SQL_UDF_CLASS`
+(default: `org.apache.hadoop.hive.ql.udf.UDFReverse`).
 
 ```sql
 use hdp__default;
@@ -245,6 +250,18 @@ select * from apache__default.some_table;
 
 show create table smoke_view_cross;
 select * from smoke_view_cross limit 5;
+```
+
+For a permanent UDF on a non-default catalog, also run:
+
+```sql
+use apache__default;
+
+drop function if exists smoke_udf_reverse;
+create function smoke_udf_reverse as 'org.apache.hadoop.hive.ql.udf.UDFReverse';
+show functions like 'smoke_udf_reverse';
+select smoke_udf_reverse('proxy') as smoke_udf_reverse_value;
+drop function if exists smoke_udf_reverse;
 ```
 
 If your backend supports materialized views, also run:
@@ -266,6 +283,8 @@ Expected:
   `viewExpandedText` still routes correctly on the backend
 - cross-catalog references like `apache__default.some_table` are stored in backend-compatible form
   and stay queryable through the proxy
+- a permanent UDF created on `apache__default` is visible in `show functions`, callable in the same
+  session, and returns the expected value such as `yxorp` for `UDFReverse('proxy')`
 - if the backend does not support materialized views, the failure is explicit rather than silent
 
 **9. Direct Synthetic Lock Smoke**
