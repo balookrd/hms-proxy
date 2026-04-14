@@ -218,6 +218,12 @@ drop table smoke_txn_tbl;
 - таблицы с `transactional='true'` создаются только там, где backend поддерживает ACID
 - тип таблицы и ключевые properties видны в `describe formatted`
 
+Примечание:
+- В Beeline / HiveServer2 SQL сценариях неqualified `LOCATION '/tmp/...'` резолвится через `fs.defaultFS`
+  того HiveServer2, к которому подключён клиент, а не через routed HMS backend. Если разные proxy catalog
+  должны писать в разные HDFS namespace, указывай fully qualified URI для каждого catalog, например
+  `hdfs://nameservice-hdp/tmp/...` и `hdfs://nameservice-apache/tmp/...`.
+
 **7. Mixed negative-check**
 
 ```sql

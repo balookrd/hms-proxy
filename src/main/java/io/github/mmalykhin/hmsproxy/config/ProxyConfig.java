@@ -379,10 +379,34 @@ public record ProxyConfig(
   public record FederationConfig(
       boolean preserveBackendCatalogName,
       ViewTextRewriteMode viewTextRewriteMode,
-      boolean preserveOriginalViewText
+      boolean preserveOriginalViewText,
+      ExternalTableLocationRewriteMode externalTableLocationRewriteMode,
+      String externalTableLocationRewriteSourceDefaultFs
   ) {
     public FederationConfig {
       viewTextRewriteMode = viewTextRewriteMode == null ? ViewTextRewriteMode.DISABLED : viewTextRewriteMode;
+      externalTableLocationRewriteMode = externalTableLocationRewriteMode == null
+          ? ExternalTableLocationRewriteMode.DISABLED
+          : externalTableLocationRewriteMode;
+      if (externalTableLocationRewriteSourceDefaultFs != null) {
+        externalTableLocationRewriteSourceDefaultFs = externalTableLocationRewriteSourceDefaultFs.trim();
+        if (externalTableLocationRewriteSourceDefaultFs.isEmpty()) {
+          externalTableLocationRewriteSourceDefaultFs = null;
+        }
+      }
+    }
+
+    public FederationConfig(
+        boolean preserveBackendCatalogName,
+        ViewTextRewriteMode viewTextRewriteMode,
+        boolean preserveOriginalViewText
+    ) {
+      this(
+          preserveBackendCatalogName,
+          viewTextRewriteMode,
+          preserveOriginalViewText,
+          ExternalTableLocationRewriteMode.DISABLED,
+          null);
     }
 
     public boolean viewTextRewriteEnabled() {
@@ -393,6 +417,12 @@ public record ProxyConfig(
   public enum ViewTextRewriteMode {
     DISABLED,
     REWRITE
+  }
+
+  public enum ExternalTableLocationRewriteMode {
+    DISABLED,
+    QUALIFY_UNQUALIFIED,
+    REWRITE_IF_SOURCE_DEFAULT_FS
   }
 
   public record TransactionalDdlGuardConfig(

@@ -79,6 +79,8 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_HDP_READ_TABLE               required for SQL smoke
   HMS_SMOKE_APACHE_READ_TABLE            required for SQL smoke
   HMS_SMOKE_SQL_EXTERNAL_ROOT            default: /tmp/hms-proxy-smoke
+  HMS_SMOKE_HDP_EXTERNAL_ROOT            default: ${HMS_SMOKE_SQL_EXTERNAL_ROOT}/${HMS_SMOKE_HDP_CATALOG}
+  HMS_SMOKE_APACHE_EXTERNAL_ROOT         default: ${HMS_SMOKE_SQL_EXTERNAL_ROOT}/${HMS_SMOKE_APACHE_CATALOG}
   HMS_SMOKE_SQL_RUN_VIEW_REWRITE         default: true
   HMS_SMOKE_SQL_RUN_UDF                  default: true
   HMS_SMOKE_SQL_UDF_CLASS                default: org.apache.hadoop.hive.ql.udf.UDFReverse
@@ -505,6 +507,8 @@ run_sql_smoke() {
   local hdp_catalog="${HMS_SMOKE_HDP_CATALOG:-hdp}"
   local apache_catalog="${HMS_SMOKE_APACHE_CATALOG:-apache}"
   local external_root="${HMS_SMOKE_SQL_EXTERNAL_ROOT:-/tmp/hms-proxy-smoke}"
+  local hdp_external_root="${HMS_SMOKE_HDP_EXTERNAL_ROOT:-${external_root}/${hdp_catalog}}"
+  local apache_external_root="${HMS_SMOKE_APACHE_EXTERNAL_ROOT:-${external_root}/${apache_catalog}}"
   local run_view_rewrite="${HMS_SMOKE_SQL_RUN_VIEW_REWRITE:-true}"
   local run_udf="${HMS_SMOKE_SQL_RUN_UDF:-true}"
   local udf_class="${HMS_SMOKE_SQL_UDF_CLASS:-org.apache.hadoop.hive.ql.udf.UDFReverse}"
@@ -568,7 +572,7 @@ create external table if not exists ${external_hdp} (
   ds string
 )
 stored as parquet
-location '${external_root}/${hdp_catalog}/external/${external_hdp}';
+location '${hdp_external_root}/external/${external_hdp}';
 alter table ${external_hdp} set tblproperties ('smoke'='true', 'table_kind'='external');
 insert into ${external_hdp} values (2, '2026-03-31');
 select count(*) as ${external_hdp}_count from ${external_hdp} where id=2;
@@ -614,7 +618,7 @@ create external table if not exists ${external_apache} (
   ds string
 )
 stored as parquet
-location '${external_root}/${apache_catalog}/external/${external_apache}';
+location '${apache_external_root}/external/${external_apache}';
 alter table ${external_apache} set tblproperties ('smoke'='true', 'table_kind'='external');
 insert into ${external_apache} values (2, '2026-03-31');
 select count(*) as ${external_apache}_count from ${external_apache} where id=2;

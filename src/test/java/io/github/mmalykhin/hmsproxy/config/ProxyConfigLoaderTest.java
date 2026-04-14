@@ -205,6 +205,30 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsExternalTableLocationRewriteConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          federation.external-table-location-rewrite.source-default-fs=hdfs://ns-frontend
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+          config.federation().externalTableLocationRewriteMode());
+      Assert.assertEquals(
+          "hdfs://ns-frontend",
+          config.federation().externalTableLocationRewriteSourceDefaultFs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void loadsCatalogExposureConfiguration() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
@@ -310,6 +334,26 @@ public class ProxyConfigLoaderTest {
         Assert.fail("Expected IllegalArgumentException for invalid view text rewrite mode");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("federation.view-text-rewrite.mode"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsMissingSourceDefaultFsForExternalLocationRewrite() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for missing source default FS");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("federation.external-table-location-rewrite.source-default-fs"));
       }
     } finally {
       Files.deleteIfExists(file);

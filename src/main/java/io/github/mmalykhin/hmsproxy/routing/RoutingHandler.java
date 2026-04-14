@@ -33,6 +33,7 @@ final class RoutingHandler implements InvocationHandler {
   private final ProxyObservability observability;
   private final BackendCallDispatcher dispatcher;
   private final ImpersonationResolver impersonationResolver;
+  private final ExternalTableLocationRewriter externalTableLocationRewriter;
 
   RoutingHandler(
       ProxyConfig config,
@@ -50,6 +51,7 @@ final class RoutingHandler implements InvocationHandler {
     this.observability = observability;
     this.dispatcher = dispatcher;
     this.impersonationResolver = impersonationResolver;
+    this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
   }
 
   @Override
@@ -394,6 +396,7 @@ final class RoutingHandler implements InvocationHandler {
     validateAcidNotOnNonDefaultCatalog(operation, extractedNamespace, methodName);
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
+    externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
     Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
     result = filterReadResult(methodName, extractedNamespace, result);
     return federationLayer.externalizeResult(result, extractedNamespace);

@@ -6,9 +6,11 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.routing.TimeoutValueParser;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -77,6 +79,10 @@ public final class CatalogBackend implements AutoCloseable {
 
   public Catalog catalog() {
     return new Catalog(catalog);
+  }
+
+  public URI defaultFileSystemUri() {
+    return FileSystem.getDefaultUri(hiveConf);
   }
 
   public boolean impersonationEnabled() {

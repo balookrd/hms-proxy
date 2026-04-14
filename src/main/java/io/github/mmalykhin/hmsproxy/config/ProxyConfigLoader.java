@@ -83,6 +83,11 @@ public final class ProxyConfigLoader {
         properties,
         "federation.view-text-rewrite.preserve-original-text",
         "false"));
+    ProxyConfig.ExternalTableLocationRewriteMode externalTableLocationRewriteMode =
+        parseExternalTableLocationRewriteMode(
+            trimToNull(properties.getProperty("federation.external-table-location-rewrite.mode")));
+    String externalTableLocationRewriteSourceDefaultFs =
+        trimToNull(properties.getProperty("federation.external-table-location-rewrite.source-default-fs"));
     ProxyConfig.TransactionalDdlGuardMode transactionalDdlGuardMode = parseTransactionalDdlGuardMode(
         trimToNull(properties.getProperty("guard.transactional-ddl.mode")));
     String[] transactionalDdlClientAddresses =
@@ -257,6 +262,12 @@ public final class ProxyConfigLoader {
       requireNonBlank(clientKeytab, "security.client-keytab");
       requireReadableFile(clientKeytab, "security.client-keytab");
     }
+    if (externalTableLocationRewriteMode
+        == ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS
+        && externalTableLocationRewriteSourceDefaultFs == null) {
+      throw new IllegalArgumentException(
+          "Missing required property: federation.external-table-location-rewrite.source-default-fs");
+    }
 
     ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
         securityMode,
@@ -276,7 +287,9 @@ public final class ProxyConfigLoader {
     ProxyConfig.FederationConfig federation = new ProxyConfig.FederationConfig(
         preserveBackendCatalogName,
         viewTextRewriteMode,
-        preserveOriginalViewText);
+        preserveOriginalViewText,
+        externalTableLocationRewriteMode,
+        externalTableLocationRewriteSourceDefaultFs);
     ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
         new ProxyConfig.TransactionalDdlGuardConfig(
             transactionalDdlGuardMode,
@@ -655,6 +668,20 @@ public final class ProxyConfigLoader {
       throw new IllegalArgumentException(
           "Invalid value for federation.view-text-rewrite.mode: " + value
               + ". Expected one of: DISABLED, REWRITE",
+          e);
+    }
+  }
+
+  private static ProxyConfig.ExternalTableLocationRewriteMode parseExternalTableLocationRewriteMode(String value) {
+    if (value == null) {
+      return ProxyConfig.ExternalTableLocationRewriteMode.DISABLED;
+    }
+    try {
+      return ProxyConfig.ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for federation.external-table-location-rewrite.mode: " + value
+              + ". Expected one of: disabled, qualify_unqualified, rewrite_if_source_default_fs",
           e);
     }
   }

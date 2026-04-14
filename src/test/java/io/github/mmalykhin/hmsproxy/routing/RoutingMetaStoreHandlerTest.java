@@ -50,6 +50,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
@@ -1905,6 +1906,58 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void externalTableLocationRewriteQualifiesUnqualifiedLocationForNonDefaultCatalog() throws Throwable {
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = locationRewriteHandler(
+        ProxyConfig.ExternalTableLocationRewriteMode.QUALIFY_UNQUALIFIED,
+        null,
+        capturedTable);
+    Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
+    table.setTableType("EXTERNAL_TABLE");
+    table.setSd(storageDescriptor("/tmp/external/events"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals("sales", capturedTable.get().getDbName());
+    Assert.assertEquals("hdfs://ns-catalog2/tmp/external/events", capturedTable.get().getSd().getLocation());
+  }
+
+  @Test
+  public void externalTableLocationRewriteMovesFrontendDefaultFsToTargetCatalog() throws Throwable {
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = locationRewriteHandler(
+        ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+        "hdfs://ns-frontend",
+        capturedTable);
+    Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
+    table.setTableType("EXTERNAL_TABLE");
+    table.setSd(storageDescriptor("hdfs://ns-frontend/tmp/external/events"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals("hdfs://ns-catalog2/tmp/external/events", capturedTable.get().getSd().getLocation());
+  }
+
+  @Test
+  public void externalTableLocationRewriteLeavesExplicitForeignHdfsLocationUntouched() throws Throwable {
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreHandler handler = locationRewriteHandler(
+        ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+        "hdfs://ns-frontend",
+        capturedTable);
+    Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
+    table.setTableType("EXTERNAL_TABLE");
+    table.setSd(storageDescriptor("hdfs://ns-shared/tmp/external/events"));
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    handler.invoke(null, method, new Object[] {table});
+
+    Assert.assertEquals("hdfs://ns-shared/tmp/external/events", capturedTable.get().getSd().getLocation());
+  }
+
+  @Test
   public void readOnlyCatalogBlocksWriteOperations() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreHandler handler = accessModeHandler(
@@ -2465,7 +2518,11 @@ public class RoutingMetaStoreHandlerTest {
         BackendRuntime.class,
         Catalog.class);
     ctor.setAccessible(true);
-    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), adapter, runtime, catalog);
+    HiveConf hiveConf = new HiveConf();
+    for (Map.Entry<String, String> entry : catalogConfig.hiveConf().entrySet()) {
+      hiveConf.set(entry.getKey(), entry.getValue());
+    }
+    return ctor.newInstance(proxyConfig, catalogConfig, hiveConf, adapter, runtime, catalog);
   }
 
   private static void assertCatalogManagementRejected(RoutingMetaStoreHandler handler, String methodName) throws Throwable {
@@ -2666,6 +2723,71 @@ public class RoutingMetaStoreHandlerTest {
     return new RoutingMetaStoreHandler(config, router, null);
   }
 
+  private static RoutingMetaStoreHandler locationRewriteHandler(
+      ProxyConfig.ExternalTableLocationRewriteMode mode,
+      String sourceDefaultFs,
+      AtomicReference<Table> capturedTable
+  ) throws Exception {
+    ProxyConfig config = new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfig(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                Map.of(
+                    "hive.metastore.uris", "thrift://one",
+                    "fs.defaultFS", "hdfs://ns-catalog1")),
+            "catalog2",
+            catalogConfig(
+                "catalog2",
+                "c2",
+                null,
+                null,
+                Map.of(
+                    "hive.metastore.uris", "thrift://two",
+                    "fs.defaultFS", "hdfs://ns-catalog2"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.FederationConfig(
+            false,
+            ProxyConfig.ViewTextRewriteMode.DISABLED,
+            false,
+            mode,
+            sourceDefaultFs),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()));
+
+    BackendInvocationSession backend1Session = newSession((proxy, method, args) -> null);
+    BackendInvocationSession backend2Session = newSession((proxy, method, args) -> {
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), backend1Session));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), backend2Session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    return new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+  }
+
   private static BackendInvocationSession newSession(java.lang.reflect.InvocationHandler invocationHandler) throws Exception {
     Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
         org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
@@ -2746,6 +2868,12 @@ public class RoutingMetaStoreHandlerTest {
     table.setTableName(tableName);
     table.setParameters(parameters);
     return table;
+  }
+
+  private static StorageDescriptor storageDescriptor(String location) {
+    StorageDescriptor storageDescriptor = new StorageDescriptor();
+    storageDescriptor.setLocation(location);
+    return storageDescriptor;
   }
 
   private static LockRequest lockRequest(String dbName, String tableName) {

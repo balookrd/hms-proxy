@@ -212,6 +212,12 @@ Expected:
 - `transactional='true'` tables are accepted only where the backend supports ACID table creation
 - table type and key properties are visible in `describe formatted`
 
+Note:
+- In Beeline / HiveServer2 SQL flows, an unqualified `LOCATION '/tmp/...'` is resolved by the connected
+  HiveServer2 `fs.defaultFS`, not by the routed HMS backend. If different proxy catalogs should write to
+  different HDFS namespaces, use fully qualified per-catalog URIs such as `hdfs://nameservice-hdp/tmp/...`
+  and `hdfs://nameservice-apache/tmp/...`.
+
 **7. Mixed Negative Check**
 ```sql
 use hdp__default;
