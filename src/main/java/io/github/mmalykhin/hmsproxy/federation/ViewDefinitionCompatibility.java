@@ -67,7 +67,11 @@ final class ViewDefinitionCompatibility {
     }
     if (value instanceof TBase<?, ?> thriftValue) {
       for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
-        rewriteViewTexts(getThriftFieldValue(thriftValue, fieldId), namespace, direction, visited);
+        // TUnion-backed thrift payloads throw when callers read inactive fields.
+        // Only traverse fields that are actually set.
+        if (isThriftFieldSet(thriftValue, fieldId)) {
+          rewriteViewTexts(getThriftFieldValue(thriftValue, fieldId), namespace, direction, visited);
+        }
       }
     }
   }
@@ -180,6 +184,11 @@ final class ViewDefinitionCompatibility {
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static Object getThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
     return ((TBase) thriftValue).getFieldValue(fieldId);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static boolean isThriftFieldSet(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
+    return ((TBase) thriftValue).isSet(fieldId);
   }
 
   private enum Direction {

@@ -4,7 +4,14 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import java.lang.reflect.Constructor;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsData;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
+import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
+import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
@@ -68,6 +75,45 @@ public class FederationLayerTest {
 
     Assert.assertEquals("select * from catalog2__sales.orders", routed.getViewOriginalText());
     Assert.assertEquals("select * from catalog2__sales.orders", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void internalizeArgumentHandlesUnionBackedStatsRequests() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog1", "catalog1__sales", "sales");
+
+    ColumnStatisticsDesc statsDesc = new ColumnStatisticsDesc(true, "catalog1__sales", "events");
+    statsDesc.setCatName("hive");
+
+    LongColumnStatsData longStats = new LongColumnStatsData();
+    longStats.setLowValue(2L);
+    longStats.setHighValue(2L);
+    longStats.setNumNulls(0L);
+    longStats.setNumDVs(1L);
+
+    ColumnStatisticsData statsData = new ColumnStatisticsData();
+    statsData.setLongStats(longStats);
+
+    ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
+    statsObj.setColName("id");
+    statsObj.setColType("int");
+    statsObj.setStatsData(statsData);
+
+    ColumnStatistics statistics = new ColumnStatistics();
+    statistics.setStatsDesc(statsDesc);
+    statistics.setStatsObj(List.of(statsObj));
+
+    SetPartitionsStatsRequest request = new SetPartitionsStatsRequest();
+    request.setColStats(List.of(statistics));
+    request.setNeedMerge(true);
+
+    SetPartitionsStatsRequest routed = (SetPartitionsStatsRequest) layer.internalizeArgument(request, namespace);
+
+    Assert.assertEquals("sales", routed.getColStats().get(0).getStatsDesc().getDbName());
+    Assert.assertEquals("events", routed.getColStats().get(0).getStatsDesc().getTableName());
+    Assert.assertNull(routed.getColStats().get(0).getStatsDesc().getCatName());
+    Assert.assertTrue(routed.getColStats().get(0).getStatsObj().get(0).getStatsData().isSetLongStats());
   }
 
   @Test
