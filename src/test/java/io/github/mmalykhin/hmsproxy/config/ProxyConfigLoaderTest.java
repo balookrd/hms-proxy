@@ -191,7 +191,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          federation.view-text-rewrite.mode=rewrite
+          federation.view-text-rewrite.mode=REWRITE
           federation.view-text-rewrite.preserve-original-text=true
           """);
 
@@ -360,6 +360,7 @@ public class ProxyConfigLoaderTest {
         Assert.fail("Expected IllegalArgumentException for invalid view text rewrite mode");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("federation.view-text-rewrite.mode"));
+        Assert.assertTrue(e.getMessage().contains("REWRITE"));
       }
     } finally {
       Files.deleteIfExists(file);

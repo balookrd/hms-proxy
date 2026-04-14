@@ -75,7 +75,7 @@ failure, если mutation остаётся ambiguous.
 | --- | --- |
 | `routing.catalog-db-separator` | Меняет внешний legacy формат, например `catalog2__sales` вместо `catalog2.sales`. |
 | `federation.preserve-backend-catalog-name=true` | Возвращает backend `catName` / `catalogName` вроде `hive`, но routing всё равно идёт по внешнему `dbName` или явному proxy catalog. |
-| `federation.view-text-rewrite.mode=rewrite` | Переписывает SQL внутри view между внешними и внутренними именами; на выбор backend для самого RPC не влияет. |
+| `federation.view-text-rewrite.mode=REWRITE` | Переписывает SQL внутри view между внешними и внутренними именами; на выбор backend для самого RPC не влияет. |
 
 ## Матрица поведения RPC
 
@@ -594,7 +594,7 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 - `get_all_materialized_view_objects_for_rewriting` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1` через `routing.default-catalog`
 
 Замечания по view / materialized view:
-- переписывание SQL работает только при `federation.view-text-rewrite.mode=rewrite`
+- переписывание SQL работает только при `federation.view-text-rewrite.mode=REWRITE`
 - rewrite сделан intentionally parser-less: proxy переписывает ссылки вида `db.table`, а не
   пытается разобрать весь Hive SQL grammar
 - входящие cross-catalog ссылки вроде `catalog2__dim.table_x` internalize'ятся для backend, но на
@@ -654,7 +654,7 @@ federation.preserve-backend-catalog-name=true
 сразу прогонять и такой режим:
 
 ```properties
-federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.mode=REWRITE
 federation.view-text-rewrite.preserve-original-text=true
 ```
 
@@ -1086,7 +1086,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario notification
 - путь к jar можно переопределить через `HMS_SMOKE_FAT_JAR`
 - если задан `HMS_SMOKE_BEELINE_JDBC_URL`, в `all` дополнительно запускается Beeline / HiveServer2 SQL smoke из `SMOKE.ru.md`
 - SQL smoke использует `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE`, по умолчанию проверяет view rewrite и permanent UDF, а при необходимости умеет запускать transactional SQL и materialized-view checks
-- если proxy специально поднят без `federation.view-text-rewrite.mode=rewrite`, выставь `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false`; для UDF можно выставить `HMS_SMOKE_SQL_RUN_UDF=false` или переопределить `HMS_SMOKE_SQL_UDF_CLASS` вместе с `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT`, если HS2 classpath отличается
+- если proxy специально поднят без `federation.view-text-rewrite.mode=REWRITE`, выставь `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false`; для UDF можно выставить `HMS_SMOKE_SQL_RUN_UDF=false` или переопределить `HMS_SMOKE_SQL_UDF_CLASS` вместе с `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT`, если HS2 classpath отличается
 - если заданы `HMS_SMOKE_TXN_SECONDARY_DB` и `HMS_SMOKE_TXN_SECONDARY_TABLE`, runner делает второй direct txn smoke
 - если `HMS_SMOKE_NOTIFICATION_*` не настроены, notification шаг в `all` будет пропущен
 - если заданы `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`, runner дополнительно запускает negative notification check для Apache backend из `SMOKE.ru.md`

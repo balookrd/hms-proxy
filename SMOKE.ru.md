@@ -240,7 +240,7 @@ select count(*) from some_table;
 
 **8. Views, materialized views и UDF**
 
-Этот блок стоит прогонять с `federation.view-text-rewrite.mode=rewrite`. Если важно, чтобы
+Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Если важно, чтобы
 оригинальный клиентский SQL оставался видимым в HMS без изменений, дополнительно включи
 `federation.view-text-rewrite.preserve-original-text=true`.
 

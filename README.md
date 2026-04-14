@@ -75,7 +75,7 @@ These switches change client-visible names or SQL text, not backend selection:
 | --- | --- |
 | `routing.catalog-db-separator` | Changes the external legacy spelling, for example `catalog2__sales` instead of `catalog2.sales`. |
 | `federation.preserve-backend-catalog-name=true` | Returns backend `catName` / `catalogName` such as `hive`, but routing still follows the external `dbName` or explicit proxy catalog. |
-| `federation.view-text-rewrite.mode=rewrite` | Rewrites view SQL between external and internal names; it does not change backend selection for the RPC itself. |
+| `federation.view-text-rewrite.mode=REWRITE` | Rewrites view SQL between external and internal names; it does not change backend selection for the RPC itself. |
 
 ## RPC behavior matrix
 
@@ -601,7 +601,7 @@ Some HDP-only methods still do not have a safe Apache mapping, so they remain un
 explicitly rather than returning a misleading success response.
 
 View/materialized-view notes:
-- the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=rewrite`
+- the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=REWRITE`
 - rewrite is intentionally parser-less and conservative: it targets `db.table` references, not full
   Hive SQL grammar
 - cross-catalog references in inbound SQL like `catalog2__dim.table_x` are internalized for the
@@ -657,7 +657,7 @@ If your workloads depend on Hive views or materialized views across multiple cat
 with:
 
 ```properties
-federation.view-text-rewrite.mode=rewrite
+federation.view-text-rewrite.mode=REWRITE
 federation.view-text-rewrite.preserve-original-text=true
 ```
 
@@ -1158,7 +1158,7 @@ Notes:
 - you can override the jar path with `HMS_SMOKE_FAT_JAR`
 - if `HMS_SMOKE_BEELINE_JDBC_URL` is configured, `all` also runs the Beeline / HiveServer2 SQL smoke from `SMOKE.md`
 - SQL smoke uses `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE`, validates view rewrite and permanent UDFs by default, and can optionally run transactional SQL and materialized-view checks
-- set `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false` if the proxy is intentionally started without `federation.view-text-rewrite.mode=rewrite`; set `HMS_SMOKE_SQL_RUN_UDF=false` or override `HMS_SMOKE_SQL_UDF_CLASS` together with `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT` when the HS2 classpath differs
+- set `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false` if the proxy is intentionally started without `federation.view-text-rewrite.mode=REWRITE`; set `HMS_SMOKE_SQL_RUN_UDF=false` or override `HMS_SMOKE_SQL_UDF_CLASS` together with `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT` when the HS2 classpath differs
 - if `HMS_SMOKE_TXN_SECONDARY_DB` and `HMS_SMOKE_TXN_SECONDARY_TABLE` are set, the runner executes a second direct txn smoke target
 - if `HMS_SMOKE_NOTIFICATION_*` is not configured, the notification step is skipped in `all`
 - if `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE` are set, the runner also executes the negative Apache-backend notification check from `SMOKE.md`

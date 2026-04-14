@@ -232,7 +232,7 @@ Expected:
 
 **8. Views, Materialized Views, and UDFs**
 
-Run this block with `federation.view-text-rewrite.mode=rewrite`. If you need the original client SQL
+Run this block with `federation.view-text-rewrite.mode=REWRITE`. If you need the original client SQL
 to stay byte-for-byte visible through HMS, also set
 `federation.view-text-rewrite.preserve-original-text=true`.
 

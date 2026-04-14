@@ -670,7 +670,7 @@ public final class ProxyConfigLoader {
       return ProxyConfig.ViewTextRewriteMode.DISABLED;
     }
     try {
-      return ProxyConfig.ViewTextRewriteMode.valueOf(value.trim().toUpperCase());
+      return ProxyConfig.ViewTextRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for federation.view-text-rewrite.mode: " + value
