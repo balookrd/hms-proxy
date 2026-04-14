@@ -404,13 +404,13 @@ metadata таблица помечена как transactional:
 Режим reject:
 
 ```properties
-guard.transactional-ddl.mode=reject
+guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 ```
 
 Режим rewrite:
 
 ```properties
-guard.transactional-ddl.mode=rewrite
+guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
 ```
 
 В режиме rewrite proxy переписывает входящую таблицу в `EXTERNAL_TABLE`, добавляет
@@ -419,7 +419,7 @@ guard.transactional-ddl.mode=rewrite
 Также можно ограничить его конкретными IP-адресами или CIDR-масками:
 
 ```properties
-guard.transactional-ddl.mode=reject
+guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 ```
 

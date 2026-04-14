@@ -403,13 +403,13 @@ It is evaluated only for `MANAGED_TABLE`. External tables are left unchanged.
 Reject mode:
 
 ```properties
-guard.transactional-ddl.mode=reject
+guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 ```
 
 Rewrite mode:
 
 ```properties
-guard.transactional-ddl.mode=rewrite
+guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
 ```
 
 In rewrite mode the proxy rewrites the incoming table to `EXTERNAL_TABLE`, adds
@@ -418,7 +418,7 @@ In rewrite mode the proxy rewrites the incoming table to `EXTERNAL_TABLE`, adds
 You can also scope it to specific client IPs or CIDR ranges:
 
 ```properties
-guard.transactional-ddl.mode=reject
+guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 ```
 

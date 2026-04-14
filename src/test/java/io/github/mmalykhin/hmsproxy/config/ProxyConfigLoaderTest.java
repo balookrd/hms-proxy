@@ -129,7 +129,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject_transactional
+          guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
           guard.transactional-ddl.client-addresses=10.10.0.0/16,192.168.1.20
           """);
 
@@ -151,7 +151,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject_transactional
+          guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
@@ -171,7 +171,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=rewrite_transactional_to_external
+          guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
           guard.transactional-ddl.client-addresses=10.10.0.0/16
           """);
 
@@ -211,7 +211,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
           federation.external-table-location-rewrite.source-default-fs=hdfs://ns-frontend
           """);
 
@@ -238,7 +238,7 @@ public class ProxyConfigLoaderTest {
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
           catalog.catalog2.conf.fs.defaultFS=hdfs://ns-default
-          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
@@ -373,7 +373,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
           """);
       try {
         ProxyConfigLoader.load(file);
@@ -420,6 +420,7 @@ public class ProxyConfigLoaderTest {
         Assert.fail("Expected IllegalArgumentException for invalid transactional DDL mode");
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage().contains("guard.transactional-ddl.mode"));
+        Assert.assertTrue(e.getMessage().contains("REJECT_TRANSACTIONAL"));
       }
     } finally {
       Files.deleteIfExists(file);
@@ -433,7 +434,7 @@ public class ProxyConfigLoaderTest {
       Files.writeString(file, """
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          guard.transactional-ddl.mode=reject_transactional
+          guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
           guard.transactional-ddl.client-addresses=10.10.0.0/99
           """);
       try {

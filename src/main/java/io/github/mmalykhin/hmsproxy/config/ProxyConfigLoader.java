@@ -609,12 +609,12 @@ public final class ProxyConfigLoader {
       return ProxyConfig.TransactionalDdlGuardMode.DISABLED;
     }
     try {
-      return ProxyConfig.TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase());
+      return ProxyConfig.TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for guard.transactional-ddl.mode: " + value
-              + ". Expected one of: reject_transactional, rewrite_transactional_to_external,"
-              + " rewrite_to_non_transactional, rewrite_managed_to_external", e);
+              + ". Expected one of: REJECT_TRANSACTIONAL, REWRITE_TRANSACTIONAL_TO_EXTERNAL,"
+              + " REWRITE_TO_NON_TRANSACTIONAL, REWRITE_MANAGED_TO_EXTERNAL", e);
     }
   }
 
@@ -684,11 +684,11 @@ public final class ProxyConfigLoader {
       return ProxyConfig.ExternalTableLocationRewriteMode.DISABLED;
     }
     try {
-      return ProxyConfig.ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase());
+      return ProxyConfig.ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for federation.external-table-location-rewrite.mode: " + value
-              + ". Expected one of: disabled, qualify_unqualified, rewrite_if_source_default_fs",
+              + ". Expected one of: DISABLED, QUALIFY_UNQUALIFIED, REWRITE_IF_SOURCE_DEFAULT_FS",
           e);
     }
   }
