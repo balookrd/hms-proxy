@@ -229,6 +229,32 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsExternalTableLocationRewriteSourceDefaultFsFromDefaultCatalog() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog2
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.catalog2.conf.fs.defaultFS=hdfs://ns-default
+          federation.external-table-location-rewrite.mode=rewrite_if_source_default_fs
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+          config.federation().externalTableLocationRewriteMode());
+      Assert.assertEquals(
+          "hdfs://ns-default",
+          config.federation().externalTableLocationRewriteSourceDefaultFs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void loadsCatalogExposureConfiguration() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
@@ -353,7 +379,7 @@ public class ProxyConfigLoaderTest {
         ProxyConfigLoader.load(file);
         Assert.fail("Expected IllegalArgumentException for missing source default FS");
       } catch (IllegalArgumentException e) {
-        Assert.assertTrue(e.getMessage().contains("federation.external-table-location-rewrite.source-default-fs"));
+        Assert.assertTrue(e.getMessage().contains("catalog.catalog1.conf.fs.defaultFS"));
       }
     } finally {
       Files.deleteIfExists(file);

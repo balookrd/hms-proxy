@@ -222,7 +222,6 @@ public final class ProxyConfigLoader {
           hiveConf,
           latencyBudgetMs));
     }
-
     String defaultCatalog = trimToNull(properties.getProperty("routing.default-catalog"));
     if (defaultCatalog == null) {
       if (catalogs.size() == 1) {
@@ -235,6 +234,13 @@ public final class ProxyConfigLoader {
     if (!catalogs.containsKey(defaultCatalog)) {
       throw new IllegalArgumentException(
           "Unknown routing.default-catalog: " + defaultCatalog);
+    }
+    if (externalTableLocationRewriteSourceDefaultFs == null) {
+      ProxyConfig.CatalogConfig defaultCatalogConfig = catalogs.get(defaultCatalog);
+      if (defaultCatalogConfig != null) {
+        externalTableLocationRewriteSourceDefaultFs =
+            trimToNull(defaultCatalogConfig.hiveConf().get("fs.defaultFS"));
+      }
     }
 
     if (clientPrincipal == null && serverPrincipal != null) {
@@ -266,7 +272,8 @@ public final class ProxyConfigLoader {
         == ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS
         && externalTableLocationRewriteSourceDefaultFs == null) {
       throw new IllegalArgumentException(
-          "Missing required property: federation.external-table-location-rewrite.source-default-fs");
+          "Missing required property: federation.external-table-location-rewrite.source-default-fs"
+              + " (or catalog." + defaultCatalog + ".conf.fs.defaultFS)");
     }
 
     ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
