@@ -415,6 +415,9 @@ guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
 
 В режиме rewrite proxy переписывает входящую таблицу в `EXTERNAL_TABLE`, добавляет
 `external.table.purge=true` и удаляет `transactional` и `transactional_properties`.
+Если нужен ещё и физический delete файлов на backend Apache `3.1.3`, это надо комбинировать с
+`federation.external-table-drop-purge.mode=BEST_EFFORT` и per-catalog allowlist через
+`catalog.<name>.conf.hms.proxy.external-table-drop-purge.allowed-prefixes`.
 
 Также можно ограничить его конкретными IP-адресами или CIDR-масками:
 
@@ -660,6 +663,21 @@ federation.view-text-rewrite.preserve-original-text=true
 
 Такой набор переписывает SQL между внешними и внутренними именами и при этом сохраняет
 пользовательский `viewOriginalText`. На выбор backend для самого RPC это не влияет.
+
+Если нужно, чтобы proxy физически удалял данные external table на backend Apache `3.1.3`
+после `DROP TABLE`, включи:
+
+```properties
+federation.external-table-drop-purge.mode=BEST_EFFORT
+catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs://ns-catalog2/tmp/,hdfs://ns-catalog2/data/external/
+```
+
+Сейчас этот хук работает только для `drop_table` и `drop_table_with_environment_context`,
+только для backend runtime `APACHE_3_1_3`, только если таблица уже `EXTERNAL_TABLE` с
+`external.table.purge=true`, и только если квалифицированный `LOCATION` попадает в allowlist.
+Удаление данных происходит только после успешного удаления метаданных в backend metastore;
+ошибка purge логируется и не откатывает metadata delete. Allowlist лучше держать узким, потому
+что подходящие пути удаляются рекурсивно через Hadoop `FileSystem`.
 
 ## Безопасность
 
