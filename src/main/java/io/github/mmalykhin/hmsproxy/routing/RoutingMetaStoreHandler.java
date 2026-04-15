@@ -43,6 +43,16 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       FrontDoorSecurity frontDoorSecurity,
       ProxyObservability observability
   ) {
+    this(config, router, frontDoorSecurity, observability, new FileSystemExternalTableDropPurger(config));
+  }
+
+  RoutingMetaStoreHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FrontDoorSecurity frontDoorSecurity,
+      ProxyObservability observability,
+      ExternalTableDropPurger externalTableDropPurger
+  ) {
     this.observability = observability;
     CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
     FederationLayer federationLayer = new FederationLayer(config, router);
@@ -56,7 +66,14 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
 
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
     this.routingHandler = new RoutingHandler(
-        config, router, federationLayer, compatibilityLayer, observability, dispatcher, impersonationResolver);
+        config,
+        router,
+        federationLayer,
+        compatibilityLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        externalTableDropPurger);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
         this.routingHandler);

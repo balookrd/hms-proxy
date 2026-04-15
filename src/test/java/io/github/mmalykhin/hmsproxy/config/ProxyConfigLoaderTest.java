@@ -123,6 +123,27 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void loadsExternalTableDropPurgeConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          federation.external-table-drop-purge.mode=BEST_EFFORT
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.ExternalTableDropPurgeMode.BEST_EFFORT,
+          config.federation().externalTableDropPurgeMode());
+      Assert.assertTrue(config.federation().externalTableDropPurgeEnabled());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void loadsTransactionalDdlGuardConfiguration() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

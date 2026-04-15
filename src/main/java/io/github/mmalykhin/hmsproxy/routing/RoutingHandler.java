@@ -34,6 +34,7 @@ final class RoutingHandler implements InvocationHandler {
   private final BackendCallDispatcher dispatcher;
   private final ImpersonationResolver impersonationResolver;
   private final ExternalTableLocationRewriter externalTableLocationRewriter;
+  private final ExternalTableDropPurger externalTableDropPurger;
 
   RoutingHandler(
       ProxyConfig config,
@@ -44,6 +45,27 @@ final class RoutingHandler implements InvocationHandler {
       BackendCallDispatcher dispatcher,
       ImpersonationResolver impersonationResolver
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        compatibilityLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        new FileSystemExternalTableDropPurger(config));
+  }
+
+  RoutingHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationLayer federationLayer,
+      CompatibilityLayer compatibilityLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      ExternalTableDropPurger externalTableDropPurger
+  ) {
     this.config = config;
     this.router = router;
     this.federationLayer = federationLayer;
@@ -52,6 +74,7 @@ final class RoutingHandler implements InvocationHandler {
     this.dispatcher = dispatcher;
     this.impersonationResolver = impersonationResolver;
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
+    this.externalTableDropPurger = externalTableDropPurger;
   }
 
   @Override
@@ -66,6 +89,7 @@ final class RoutingHandler implements InvocationHandler {
       case "addWriteNotificationLog" -> handleAddWriteNotificationLog(args);
       case "getTablesExt" -> handleGetTablesExt(args);
       case "getAllMaterializedViewObjectsForRewriting" -> handleGetAllMaterializedViewObjectsForRewriting();
+      case "drop_table", "drop_table_with_environment_context" -> handleDropTable(method, args);
       default -> routeByNamespaceOrFail(method, args);
     };
   }
@@ -307,6 +331,26 @@ final class RoutingHandler implements InvocationHandler {
       return externalized;
     }
     return result;
+  }
+
+  private Object handleDropTable(Method method, Object[] args) throws Throwable {
+    if (args == null || args.length < 2 || !(args[0] instanceof String dbName) || !(args[1] instanceof String)) {
+      return routeByNamespaceOrFail(method, args);
+    }
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
+    RequestContext.currentObservation().recordNamespace(namespace);
+    recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
+    validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
+    Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
+
+    Optional<ExternalTableDropPurger.PurgeRequest> purgeRequest = Optional.empty();
+    if (externalTableDropPurger.enabledFor(namespace.backend())) {
+      purgeRequest = prepareDropPurgeRequest(namespace, routedArgs);
+    }
+
+    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    runBestEffortDropPurge(namespace, purgeRequest);
+    return federationLayer.externalizeResult(result, namespace);
   }
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
@@ -565,6 +609,53 @@ final class RoutingHandler implements InvocationHandler {
 
   private void recordFilteredObject(String methodName, String catalogName, String objectType) {
     observability.metrics().recordFilteredObject(methodName, catalogName, objectType);
+  }
+
+  private Optional<ExternalTableDropPurger.PurgeRequest> prepareDropPurgeRequest(
+      CatalogRouter.ResolvedNamespace namespace,
+      Object[] routedArgs
+  ) {
+    if (routedArgs.length < 2 || !(routedArgs[0] instanceof String backendDbName)
+        || !(routedArgs[1] instanceof String tableName)) {
+      return Optional.empty();
+    }
+    try {
+      Table existingTable = (Table) invokeBackendByName(
+          namespace.backend(),
+          "get_table",
+          new Class<?>[] {String.class, String.class},
+          new Object[] {backendDbName, tableName});
+      return externalTableDropPurger.prepare(namespace.backend(), existingTable);
+    } catch (Throwable throwable) {
+      LOG.warn(
+          "requestId={} unable to prepare external-table purge for catalog '{}' db='{}' table='{}': {}",
+          RequestContext.currentRequestId(),
+          namespace.catalogName(),
+          backendDbName,
+          tableName,
+          throwable.toString());
+      return Optional.empty();
+    }
+  }
+
+  private void runBestEffortDropPurge(
+      CatalogRouter.ResolvedNamespace namespace,
+      Optional<ExternalTableDropPurger.PurgeRequest> purgeRequest
+  ) {
+    if (purgeRequest.isEmpty()) {
+      return;
+    }
+    try {
+      externalTableDropPurger.purge(namespace.backend(), purgeRequest.get());
+    } catch (Exception exception) {
+      LOG.warn(
+          "requestId={} external-table purge failed after successful drop for catalog '{}' location='{}': {}",
+          RequestContext.currentRequestId(),
+          namespace.catalogName(),
+          purgeRequest.get().location(),
+          exception.toString(),
+          exception);
+    }
   }
 
   private static String extractExplicitTableReadName(

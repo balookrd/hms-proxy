@@ -88,6 +88,9 @@ public final class ProxyConfigLoader {
             trimToNull(properties.getProperty("federation.external-table-location-rewrite.mode")));
     String externalTableLocationRewriteSourceDefaultFs =
         trimToNull(properties.getProperty("federation.external-table-location-rewrite.source-default-fs"));
+    ProxyConfig.ExternalTableDropPurgeMode externalTableDropPurgeMode =
+        parseExternalTableDropPurgeMode(
+            trimToNull(properties.getProperty("federation.external-table-drop-purge.mode")));
     ProxyConfig.TransactionalDdlGuardMode transactionalDdlGuardMode = parseTransactionalDdlGuardMode(
         trimToNull(properties.getProperty("guard.transactional-ddl.mode")));
     String[] transactionalDdlClientAddresses =
@@ -296,7 +299,8 @@ public final class ProxyConfigLoader {
         viewTextRewriteMode,
         preserveOriginalViewText,
         externalTableLocationRewriteMode,
-        externalTableLocationRewriteSourceDefaultFs);
+        externalTableLocationRewriteSourceDefaultFs,
+        externalTableDropPurgeMode);
     ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
         new ProxyConfig.TransactionalDdlGuardConfig(
             transactionalDdlGuardMode,
@@ -689,6 +693,20 @@ public final class ProxyConfigLoader {
       throw new IllegalArgumentException(
           "Invalid value for federation.external-table-location-rewrite.mode: " + value
               + ". Expected one of: DISABLED, QUALIFY_UNQUALIFIED, REWRITE_IF_SOURCE_DEFAULT_FS",
+          e);
+    }
+  }
+
+  private static ProxyConfig.ExternalTableDropPurgeMode parseExternalTableDropPurgeMode(String value) {
+    if (value == null) {
+      return ProxyConfig.ExternalTableDropPurgeMode.DISABLED;
+    }
+    try {
+      return ProxyConfig.ExternalTableDropPurgeMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid value for federation.external-table-drop-purge.mode: " + value
+              + ". Expected one of: DISABLED, BEST_EFFORT",
           e);
     }
   }

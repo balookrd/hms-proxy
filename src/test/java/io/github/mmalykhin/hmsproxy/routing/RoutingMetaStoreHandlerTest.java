@@ -22,10 +22,12 @@ import java.lang.reflect.Method;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.test.TestingServer;
@@ -2431,6 +2433,106 @@ public class RoutingMetaStoreHandlerTest {
     Assert.assertEquals("sales", table.getDbName());
   }
 
+  @Test
+  public void dropTablePurgesExternalTableAfterSuccessfulBackendDrop() throws Throwable {
+    ProxyConfig config = dropPurgeConfig();
+    List<String> events = new ArrayList<>();
+    RecordingExternalTableDropPurger purger = new RecordingExternalTableDropPurger(events);
+    purger.preparedRequest = Optional.of(new ExternalTableDropPurger.PurgeRequest("hdfs://ns-dev3/tmp/external/events"));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      events.add(method.getName());
+      if ("get_table".equals(method.getName())) {
+        return externalTable("sales", "events", "hdfs://ns-dev3/tmp/external/events", true);
+      }
+      if ("drop_table".equals(method.getName())) {
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+    Method method = thriftMethod("drop_table");
+
+    handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
+
+    Assert.assertEquals(List.of("get_table", "prepare", "drop_table", "purge"), events);
+    Assert.assertEquals("sales", purger.preparedTable.get().getDbName());
+    Assert.assertEquals("events", purger.preparedTable.get().getTableName());
+  }
+
+  @Test
+  public void dropTableWithEnvironmentContextPurgesExternalTableAfterSuccessfulBackendDrop() throws Throwable {
+    ProxyConfig config = dropPurgeConfig();
+    List<String> events = new ArrayList<>();
+    RecordingExternalTableDropPurger purger = new RecordingExternalTableDropPurger(events);
+    purger.preparedRequest = Optional.of(new ExternalTableDropPurger.PurgeRequest("hdfs://ns-dev3/tmp/external/events"));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      events.add(method.getName());
+      if ("get_table".equals(method.getName())) {
+        return externalTable("sales", "events", "hdfs://ns-dev3/tmp/external/events", true);
+      }
+      if ("drop_table_with_environment_context".equals(method.getName())) {
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+    Method method = thriftMethod("drop_table_with_environment_context");
+
+    handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
+
+    Assert.assertEquals(List.of("get_table", "prepare", "drop_table_with_environment_context", "purge"), events);
+  }
+
+  @Test
+  public void dropTableIgnoresBestEffortPurgeFailureAfterSuccessfulBackendDrop() throws Throwable {
+    ProxyConfig config = dropPurgeConfig();
+    List<String> events = new ArrayList<>();
+    RecordingExternalTableDropPurger purger = new RecordingExternalTableDropPurger(events);
+    purger.preparedRequest = Optional.of(new ExternalTableDropPurger.PurgeRequest("hdfs://ns-dev3/tmp/external/events"));
+    purger.purgeFailure = new java.io.IOException("simulated purge failure");
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      events.add(method.getName());
+      if ("get_table".equals(method.getName())) {
+        return externalTable("sales", "events", "hdfs://ns-dev3/tmp/external/events", true);
+      }
+      if ("drop_table".equals(method.getName())) {
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+    Method method = thriftMethod("drop_table");
+
+    handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
+
+    Assert.assertEquals(List.of("get_table", "prepare", "drop_table", "purge"), events);
+    Assert.assertEquals(1, purger.purgeCalls.get());
+  }
+
   private static CatalogBackend newIsolatedHortonworksBackend(
       ProxyConfig proxyConfig,
       ProxyConfig.CatalogConfig catalogConfig,
@@ -2539,6 +2641,101 @@ public class RoutingMetaStoreHandlerTest {
 
     MetaException error = Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, args));
     Assert.assertTrue(error.getMessage().contains("policy-owned by proxy config"));
+  }
+
+  private static Method thriftMethod(String methodName) {
+    return Arrays.stream(ThriftHiveMetastore.Iface.class.getMethods())
+        .filter(candidate -> candidate.getName().equals(methodName))
+        .findFirst()
+        .orElseThrow(() -> new IllegalStateException("No HMS method found for " + methodName));
+  }
+
+  private static Object[] dropTableArguments(Method method, String dbName, String tableName) {
+    Object[] args = new Object[method.getParameterCount()];
+    int stringIndex = 0;
+    for (int index = 0; index < method.getParameterCount(); index++) {
+      Class<?> parameterType = method.getParameterTypes()[index];
+      if (parameterType == String.class) {
+        args[index] = stringIndex++ == 0 ? dbName : tableName;
+      } else if (parameterType == boolean.class) {
+        args[index] = Boolean.TRUE;
+      } else if (parameterType == EnvironmentContext.class) {
+        args[index] = new EnvironmentContext();
+      } else {
+        throw new IllegalArgumentException("Unsupported drop_table parameter: " + parameterType);
+      }
+    }
+    return args;
+  }
+
+  private static ProxyConfig dropPurgeConfig() {
+    return new ProxyConfig(
+        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
+        "__",
+        "catalog1",
+        Map.of(
+            "catalog1",
+            catalogConfig(
+                "catalog1",
+                "c1",
+                MetastoreRuntimeProfile.APACHE_3_1_3,
+                null,
+                Map.of(
+                    "hive.metastore.uris", "thrift://one",
+                    FileSystemExternalTableDropPurger.ALLOWED_PREFIXES_CONF_KEY, "hdfs://ns-dev3/tmp/"))),
+        new ProxyConfig.CompatibilityConfig(false),
+        new ProxyConfig.FederationConfig(
+            false,
+            ProxyConfig.ViewTextRewriteMode.DISABLED,
+            false,
+            ProxyConfig.ExternalTableLocationRewriteMode.DISABLED,
+            null,
+            ProxyConfig.ExternalTableDropPurgeMode.BEST_EFFORT),
+        new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()));
+  }
+
+  private static Table externalTable(String dbName, String tableName, String location, boolean purgeEnabled) {
+    Table table = table(
+        dbName,
+        tableName,
+        purgeEnabled ? Map.of(FileSystemExternalTableDropPurger.EXTERNAL_TABLE_PURGE_KEY, "true") : Map.of());
+    table.setTableType("EXTERNAL_TABLE");
+    table.setSd(storageDescriptor(location));
+    return table;
+  }
+
+  private static final class RecordingExternalTableDropPurger implements ExternalTableDropPurger {
+    private final List<String> events;
+    private final AtomicReference<Table> preparedTable = new AtomicReference<>();
+    private final AtomicInteger purgeCalls = new AtomicInteger();
+    private Optional<PurgeRequest> preparedRequest = Optional.empty();
+    private Exception purgeFailure;
+
+    private RecordingExternalTableDropPurger(List<String> events) {
+      this.events = events;
+    }
+
+    @Override
+    public boolean enabledFor(CatalogBackend backend) {
+      return true;
+    }
+
+    @Override
+    public Optional<PurgeRequest> prepare(CatalogBackend backend, Table table) {
+      events.add("prepare");
+      preparedTable.set(table);
+      return preparedRequest;
+    }
+
+    @Override
+    public void purge(CatalogBackend backend, PurgeRequest request) throws Exception {
+      events.add("purge");
+      purgeCalls.incrementAndGet();
+      if (purgeFailure != null) {
+        throw purgeFailure;
+      }
+    }
   }
 
   private static Object childTable(ClassLoader classLoader, String dbName, String tableName) throws Exception {

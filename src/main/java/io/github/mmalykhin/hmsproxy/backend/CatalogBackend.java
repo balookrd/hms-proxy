@@ -85,6 +85,10 @@ public final class CatalogBackend implements AutoCloseable {
     return FileSystem.getDefaultUri(hiveConf);
   }
 
+  public HiveConf hiveConf() {
+    return hiveConf;
+  }
+
   public boolean impersonationEnabled() {
     return config.impersonationEnabled();
   }

@@ -381,13 +381,17 @@ public record ProxyConfig(
       ViewTextRewriteMode viewTextRewriteMode,
       boolean preserveOriginalViewText,
       ExternalTableLocationRewriteMode externalTableLocationRewriteMode,
-      String externalTableLocationRewriteSourceDefaultFs
+      String externalTableLocationRewriteSourceDefaultFs,
+      ExternalTableDropPurgeMode externalTableDropPurgeMode
   ) {
     public FederationConfig {
       viewTextRewriteMode = viewTextRewriteMode == null ? ViewTextRewriteMode.DISABLED : viewTextRewriteMode;
       externalTableLocationRewriteMode = externalTableLocationRewriteMode == null
           ? ExternalTableLocationRewriteMode.DISABLED
           : externalTableLocationRewriteMode;
+      externalTableDropPurgeMode = externalTableDropPurgeMode == null
+          ? ExternalTableDropPurgeMode.DISABLED
+          : externalTableDropPurgeMode;
       if (externalTableLocationRewriteSourceDefaultFs != null) {
         externalTableLocationRewriteSourceDefaultFs = externalTableLocationRewriteSourceDefaultFs.trim();
         if (externalTableLocationRewriteSourceDefaultFs.isEmpty()) {
@@ -406,11 +410,32 @@ public record ProxyConfig(
           viewTextRewriteMode,
           preserveOriginalViewText,
           ExternalTableLocationRewriteMode.DISABLED,
-          null);
+          null,
+          ExternalTableDropPurgeMode.DISABLED);
+    }
+
+    public FederationConfig(
+        boolean preserveBackendCatalogName,
+        ViewTextRewriteMode viewTextRewriteMode,
+        boolean preserveOriginalViewText,
+        ExternalTableLocationRewriteMode externalTableLocationRewriteMode,
+        String externalTableLocationRewriteSourceDefaultFs
+    ) {
+      this(
+          preserveBackendCatalogName,
+          viewTextRewriteMode,
+          preserveOriginalViewText,
+          externalTableLocationRewriteMode,
+          externalTableLocationRewriteSourceDefaultFs,
+          ExternalTableDropPurgeMode.DISABLED);
     }
 
     public boolean viewTextRewriteEnabled() {
       return viewTextRewriteMode == ViewTextRewriteMode.REWRITE;
+    }
+
+    public boolean externalTableDropPurgeEnabled() {
+      return externalTableDropPurgeMode == ExternalTableDropPurgeMode.BEST_EFFORT;
     }
   }
 
@@ -423,6 +448,11 @@ public record ProxyConfig(
     DISABLED,
     QUALIFY_UNQUALIFIED,
     REWRITE_IF_SOURCE_DEFAULT_FS
+  }
+
+  public enum ExternalTableDropPurgeMode {
+    DISABLED,
+    BEST_EFFORT
   }
 
   public record TransactionalDdlGuardConfig(
