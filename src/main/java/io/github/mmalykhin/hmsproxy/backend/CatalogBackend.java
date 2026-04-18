@@ -31,7 +31,8 @@ public final class CatalogBackend implements AutoCloseable {
   private final BackendAdapter adapter;
   private final BackendRuntime runtime;
   private final Catalog catalog;
-  private long appliedClientTimeoutMs;
+  private final Object reconnectLock = new Object();
+  private volatile long appliedClientTimeoutMs;
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
@@ -109,17 +110,24 @@ public final class CatalogBackend implements AutoCloseable {
     invokeRawByName("getStatus", new Class<?>[0], new Object[0], null);
   }
 
-  public synchronized void ensureClientSocketTimeout(long timeoutMs) throws MetaException {
+  public void ensureClientSocketTimeout(long timeoutMs) throws MetaException {
     if (timeoutMs <= 0 || !shouldReconnectForTimeout(timeoutMs)) {
       return;
     }
-    hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
-    runtime.reconnectShared(adapter);
-    for (ImpersonationClient client : impersonationClients.values()) {
-      client.evict();
+    synchronized (reconnectLock) {
+      if (!shouldReconnectForTimeout(timeoutMs)) {
+        return;
+      }
+      hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
+      runtime.reconnectShared(adapter);
+      synchronized (this) {
+        for (ImpersonationClient client : impersonationClients.values()) {
+          client.evict();
+        }
+        impersonationClients.clear();
+      }
+      appliedClientTimeoutMs = timeoutMs;
     }
-    impersonationClients.clear();
-    appliedClientTimeoutMs = timeoutMs;
     LOG.info("Backend catalog '{}' applied adaptive socket timeout {}",
         config.name(), TimeoutValueParser.formatDurationMs(timeoutMs));
   }
