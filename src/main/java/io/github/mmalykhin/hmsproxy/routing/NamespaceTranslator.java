@@ -4,10 +4,13 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.apache.hadoop.hive.metastore.api.Database;
@@ -89,6 +92,10 @@ public final class NamespaceTranslator {
   }
 
   public static String extractDbName(Object value) {
+    return extractDbName(value, Collections.newSetFromMap(new IdentityHashMap<>()));
+  }
+
+  private static String extractDbName(Object value, Set<Object> seen) {
     if (value == null) {
       return null;
     }
@@ -114,7 +121,7 @@ public final class NamespaceTranslator {
     }
     if (value instanceof List<?> list) {
       for (Object element : list) {
-        String nestedDbName = extractDbName(element);
+        String nestedDbName = extractDbName(element, seen);
         if (nestedDbName != null) {
           return nestedDbName;
         }
@@ -123,7 +130,7 @@ public final class NamespaceTranslator {
     }
     if (value instanceof Map<?, ?> map) {
       for (Object element : map.values()) {
-        String nestedDbName = extractDbName(element);
+        String nestedDbName = extractDbName(element, seen);
         if (nestedDbName != null) {
           return nestedDbName;
         }
@@ -131,11 +138,14 @@ public final class NamespaceTranslator {
       return null;
     }
     if (value instanceof TBase<?, ?> thriftValue) {
+      if (!seen.add(thriftValue)) {
+        return null;
+      }
       for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
         Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
         String nestedDbName = extractDbNameFromField(fieldId, fieldValue);
         if (nestedDbName == null) {
-          nestedDbName = extractDbName(fieldValue);
+          nestedDbName = extractDbName(fieldValue, seen);
         }
         if (nestedDbName != null) {
           return nestedDbName;
