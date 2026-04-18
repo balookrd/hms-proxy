@@ -284,6 +284,8 @@ final class RequestRateLimiter {
     private final String dimension;
     private final String scope;
     private final ProxyConfig.RateLimitPolicyConfig policy;
+    private final long intervalNanos;
+    private final long burstWindowNanos;
     private final ConcurrentMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final AtomicLong cleanupTicker = new AtomicLong();
 
@@ -291,6 +293,13 @@ final class RequestRateLimiter {
       this.dimension = dimension;
       this.scope = scope;
       this.policy = policy == null ? ProxyConfig.RateLimitPolicyConfig.disabled() : policy;
+      if (this.policy.enabled()) {
+        this.intervalNanos = 1_000_000_000L / this.policy.requestsPerSecond();
+        this.burstWindowNanos = (long) this.policy.burst() * this.intervalNanos;
+      } else {
+        this.intervalNanos = 0L;
+        this.burstWindowNanos = 0L;
+      }
     }
 
     private boolean enabled() {
@@ -314,8 +323,8 @@ final class RequestRateLimiter {
         return true;
       }
       cleanupIfNeeded(nowNanos);
-      return buckets.computeIfAbsent(bucketKey, ignored -> new TokenBucket(policy.burst(), nowNanos))
-          .tryAcquire(nowNanos, policy.requestsPerSecond(), policy.burst());
+      return buckets.computeIfAbsent(bucketKey, ignored -> new TokenBucket(intervalNanos, burstWindowNanos, nowNanos))
+          .tryAcquire(nowNanos);
     }
 
     private void cleanupIfNeeded(long nowNanos) {
@@ -330,40 +339,39 @@ final class RequestRateLimiter {
     }
   }
 
+  // GCRA (virtual-scheduler) token bucket — lock-free via single AtomicLong CAS.
+  // nextFreeNanos is the earliest time the next token becomes available.
+  // Clamping it to (now - burstWindowNanos) implements the burst allowance.
   private static final class TokenBucket {
-    private double tokens;
-    private long lastRefillNanos;
-    private long lastSeenNanos;
+    private final long intervalNanos;
+    private final long burstWindowNanos;
+    private final AtomicLong nextFreeNanos;
+    private final AtomicLong lastSeenNanos;
 
-    private TokenBucket(int burst, long nowNanos) {
-      this.tokens = burst;
-      this.lastRefillNanos = nowNanos;
-      this.lastSeenNanos = nowNanos;
+    private TokenBucket(long intervalNanos, long burstWindowNanos, long nowNanos) {
+      this.intervalNanos = intervalNanos;
+      this.burstWindowNanos = burstWindowNanos;
+      // start full: (burst-1) intervals already "consumed" so burst tokens are immediately available
+      this.nextFreeNanos = new AtomicLong(nowNanos - burstWindowNanos + intervalNanos);
+      this.lastSeenNanos = new AtomicLong(nowNanos);
     }
 
-    private synchronized boolean tryAcquire(long nowNanos, int requestsPerSecond, int burst) {
-      refill(nowNanos, requestsPerSecond, burst);
-      lastSeenNanos = nowNanos;
-      if (tokens < 1.0d) {
-        return false;
+    private boolean tryAcquire(long nowNanos) {
+      lastSeenNanos.setOpaque(nowNanos);
+      while (true) {
+        long next = nextFreeNanos.get();
+        long clamped = Math.max(next, nowNanos - burstWindowNanos);
+        if (clamped > nowNanos) {
+          return false;
+        }
+        if (nextFreeNanos.compareAndSet(next, clamped + intervalNanos)) {
+          return true;
+        }
       }
-      tokens -= 1.0d;
-      return true;
     }
 
-    private synchronized boolean idle(long nowNanos, long idleTtlNanos) {
-      return nowNanos - lastSeenNanos >= idleTtlNanos;
-    }
-
-    private void refill(long nowNanos, int requestsPerSecond, int burst) {
-      if (nowNanos <= lastRefillNanos) {
-        return;
-      }
-      double replenished = (nowNanos - lastRefillNanos) * (double) requestsPerSecond / 1_000_000_000d;
-      if (replenished > 0.0d) {
-        tokens = Math.min(burst, tokens + replenished);
-        lastRefillNanos = nowNanos;
-      }
+    private boolean idle(long nowNanos, long idleTtlNanos) {
+      return nowNanos - lastSeenNanos.getOpaque() >= idleTtlNanos;
     }
   }
 }
