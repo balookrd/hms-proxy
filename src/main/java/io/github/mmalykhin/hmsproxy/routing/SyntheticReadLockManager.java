@@ -71,15 +71,15 @@ final class SyntheticReadLockManager implements AutoCloseable {
     return state;
   }
 
-  SyntheticLockState syntheticLock(CheckLockRequest request) throws MetaException, NoSuchLockException {
+  SyntheticLockState syntheticLockForCheck(CheckLockRequest request) throws MetaException, NoSuchLockException {
     return syntheticLock(request == null ? 0L : request.getLockid(), "check_lock");
   }
 
-  SyntheticLockState syntheticLock(UnlockRequest request) throws MetaException, NoSuchLockException {
+  SyntheticLockState syntheticLockForUnlock(UnlockRequest request) throws MetaException, NoSuchLockException {
     return syntheticLock(request == null ? 0L : request.getLockid(), "unlock");
   }
 
-  SyntheticLockState syntheticLock(HeartbeatRequest request) throws MetaException, NoSuchLockException {
+  SyntheticLockState syntheticLockForHeartbeat(HeartbeatRequest request) throws MetaException, NoSuchLockException {
     return syntheticLock(request == null ? 0L : request.getLockid(), "heartbeat");
   }
 

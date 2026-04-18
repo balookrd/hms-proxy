@@ -87,7 +87,7 @@ final class LockHandler implements InvocationHandler {
 
   private Object handleCheckLock(Object proxy, Method method, Object[] args) throws Throwable {
     SyntheticReadLockManager.SyntheticLockState syntheticState =
-        syntheticReadLockManager.syntheticLock((CheckLockRequest) args[0]);
+        syntheticReadLockManager.syntheticLockForCheck((CheckLockRequest) args[0]);
     if (syntheticState == null) {
       return next.invoke(proxy, method, args);
     }
@@ -99,7 +99,7 @@ final class LockHandler implements InvocationHandler {
 
   private Object handleUnlock(Object proxy, Method method, Object[] args) throws Throwable {
     SyntheticReadLockManager.SyntheticLockState syntheticState =
-        syntheticReadLockManager.syntheticLock((org.apache.hadoop.hive.metastore.api.UnlockRequest) args[0]);
+        syntheticReadLockManager.syntheticLockForUnlock((org.apache.hadoop.hive.metastore.api.UnlockRequest) args[0]);
     if (syntheticState == null) {
       return next.invoke(proxy, method, args);
     }
@@ -112,7 +112,7 @@ final class LockHandler implements InvocationHandler {
 
   private Object handleHeartbeat(Object proxy, Method method, Object[] args) throws Throwable {
     HeartbeatRequest request = (HeartbeatRequest) args[0];
-    SyntheticReadLockManager.SyntheticLockState syntheticState = syntheticReadLockManager.syntheticLock(request);
+    SyntheticReadLockManager.SyntheticLockState syntheticState = syntheticReadLockManager.syntheticLockForHeartbeat(request);
     if (syntheticState == null) {
       return next.invoke(proxy, method, args);
     }

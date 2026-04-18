@@ -125,7 +125,7 @@ final class RoutingHandler implements InvocationHandler {
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
-          List<String> result = (List<String>) dispatcher.invokeBackend(
+          List<String> result = (List<String>) dispatcher.invokeDirect(
               backend, method, null, impersonation, requestId, false, false);
           return result;
         })) {
@@ -148,7 +148,7 @@ final class RoutingHandler implements InvocationHandler {
       RequestContext.currentObservation().recordNamespace(resolved);
       @SuppressWarnings("unchecked")
       List<String> backendDatabases =
-          (List<String>) invokeBackend(resolved.backend(), method, new Object[]{resolved.backendDbName()});
+          (List<String>) invokeDirect(resolved.backend(), method, new Object[]{resolved.backendDbName()});
       List<String> databases = new ArrayList<>();
       for (String backendDatabase : backendDatabases) {
         if (!federationLayer.isDatabaseExposed(resolved.catalogName(), backendDatabase)) {
@@ -166,7 +166,7 @@ final class RoutingHandler implements InvocationHandler {
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
-          List<String> result = (List<String>) dispatcher.invokeBackend(
+          List<String> result = (List<String>) dispatcher.invokeDirect(
               backend, method, new Object[]{pattern}, impersonation, requestId, false, false);
           return result;
         })) {
@@ -192,7 +192,7 @@ final class RoutingHandler implements InvocationHandler {
     if (resolved != null) {
       RequestContext.currentObservation().recordNamespace(resolved);
       @SuppressWarnings("unchecked")
-      List<TableMeta> backendResults = (List<TableMeta>) invokeBackend(
+      List<TableMeta> backendResults = (List<TableMeta>) invokeDirect(
           resolved.backend(), method, new Object[]{resolved.backendDbName(), tablePattern, tableTypes});
       List<TableMeta> results = new ArrayList<>();
       for (TableMeta result : backendResults) {
@@ -211,7 +211,7 @@ final class RoutingHandler implements InvocationHandler {
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
-          List<TableMeta> result = (List<TableMeta>) dispatcher.invokeBackend(
+          List<TableMeta> result = (List<TableMeta>) dispatcher.invokeDirect(
               backend, method, new Object[]{dbPattern, tablePattern, tableTypes},
               impersonation, requestId, false, false);
           return result;
@@ -244,7 +244,7 @@ final class RoutingHandler implements InvocationHandler {
     validateExposedDatabaseAccess(method.getName(), namespace);
     validateExposedTableAccess(method.getName(), namespace, request.getTblName());
     GetTableRequest routedRequest = (GetTableRequest) federationLayer.internalizeTableRequest(request, namespace);
-    Object result = invokeBackendRequest(backend, routedRequest, method.getName());
+    Object result = invokeViaRequest(backend, routedRequest, method.getName());
     result = filterSingleTableResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
@@ -258,7 +258,7 @@ final class RoutingHandler implements InvocationHandler {
     CatalogBackend backend = namespace.backend();
     validateExposedDatabaseAccess(method.getName(), namespace);
     GetTablesRequest routedRequest = (GetTablesRequest) federationLayer.internalizeTablesRequest(request, namespace);
-    Object result = invokeBackendRequest(backend, routedRequest, method.getName());
+    Object result = invokeViaRequest(backend, routedRequest, method.getName());
     result = filterTableCollectionResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
@@ -322,7 +322,7 @@ final class RoutingHandler implements InvocationHandler {
               + "'");
     }
     validateCatalogAccess(backend, "get_all_materialized_view_objects_for_rewriting", null);
-    Object result = invokeBackendByName(backend, "get_all_materialized_view_objects_for_rewriting",
+    Object result = invokeByReflection(backend, "get_all_materialized_view_objects_for_rewriting",
         new Class<?>[0], new Object[0]);
     if (result instanceof List<?> tables) {
       List<Object> externalized = new ArrayList<>(tables.size());
@@ -357,7 +357,7 @@ final class RoutingHandler implements InvocationHandler {
       purgeRequest = prepareDropPurgeRequest(namespace, routedArgs);
     }
 
-    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    Object result = invokeDirect(namespace.backend(), method, routedArgs);
     runBestEffortDropPurge(namespace, purgeRequest);
     return federationLayer.externalizeResult(result, namespace);
   }
@@ -393,7 +393,7 @@ final class RoutingHandler implements InvocationHandler {
       RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
       observability.metrics().recordDefaultCatalogRoute(method.getName());
       validateCatalogAccess(router.defaultBackend(), method.getName(), null);
-      return invokeBackend(router.defaultBackend(), method, args);
+      return invokeDirect(router.defaultBackend(), method, args);
     }
     if (!router.singleCatalog()) {
       throw new MetaException("Operation " + method.getName()
@@ -403,7 +403,7 @@ final class RoutingHandler implements InvocationHandler {
     RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
     observability.metrics().recordDefaultCatalogRoute(method.getName());
     validateCatalogAccess(router.defaultBackend(), method.getName(), null);
-    return invokeBackend(router.defaultBackend(), method, args);
+    return invokeDirect(router.defaultBackend(), method, args);
   }
 
   private Object routeByDbStringArgument(Method method, Object[] args) throws Throwable {
@@ -416,7 +416,7 @@ final class RoutingHandler implements InvocationHandler {
     validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     validateReadExposure(method.getName(), namespace, args);
     Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
-    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    Object result = invokeDirect(namespace.backend(), method, routedArgs);
     result = filterReadResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
@@ -431,7 +431,7 @@ final class RoutingHandler implements InvocationHandler {
     validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     validateReadExposure(method.getName(), namespace, args);
     Object[] routedArgs = federationLayer.internalizeDbStringArguments(args, namespace);
-    Object result = invokeBackend(namespace.backend(), method, routedArgs);
+    Object result = invokeDirect(namespace.backend(), method, routedArgs);
     result = filterReadResult(method.getName(), namespace, result);
     return federationLayer.externalizeResult(result, namespace);
   }
@@ -450,7 +450,7 @@ final class RoutingHandler implements InvocationHandler {
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = federationLayer.internalizeObjectArguments(args, extractedNamespace);
     externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
-    Object result = invokeBackend(extractedNamespace.backend(), method, routedArgs);
+    Object result = invokeDirect(extractedNamespace.backend(), method, routedArgs);
     result = filterReadResult(methodName, extractedNamespace, result);
     return federationLayer.externalizeResult(result, extractedNamespace);
   }
@@ -629,7 +629,7 @@ final class RoutingHandler implements InvocationHandler {
       return Optional.empty();
     }
     try {
-      Table existingTable = (Table) invokeBackendByName(
+      Table existingTable = (Table) invokeByReflection(
           namespace.backend(),
           "get_table",
           new Class<?>[] {String.class, String.class},
@@ -768,33 +768,33 @@ final class RoutingHandler implements InvocationHandler {
 
   // --- Backend invocation bridges ---
 
-  private Object invokeBackend(CatalogBackend backend, Method method, Object[] args) throws Throwable {
-    return dispatcher.invokeBackend(
+  private Object invokeDirect(CatalogBackend backend, Method method, Object[] args) throws Throwable {
+    return dispatcher.invokeDirect(
         backend, method, args,
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId(),
         true, true);
   }
 
-  private Object invokeBackendRequest(CatalogBackend backend, Object request, String methodName) throws Throwable {
-    return dispatcher.invokeBackendRequest(
+  private Object invokeViaRequest(CatalogBackend backend, Object request, String methodName) throws Throwable {
+    return dispatcher.invokeViaRequest(
         backend, request, methodName,
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId());
   }
 
   private Object invokeBackendNamed(CatalogBackend backend, String methodName, Object request) throws Throwable {
-    return dispatcher.invokeBackendByName(
+    return dispatcher.invokeByReflection(
         backend, methodName,
         new Class<?>[]{request.getClass()}, new Object[]{request},
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId());
   }
 
-  private Object invokeBackendByName(
+  private Object invokeByReflection(
       CatalogBackend backend,
       String methodName,
       Class<?>[] parameterTypes,
       Object[] args
   ) throws Throwable {
-    return dispatcher.invokeBackendByName(
+    return dispatcher.invokeByReflection(
         backend, methodName, parameterTypes, args,
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId());
   }

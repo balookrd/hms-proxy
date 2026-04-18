@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
  * compatibility fallback, request/response logging, fanout reads (parallel and
  * sequential), and backend-error normalisation.
  *
- * <p>Single-backend calls are exposed through the {@code invokeBackend*} family.
+ * <p>Single-backend calls are exposed through {@link #invokeDirect}, {@link #invokeViaRequest}, and {@link #invokeByReflection}.
  * Fanout calls are exposed through {@link #invokeFanoutRead}.
  */
 final class BackendCallDispatcher {
@@ -50,7 +50,7 @@ final class BackendCallDispatcher {
     this.requestRateLimiter = requestRateLimiter;
   }
 
-  Object invokeBackend(
+  Object invokeDirect(
       CatalogBackend backend,
       Method method,
       Object[] args,
@@ -72,7 +72,7 @@ final class BackendCallDispatcher {
         method);
   }
 
-  Object invokeBackendRequest(
+  Object invokeViaRequest(
       CatalogBackend backend,
       Object request,
       String methodName,
@@ -92,7 +92,7 @@ final class BackendCallDispatcher {
         null);
   }
 
-  Object invokeBackendByName(
+  Object invokeByReflection(
       CatalogBackend backend,
       String methodName,
       Class<?>[] parameterTypes,

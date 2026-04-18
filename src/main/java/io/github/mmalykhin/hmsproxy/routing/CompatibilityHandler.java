@@ -99,7 +99,7 @@ final class CompatibilityHandler implements InvocationHandler {
     }
     RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
     observability.metrics().recordDefaultCatalogRoute(method.getName());
-    return dispatcher.invokeBackend(
+    return dispatcher.invokeDirect(
         router.defaultBackend(), method, args,
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId(),
         true, true);
