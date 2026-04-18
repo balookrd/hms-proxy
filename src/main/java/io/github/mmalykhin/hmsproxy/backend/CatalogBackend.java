@@ -20,7 +20,6 @@ import org.slf4j.LoggerFactory;
 
 public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
-  private static final int MAX_IMPERSONATION_CLIENTS = 128;
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
   private static final long SOCKET_TIMEOUT_RECONNECT_DELTA_MS = 1_000L;
 
@@ -244,7 +243,16 @@ public final class CatalogBackend implements AutoCloseable {
   ) throws MetaException {
     ImpersonationClient client = impersonationClients.get(impersonation.userName());
     if (client != null) {
-      return client;
+      long ttlMs = config.impersonationClientIdleTtlMs();
+      if (ttlMs > 0 && System.currentTimeMillis() - client.lastUsedMs > ttlMs) {
+        LOG.info("Evicting idle impersonation client for user '{}' in catalog '{}'",
+            impersonation.userName(), config.name());
+        impersonationClients.remove(impersonation.userName());
+        client.evict();
+        client = null;
+      } else {
+        return client;
+      }
     }
 
     client = new ImpersonationClient(impersonation.userName(), impersonation.groupNames());
@@ -254,7 +262,7 @@ public final class CatalogBackend implements AutoCloseable {
   }
 
   private void evictOldImpersonationClientsIfNeeded() {
-    while (impersonationClients.size() > MAX_IMPERSONATION_CLIENTS) {
+    while (impersonationClients.size() > config.maxImpersonationClients()) {
       String eldestUser = impersonationClients.keySet().iterator().next();
       ImpersonationClient evicted = impersonationClients.remove(eldestUser);
       if (evicted != null) {
@@ -270,6 +278,7 @@ public final class CatalogBackend implements AutoCloseable {
     private final List<String> groupNames;
     private BackendInvocationSession session;
     private volatile boolean evicted;
+    volatile long lastUsedMs = System.currentTimeMillis();
 
     private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
       this.userName = userName;
@@ -278,6 +287,7 @@ public final class CatalogBackend implements AutoCloseable {
     }
 
     synchronized Object invoke(Method method, Object[] args) throws Throwable {
+      lastUsedMs = System.currentTimeMillis();
       try {
         if ("set_ugi".equals(method.getName())) {
           return List.copyOf(groupNames);
@@ -306,6 +316,7 @@ public final class CatalogBackend implements AutoCloseable {
     }
 
     synchronized Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
+      lastUsedMs = System.currentTimeMillis();
       try {
         if ("set_ugi".equals(methodName)) {
           return List.copyOf(groupNames);

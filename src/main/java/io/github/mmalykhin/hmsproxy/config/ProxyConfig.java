@@ -270,7 +270,9 @@ public record ProxyConfig(
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
       Map<String, String> hiveConf,
-      long latencyBudgetMs
+      long latencyBudgetMs,
+      int maxImpersonationClients,
+      long impersonationClientIdleTtlMs
   ) {
     public CatalogConfig {
       accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
@@ -278,6 +280,8 @@ public record ProxyConfig(
       writeDbWhitelist = writeDbWhitelist == null ? List.of() : List.copyOf(writeDbWhitelist);
       exposeDbPatterns = exposeDbPatterns == null ? List.of() : List.copyOf(exposeDbPatterns);
       latencyBudgetMs = Math.max(latencyBudgetMs, 0L);
+      maxImpersonationClients = maxImpersonationClients <= 0 ? 128 : maxImpersonationClients;
+      impersonationClientIdleTtlMs = Math.max(impersonationClientIdleTtlMs, 0L);
       Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
       for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
         copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -310,6 +314,8 @@ public record ProxyConfig(
           runtimeProfile,
           backendStandaloneMetastoreJar,
           hiveConf,
+          0L,
+          128,
           0L);
     }
 
@@ -340,6 +346,8 @@ public record ProxyConfig(
           runtimeProfile,
           backendStandaloneMetastoreJar,
           hiveConf,
+          0L,
+          128,
           0L);
     }
   }

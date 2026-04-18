@@ -197,6 +197,8 @@ public final class ProxyConfigLoader {
       String catalogBackendStandaloneMetastoreJar =
           trimToNull(properties.getProperty(prefix + "backend-standalone-metastore-jar"));
       long latencyBudgetMs = getNonNegativeLong(properties, prefix + "latency-budget-ms", 0L);
+      int maxImpersonationClients = getPositiveInt(properties, prefix + "impersonation-max-clients", 128);
+      long impersonationClientIdleTtlMs = getNonNegativeLong(properties, prefix + "impersonation-client-idle-ttl-ms", 0L);
       Map<String, String> hiveConfOverrides = properties.stringPropertyNames().stream()
           .filter(name -> name.startsWith(prefix + "conf."))
           .sorted()
@@ -225,7 +227,9 @@ public final class ProxyConfigLoader {
           catalogRuntimeProfile,
           catalogBackendStandaloneMetastoreJar,
           hiveConf,
-          latencyBudgetMs));
+          latencyBudgetMs,
+          maxImpersonationClients,
+          impersonationClientIdleTtlMs));
     }
     String defaultCatalog = trimToNull(properties.getProperty("routing.default-catalog"));
     if (defaultCatalog == null) {
