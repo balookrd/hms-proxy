@@ -9,6 +9,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
@@ -26,6 +27,11 @@ import org.slf4j.LoggerFactory;
 final class RoutingHandler implements InvocationHandler {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingHandler.class);
 
+  @FunctionalInterface
+  private interface SpecialCaseHandler {
+    Object handle(Method method, Object[] args) throws Throwable;
+  }
+
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final FederationLayer federationLayer;
@@ -35,6 +41,7 @@ final class RoutingHandler implements InvocationHandler {
   private final ImpersonationResolver impersonationResolver;
   private final ExternalTableLocationRewriter externalTableLocationRewriter;
   private final ExternalTableDropPurger externalTableDropPurger;
+  private final Map<String, SpecialCaseHandler> specialCaseHandlers;
 
   RoutingHandler(
       ProxyConfig config,
@@ -75,23 +82,25 @@ final class RoutingHandler implements InvocationHandler {
     this.impersonationResolver = impersonationResolver;
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.externalTableDropPurger = externalTableDropPurger;
+    this.specialCaseHandlers = Map.ofEntries(
+        Map.entry("set_ugi", this::handleSetUgi),
+        Map.entry("get_all_databases", (m, a) -> handleGetAllDatabases(m)),
+        Map.entry("get_databases", this::handleGetDatabases),
+        Map.entry("get_table_meta", this::handleGetTableMeta),
+        Map.entry("get_table_req", this::handleGetTableReq),
+        Map.entry("get_table_objects_by_name_req", this::handleGetTablesReq),
+        Map.entry("addWriteNotificationLog", (m, a) -> handleAddWriteNotificationLog(a)),
+        Map.entry("getTablesExt", (m, a) -> handleGetTablesExt(a)),
+        Map.entry("getAllMaterializedViewObjectsForRewriting", (m, a) -> handleGetAllMaterializedViewObjectsForRewriting()),
+        Map.entry("drop_table", this::handleDropTable),
+        Map.entry("drop_table_with_environment_context", this::handleDropTable)
+    );
   }
 
   @Override
   public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-    return switch (method.getName()) {
-      case "set_ugi" -> handleSetUgi(method, args);
-      case "get_all_databases" -> handleGetAllDatabases(method);
-      case "get_databases" -> handleGetDatabases(method, args);
-      case "get_table_meta" -> handleGetTableMeta(method, args);
-      case "get_table_req" -> handleGetTableReq(method, args);
-      case "get_table_objects_by_name_req" -> handleGetTablesReq(method, args);
-      case "addWriteNotificationLog" -> handleAddWriteNotificationLog(args);
-      case "getTablesExt" -> handleGetTablesExt(args);
-      case "getAllMaterializedViewObjectsForRewriting" -> handleGetAllMaterializedViewObjectsForRewriting();
-      case "drop_table", "drop_table_with_environment_context" -> handleDropTable(method, args);
-      default -> routeByNamespaceOrFail(method, args);
-    };
+    SpecialCaseHandler handler = specialCaseHandlers.get(method.getName());
+    return handler != null ? handler.handle(method, args) : routeByNamespaceOrFail(method, args);
   }
 
   private Object handleSetUgi(Method method, Object[] args) throws Throwable {
