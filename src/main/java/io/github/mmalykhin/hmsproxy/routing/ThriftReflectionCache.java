@@ -36,7 +36,10 @@ final class ThriftReflectionCache {
         continue;
       }
       try {
-        return (String) cached.get().invoke(target);
+        String result = (String) cached.get().invoke(target);
+        if (result != null) {
+          return result;
+        }
       } catch (IllegalAccessException | InvocationTargetException e) {
         throw new IllegalStateException(
             "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
@@ -66,6 +69,60 @@ final class ThriftReflectionCache {
       throw new IllegalStateException(
           "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
     }
+  }
+
+  static Object invokeGetter(Object target, String methodName) {
+    if (target == null) {
+      return null;
+    }
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    Optional<Method> cached = classCache.computeIfAbsent(methodName, name -> {
+      try {
+        return Optional.of(target.getClass().getMethod(name));
+      } catch (NoSuchMethodException ignored) {
+        return Optional.empty();
+      }
+    });
+    if (cached.isEmpty()) {
+      return null;
+    }
+    try {
+      return cached.get().invoke(target);
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Unable to invoke " + methodName + " on " + target.getClass().getName(), e);
+    }
+  }
+
+  static void invokeListSetter(Object target, String methodName, List<?> values) {
+    if (target == null) {
+      return;
+    }
+    String cacheKey = methodName + "(List)";
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
+        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
+      try {
+        return Optional.of(target.getClass().getMethod(methodName, List.class));
+      } catch (NoSuchMethodException ignoredEx) {
+        return Optional.empty();
+      }
+    });
+    if (cached.isEmpty()) {
+      return;
+    }
+    try {
+      cached.get().invoke(target, values);
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Unable to invoke " + methodName + " on " + target.getClass().getName(), e);
+    }
+  }
+
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  static Object deepCopy(Object thriftObject) {
+    return ((TBase) thriftObject).deepCopy();
   }
 
   static void invokeStringSetter(Object target, String methodName, String argument) {

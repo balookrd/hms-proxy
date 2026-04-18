@@ -265,7 +265,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private Object handleAddWriteNotificationLog(Object[] args) throws Throwable {
     Object request = args[0];
-    String dbName = (String) request.getClass().getMethod("getDb").invoke(request);
+    String dbName = ThriftReflectionCache.readString(request, "getDb");
     CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit("add_write_notification_log", dbName, namespace);
@@ -277,15 +277,15 @@ final class RoutingHandler implements InvocationHandler {
               + backend.name()
               + "'");
     }
-    Object routedRequest = request.getClass().getConstructor(request.getClass()).newInstance(request);
-    routedRequest.getClass().getMethod("setDb", String.class).invoke(routedRequest, namespace.backendDbName());
+    Object routedRequest = ThriftReflectionCache.deepCopy(request);
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setDb", namespace.backendDbName());
     return invokeBackendNamed(backend, "add_write_notification_log", routedRequest);
   }
 
   private Object handleGetTablesExt(Object[] args) throws Throwable {
     Object request = args[0];
-    String catalogName = (String) request.getClass().getMethod("getCatalog").invoke(request);
-    String dbName = (String) request.getClass().getMethod("getDatabase").invoke(request);
+    String catalogName = ThriftReflectionCache.readString(request, "getCatalog");
+    String dbName = ThriftReflectionCache.readString(request, "getDatabase");
     CatalogRouter.ResolvedNamespace namespace = resolveRequestNamespace(catalogName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     recordDefaultCatalogRouteIfImplicit("get_tables_ext", catalogName, dbName, namespace);
@@ -298,12 +298,12 @@ final class RoutingHandler implements InvocationHandler {
     }
     validateCatalogAccess(backend, "get_tables_ext", namespace.backendDbName());
     validateExposedDatabaseAccess("get_tables_ext", namespace);
-    Object routedRequest = request.getClass().getConstructor(request.getClass()).newInstance(request);
-    routedRequest.getClass().getMethod("setDatabase", String.class).invoke(routedRequest, namespace.backendDbName());
+    Object routedRequest = ThriftReflectionCache.deepCopy(request);
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setDatabase", namespace.backendDbName());
     String internalCatalog = NamespaceTranslator.internalCatalogName(catalogName, dbName, namespace,
         federationLayer.preserveBackendCatalogName());
-    routedRequest.getClass().getMethod("setCatalog", String.class)
-        .invoke(routedRequest, internalCatalog == null ? catalogName : internalCatalog);
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatalog",
+        internalCatalog == null ? catalogName : internalCatalog);
     return filterTableCollectionResult(
         "get_tables_ext",
         namespace,
@@ -565,7 +565,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private Object filterSingleTableResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
       throws TException {
-    Object tableCarrier = result instanceof Table ? result : tryInvokeNoArgs(result, "getTable");
+    Object tableCarrier = result instanceof Table ? result : ThriftReflectionCache.invokeGetter(result, "getTable");
     String tableName = extractTableName(tableCarrier);
     if (tableName != null) {
       validateExposedTableAccess(methodName, namespace, tableName);
@@ -578,9 +578,9 @@ final class RoutingHandler implements InvocationHandler {
     if (result instanceof List<?> list) {
       return filterTableObjectList(methodName, namespace, list);
     }
-    Object tables = tryInvokeNoArgs(result, "getTables");
+    Object tables = ThriftReflectionCache.invokeGetter(result, "getTables");
     if (tables instanceof List<?> list) {
-      tryInvokeSetList(result, "setTables", filterTableObjectList(methodName, namespace, list));
+      ThriftReflectionCache.invokeListSetter(result, "setTables", filterTableObjectList(methodName, namespace, list));
     }
     return result;
   }
@@ -688,22 +688,12 @@ final class RoutingHandler implements InvocationHandler {
     if (value instanceof Table table) {
       return blankToNull(table.getTableName());
     }
-    String directName = blankToNull(readStringProperty(value, "getTableName"));
-    if (directName != null) {
-      return directName;
+    String name = blankToNull(ThriftReflectionCache.readString(value, "getTableName", "getTblName", "getName"));
+    if (name != null) {
+      return name;
     }
-    directName = blankToNull(readStringProperty(value, "getTblName"));
-    if (directName != null) {
-      return directName;
-    }
-    directName = blankToNull(readStringProperty(value, "getName"));
-    if (directName != null) {
-      return directName;
-    }
-    String fullTableName = blankToNull(readStringProperty(value, "getFullTableName"));
-    if (fullTableName == null) {
-      fullTableName = blankToNull(readStringProperty(value, "getFull_table_name"));
-    }
+    String fullTableName = blankToNull(
+        ThriftReflectionCache.readString(value, "getFullTableName", "getFull_table_name"));
     if (fullTableName == null) {
       return null;
     }
@@ -711,32 +701,6 @@ final class RoutingHandler implements InvocationHandler {
     return separator >= 0 && separator + 1 < fullTableName.length()
         ? blankToNull(fullTableName.substring(separator + 1))
         : blankToNull(fullTableName);
-  }
-
-  private static Object tryInvokeNoArgs(Object target, String methodName) {
-    if (target == null) {
-      return null;
-    }
-    try {
-      return target.getClass().getMethod(methodName).invoke(target);
-    } catch (ReflectiveOperationException ignored) {
-      return null;
-    }
-  }
-
-  private static void tryInvokeSetList(Object target, String methodName, List<?> values) {
-    if (target == null) {
-      return;
-    }
-    try {
-      target.getClass().getMethod(methodName, List.class).invoke(target, values);
-    } catch (ReflectiveOperationException ignored) {
-    }
-  }
-
-  private static String readStringProperty(Object target, String methodName) {
-    Object value = tryInvokeNoArgs(target, methodName);
-    return value instanceof String stringValue ? stringValue : null;
   }
 
   private static String blankToNull(String value) {
