@@ -108,18 +108,17 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     long requestId = REQUEST_SEQUENCE.incrementAndGet();
     long startedAt = System.nanoTime();
     RequestObservation observation = new RequestObservation(name);
-    RequestContext.REQUEST_ID.set(requestId);
-    RequestContext.REQUEST_OBSERVATION.set(observation);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("requestId={} incoming method={} args={}",
-          requestId, name, DebugLogUtil.formatArgs(args));
-    }
-    if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
-      LOG.info("requestId={} trace stage=client-request method={} summary={}",
-          requestId, name, WriteTraceUtil.summarizeArgs(args));
-    }
-
     try {
+      RequestContext.REQUEST_ID.set(requestId);
+      RequestContext.REQUEST_OBSERVATION.set(observation);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("requestId={} incoming method={} args={}",
+            requestId, name, DebugLogUtil.formatArgs(args));
+      }
+      if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
+        LOG.info("requestId={} trace stage=client-request method={} summary={}",
+            requestId, name, WriteTraceUtil.summarizeArgs(args));
+      }
       Object result = chain.invoke(proxy, method, args);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
