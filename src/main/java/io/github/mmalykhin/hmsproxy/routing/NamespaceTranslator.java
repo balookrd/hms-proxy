@@ -1,40 +1,18 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
-import org.apache.thrift.TFieldRequirementType;
-import org.apache.thrift.meta_data.FieldMetaData;
 
 public final class NamespaceTranslator {
-  private enum Direction {
-    EXTERNALIZE,
-    INTERNALIZE
-  }
-
-  /** Cache: Class → "metaDataMap" static Field */
-  private static final ConcurrentMap<Class<?>, Field> METADATA_FIELD_CACHE = new ConcurrentHashMap<>();
-  /** Cache: Class → getterName → Optional<Method> (empty = method absent on this class) */
-  private static final ConcurrentMap<Class<?>, ConcurrentMap<String, Optional<Method>>> METHOD_CACHE =
-      new ConcurrentHashMap<>();
-
-  private NamespaceTranslator() {
-  }
+  private NamespaceTranslator() {}
 
   public static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeResult(value, namespace, false);
@@ -45,7 +23,7 @@ public final class NamespaceTranslator {
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
   ) {
-    return transform(value, namespace, Direction.EXTERNALIZE, preserveBackendCatalogName);
+    return NamespaceExternalizer.externalize(value, namespace, preserveBackendCatalogName);
   }
 
   public static Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace) {
@@ -57,7 +35,7 @@ public final class NamespaceTranslator {
       CatalogRouter.ResolvedNamespace namespace,
       boolean preserveBackendCatalogName
   ) {
-    return transform(value, namespace, Direction.INTERNALIZE, preserveBackendCatalogName);
+    return NamespaceInternalizer.internalize(value, namespace, preserveBackendCatalogName);
   }
 
   public static String internalizeStringArgument(String value, CatalogRouter.ResolvedNamespace namespace) {
@@ -89,6 +67,32 @@ public final class NamespaceTranslator {
       boolean preserveBackendCatalogName
   ) {
     return (TableMeta) externalizeResult(tableMeta, namespace, preserveBackendCatalogName);
+  }
+
+  public static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
+    return internalCatalogName(requestCatalogName, null, namespace);
+  }
+
+  public static String internalCatalogName(
+      String requestCatalogName,
+      String originalDbName,
+      CatalogRouter.ResolvedNamespace namespace
+  ) {
+    return internalCatalogName(requestCatalogName, originalDbName, namespace, false);
+  }
+
+  public static String internalCatalogName(
+      String requestCatalogName,
+      String originalDbName,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    return NamespaceInternalizer.internalCatalogName(
+        requestCatalogName, originalDbName, namespace, preserveBackendCatalogName);
+  }
+
+  public static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
+    return NamespaceInternalizer.internalCatalogName(requestCatalogName, proxyCatalogName);
   }
 
   public static String extractDbName(Object value) {
@@ -141,8 +145,8 @@ public final class NamespaceTranslator {
       if (!seen.add(thriftValue)) {
         return null;
       }
-      for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
-        Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
+      for (TFieldIdEnum fieldId : ThriftReflectionCache.fieldIds(thriftValue)) {
+        Object fieldValue = ThriftReflectionCache.getField(thriftValue, fieldId);
         String nestedDbName = extractDbNameFromField(fieldId, fieldValue);
         if (nestedDbName == null) {
           nestedDbName = extractDbName(fieldValue, seen);
@@ -155,273 +159,29 @@ public final class NamespaceTranslator {
     return null;
   }
 
-  private static Object transform(
-      Object value,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction,
-      boolean preserveBackendCatalogName
-  ) {
-    if (value == null) {
-      return null;
-    }
-    if (isScalar(value)) {
-      return value;
-    }
-    if (value instanceof List<?> list) {
-      List<Object> transformed = new ArrayList<>(list.size());
-      for (Object element : list) {
-        transformed.add(transform(element, namespace, direction, preserveBackendCatalogName));
-      }
-      return transformed;
-    }
-    if (value instanceof Map<?, ?> map) {
-      Map<Object, Object> transformed = new LinkedHashMap<>();
-      for (Map.Entry<?, ?> entry : map.entrySet()) {
-        transformed.put(entry.getKey(), transform(entry.getValue(), namespace, direction, preserveBackendCatalogName));
-      }
-      return transformed;
-    }
-    if (value instanceof TBase<?, ?> thriftValue) {
-      TBase<?, ?> copy = thriftValue.deepCopy();
-      rewriteNestedFields(copy, namespace, direction, preserveBackendCatalogName);
-      return applyNamespace(copy, namespace, direction, preserveBackendCatalogName);
-    }
-    return value;
-  }
+  // --- package-private helpers used by NamespaceExternalizer / NamespaceInternalizer ---
 
-  private static void rewriteNestedFields(
-      TBase<?, ?> thriftValue,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction,
-      boolean preserveBackendCatalogName
-  ) {
-    for (TFieldIdEnum fieldId : thriftFieldIds(thriftValue)) {
-      Object fieldValue = getThriftFieldValue(thriftValue, fieldId);
-      Object transformed = transformThriftField(fieldId, fieldValue, namespace, direction, preserveBackendCatalogName);
-      if (transformed != fieldValue) {
-        setThriftFieldValue(thriftValue, fieldId, transformed);
-      }
-    }
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Object transformThriftField(
-      TFieldIdEnum fieldId,
-      Object fieldValue,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction,
-      boolean preserveBackendCatalogName
-  ) {
-    String normalizedFieldName = normalizeFieldName(fieldId.getFieldName());
-    if (fieldValue instanceof String stringValue) {
-      if (looksLikeDbNameField(fieldId.getFieldName()) && !normalizedFieldName.equals("dbname")) {
-        return transformDbNameString(stringValue, namespace, direction);
-      }
-      if (looksLikeFullTableNameField(fieldId.getFieldName()) && !normalizedFieldName.equals("fulltablename")) {
-        return transformFullTableName(stringValue, namespace, direction);
-      }
-    }
-    if (fieldValue instanceof List<?> listValue
-        && looksLikeFullTableNamesField(fieldId.getFieldName())
-        && !normalizedFieldName.equals("fulltablenames")) {
-      return transformFullTableNames((List<String>) listValue, namespace, direction);
-    }
-    return transform(fieldValue, namespace, direction, preserveBackendCatalogName);
-  }
-
-  private static Object applyNamespace(
-      Object value,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction,
-      boolean preserveBackendCatalogName
-  ) {
-    if (value instanceof Database database) {
-      if (direction == Direction.EXTERNALIZE) {
-        database.setName(namespace.externalDbName());
-        if (!preserveBackendCatalogName) {
-          database.setCatalogName(namespace.catalogName());
-        }
-      } else {
-        String originalName = database.getName();
-        database.setName(namespace.backendDbName());
-        database.setCatalogName(
-            internalCatalogName(database.getCatalogName(), originalName, namespace, preserveBackendCatalogName));
-      }
-      return database;
-    }
-    String originalDbName = readDbNameProperty(value);
-    String originalFullTableName = readFullTableNameProperty(value);
-    List<String> originalFullTableNames = readFullTableNamesProperty(value);
-    if (direction == Direction.EXTERNALIZE) {
-      maybeInvoke(value, "setDbName", namespace.externalDbName());
-      maybeInvoke(value, "setDbname", namespace.externalDbName());
-      maybeInvoke(value, "setDb_name", namespace.externalDbName());
-      rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
-      rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
-      if (!preserveBackendCatalogName) {
-        maybeInvoke(value, "setCatName", namespace.catalogName());
-        maybeInvoke(value, "setCatalogName", namespace.catalogName());
-      }
-    } else {
-      maybeInvoke(value, "setCatName",
-          internalCatalogNameForField(
-              value,
-              "catName",
-              readStringProperty(value, "getCatName"),
-              originalDbName,
-              namespace,
-              preserveBackendCatalogName));
-      maybeInvoke(value, "setCatalogName",
-          internalCatalogNameForField(
-              value,
-              "catalogName",
-              readStringProperty(value, "getCatalogName"),
-              originalDbName,
-              namespace,
-              preserveBackendCatalogName));
-      maybeInvoke(value, "setDbName", namespace.backendDbName());
-      maybeInvoke(value, "setDbname", namespace.backendDbName());
-      maybeInvoke(value, "setDb_name", namespace.backendDbName());
-      rewriteFullTableName(value, transformFullTableName(originalFullTableName, namespace, direction));
-      rewriteFullTableNames(value, transformFullTableNames(originalFullTableNames, namespace, direction));
-    }
-    return value;
-  }
-
-  private static boolean isScalar(Object value) {
+  static boolean isScalar(Object value) {
     return value instanceof CharSequence
         || value instanceof Number
         || value instanceof Boolean
         || value instanceof Enum<?>;
   }
 
-  @SuppressWarnings("unchecked")
-  private static List<TFieldIdEnum> thriftFieldIds(TBase<?, ?> thriftValue) {
-    try {
-      Field metadataField = METADATA_FIELD_CACHE.computeIfAbsent(thriftValue.getClass(), cls -> {
-        try {
-          return cls.getField("metaDataMap");
-        } catch (NoSuchFieldException e) {
-          throw new IllegalStateException("Unable to locate metaDataMap on " + cls.getName(), e);
-        }
-      });
-      Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
-      List<TFieldIdEnum> fieldIds = new ArrayList<>();
-      for (Object fieldId : metadata.keySet()) {
-        TFieldIdEnum typedFieldId = (TFieldIdEnum) fieldId;
-        if (isThriftFieldSet(thriftValue, typedFieldId)) {
-          fieldIds.add(typedFieldId);
-        }
-      }
-      return fieldIds;
-    } catch (IllegalAccessException e) {
-      throw new IllegalStateException(
-          "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
-    }
+  static String readDbNameProperty(Object value) {
+    return blankToNull(ThriftReflectionCache.readString(value, "getDbName", "getDbname", "getDb_name"));
   }
 
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private static Object getThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
-    return ((TBase) thriftValue).getFieldValue(fieldId);
+  static String readFullTableNameProperty(Object value) {
+    return blankToNull(ThriftReflectionCache.readString(value, "getFullTableName", "getFull_table_name"));
   }
 
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private static void setThriftFieldValue(TBase<?, ?> thriftValue, TFieldIdEnum fieldId, Object value) {
-    ((TBase) thriftValue).setFieldValue(fieldId, value);
+  static List<String> readFullTableNamesProperty(Object value) {
+    List<String> result = ThriftReflectionCache.readStringList(value, "getFullTableNames");
+    return result != null ? result : ThriftReflectionCache.readStringList(value, "getFull_table_names");
   }
 
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private static boolean isThriftFieldSet(TBase<?, ?> thriftValue, TFieldIdEnum fieldId) {
-    return ((TBase) thriftValue).isSet(fieldId);
-  }
-
-  public static String internalCatalogName(String requestCatalogName, CatalogRouter.ResolvedNamespace namespace) {
-    return internalCatalogName(requestCatalogName, null, namespace);
-  }
-
-  public static String internalCatalogName(
-      String requestCatalogName,
-      String originalDbName,
-      CatalogRouter.ResolvedNamespace namespace
-  ) {
-    return internalCatalogName(requestCatalogName, originalDbName, namespace, false);
-  }
-
-  public static String internalCatalogName(
-      String requestCatalogName,
-      String originalDbName,
-      CatalogRouter.ResolvedNamespace namespace,
-      boolean preserveBackendCatalogName
-  ) {
-    return internalCatalogName(
-        requestCatalogName,
-        originalDbName,
-        namespace.catalogName(),
-        namespace.externalDbName(),
-        namespace.backendDbName(),
-        preserveBackendCatalogName);
-  }
-
-  public static String internalCatalogName(String requestCatalogName, String proxyCatalogName) {
-    return internalCatalogName(requestCatalogName, null, proxyCatalogName, null, null, false);
-  }
-
-  private static String internalCatalogName(
-      String requestCatalogName,
-      String originalDbName,
-      String proxyCatalogName,
-      String externalDbName,
-      String backendDbName,
-      boolean preserveBackendCatalogName
-  ) {
-    if (requestCatalogName == null || requestCatalogName.isBlank()) {
-      return null;
-    }
-    if (requestCatalogName.equals(proxyCatalogName)) {
-      return null;
-    }
-    if (externalDbName != null && externalDbName.equals(backendDbName)) {
-      return requestCatalogName;
-    }
-    if (matchesExternalDatabaseAlias(originalDbName, externalDbName)) {
-      return preserveBackendCatalogName ? requestCatalogName : null;
-    }
-    return requestCatalogName;
-  }
-
-  private static boolean matchesExternalDatabaseAlias(String originalDbName, String externalDbName) {
-    if (originalDbName == null || originalDbName.isBlank() || externalDbName == null || externalDbName.isBlank()) {
-      return false;
-    }
-    String normalizedDbName = normalizeCompatibilityDbName(originalDbName);
-    return normalizedDbName.equals(externalDbName) || normalizedDbName.endsWith("." + externalDbName);
-  }
-
-  private static String normalizeCompatibilityDbName(String dbName) {
-    if (dbName == null || dbName.isBlank()) {
-      return dbName;
-    }
-    int hash = dbName.indexOf('#');
-    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
-      return normalizeCompatibilityDbName(dbName.substring(hash + 1));
-    }
-    return dbName;
-  }
-
-  private static String readDbNameProperty(Object value) {
-    return blankToNull(readStringProperty(value, "getDbName", "getDbname", "getDb_name"));
-  }
-
-  private static String readFullTableNameProperty(Object value) {
-    return blankToNull(readStringProperty(value, "getFullTableName", "getFull_table_name"));
-  }
-
-  private static List<String> readFullTableNamesProperty(Object value) {
-    List<String> fullTableNames = readStringListProperty(value, "getFullTableNames");
-    return fullTableNames != null ? fullTableNames : readStringListProperty(value, "getFull_table_names");
-  }
-
-  private static String extractDbNameFromFullTableName(String fullTableName) {
+  static String extractDbNameFromFullTableName(String fullTableName) {
     if (fullTableName == null || fullTableName.isBlank()) {
       return null;
     }
@@ -432,73 +192,7 @@ public final class NamespaceTranslator {
     return blankToNull(fullTableName.substring(0, separator));
   }
 
-  private static String transformFullTableName(
-      String fullTableName,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
-  ) {
-    if (fullTableName == null || fullTableName.isBlank()) {
-      return fullTableName;
-    }
-    int separator = fullTableName.lastIndexOf('.');
-    if (separator <= 0 || separator + 1 >= fullTableName.length()) {
-      return fullTableName;
-    }
-
-    String dbName = fullTableName.substring(0, separator);
-    String tableName = fullTableName.substring(separator + 1);
-    String rewrittenDbName = switch (direction) {
-      case EXTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.backendDbName())
-          ? namespace.externalDbName()
-          : dbName;
-      case INTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.externalDbName())
-          ? namespace.backendDbName()
-          : dbName;
-    };
-    return rewrittenDbName + "." + tableName;
-  }
-
-  private static String transformDbNameString(
-      String dbName,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
-  ) {
-    if (dbName == null) {
-      return null;
-    }
-    return switch (direction) {
-      case EXTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.backendDbName())
-          ? namespace.externalDbName()
-          : dbName;
-      case INTERNALIZE -> matchesExternalDatabaseAlias(dbName, namespace.externalDbName())
-          ? namespace.backendDbName()
-          : dbName;
-    };
-  }
-
-  private static List<String> transformFullTableNames(
-      List<String> fullTableNames,
-      CatalogRouter.ResolvedNamespace namespace,
-      Direction direction
-  ) {
-    if (fullTableNames == null) {
-      return null;
-    }
-    if (fullTableNames.isEmpty()) {
-      return fullTableNames;
-    }
-    List<String> transformed = new ArrayList<>(fullTableNames.size());
-    for (String fullTableName : fullTableNames) {
-      transformed.add(transformFullTableName(fullTableName, namespace, direction));
-    }
-    return transformed;
-  }
-
-  private static String blankToNull(String value) {
-    return value == null || value.isBlank() ? null : value;
-  }
-
-  private static String extractDbNameFromField(TFieldIdEnum fieldId, Object fieldValue) {
+  static String extractDbNameFromField(TFieldIdEnum fieldId, Object fieldValue) {
     if (fieldValue == null) {
       return null;
     }
@@ -524,169 +218,47 @@ public final class NamespaceTranslator {
     return null;
   }
 
-  private static boolean looksLikeDbNameField(String fieldName) {
-    String normalizedFieldName = normalizeFieldName(fieldName);
-    return normalizedFieldName.equals("dbname") || normalizedFieldName.endsWith("dbname");
+  static boolean matchesExternalDatabaseAlias(String originalDbName, String externalDbName) {
+    if (originalDbName == null || originalDbName.isBlank()
+        || externalDbName == null || externalDbName.isBlank()) {
+      return false;
+    }
+    String normalizedDbName = normalizeCompatibilityDbName(originalDbName);
+    return normalizedDbName.equals(externalDbName) || normalizedDbName.endsWith("." + externalDbName);
   }
 
-  private static boolean looksLikeFullTableNameField(String fieldName) {
+  private static String normalizeCompatibilityDbName(String dbName) {
+    if (dbName == null || dbName.isBlank()) {
+      return dbName;
+    }
+    int hash = dbName.indexOf('#');
+    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
+      return normalizeCompatibilityDbName(dbName.substring(hash + 1));
+    }
+    return dbName;
+  }
+
+  static boolean looksLikeDbNameField(String fieldName) {
+    String normalized = normalizeFieldName(fieldName);
+    return normalized.equals("dbname") || normalized.endsWith("dbname");
+  }
+
+  static boolean looksLikeFullTableNameField(String fieldName) {
     return normalizeFieldName(fieldName).endsWith("fulltablename");
   }
 
-  private static boolean looksLikeFullTableNamesField(String fieldName) {
+  static boolean looksLikeFullTableNamesField(String fieldName) {
     return normalizeFieldName(fieldName).endsWith("fulltablenames");
   }
 
-  private static String normalizeFieldName(String fieldName) {
+  static String normalizeFieldName(String fieldName) {
     if (fieldName == null) {
       return "";
     }
     return fieldName.replace("_", "").toLowerCase();
   }
 
-  private static String internalCatalogNameForField(
-      Object target,
-      String fieldName,
-      String requestCatalogName,
-      String originalDbName,
-      CatalogRouter.ResolvedNamespace namespace,
-      boolean preserveBackendCatalogName
-  ) {
-    String translated = internalCatalogName(
-        requestCatalogName,
-        originalDbName,
-        namespace,
-        preserveBackendCatalogName);
-    if (translated == null && hasRequiredThriftField(target, fieldName)) {
-      return requestCatalogName;
-    }
-    return translated;
-  }
-
-  private static String readStringProperty(Object target, String... getterNames) {
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
-    for (String getterName : getterNames) {
-      Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
-        try {
-          return Optional.of(target.getClass().getMethod(name));
-        } catch (NoSuchMethodException ignored) {
-          return Optional.empty();
-        }
-      });
-      if (cached.isEmpty()) {
-        continue;
-      }
-      try {
-        return (String) cached.get().invoke(target);
-      } catch (IllegalAccessException | InvocationTargetException e) {
-        throw new IllegalStateException(
-            "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
-      }
-    }
-    return null;
-  }
-
-  private static boolean hasRequiredThriftField(Object target, String expectedFieldName) {
-    if (!(target instanceof TBase<?, ?> thriftValue)) {
-      return false;
-    }
-    try {
-      Field metadataField = METADATA_FIELD_CACHE.computeIfAbsent(thriftValue.getClass(), cls -> {
-        try {
-          return cls.getField("metaDataMap");
-        } catch (NoSuchFieldException e) {
-          throw new IllegalStateException("Unable to locate metaDataMap on " + cls.getName(), e);
-        }
-      });
-      Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
-      for (Map.Entry<?, ?> entry : metadata.entrySet()) {
-        TFieldIdEnum fieldId = (TFieldIdEnum) entry.getKey();
-        if (!fieldId.getFieldName().equals(expectedFieldName)) {
-          continue;
-        }
-        FieldMetaData fieldMetaData = (FieldMetaData) entry.getValue();
-        return fieldMetaData.requirementType == TFieldRequirementType.REQUIRED;
-      }
-      return false;
-    } catch (IllegalAccessException e) {
-      throw new IllegalStateException(
-          "Unable to inspect thrift metadata for " + thriftValue.getClass().getName(), e);
-    }
-  }
-
-  @SuppressWarnings("unchecked")
-  private static List<String> readStringListProperty(Object target, String getterName) {
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
-    Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
-      try {
-        return Optional.of(target.getClass().getMethod(name));
-      } catch (NoSuchMethodException ignored) {
-        return Optional.empty();
-      }
-    });
-    if (cached.isEmpty()) {
-      return null;
-    }
-    try {
-      Object value = cached.get().invoke(target);
-      return value == null ? null : (List<String>) value;
-    } catch (IllegalAccessException | InvocationTargetException e) {
-      throw new IllegalStateException(
-          "Unable to invoke " + getterName + " on " + target.getClass().getName(), e);
-    }
-  }
-
-  private static void maybeInvoke(Object target, String methodName, String argument) {
-    // Use a distinct cache key to separate no-arg getters from single-String setters.
-    String cacheKey = methodName + "(String)";
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
-    Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
-      try {
-        return Optional.of(target.getClass().getMethod(methodName, String.class));
-      } catch (NoSuchMethodException ignoredEx) {
-        return Optional.empty();
-      }
-    });
-    if (cached.isEmpty()) {
-      return;
-    }
-    try {
-      cached.get().invoke(target, argument);
-    } catch (IllegalAccessException | InvocationTargetException e) {
-      throw new IllegalStateException(
-          "Unable to invoke " + methodName + " on " + target.getClass().getName(), e);
-    }
-  }
-
-  private static void rewriteFullTableName(Object target, String value) {
-    maybeInvoke(target, "setFullTableName", value);
-  }
-
-  private static void rewriteFullTableNames(Object target, List<String> values) {
-    if (values == null) {
-      return;
-    }
-    String cacheKey = "setFullTableNames(List)";
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
-    Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
-      try {
-        return Optional.of(target.getClass().getMethod("setFullTableNames", List.class));
-      } catch (NoSuchMethodException ignoredEx) {
-        return Optional.empty();
-      }
-    });
-    if (cached.isEmpty()) {
-      return;
-    }
-    try {
-      cached.get().invoke(target, values);
-    } catch (IllegalAccessException | InvocationTargetException e) {
-      throw new IllegalStateException(
-          "Unable to invoke setFullTableNames on " + target.getClass().getName(), e);
-    }
+  static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
   }
 }
