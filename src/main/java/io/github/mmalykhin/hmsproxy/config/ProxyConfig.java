@@ -604,7 +604,7 @@ public record ProxyConfig(
           ? new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d)
           : adaptiveTimeout;
       circuitBreaker = circuitBreaker == null ? new CircuitBreakerConfig(false, 3, 30_000L) : circuitBreaker;
-      hedgedRead = hedgedRead == null ? new HedgedReadConfig(false, 8) : hedgedRead;
+      hedgedRead = hedgedRead == null ? new HedgedReadConfig(false, 8, 30_000L) : hedgedRead;
       degradedRoutingPolicy =
           degradedRoutingPolicy == null ? DegradedRoutingPolicy.STRICT : degradedRoutingPolicy;
     }
@@ -614,7 +614,7 @@ public record ProxyConfig(
           new BackendStatePollingConfig(false, 10_000),
           new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
           new CircuitBreakerConfig(false, 3, 30_000L),
-          new HedgedReadConfig(false, 8),
+          new HedgedReadConfig(false, 8, 30_000L),
           DegradedRoutingPolicy.STRICT);
     }
   }
@@ -667,10 +667,12 @@ public record ProxyConfig(
 
   public record HedgedReadConfig(
       boolean enabled,
-      int maxParallelism
+      int maxParallelism,
+      long fanoutTimeoutMs
   ) {
     public HedgedReadConfig {
       maxParallelism = maxParallelism <= 0 ? 8 : maxParallelism;
+      fanoutTimeoutMs = fanoutTimeoutMs <= 0 ? 30_000L : fanoutTimeoutMs;
     }
   }
 

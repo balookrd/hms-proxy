@@ -81,6 +81,10 @@ public final class BackendRoutingController implements AutoCloseable {
     return fanoutExecutor;
   }
 
+  public long fanoutTimeoutMs() {
+    return config.latencyRouting().hedgedRead().fanoutTimeoutMs();
+  }
+
   public boolean shouldDegradeSafeFanout(String methodName, Throwable error) {
     if (!SAFE_FANOUT_METHODS.contains(methodName)
         || config.latencyRouting().degradedRoutingPolicy() != ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS) {

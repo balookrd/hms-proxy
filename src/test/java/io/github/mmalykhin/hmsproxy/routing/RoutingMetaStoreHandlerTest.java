@@ -213,7 +213,7 @@ public class RoutingMetaStoreHandlerTest {
             new ProxyConfig.BackendStatePollingConfig(false, 10_000),
             new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
-            new ProxyConfig.HedgedReadConfig(true, 2),
+            new ProxyConfig.HedgedReadConfig(true, 2, 30_000L),
             ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
 
     CatalogBackend backend1 = newBackend(
@@ -267,7 +267,7 @@ public class RoutingMetaStoreHandlerTest {
             new ProxyConfig.BackendStatePollingConfig(false, 10_000),
             new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(true, 1, 150L),
-            new ProxyConfig.HedgedReadConfig(false, 1),
+            new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),
             ProxyConfig.DegradedRoutingPolicy.STRICT));
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -319,7 +319,7 @@ public class RoutingMetaStoreHandlerTest {
             new ProxyConfig.BackendStatePollingConfig(true, 50),
             new ProxyConfig.AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(false, 3, 30_000L),
-            new ProxyConfig.HedgedReadConfig(false, 1),
+            new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),
             ProxyConfig.DegradedRoutingPolicy.STRICT));
 
     AtomicInteger probeCalls = new AtomicInteger();

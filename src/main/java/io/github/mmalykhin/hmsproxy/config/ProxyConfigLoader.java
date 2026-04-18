@@ -148,6 +148,8 @@ public final class ProxyConfigLoader {
         getPositiveLong(properties, "routing.circuit-breaker.open-state-ms", 30_000L);
     boolean hedgedReadEnabled =
         Boolean.parseBoolean(get(properties, "routing.hedged-read.enabled", "false"));
+    long hedgedReadFanoutTimeoutMs =
+        getPositiveLong(properties, "routing.hedged-read.fanout-timeout-ms", 30_000L);
     ProxyConfig.DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
         trimToNull(properties.getProperty("routing.degraded-routing-policy")));
 
@@ -364,7 +366,8 @@ public final class ProxyConfigLoader {
             Math.max(1, Math.min(catalogs.size(), getPositiveInt(
                 properties,
                 "routing.hedged-read.max-parallelism",
-                Math.max(1, catalogs.size()))))),
+                Math.max(1, catalogs.size())))),
+            hedgedReadFanoutTimeoutMs),
         degradedRoutingPolicy);
     return new ProxyConfig(
         server,

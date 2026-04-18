@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
@@ -246,11 +248,20 @@ final class BackendCallDispatcher {
       }));
     }
 
+    long timeoutMs = backendRoutingController.fanoutTimeoutMs();
+    long deadlineNs = System.nanoTime() + timeoutMs * 1_000_000L;
     List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
-    for (Future<FanoutTaskResult<T>> future : futures) {
+    for (int i = 0; i < futures.size(); i++) {
+      Future<FanoutTaskResult<T>> future = futures.get(i);
       FanoutTaskResult<T> taskResult;
       try {
-        taskResult = future.get();
+        long remainingNs = deadlineNs - System.nanoTime();
+        taskResult = future.get(Math.max(0, remainingNs), TimeUnit.NANOSECONDS);
+      } catch (TimeoutException e) {
+        future.cancel(true);
+        handleFanoutFailure(methodName, backends.get(i), requestId,
+            new MetaException("Fanout backend timed out after " + timeoutMs + " ms"));
+        continue;
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new MetaException("Interrupted while waiting for fanout backend response");
