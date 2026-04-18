@@ -126,12 +126,10 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   private void runPollCycle() {
+    long probeTimeoutMs = config.latencyRouting().backendStatePolling().probeTimeoutMs();
     for (CatalogBackend backend : router.backends()) {
       try {
-        ProxyRuntimeState.BackendRuntimeStatus status = observability.runtimeState().backendStatus(backend.name());
-        if (status != null && config.latencyRouting().adaptiveTimeout().enabled()) {
-          backend.ensureClientSocketTimeout(status.adaptiveTimeoutMs());
-        }
+        backend.ensureClientSocketTimeout(probeTimeoutMs);
         long startedAt = System.nanoTime();
         backend.checkConnectivity();
         observability.runtimeState().recordBackendProbeSuccess(

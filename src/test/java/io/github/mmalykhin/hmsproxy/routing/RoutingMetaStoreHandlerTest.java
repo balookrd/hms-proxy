@@ -210,7 +210,7 @@ public class RoutingMetaStoreHandlerTest {
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
         new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000),
+            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
             new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
             new ProxyConfig.HedgedReadConfig(true, 2, 30_000L),
@@ -264,7 +264,7 @@ public class RoutingMetaStoreHandlerTest {
     ProxyConfig config = latencyAwareConfig(
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000),
+            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
             new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(true, 1, 150L),
             new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),
@@ -316,7 +316,7 @@ public class RoutingMetaStoreHandlerTest {
     ProxyConfig config = latencyAwareConfig(
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
         new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(true, 50),
+            new ProxyConfig.BackendStatePollingConfig(true, 50, 5_000L),
             new ProxyConfig.AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
             new ProxyConfig.CircuitBreakerConfig(false, 3, 30_000L),
             new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),

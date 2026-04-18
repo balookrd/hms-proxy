@@ -128,6 +128,8 @@ public final class ProxyConfigLoader {
         Boolean.parseBoolean(get(properties, "routing.backend-state-polling.enabled", "false"));
     int backendStatePollingIntervalMs =
         getPositiveInt(properties, "routing.backend-state-polling.interval-ms", 10_000);
+    long backendStatePollingProbeTimeoutMs =
+        getPositiveLong(properties, "routing.backend-state-polling.probe-timeout-ms", 5_000L);
     boolean adaptiveTimeoutEnabled =
         Boolean.parseBoolean(get(properties, "routing.adaptive-timeout.enabled", "false"));
     long adaptiveTimeoutInitialMs =
@@ -353,7 +355,7 @@ public final class ProxyConfigLoader {
         catalogRateLimits,
         rpcClassRateLimits);
     ProxyConfig.LatencyRoutingConfig latencyRouting = new ProxyConfig.LatencyRoutingConfig(
-        new ProxyConfig.BackendStatePollingConfig(backendStatePollingEnabled, backendStatePollingIntervalMs),
+        new ProxyConfig.BackendStatePollingConfig(backendStatePollingEnabled, backendStatePollingIntervalMs, backendStatePollingProbeTimeoutMs),
         new ProxyConfig.AdaptiveTimeoutConfig(
             adaptiveTimeoutEnabled,
             adaptiveTimeoutInitialMs,
