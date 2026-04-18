@@ -6,12 +6,15 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -29,14 +32,19 @@ public final class BackendRoutingController implements AutoCloseable {
   private final CatalogRouter router;
   private final ProxyObservability observability;
   private final ScheduledExecutorService pollingExecutor;
+  private final ExecutorService probeExecutor;
   private final ExecutorService fanoutExecutor;
 
   public BackendRoutingController(ProxyConfig config, CatalogRouter router, ProxyObservability observability) {
     this.config = config;
     this.router = router;
     this.observability = observability;
-    this.pollingExecutor = config.latencyRouting().backendStatePolling().enabled()
+    boolean pollingEnabled = config.latencyRouting().backendStatePolling().enabled();
+    this.pollingExecutor = pollingEnabled
         ? Executors.newSingleThreadScheduledExecutor(namedThreadFactory("hms-proxy-backend-poll"))
+        : null;
+    this.probeExecutor = pollingEnabled
+        ? Executors.newSingleThreadExecutor(namedThreadFactory("hms-proxy-backend-probe"))
         : null;
     if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
       int poolSize = Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size());
@@ -100,6 +108,10 @@ public final class BackendRoutingController implements AutoCloseable {
     if (pollingExecutor != null) {
       pollingExecutor.shutdownNow();
       awaitTerminationQuietly(pollingExecutor, "backend-poll");
+    }
+    if (probeExecutor != null) {
+      probeExecutor.shutdownNow();
+      awaitTerminationQuietly(probeExecutor, "backend-probe");
     }
     if (fanoutExecutor != null) {
       fanoutExecutor.shutdownNow();

@@ -258,7 +258,7 @@ final class BackendCallDispatcher {
         long remainingNs = deadlineNs - System.nanoTime();
         taskResult = future.get(Math.max(0, remainingNs), TimeUnit.NANOSECONDS);
       } catch (TimeoutException e) {
-        future.cancel(true);
+        futures.subList(i, futures.size()).forEach(f -> f.cancel(true));
         handleFanoutFailure(methodName, backends.get(i), requestId,
             new MetaException("Fanout backend timed out after " + timeoutMs + " ms"));
         continue;
