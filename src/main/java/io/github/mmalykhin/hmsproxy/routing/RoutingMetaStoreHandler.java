@@ -53,19 +53,53 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
       ProxyObservability observability,
       ExternalTableDropPurger externalTableDropPurger
   ) {
+    this(observability, assemble(config, router, frontDoorSecurity, observability, externalTableDropPurger));
+  }
+
+  RoutingMetaStoreHandler(
+      ProxyObservability observability,
+      SyntheticReadLockManager syntheticReadLockManager,
+      BackendRoutingController backendRoutingController,
+      RoutingHandler routingHandler,
+      InvocationHandler chain
+  ) {
     this.observability = observability;
+    this.syntheticReadLockManager = syntheticReadLockManager;
+    this.backendRoutingController = backendRoutingController;
+    this.routingHandler = routingHandler;
+    this.chain = chain;
+  }
+
+  private RoutingMetaStoreHandler(ProxyObservability observability, Assembly assembly) {
+    this(observability, assembly.syntheticReadLockManager, assembly.backendRoutingController,
+        assembly.routingHandler, assembly.chain);
+  }
+
+  private record Assembly(
+      SyntheticReadLockManager syntheticReadLockManager,
+      BackendRoutingController backendRoutingController,
+      RoutingHandler routingHandler,
+      InvocationHandler chain
+  ) {}
+
+  private static Assembly assemble(
+      ProxyConfig config,
+      CatalogRouter router,
+      FrontDoorSecurity frontDoorSecurity,
+      ProxyObservability observability,
+      ExternalTableDropPurger externalTableDropPurger
+  ) {
     CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
     FederationLayer federationLayer = new FederationLayer(config, router);
     TransactionalTableMutationGuard transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
-    this.syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
+    SyntheticReadLockManager syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
     RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
-    this.backendRoutingController = new BackendRoutingController(config, router, observability);
+    BackendRoutingController backendRoutingController = new BackendRoutingController(config, router, observability);
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
         compatibilityLayer, backendRoutingController, observability, router, requestRateLimiter);
     long aliveSince = System.currentTimeMillis() / 1000L;
-
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
-    this.routingHandler = new RoutingHandler(
+    RoutingHandler routingHandler = new RoutingHandler(
         config,
         router,
         federationLayer,
@@ -76,10 +110,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
         externalTableDropPurger);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
-        this.routingHandler);
+        routingHandler);
     LockHandler lockHandler = new LockHandler(
         syntheticReadLockManager, requestRateLimiter, router, federationLayer, observability, compatibilityHandler);
-    this.chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
+    InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
+    return new Assembly(syntheticReadLockManager, backendRoutingController, routingHandler, chain);
   }
 
   @SuppressWarnings("unchecked")
