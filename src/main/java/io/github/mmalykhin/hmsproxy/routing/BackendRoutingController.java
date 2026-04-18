@@ -6,6 +6,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -143,7 +144,28 @@ public final class BackendRoutingController implements AutoCloseable {
       try {
         backend.ensureClientSocketTimeout(probeTimeoutMs);
         long startedAt = System.nanoTime();
-        backend.checkConnectivity();
+        Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
+          try {
+            backend.checkConnectivity();
+            return null;
+          } catch (Exception e) {
+            throw e;
+          } catch (Throwable t) {
+            throw new RuntimeException(t);
+          }
+        });
+        try {
+          probe.get(probeTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+          probe.cancel(true);
+          throw e;
+        } catch (ExecutionException e) {
+          throw e.getCause();
+        } catch (InterruptedException e) {
+          probe.cancel(true);
+          Thread.currentThread().interrupt();
+          throw e;
+        }
         observability.runtimeState().recordBackendProbeSuccess(
             backend.name(),
             elapsedMillis(startedAt),
