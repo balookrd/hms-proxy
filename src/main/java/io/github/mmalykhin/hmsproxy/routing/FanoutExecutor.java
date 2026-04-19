@@ -4,8 +4,8 @@ import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -52,9 +52,9 @@ final class FanoutExecutor {
       FanoutBackendCall<T> call
   ) throws Throwable {
     RequestObservation parentObservation = RequestContext.REQUEST_OBSERVATION.get();
-    List<Future<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
+    List<CompletableFuture<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
     for (CatalogBackend backend : backends) {
-      futures.add(backendRoutingController.fanoutExecutor().submit(() -> {
+      futures.add(CompletableFuture.supplyAsync(() -> {
         if (parentObservation != null) {
           RequestContext.REQUEST_OBSERVATION.set(parentObservation);
         }
@@ -65,37 +65,47 @@ final class FanoutExecutor {
         } finally {
           RequestContext.REQUEST_OBSERVATION.remove();
         }
-      }));
+      }, backendRoutingController.fanoutExecutor()));
     }
 
     long timeoutMs = backendRoutingController.fanoutTimeoutMs();
-    long deadlineNs = System.nanoTime() + timeoutMs * 1_000_000L;
+    try {
+      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+          .get(timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException ignored) {
+      // fall through and harvest whatever completed within the deadline
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new MetaException("Interrupted while waiting for fanout backend response");
+    } catch (ExecutionException e) {
+      Throwable cause = e.getCause() == null ? e : e.getCause();
+      throw new MetaException("Fanout backend execution failed: " + cause.getMessage());
+    }
+
+    MetaException timeoutError = new MetaException("Fanout backend timed out after " + timeoutMs + " ms");
     List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
     for (int i = 0; i < futures.size(); i++) {
-      Future<FanoutTaskResult<T>> future = futures.get(i);
-      FanoutTaskResult<T> taskResult;
-      try {
-        long remainingNs = deadlineNs - System.nanoTime();
-        taskResult = future.get(Math.max(0, remainingNs), TimeUnit.NANOSECONDS);
-      } catch (TimeoutException e) {
-        MetaException timeoutError = new MetaException("Fanout backend timed out after " + timeoutMs + " ms");
-        for (int j = i; j < futures.size(); j++) {
-          futures.get(j).cancel(true);
-          handleFanoutFailure(methodName, backends.get(j), requestId, timeoutError);
+      CompletableFuture<FanoutTaskResult<T>> future = futures.get(i);
+      if (future.isDone()) {
+        FanoutTaskResult<T> taskResult;
+        try {
+          taskResult = future.get();
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new MetaException("Interrupted while waiting for fanout backend response");
+        } catch (ExecutionException e) {
+          Throwable cause = e.getCause() == null ? e : e.getCause();
+          throw new MetaException("Fanout backend execution failed: " + cause.getMessage());
         }
-        break;
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new MetaException("Interrupted while waiting for fanout backend response");
-      } catch (ExecutionException e) {
-        Throwable cause = e.getCause() == null ? e : e.getCause();
-        throw new MetaException("Fanout backend execution failed: " + cause.getMessage());
+        if (taskResult.error() != null) {
+          handleFanoutFailure(methodName, taskResult.backend(), requestId, taskResult.error());
+        } else {
+          results.add(new FanoutBackendResult<>(taskResult.backend(), taskResult.value()));
+        }
+      } else {
+        future.cancel(true);
+        handleFanoutFailure(methodName, backends.get(i), requestId, timeoutError);
       }
-      if (taskResult.error() != null) {
-        handleFanoutFailure(methodName, taskResult.backend(), requestId, taskResult.error());
-        continue;
-      }
-      results.add(new FanoutBackendResult<>(taskResult.backend(), taskResult.value()));
     }
     return results;
   }
