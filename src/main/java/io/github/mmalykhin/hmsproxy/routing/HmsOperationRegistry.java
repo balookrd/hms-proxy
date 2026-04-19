@@ -45,6 +45,23 @@ public final class HmsOperationRegistry {
   private static final Map<String, DefaultBackendRoutingPolicy.Policy> DEFAULT_BACKEND_POLICY_OVERRIDES =
       buildDefaultBackendPolicyOverrides();
   private static final ConcurrentMap<String, OperationMetadata> DESCRIBE_CACHE = new ConcurrentHashMap<>();
+  private static final Set<String> SAFE_FANOUT_METHODS = Set.of(
+      "get_all_databases",
+      "get_databases",
+      "get_table_meta");
+  private static final Set<String> HDP_ADAPTED_METHODS = Set.of(
+      "get_database_req",
+      "create_table_req",
+      "truncate_table_req",
+      "alter_table_req",
+      "alter_partitions_req",
+      "rename_partition_req",
+      "update_table_column_statistics_req",
+      "update_partition_column_statistics_req",
+      "add_write_notification_log",
+      "get_partitions_by_names_req",
+      "get_tables_ext",
+      "get_all_materialized_view_objects_for_rewriting");
   private static final Set<String> TRACE_METHOD_OVERRIDES = Set.of(
       "get_database",
       "get_table",
@@ -99,6 +116,8 @@ public final class HmsOperationRegistry {
         normalizedMethod,
         ReadResultFilterKind.NONE);
     boolean trace = TRACE_METHOD_OVERRIDES.contains(normalizedMethod);
+    boolean safeFanout = SAFE_FANOUT_METHODS.contains(normalizedMethod);
+    boolean hdpAdapted = HDP_ADAPTED_METHODS.contains(normalizedMethod);
     return new OperationMetadata(
         normalizedMethod,
         operationClass,
@@ -107,7 +126,9 @@ public final class HmsOperationRegistry {
         namespaceStrategy,
         tableExposureMode,
         resultFilterKind,
-        defaultBackendPolicy);
+        defaultBackendPolicy,
+        safeFanout,
+        hdpAdapted);
   }
 
   private static HmsOperationClass deriveHmsOperationClass(String methodName) {
@@ -448,7 +469,9 @@ public final class HmsOperationRegistry {
       NamespaceStrategy namespaceStrategy,
       TableExposureMode tableExposureMode,
       ReadResultFilterKind readResultFilterKind,
-      DefaultBackendRoutingPolicy.Policy defaultBackendPolicy
+      DefaultBackendRoutingPolicy.Policy defaultBackendPolicy,
+      boolean safeFanout,
+      boolean hdpAdapted
   ) {
     public Optional<DefaultBackendRoutingPolicy.Policy> defaultBackendPolicyOptional() {
       return Optional.ofNullable(defaultBackendPolicy);

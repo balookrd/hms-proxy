@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.frontend;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreRuntimeJarResolver;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.routing.HmsOperationRegistry;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -28,19 +29,6 @@ import org.apache.thrift.protocol.TBinaryProtocol;
 
 public final class HortonworksFrontendBridge {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
-  private static final Set<String> ADAPTED_HDP_ONLY_METHODS = Set.of(
-      "get_database_req",
-      "create_table_req",
-      "truncate_table_req",
-      "alter_table_req",
-      "alter_partitions_req",
-      "rename_partition_req",
-      "update_table_column_statistics_req",
-      "update_partition_column_statistics_req",
-      "add_write_notification_log",
-      "get_partitions_by_names_req",
-      "get_tables_ext",
-      "get_all_materialized_view_objects_for_rewriting");
 
   private HortonworksFrontendBridge() {
   }
@@ -69,7 +57,7 @@ public final class HortonworksFrontendBridge {
     return ifaceClass == null
         ? Set.of()
         : ifaceMethods(ifaceClass).stream()
-            .filter(ADAPTED_HDP_ONLY_METHODS::contains)
+            .filter(m -> HmsOperationRegistry.describe(m).hdpAdapted())
             .collect(java.util.stream.Collectors.toUnmodifiableSet());
   }
 
@@ -105,7 +93,7 @@ public final class HortonworksFrontendBridge {
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
-      if (ADAPTED_HDP_ONLY_METHODS.contains(method.getName())) {
+      if (HmsOperationRegistry.describe(method.getName()).hdpAdapted()) {
         try {
           return invokeHdpOnly(method, args);
         } catch (Throwable t) {

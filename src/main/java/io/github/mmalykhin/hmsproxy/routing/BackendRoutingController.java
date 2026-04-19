@@ -4,7 +4,6 @@ import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
-import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -24,10 +23,6 @@ import org.slf4j.LoggerFactory;
 
 public final class BackendRoutingController implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRoutingController.class);
-  private static final Set<String> SAFE_FANOUT_METHODS = Set.of(
-      "get_all_databases",
-      "get_databases",
-      "get_table_meta");
 
   private final ProxyConfig config;
   private final CatalogRouter router;
@@ -83,7 +78,7 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public boolean hedgedReadEnabled(String methodName) {
-    return fanoutExecutor != null && SAFE_FANOUT_METHODS.contains(methodName);
+    return fanoutExecutor != null && HmsOperationRegistry.describe(methodName).safeFanout();
   }
 
   public ExecutorService fanoutExecutor() {
@@ -95,7 +90,7 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public boolean shouldDegradeSafeFanout(String methodName, Throwable error) {
-    if (!SAFE_FANOUT_METHODS.contains(methodName)
+    if (!HmsOperationRegistry.describe(methodName).safeFanout()
         || config.latencyRouting().degradedRoutingPolicy() != ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS) {
       return false;
     }
