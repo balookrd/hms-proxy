@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
+import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;

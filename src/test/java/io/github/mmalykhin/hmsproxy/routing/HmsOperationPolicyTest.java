@@ -1,6 +1,8 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.config.HmsOperationClass;
+import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
 import org.junit.Assert;
 import org.junit.Test;
 

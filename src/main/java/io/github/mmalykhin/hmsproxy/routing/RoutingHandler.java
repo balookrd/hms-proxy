@@ -1,5 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;

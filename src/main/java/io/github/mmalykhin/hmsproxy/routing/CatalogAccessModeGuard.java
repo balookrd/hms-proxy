@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 
