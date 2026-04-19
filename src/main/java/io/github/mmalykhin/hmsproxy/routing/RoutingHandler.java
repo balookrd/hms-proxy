@@ -121,7 +121,7 @@ final class RoutingHandler implements InvocationHandler {
   private Object handleGetAllDatabases(Method method) throws Throwable {
     RequestContext.currentObservation().recordFanout();
     List<String> databases = new ArrayList<>();
-    for (BackendCallDispatcher.FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
+    for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
@@ -162,7 +162,7 @@ final class RoutingHandler implements InvocationHandler {
 
     RequestContext.currentObservation().recordFanout();
     List<String> databases = new ArrayList<>();
-    for (BackendCallDispatcher.FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
+    for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : invokeFanoutRead(
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
@@ -207,7 +207,7 @@ final class RoutingHandler implements InvocationHandler {
 
     RequestContext.currentObservation().recordFanout();
     List<TableMeta> results = new ArrayList<>();
-    for (BackendCallDispatcher.FanoutBackendResult<List<TableMeta>> fanoutResult : invokeFanoutRead(
+    for (FanoutExecutor.FanoutBackendResult<List<TableMeta>> fanoutResult : invokeFanoutRead(
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
@@ -799,9 +799,9 @@ final class RoutingHandler implements InvocationHandler {
         impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId());
   }
 
-  private <T> List<BackendCallDispatcher.FanoutBackendResult<T>> invokeFanoutRead(
+  private <T> List<FanoutExecutor.FanoutBackendResult<T>> invokeFanoutRead(
       String methodName,
-      BackendCallDispatcher.FanoutBackendCall<T> call
+      FanoutExecutor.FanoutBackendCall<T> call
   ) throws Throwable {
     return dispatcher.invokeFanoutRead(
         methodName, call,

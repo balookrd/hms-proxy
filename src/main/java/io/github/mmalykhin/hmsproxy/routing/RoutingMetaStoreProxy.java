@@ -101,8 +101,10 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     SyntheticReadLockManager syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
     RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
     BackendRoutingController backendRoutingController = new BackendRoutingController(config, router, observability);
+    AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
+    FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
-        compatibilityLayer, backendRoutingController, observability, router, requestRateLimiter);
+        compatibilityLayer, admissionGate, observability, fanoutExecutor);
     long aliveSince = System.currentTimeMillis() / 1000L;
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
     RoutingHandler routingHandler = new RoutingHandler(

@@ -7,47 +7,34 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Handles all backend invocation concerns: circuit-breaker admission, rate limiting,
- * compatibility fallback, request/response logging, fanout reads (parallel and
- * sequential), and backend-error normalisation.
- *
- * <p>Single-backend calls are exposed through {@link #invokeDirect}, {@link #invokeViaRequest}, and {@link #invokeByReflection}.
- * Fanout calls are exposed through {@link #invokeFanoutRead}.
+ * Routes invocations through admission control, compatibility fallback, and fanout.
+ * All cross-cutting concerns (circuit breaking, rate limiting, error normalisation,
+ * fanout scheduling) are delegated to dedicated collaborators.
  */
 final class BackendCallDispatcher {
   private static final Logger LOG = LoggerFactory.getLogger(BackendCallDispatcher.class);
 
   private final CompatibilityLayer compatibilityLayer;
-  private final BackendRoutingController backendRoutingController;
+  private final AdmissionGate admissionGate;
   private final ProxyObservability observability;
-  private final CatalogRouter router;
-  private final RequestRateLimiter requestRateLimiter;
+  private final FanoutExecutor fanoutExecutor;
 
   BackendCallDispatcher(
       CompatibilityLayer compatibilityLayer,
-      BackendRoutingController backendRoutingController,
+      AdmissionGate admissionGate,
       ProxyObservability observability,
-      CatalogRouter router,
-      RequestRateLimiter requestRateLimiter
+      FanoutExecutor fanoutExecutor
   ) {
     this.compatibilityLayer = compatibilityLayer;
-    this.backendRoutingController = backendRoutingController;
+    this.admissionGate = admissionGate;
     this.observability = observability;
-    this.router = router;
-    this.requestRateLimiter = requestRateLimiter;
+    this.fanoutExecutor = fanoutExecutor;
   }
 
   Object invokeDirect(
@@ -113,19 +100,13 @@ final class BackendCallDispatcher {
         null);
   }
 
-  <T> List<FanoutBackendResult<T>> invokeFanoutRead(
+  <T> List<FanoutExecutor.FanoutBackendResult<T>> invokeFanoutRead(
       String methodName,
-      FanoutBackendCall<T> call,
+      FanoutExecutor.FanoutBackendCall<T> call,
       ImpersonationContext impersonation,
       long requestId
   ) throws Throwable {
-    List<CatalogBackend> backends = new ArrayList<>(router.backends());
-    for (CatalogBackend backend : backends) {
-      enforceCatalogRateLimit(methodName, backend.name());
-    }
-    return backendRoutingController.hedgedReadEnabled(methodName)
-        ? invokeParallelFanoutRead(methodName, backends, impersonation, requestId, call)
-        : invokeSequentialFanoutRead(methodName, backends, impersonation, requestId, call);
+    return fanoutExecutor.execute(methodName, call, impersonation, requestId);
   }
 
   private Object performBackendCall(
@@ -142,20 +123,20 @@ final class BackendCallDispatcher {
   ) throws Throwable {
     long startedAt = System.nanoTime();
     if (enforceRateLimit) {
-      enforceCatalogRateLimit(methodName, backend.name());
+      admissionGate.enforceRateLimit(methodName, backend.name());
     }
     if (recordObservation) {
       RequestContext.currentObservation().recordBackend(backend.name());
     }
 
-    ProxyRuntimeState.BackendCallAdmission admission = backendRoutingController.admit(backend);
+    ProxyRuntimeState.BackendCallAdmission admission = admissionGate.admit(backend);
     if (!admission.allowed()) {
       return maybeCompatibilityFallback(
           backend,
           methodName,
           requestId,
           allowCompatibilityFallback,
-          backendUnavailableException(backend, methodName, admission),
+          AdmissionGate.unavailableException(backend, methodName, admission),
           declaredMethod);
     }
 
@@ -164,12 +145,12 @@ final class BackendCallDispatcher {
       Object result = call.call();
       long elapsedMs = elapsedMillis(startedAt);
       logBackendResponse(requestId, backend, methodName, elapsedMs, result);
-      backendRoutingController.recordSuccess(backend, elapsedMs);
+      admissionGate.recordSuccess(backend, elapsedMs);
       return result;
     } catch (Throwable cause) {
       long elapsedMs = elapsedMillis(startedAt);
       observability.metrics().recordBackendFailure(backend.name(), cause);
-      backendRoutingController.recordFailure(backend, cause, elapsedMs);
+      admissionGate.recordFailure(backend, cause, elapsedMs);
       Optional<Object> compatibilityFallback =
           allowCompatibilityFallback ? compatibilityLayer.fallback(methodName, cause) : Optional.empty();
       if (compatibilityFallback.isPresent()) {
@@ -184,7 +165,7 @@ final class BackendCallDispatcher {
       }
       logBackendError(requestId, backend, methodName, elapsedMs, cause);
       if (declaredMethod != null) {
-        throw normalizeBackendFailure(declaredMethod, backend.name(), cause);
+        throw BackendErrorNormalizer.normalize(declaredMethod, backend.name(), cause);
       }
       throw cause;
     }
@@ -211,105 +192,9 @@ final class BackendCallDispatcher {
       return fallback.get();
     }
     if (declaredMethod != null) {
-      throw normalizeBackendFailure(declaredMethod, backend.name(), cause);
+      throw BackendErrorNormalizer.normalize(declaredMethod, backend.name(), cause);
     }
     throw cause;
-  }
-
-  private void enforceCatalogRateLimit(String methodName, String catalogName)
-      throws RateLimitExceededException {
-    if (!RequestContext.currentObservation().shouldRateLimitCatalog(catalogName)) {
-      return;
-    }
-    requestRateLimiter.enforceCatalog(methodName, catalogName);
-  }
-
-  private <T> List<FanoutBackendResult<T>> invokeParallelFanoutRead(
-      String methodName,
-      List<CatalogBackend> backends,
-      ImpersonationContext impersonation,
-      long requestId,
-      FanoutBackendCall<T> call
-  ) throws Throwable {
-    RequestObservation parentObservation = RequestContext.REQUEST_OBSERVATION.get();
-    List<Future<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
-    for (CatalogBackend backend : backends) {
-      futures.add(backendRoutingController.fanoutExecutor().submit(() -> {
-        if (parentObservation != null) {
-          RequestContext.REQUEST_OBSERVATION.set(parentObservation);
-        }
-        try {
-          return FanoutTaskResult.success(backend, call.call(backend, impersonation, requestId));
-        } catch (Throwable error) {
-          return FanoutTaskResult.failure(backend, error);
-        } finally {
-          RequestContext.REQUEST_OBSERVATION.remove();
-        }
-      }));
-    }
-
-    long timeoutMs = backendRoutingController.fanoutTimeoutMs();
-    long deadlineNs = System.nanoTime() + timeoutMs * 1_000_000L;
-    List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
-    for (int i = 0; i < futures.size(); i++) {
-      Future<FanoutTaskResult<T>> future = futures.get(i);
-      FanoutTaskResult<T> taskResult;
-      try {
-        long remainingNs = deadlineNs - System.nanoTime();
-        taskResult = future.get(Math.max(0, remainingNs), TimeUnit.NANOSECONDS);
-      } catch (TimeoutException e) {
-        MetaException timeoutError = new MetaException("Fanout backend timed out after " + timeoutMs + " ms");
-        for (int j = i; j < futures.size(); j++) {
-          futures.get(j).cancel(true);
-          handleFanoutFailure(methodName, backends.get(j), requestId, timeoutError);
-        }
-        break;
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new MetaException("Interrupted while waiting for fanout backend response");
-      } catch (ExecutionException e) {
-        Throwable cause = e.getCause() == null ? e : e.getCause();
-        throw new MetaException("Fanout backend execution failed: " + cause.getMessage());
-      }
-      if (taskResult.error() != null) {
-        handleFanoutFailure(methodName, taskResult.backend(), requestId, taskResult.error());
-        continue;
-      }
-      results.add(new FanoutBackendResult<>(taskResult.backend(), taskResult.value()));
-    }
-    return results;
-  }
-
-  private <T> List<FanoutBackendResult<T>> invokeSequentialFanoutRead(
-      String methodName,
-      List<CatalogBackend> backends,
-      ImpersonationContext impersonation,
-      long requestId,
-      FanoutBackendCall<T> call
-  ) throws Throwable {
-    List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
-    for (CatalogBackend backend : backends) {
-      try {
-        results.add(new FanoutBackendResult<>(backend, call.call(backend, impersonation, requestId)));
-      } catch (Throwable error) {
-        handleFanoutFailure(methodName, backend, requestId, error);
-      }
-    }
-    return results;
-  }
-
-  private void handleFanoutFailure(
-      String methodName,
-      CatalogBackend backend,
-      long requestId,
-      Throwable error
-  ) throws Throwable {
-    if (!backendRoutingController.shouldDegradeSafeFanout(methodName, error)) {
-      throw error;
-    }
-    RequestContext.currentObservation().markDegraded();
-    LOG.warn("requestId={} omitting degraded backend catalog={} from safe fanout method={}",
-        requestId, backend.name(), methodName, error);
   }
 
   private void logBackendRequest(
@@ -377,47 +262,6 @@ final class BackendCallDispatcher {
         requestId, backend.name(), methodName, elapsedMs, cause.toString(), cause);
   }
 
-  private static MetaException backendUnavailableException(
-      CatalogBackend backend,
-      String methodName,
-      ProxyRuntimeState.BackendCallAdmission admission
-  ) {
-    String reason = admission.rejectionReason() == null ? "backend unavailable" : admission.rejectionReason();
-    String message = "Backend catalog '" + backend.name() + "' rejected method '" + methodName + "' because "
-        + reason;
-    if (admission.retryAtEpochMs() > 0L) {
-      long retryInMs = Math.max(0L, admission.retryAtEpochMs() - System.currentTimeMillis());
-      message += "; next retry window in " + retryInMs + "ms";
-    }
-    return new MetaException(message);
-  }
-
-  static Throwable normalizeBackendFailure(Method method, String backendName, Throwable cause) {
-    if (!(cause instanceof TException) || isDeclaredMethodException(method, cause)) {
-      return cause;
-    }
-    String message = "Backend catalog '" + backendName + "' failed in method '" + method.getName()
-        + "' with " + cause.getClass().getSimpleName();
-    if (cause.getMessage() != null && !cause.getMessage().isBlank()) {
-      message += ": " + cause.getMessage();
-    }
-    MetaException metaException = new MetaException(message);
-    metaException.initCause(cause);
-    return metaException;
-  }
-
-  private static boolean isDeclaredMethodException(Method method, Throwable cause) {
-    for (Class<?> declaredType : method.getExceptionTypes()) {
-      if (declaredType == TException.class) {
-        continue;
-      }
-      if (declaredType.isAssignableFrom(cause.getClass())) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   private static long elapsedMillis(long startedAt) {
     return (System.nanoTime() - startedAt) / 1_000_000L;
   }
@@ -425,23 +269,5 @@ final class BackendCallDispatcher {
   @FunctionalInterface
   interface BackendCall {
     Object call() throws Throwable;
-  }
-
-  @FunctionalInterface
-  interface FanoutBackendCall<T> {
-    T call(CatalogBackend backend, ImpersonationContext impersonation, long requestId) throws Throwable;
-  }
-
-  record FanoutBackendResult<T>(CatalogBackend backend, T value) {
-  }
-
-  private record FanoutTaskResult<T>(CatalogBackend backend, T value, Throwable error) {
-    private static <T> FanoutTaskResult<T> success(CatalogBackend backend, T value) {
-      return new FanoutTaskResult<>(backend, value, null);
-    }
-
-    private static <T> FanoutTaskResult<T> failure(CatalogBackend backend, Throwable error) {
-      return new FanoutTaskResult<>(backend, null, error);
-    }
   }
 }
