@@ -21,8 +21,8 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class RoutingMetaStoreHandler implements InvocationHandler, HortonworksFrontendExtension, AutoCloseable {
-  private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreHandler.class);
+public final class RoutingMetaStoreProxy implements InvocationHandler, HortonworksFrontendExtension, AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreProxy.class);
   private static final Logger AUDIT_LOG = LoggerFactory.getLogger("io.github.mmalykhin.hmsproxy.audit");
   private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
 
@@ -32,7 +32,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final RoutingHandler routingHandler;
   private final InvocationHandler chain;
 
-  public RoutingMetaStoreHandler(
+  public RoutingMetaStoreProxy(
       ProxyConfig config,
       CatalogRouter router,
       FederationOperations federation,
@@ -41,7 +41,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this(config, router, federation, frontDoorSecurity, new ProxyObservability(config));
   }
 
-  public RoutingMetaStoreHandler(
+  public RoutingMetaStoreProxy(
       ProxyConfig config,
       CatalogRouter router,
       FederationOperations federation,
@@ -51,7 +51,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this(config, router, federation, frontDoorSecurity, observability, new FileSystemExternalTableDropPurger(config));
   }
 
-  RoutingMetaStoreHandler(
+  RoutingMetaStoreProxy(
       ProxyConfig config,
       CatalogRouter router,
       FederationOperations federation,
@@ -62,7 +62,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this(observability, assemble(config, router, federation, frontDoorSecurity, observability, externalTableDropPurger));
   }
 
-  RoutingMetaStoreHandler(
+  RoutingMetaStoreProxy(
       ProxyObservability observability,
       SyntheticReadLockManager syntheticReadLockManager,
       BackendRoutingController backendRoutingController,
@@ -76,7 +76,7 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     this.chain = chain;
   }
 
-  private RoutingMetaStoreHandler(ProxyObservability observability, Assembly assembly) {
+  private RoutingMetaStoreProxy(ProxyObservability observability, Assembly assembly) {
     this(observability, assembly.syntheticReadLockManager, assembly.backendRoutingController,
         assembly.routingHandler, assembly.chain);
   }

@@ -31,7 +31,7 @@ final class ImpersonationResolver {
       if (userName == null || userName.isBlank()) {
         return Optional.empty();
       }
-      if (RoutingMetaStoreHandler.isServicePrincipalUser(userName, security)) {
+      if (RoutingMetaStoreProxy.isServicePrincipalUser(userName, security)) {
         return Optional.empty();
       }
       return Optional.of(new ImpersonationContext(userName, resolveGroupNames(currentUser, userName)));

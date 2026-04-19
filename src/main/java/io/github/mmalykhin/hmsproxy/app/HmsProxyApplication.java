@@ -6,7 +6,7 @@ import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.nio.file.Path;
@@ -39,11 +39,11 @@ public final class HmsProxyApplication {
       try (frontDoorSecurity;
            CatalogRouter router = CatalogRouter.open(config);
            ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability);
-           RoutingMetaStoreHandler handler =
-               new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router),
+           RoutingMetaStoreProxy handler =
+               new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router),
                    frontDoorSecurity, observability)) {
         ThriftHiveMetastore.Iface proxy =
-            RoutingMetaStoreHandler.newProxy(
+            RoutingMetaStoreProxy.newProxy(
                 ThriftHiveMetastore.Iface.class,
                 handler,
                 HortonworksFrontendExtension.class);

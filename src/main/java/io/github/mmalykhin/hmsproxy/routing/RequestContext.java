@@ -2,7 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 /**
  * Static holder for per-request ThreadLocal state shared across the routing layer.
- * Set and cleared by {@link RoutingMetaStoreHandler#invoke} for every incoming call.
+ * Set and cleared by {@link RoutingMetaStoreProxy#invoke} for every incoming call.
  */
 final class RequestContext {
   static final ThreadLocal<Long> REQUEST_ID = new ThreadLocal<>();
