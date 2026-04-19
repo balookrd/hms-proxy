@@ -260,6 +260,62 @@ public class RoutingMetaStoreHandlerTest {
   }
 
   @Test
+  public void safeFanoutReadsDegradesOnTimeoutWithoutThrowingCancellationException() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new ProxyConfig.LatencyRoutingConfig(
+            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
+            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
+            new ProxyConfig.HedgedReadConfig(true, 2, 100L),
+            ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("sales");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                Thread.sleep(5_000L);
+                return List.of("reports");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreHandler handler =
+        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals(List.of("sales"), result);
+    Assert.assertTrue(observability.metrics().render().contains(
+        "hms_proxy_requests_total{method=\"get_all_databases\",catalog=\"all\",backend=\"fanout\",status=\"degraded\"} 1"));
+  }
+
+  @Test
   public void circuitBreakerFailsFastAndHalfOpenRetryRecovers() throws Throwable {
     ProxyConfig config = latencyAwareConfig(
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),

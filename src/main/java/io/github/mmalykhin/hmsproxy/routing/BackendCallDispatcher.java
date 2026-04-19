@@ -258,10 +258,12 @@ final class BackendCallDispatcher {
         long remainingNs = deadlineNs - System.nanoTime();
         taskResult = future.get(Math.max(0, remainingNs), TimeUnit.NANOSECONDS);
       } catch (TimeoutException e) {
-        futures.subList(i, futures.size()).forEach(f -> f.cancel(true));
-        handleFanoutFailure(methodName, backends.get(i), requestId,
-            new MetaException("Fanout backend timed out after " + timeoutMs + " ms"));
-        continue;
+        MetaException timeoutError = new MetaException("Fanout backend timed out after " + timeoutMs + " ms");
+        for (int j = i; j < futures.size(); j++) {
+          futures.get(j).cancel(true);
+          handleFanoutFailure(methodName, backends.get(j), requestId, timeoutError);
+        }
+        break;
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new MetaException("Interrupted while waiting for fanout backend response");
