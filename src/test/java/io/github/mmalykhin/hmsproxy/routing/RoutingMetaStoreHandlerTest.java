@@ -16,6 +16,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -76,6 +77,8 @@ public class RoutingMetaStoreHandlerTest {
       Map.of(
           "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
           "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))));
+
+  private static final CatalogRouter CUSTOM_SEPARATOR_ROUTER = routerFor(CUSTOM_SEPARATOR_CONFIG);
 
   private static CatalogRouter routerFor(ProxyConfig config) {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
@@ -143,7 +146,8 @@ public class RoutingMetaStoreHandlerTest {
         Map.of(),
         Map.of()));
     ProxyObservability observability = new ProxyObservability(config);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, routerFor(config), null, observability);
+    CatalogRouter router = routerFor(config);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("getName");
 
     String previousRemoteUser = ClientRequestContext.setRemoteUser("hs2/host@EXAMPLE.COM");
@@ -189,7 +193,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
 
     handler.invoke(null, method, new Object[] {"catalog1__sales"});
@@ -246,8 +250,9 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", backend1);
     backends.put("catalog2", backend2);
     ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
 
     @SuppressWarnings("unchecked")
@@ -303,8 +308,9 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", backend1);
     backends.put("catalog2", backend2);
     ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
 
     @SuppressWarnings("unchecked")
@@ -345,7 +351,7 @@ public class RoutingMetaStoreHandlerTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     ProxyObservability observability = new ProxyObservability(config);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null, observability);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
 
     Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {"sales"}));
@@ -396,7 +402,7 @@ public class RoutingMetaStoreHandlerTest {
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     ProxyObservability observability = new ProxyObservability(config);
 
-    try (RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null, observability)) {
+    try (RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability)) {
       Thread.sleep(180L);
     }
 
@@ -468,7 +474,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_functions");
 
     Object result = handler.invoke(null, method, new Object[0]);
@@ -501,7 +507,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("getMetaConf", String.class);
 
     Object result = handler.invoke(null, method, new Object[] {"metastore.thrift.uris"});
@@ -533,7 +539,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_metastore_db_uuid");
 
     Object result = handler.invoke(null, method, new Object[0]);
@@ -572,7 +578,7 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", null);
     backends.put("catalog2", backend);
     CatalogRouter router = new CatalogRouter(config, backends);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("drop_function", String.class, String.class);
 
     Object result = handler.invoke(null, method, new Object[] {"catalog2__sales", "f_events"});
@@ -584,7 +590,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("setMetaConf", String.class, String.class);
 
     MetaException error = Assert.assertThrows(
@@ -597,7 +603,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod(
         "grant_role",
         String.class,
@@ -620,7 +626,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void revokeRoleWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod(
         "revoke_role",
         String.class,
@@ -637,7 +643,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void catalogManagementRpcsAreRejected() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
 
     assertCatalogManagementRejected(handler, "create_catalog");
     assertCatalogManagementRejected(handler, "alter_catalog");
@@ -647,7 +653,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void addTokenWithoutKerberosFrontDoorIsRejected() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("add_token", String.class, String.class);
 
     MetaException error = Assert.assertThrows(
@@ -660,7 +666,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void tokenIdentifierListingWithoutKerberosFrontDoorIsRejected() throws Throwable {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_token_identifiers");
 
     MetaException error = Assert.assertThrows(
@@ -701,7 +707,7 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", null);
     backends.put("catalog2", backend);
     CatalogRouter router = new CatalogRouter(config, backends);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
 
     Object result = handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")});
@@ -767,7 +773,7 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", null);
     backends.put("catalog2", backend);
     CatalogRouter router = new CatalogRouter(config, backends);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
 
     MetaException error = Assert.assertThrows(
@@ -818,7 +824,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -889,7 +896,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -959,7 +967,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -1037,7 +1046,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -1102,7 +1112,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -1153,8 +1164,9 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", defaultBackend);
     backends.put("catalog2", nonDefaultBackend);
     ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null, observability);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, observability);
 
     Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
     LockResponse lock = (LockResponse) handler.invoke(
@@ -1268,10 +1280,10 @@ public class RoutingMetaStoreHandlerTest {
       try (CatalogRouter routerA = new CatalogRouter(config, backendsA);
            CatalogRouter routerB = new CatalogRouter(config, backendsB);
            RoutingMetaStoreHandler secondProxy =
-               new RoutingMetaStoreHandler(config, routerB, null, observabilityB)) {
+               new RoutingMetaStoreHandler(config, routerB, new FederationLayer(config, routerB), null, observabilityB)) {
         Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
         LockResponse lock;
-        RoutingMetaStoreHandler firstProxy = new RoutingMetaStoreHandler(config, routerA, null, observabilityA);
+        RoutingMetaStoreHandler firstProxy = new RoutingMetaStoreHandler(config, routerA, new FederationLayer(config, routerA), null, observabilityA);
         try {
           lock = (LockResponse) firstProxy.invoke(
               null,
@@ -1390,7 +1402,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void explicitDefaultCatalogLeavesUnprefixedDatabaseNameUntouched() throws Exception {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     java.lang.reflect.Method method =
         RoutingMetaStoreHandler.class.getDeclaredMethod("resolveRequestNamespace", String.class, String.class);
     method.setAccessible(true);
@@ -1406,7 +1418,7 @@ public class RoutingMetaStoreHandlerTest {
   @Test
   public void explicitCatalogPrefixStillRoutesUsingThatPrefix() throws Exception {
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, routerFor(CUSTOM_SEPARATOR_CONFIG), null);
+        new RoutingMetaStoreHandler(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
     java.lang.reflect.Method method =
         RoutingMetaStoreHandler.class.getDeclaredMethod("resolveRequestNamespace", String.class, String.class);
     method.setAccessible(true);
@@ -1430,7 +1442,8 @@ public class RoutingMetaStoreHandlerTest {
         new ProxyConfig.CompatibilityConfig(
             ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
             false));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, routerFor(config), null);
+    CatalogRouter router = routerFor(config);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     java.lang.reflect.Method method = org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class
         .getMethod("getVersion");
 
@@ -1523,7 +1536,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
     table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1564,7 +1577,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of(
         "transactional", "true",
         "transactional_properties", "insert_only",
@@ -1617,7 +1630,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
     table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1678,7 +1691,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
     table.setTableType("EXTERNAL_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1725,7 +1738,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of(
         "transactional", "true",
         "transactional_properties", "insert_only",
@@ -1774,7 +1787,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
     table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1816,7 +1829,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
     table.setTableType("EXTERNAL_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1858,7 +1871,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
     table.setTableType("MANAGED_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -1902,7 +1915,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of(
         "transactional", "true",
         "transactional_properties", "insert_only",
@@ -1951,7 +1964,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Table table = table("catalog1__sales", "events", Map.of("owner", "etl"));
     table.setTableType("EXTERNAL_TABLE");
     Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
@@ -2101,7 +2114,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
 
     @SuppressWarnings("unchecked")
@@ -2140,7 +2153,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
 
     NoSuchObjectException error = Assert.assertThrows(
@@ -2182,7 +2195,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_tables", String.class);
 
     @SuppressWarnings("unchecked")
@@ -2224,7 +2237,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
     Method method =
         ThriftHiveMetastore.Iface.class.getMethod("get_table_meta", String.class, String.class, List.class);
 
@@ -2264,7 +2277,7 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", null);
     backends.put("catalog2", hdpBackend);
     CatalogRouter router = new CatalogRouter(config, backends);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     ClassLoader classLoader = new MetastoreApiClassLoader(
         new java.net.URL[] {HDP_JAR.toUri().toURL()},
@@ -2307,7 +2320,7 @@ public class RoutingMetaStoreHandlerTest {
     CatalogBackend apacheBackend = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), newSession()));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", apacheBackend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     ClassLoader classLoader = new MetastoreApiClassLoader(
         new java.net.URL[] {HDP_JAR.toUri().toURL()},
@@ -2370,7 +2383,7 @@ public class RoutingMetaStoreHandlerTest {
     backends.put("catalog1", null);
     backends.put("catalog2", hdpBackend);
     CatalogRouter router = new CatalogRouter(config, backends);
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     ClassLoader classLoader = new MetastoreApiClassLoader(
         new java.net.URL[] {HDP_6150_JAR.toUri().toURL()},
@@ -2433,7 +2446,7 @@ public class RoutingMetaStoreHandlerTest {
           throw new UnsupportedOperationException(method.getName());
         });
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog2", hdpBackend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     ClassLoader classLoader = new MetastoreApiClassLoader(
         new java.net.URL[] {HDP_6150_JAR.toUri().toURL()},
@@ -2480,7 +2493,7 @@ public class RoutingMetaStoreHandlerTest {
           throw new UnsupportedOperationException(method.getName());
         });
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog2", hdpBackend)));
-    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, null);
+    RoutingMetaStoreHandler handler = new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
 
     Object response = handler.getAllMaterializedViewObjectsForRewriting();
 
@@ -2513,7 +2526,7 @@ public class RoutingMetaStoreHandlerTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, new ProxyObservability(config), purger);
     Method method = thriftMethod("drop_table");
 
     handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
@@ -2547,7 +2560,7 @@ public class RoutingMetaStoreHandlerTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, new ProxyObservability(config), purger);
     Method method = thriftMethod("drop_table_with_environment_context");
 
     handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
@@ -2580,7 +2593,7 @@ public class RoutingMetaStoreHandlerTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     RoutingMetaStoreHandler handler =
-        new RoutingMetaStoreHandler(config, router, null, new ProxyObservability(config), purger);
+        new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null, new ProxyObservability(config), purger);
     Method method = thriftMethod("drop_table");
 
     handler.invoke(null, method, dropTableArguments(method, "catalog1__sales", "events"));
@@ -2891,7 +2904,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    return new RoutingMetaStoreHandler(config, router, null);
+    return new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
   }
 
   private static ProxyConfig rateLimitedConfig(ProxyConfig.RateLimitConfig rateLimit) {
@@ -2973,7 +2986,7 @@ public class RoutingMetaStoreHandlerTest {
         new ApacheBackendAdapter(),
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
-    return new RoutingMetaStoreHandler(config, router, null);
+    return new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
   }
 
   private static RoutingMetaStoreHandler locationRewriteHandler(
@@ -3038,7 +3051,8 @@ public class RoutingMetaStoreHandlerTest {
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
     backends.put("catalog1", backend1);
     backends.put("catalog2", backend2);
-    return new RoutingMetaStoreHandler(config, new CatalogRouter(config, backends), null);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    return new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router), null);
   }
 
   private static BackendInvocationSession newSession(java.lang.reflect.InvocationHandler invocationHandler) throws Exception {

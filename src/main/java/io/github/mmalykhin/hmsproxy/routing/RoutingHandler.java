@@ -4,7 +4,6 @@ import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -35,7 +34,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private final ProxyConfig config;
   private final CatalogRouter router;
-  private final FederationLayer federationLayer;
+  private final FederationOperations federationLayer;
   private final CompatibilityLayer compatibilityLayer;
   private final ProxyObservability observability;
   private final BackendCallDispatcher dispatcher;
@@ -47,7 +46,7 @@ final class RoutingHandler implements InvocationHandler {
   RoutingHandler(
       ProxyConfig config,
       CatalogRouter router,
-      FederationLayer federationLayer,
+      FederationOperations federationLayer,
       CompatibilityLayer compatibilityLayer,
       ProxyObservability observability,
       BackendCallDispatcher dispatcher,
@@ -67,7 +66,7 @@ final class RoutingHandler implements InvocationHandler {
   RoutingHandler(
       ProxyConfig config,
       CatalogRouter router,
-      FederationLayer federationLayer,
+      FederationOperations federationLayer,
       CompatibilityLayer compatibilityLayer,
       ProxyObservability observability,
       BackendCallDispatcher dispatcher,

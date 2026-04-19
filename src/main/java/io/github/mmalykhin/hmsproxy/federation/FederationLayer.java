@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.federation;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.routing.FederationOperations;
 import io.github.mmalykhin.hmsproxy.routing.NamespaceTranslator;
 import java.util.Arrays;
 import java.util.Optional;
@@ -10,7 +11,7 @@ import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 
-public final class FederationLayer {
+public final class FederationLayer implements FederationOperations {
   private final ProxyConfig config;
   private final CatalogRouter router;
   private final ViewDefinitionCompatibility viewDefinitionCompatibility;

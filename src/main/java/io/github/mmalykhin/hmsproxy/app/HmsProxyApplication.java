@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
+import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
@@ -39,7 +40,8 @@ public final class HmsProxyApplication {
            CatalogRouter router = CatalogRouter.open(config);
            ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability);
            RoutingMetaStoreHandler handler =
-               new RoutingMetaStoreHandler(config, router, frontDoorSecurity, observability)) {
+               new RoutingMetaStoreHandler(config, router, new FederationLayer(config, router),
+                   frontDoorSecurity, observability)) {
         ThriftHiveMetastore.Iface proxy =
             RoutingMetaStoreHandler.newProxy(
                 ThriftHiveMetastore.Iface.class,

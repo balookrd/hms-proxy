@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -27,7 +26,7 @@ final class LockHandler implements InvocationHandler {
   private final SyntheticReadLockManager syntheticReadLockManager;
   private final RequestRateLimiter requestRateLimiter;
   private final CatalogRouter router;
-  private final FederationLayer federationLayer;
+  private final FederationOperations federationLayer;
   private final ProxyObservability observability;
   private final InvocationHandler next;
 
@@ -35,7 +34,7 @@ final class LockHandler implements InvocationHandler {
       SyntheticReadLockManager syntheticReadLockManager,
       RequestRateLimiter requestRateLimiter,
       CatalogRouter router,
-      FederationLayer federationLayer,
+      FederationOperations federationLayer,
       ProxyObservability observability,
       InvocationHandler next
   ) {

@@ -3,7 +3,6 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.AuditLogUtil;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
@@ -34,27 +33,34 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private final RoutingHandler routingHandler;
   private final InvocationHandler chain;
 
-  public RoutingMetaStoreHandler(ProxyConfig config, CatalogRouter router, FrontDoorSecurity frontDoorSecurity) {
-    this(config, router, frontDoorSecurity, new ProxyObservability(config));
+  public RoutingMetaStoreHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federation,
+      FrontDoorSecurity frontDoorSecurity
+  ) {
+    this(config, router, federation, frontDoorSecurity, new ProxyObservability(config));
   }
 
   public RoutingMetaStoreHandler(
       ProxyConfig config,
       CatalogRouter router,
+      FederationOperations federation,
       FrontDoorSecurity frontDoorSecurity,
       ProxyObservability observability
   ) {
-    this(config, router, frontDoorSecurity, observability, new FileSystemExternalTableDropPurger(config));
+    this(config, router, federation, frontDoorSecurity, observability, new FileSystemExternalTableDropPurger(config));
   }
 
   RoutingMetaStoreHandler(
       ProxyConfig config,
       CatalogRouter router,
+      FederationOperations federation,
       FrontDoorSecurity frontDoorSecurity,
       ProxyObservability observability,
       ExternalTableDropPurger externalTableDropPurger
   ) {
-    this(observability, assemble(config, router, frontDoorSecurity, observability, externalTableDropPurger));
+    this(observability, assemble(config, router, federation, frontDoorSecurity, observability, externalTableDropPurger));
   }
 
   RoutingMetaStoreHandler(
@@ -86,12 +92,12 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
   private static Assembly assemble(
       ProxyConfig config,
       CatalogRouter router,
+      FederationOperations federationLayer,
       FrontDoorSecurity frontDoorSecurity,
       ProxyObservability observability,
       ExternalTableDropPurger externalTableDropPurger
   ) {
     CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
-    FederationLayer federationLayer = new FederationLayer(config, router);
     TransactionalTableMutationGuard transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
     SyntheticReadLockManager syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
     RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
