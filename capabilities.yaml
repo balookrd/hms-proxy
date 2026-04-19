@@ -37,7 +37,7 @@ capabilities:
       en: Supported as the baseline deployment.
       ru: Базовый полностью поддержанный сценарий.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultRewritesMaterializedViewTextForClientNamespace
   - id: apache_frontdoor_to_hdp_backend_downgrade
     status: degraded
@@ -119,7 +119,7 @@ capabilities:
       ru: >-
         Поддержано, если клиенту достаточно только смены advertised profile.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getVersionUsesConfiguredFrontendProfile
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getVersionUsesConfiguredFrontendProfile
       - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
   - id: hdp_only_methods_with_matching_runtime
     status: supported
@@ -160,9 +160,9 @@ capabilities:
         Поддержано при наличии совместимых Hortonworks front-door и backend
         runtime jar.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
   - id: hdp_only_methods_rejected_without_matching_runtime
     status: rejected
     client:
@@ -199,7 +199,7 @@ capabilities:
         Явно отклоняется, если target backend не даёт совместимый Hortonworks
         runtime.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRejectsNonHortonworksBackendRuntime
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#addWriteNotificationLogRejectsNonHortonworksBackendRuntime
   - id: hs2_multicatalog_namespace_rewrite
     status: supported
     client:
@@ -242,7 +242,7 @@ capabilities:
       ru: >-
         Поддержано, пока routing может однозначно вычислить целевой каталог.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#lockRoutesByNamespaceAndRewritesNestedDbName
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#lockRoutesByNamespaceAndRewritesNestedDbName
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
   - id: txn_lock_without_namespace_degraded
     status: degraded
@@ -302,9 +302,9 @@ capabilities:
         на non-default catalog, но в остальном это стоит считать
         single-catalog control plane, пока не проведена отдельная валидация.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
   - id: kerberos_frontdoor_with_impersonation
     status: supported
     client:
@@ -404,9 +404,9 @@ capabilities:
         routing, explicit namespace ownership и не допустить silent
         split-brain writes.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#catalogManagementRpcsAreRejected
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#catalogManagementRpcsAreRejected
 method_matrix:
   - id: object_scoped_reads_and_writes
     method:
@@ -445,7 +445,7 @@ method_matrix:
       en: Low, as long as the request resolves one catalog unambiguously.
       ru: Низкий, пока запрос однозначно разрешается в один catalog.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
 
   - id: list_and_discovery_reads
     method:
@@ -487,7 +487,7 @@ method_matrix:
         каталогами, поэтому клиент видит externalized names, а не сырые
         backend names
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
 
   - id: apache_request_wrappers_to_hdp_backend
     method:
@@ -550,7 +550,7 @@ method_matrix:
       en: Medium; callers only see one catalog's global service state.
       ru: Средний; клиент видит только global service state одного catalog.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getMetaConfWithoutCatalogContextUsesDefaultBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getMetaConfWithoutCatalogContextUsesDefaultBackend
 
   - id: compatibility_service_reads
     method:
@@ -595,7 +595,7 @@ method_matrix:
         Средний; вместо hard failure клиент может увидеть lossy control-plane
         state, поэтому monitoring и automation нужно отдельно валидировать
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#notificationMethodsHaveCompatibilityFallbacks
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#notificationMethodsHaveCompatibilityFallbacks
 
   - id: txn_lock_lifecycle_without_namespace
     method:
@@ -640,7 +640,7 @@ method_matrix:
         Высокий; считай это single-catalog control plane, пока не провалидирован
         точный workload end to end
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
 
   - id: acid_object_payload_rpcs
     method:
@@ -684,7 +684,7 @@ method_matrix:
         каталогами, поэтому эти RPC стоит считать production-unsafe до
         отдельной валидации
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#lockRoutesByNamespaceAndRewritesNestedDbName
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#lockRoutesByNamespaceAndRewritesNestedDbName
 
   - id: hdp_frontdoor_bridge_safe_mappings
     method:
@@ -794,7 +794,7 @@ method_matrix:
       en: Low when the target backend runtime is explicitly Hortonworks.
       ru: Низкий, если target backend runtime явно Hortonworks.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
 
   - id: hdp_get_tables_ext
     method:
@@ -825,7 +825,7 @@ method_matrix:
       en: Low; the main risk is runtime mismatch, which is rejected explicitly.
       ru: Низкий; основной риск — runtime mismatch, и он отклоняется явно.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
 
   - id: hdp_get_all_materialized_view_objects_for_rewriting
     method:
@@ -860,7 +860,7 @@ method_matrix:
         Средний; вызов scoped через default-catalog, а semantics materialized
         view rewrite остаются runtime-specific
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
 
   - id: ambiguous_global_writes
     method:
@@ -907,7 +907,7 @@ method_matrix:
         Заблокировано по design, чтобы гарантировать deterministic routing и
         не допустить silent split-brain writes или drift global state
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
 
   - id: catalog_registry_rpcs
     method:
@@ -944,4 +944,4 @@ method_matrix:
         Заблокировано по design, чтобы namespace ownership оставался явным и
         централизованно управляемым.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandlerTest#catalogManagementRpcsAreRejected
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTest#catalogManagementRpcsAreRejected
