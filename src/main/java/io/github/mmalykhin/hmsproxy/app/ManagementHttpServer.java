@@ -13,7 +13,9 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -84,21 +86,26 @@ public final class ManagementHttpServer implements AutoCloseable {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
       if (!config.latencyRouting().backendStatePolling().enabled()) {
-        for (CatalogBackend backend : router.backends()) {
-          try {
-            long startedAt = System.nanoTime();
-            backend.checkConnectivity();
-            observability.runtimeState().recordBackendProbeSuccess(
-                backend.name(),
-                (System.nanoTime() - startedAt) / 1_000_000L,
-                config.latencyRouting());
-          } catch (Throwable error) {
-            observability.runtimeState().recordBackendProbeFailure(
-                backend.name(),
-                error,
-                config.latencyRouting());
-          }
+        List<CatalogBackend> backends = new ArrayList<>(router.backends());
+        List<CompletableFuture<Void>> probes = new ArrayList<>(backends.size());
+        for (CatalogBackend backend : backends) {
+          probes.add(CompletableFuture.runAsync(() -> {
+            try {
+              long startedAt = System.nanoTime();
+              backend.checkConnectivity();
+              observability.runtimeState().recordBackendProbeSuccess(
+                  backend.name(),
+                  (System.nanoTime() - startedAt) / 1_000_000L,
+                  config.latencyRouting());
+            } catch (Throwable error) {
+              observability.runtimeState().recordBackendProbeFailure(
+                  backend.name(),
+                  error,
+                  config.latencyRouting());
+            }
+          }));
         }
+        CompletableFuture.allOf(probes.toArray(new CompletableFuture[0])).join();
       }
 
       KerberosHealthProbe.KerberosStatus frontDoorKerberos = configKerberosStatus();
@@ -174,7 +181,26 @@ public final class ManagementHttpServer implements AutoCloseable {
     }
 
     private static String escape(String value) {
-      return value.replace("\\", "\\\\").replace("\"", "\\\"");
+      StringBuilder sb = new StringBuilder(value.length());
+      for (int i = 0; i < value.length(); i++) {
+        char c = value.charAt(i);
+        switch (c) {
+          case '"':  sb.append("\\\""); break;
+          case '\\': sb.append("\\\\"); break;
+          case '\n': sb.append("\\n");  break;
+          case '\r': sb.append("\\r");  break;
+          case '\t': sb.append("\\t");  break;
+          case '\b': sb.append("\\b");  break;
+          case '\f': sb.append("\\f");  break;
+          default:
+            if (c < 0x20) {
+              sb.append(String.format("\\u%04x", (int) c));
+            } else {
+              sb.append(c);
+            }
+        }
+      }
+      return sb.toString();
     }
 
     private static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {
