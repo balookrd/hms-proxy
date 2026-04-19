@@ -58,35 +58,29 @@ public class FrontendProcessorFactoryTest {
   }
 
   private static ProxyConfig apacheConfig() {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
-        "__",
-        "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig(
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
             "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
-        new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.APACHE_3_1_3,
-            null,
-            null,
-            false));
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
+        .build();
   }
 
   private static ProxyConfig hortonworksConfig(ProxyConfig.FrontendProfile frontendProfile, Path jar) {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
-        "__",
-        "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig(
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
             "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
-            null, null, Map.of("hive.metastore.uris", "thrift://one"))),
-        new ProxyConfig.CompatibilityConfig(
-            frontendProfile,
-            jar.toString(),
-            null,
-            false));
+            null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new ProxyConfig.CompatibilityConfig(frontendProfile, jar.toString(), null, false))
+        .build();
   }
 
   private static ThriftHiveMetastore.Iface noopHandler() {

@@ -66,30 +66,25 @@ public class FrontDoorSecurityTest {
     }
 
     private static ProxyConfig kerberosConfig(java.util.Map<String, String> frontDoorConf) {
-      return new ProxyConfig(
-          new ProxyConfig.ServerConfig("hms-proxy", "0.0.0.0", 9083, 16, 256),
-          new ProxyConfig.SecurityConfig(
+      return ProxyConfig.builder()
+          .server(new ProxyConfig.ServerConfig("hms-proxy", "0.0.0.0", 9083, 16, 256))
+          .security(new ProxyConfig.SecurityConfig(
               ProxyConfig.SecurityMode.KERBEROS,
               "hive/proxy-host.example.com@EXAMPLE.COM",
               "hive/backend-host.example.com@EXAMPLE.COM",
               "/etc/security/keytabs/hms-proxy.keytab",
               "/etc/security/keytabs/hms-proxy-client.keytab",
               false,
-              frontDoorConf),
-          ".",
-          "catalog1",
-          java.util.Map.of(
+              frontDoorConf))
+          .catalogDbSeparator(".")
+          .defaultCatalog("catalog1")
+          .catalogs(java.util.Map.of(
               "catalog1",
               new ProxyConfig.CatalogConfig(
-                  "catalog1",
-                  "catalog1",
-                  "file:///warehouse/catalog1",
-                  false,
-                  ProxyConfig.CatalogAccessMode.READ_WRITE,
-                  java.util.List.of(),
-                  null,
-                  null,
-                  java.util.Map.of("hive.metastore.uris", "thrift://hms1:9083"))));
+                  "catalog1", "catalog1", "file:///warehouse/catalog1", false,
+                  ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+                  null, null, java.util.Map.of("hive.metastore.uris", "thrift://hms1:9083"))))
+          .build();
     }
   }
 }

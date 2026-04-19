@@ -59,21 +59,18 @@ public class IsolatedMetastoreClientClassLoadingTest {
 
   @Test
   public void configurationResolvesFilterHookInIsolatedLoader() throws Exception {
-    ProxyConfig config = new ProxyConfig(
-        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()),
-        ".",
-        "catalog1",
-        java.util.Map.of("catalog1", new ProxyConfig.CatalogConfig(
-            "catalog1",
-            "c1",
-            "file:///c1",
-            false,
-            ProxyConfig.CatalogAccessMode.READ_WRITE,
-            java.util.List.of(),
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()))
+        .catalogDbSeparator(".")
+        .defaultCatalog("catalog1")
+        .catalogs(java.util.Map.of("catalog1", new ProxyConfig.CatalogConfig(
+            "catalog1", "c1", "file:///c1", false,
+            ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
-            java.util.Map.of("hive.metastore.uris", "thrift://one"))));
+            java.util.Map.of("hive.metastore.uris", "thrift://one"))))
+        .build();
 
     java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
         .toAbsolutePath();

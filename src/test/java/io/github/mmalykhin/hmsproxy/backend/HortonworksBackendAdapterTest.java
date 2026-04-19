@@ -263,20 +263,16 @@ public class HortonworksBackendAdapterTest {
   }
 
   private static ProxyConfig config() {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
-        "__",
-        "catalog1",
-        Map.of("catalog1", new ProxyConfig.CatalogConfig(
-            "catalog1",
-            "c1",
-            "file:///c1",
-            false,
-            ProxyConfig.CatalogAccessMode.READ_WRITE,
-            java.util.List.of(),
-            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
-            HDP_JAR.toString(),
-            Map.of("hive.metastore.uris", "thrift://one"))));
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
+            "catalog1", "c1", "file:///c1", false,
+            ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+            Map.of("hive.metastore.uris", "thrift://one"))))
+        .build();
   }
 }

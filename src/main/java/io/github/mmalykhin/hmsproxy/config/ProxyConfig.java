@@ -42,183 +42,44 @@ public record ProxyConfig(
     latencyRouting = latencyRouting == null ? LatencyRoutingConfig.disabled() : latencyRouting;
   }
 
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()),
-        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
-        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
-        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
+  public static Builder builder() {
+    return new Builder();
   }
 
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      BackendConfig backend,
-      CompatibilityConfig compatibility,
-      FederationConfig federation,
-      TransactionalDdlGuardConfig transactionalDdlGuard,
-      ManagementConfig management
-  ) {
-    this(
-        server,
-        security,
-        catalogDbSeparator,
-        defaultCatalog,
-        catalogs,
-        backend,
-        compatibility,
-        federation,
-        transactionalDdlGuard,
-        management,
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
+  public static final class Builder {
+    private ServerConfig server;
+    private SecurityConfig security;
+    private String catalogDbSeparator;
+    private String defaultCatalog;
+    private Map<String, CatalogConfig> catalogs;
+    private BackendConfig backend;
+    private CompatibilityConfig compatibility;
+    private FederationConfig federation;
+    private TransactionalDdlGuardConfig transactionalDdlGuard;
+    private ManagementConfig management;
+    private SyntheticReadLockStoreConfig syntheticReadLockStore;
+    private RateLimitConfig rateLimit;
+    private LatencyRoutingConfig latencyRouting;
 
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      CompatibilityConfig compatibility
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
-        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
+    public Builder server(ServerConfig server) { this.server = server; return this; }
+    public Builder security(SecurityConfig security) { this.security = security; return this; }
+    public Builder catalogDbSeparator(String sep) { this.catalogDbSeparator = sep; return this; }
+    public Builder defaultCatalog(String defaultCatalog) { this.defaultCatalog = defaultCatalog; return this; }
+    public Builder catalogs(Map<String, CatalogConfig> catalogs) { this.catalogs = catalogs; return this; }
+    public Builder backend(BackendConfig backend) { this.backend = backend; return this; }
+    public Builder compatibility(CompatibilityConfig compatibility) { this.compatibility = compatibility; return this; }
+    public Builder federation(FederationConfig federation) { this.federation = federation; return this; }
+    public Builder transactionalDdlGuard(TransactionalDdlGuardConfig guard) { this.transactionalDdlGuard = guard; return this; }
+    public Builder management(ManagementConfig management) { this.management = management; return this; }
+    public Builder syntheticReadLockStore(SyntheticReadLockStoreConfig store) { this.syntheticReadLockStore = store; return this; }
+    public Builder rateLimit(RateLimitConfig rateLimit) { this.rateLimit = rateLimit; return this; }
+    public Builder latencyRouting(LatencyRoutingConfig latencyRouting) { this.latencyRouting = latencyRouting; return this; }
 
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      CompatibilityConfig compatibility,
-      TransactionalDdlGuardConfig transactionalDdlGuard
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        new FederationConfig(
-            compatibility != null && compatibility.preserveBackendCatalogName(),
-            ViewTextRewriteMode.DISABLED,
-            false),
-        transactionalDdlGuard,
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
-
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      BackendConfig backend,
-      CompatibilityConfig compatibility
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
-        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
-        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
-
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      CompatibilityConfig compatibility,
-      FederationConfig federation,
-      TransactionalDdlGuardConfig transactionalDdlGuard
-  ) {
-    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, new BackendConfig(Map.of()), compatibility,
-        federation,
-        transactionalDdlGuard,
-        new ManagementConfig(false, server.bindHost(), server.port() + 1000),
-        new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null),
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
-
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      BackendConfig backend,
-      CompatibilityConfig compatibility,
-      FederationConfig federation,
-      TransactionalDdlGuardConfig transactionalDdlGuard,
-      ManagementConfig management,
-      SyntheticReadLockStoreConfig syntheticReadLockStore
-  ) {
-    this(
-        server,
-        security,
-        catalogDbSeparator,
-        defaultCatalog,
-        catalogs,
-        backend,
-        compatibility,
-        federation,
-        transactionalDdlGuard,
-        management,
-        syntheticReadLockStore,
-        RateLimitConfig.disabled(),
-        LatencyRoutingConfig.disabled());
-  }
-
-  public ProxyConfig(
-      ServerConfig server,
-      SecurityConfig security,
-      String catalogDbSeparator,
-      String defaultCatalog,
-      Map<String, CatalogConfig> catalogs,
-      BackendConfig backend,
-      CompatibilityConfig compatibility,
-      FederationConfig federation,
-      TransactionalDdlGuardConfig transactionalDdlGuard,
-      ManagementConfig management,
-      SyntheticReadLockStoreConfig syntheticReadLockStore,
-      RateLimitConfig rateLimit
-  ) {
-    this(
-        server,
-        security,
-        catalogDbSeparator,
-        defaultCatalog,
-        catalogs,
-        backend,
-        compatibility,
-        federation,
-        transactionalDdlGuard,
-        management,
-        syntheticReadLockStore,
-        rateLimit,
-        LatencyRoutingConfig.disabled());
+    public ProxyConfig build() {
+      return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
+          backend, compatibility, federation, transactionalDdlGuard, management,
+          syntheticReadLockStore, rateLimit, latencyRouting);
+    }
   }
 
   public record ServerConfig(

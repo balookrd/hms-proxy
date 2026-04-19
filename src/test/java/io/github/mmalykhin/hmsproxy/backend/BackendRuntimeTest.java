@@ -70,12 +70,13 @@ public class BackendRuntimeTest {
   }
 
   private static ProxyConfig config() {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4),
-        new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()),
-        "__",
-        "catalog1",
-        Map.of("catalog1", catalogConfig(null, null)));
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .build();
   }
 
   private static ProxyConfig.CatalogConfig catalogConfig(

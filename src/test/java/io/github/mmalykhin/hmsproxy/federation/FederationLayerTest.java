@@ -159,19 +159,13 @@ public class FederationLayerTest {
   }
 
   private static ProxyConfig viewRewriteConfig(boolean preserveOriginalViewText) {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64),
-        new ProxyConfig.SecurityConfig(
-            ProxyConfig.SecurityMode.NONE,
-            null,
-            null,
-            null,
-            null,
-            false,
-            Map.of()),
-        "__",
-        "catalog1",
-        Map.of(
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
+        .security(new ProxyConfig.SecurityConfig(
+            ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
             "catalog1",
             new ProxyConfig.CatalogConfig(
                 "catalog1",
@@ -193,17 +187,18 @@ public class FederationLayerTest {
                 java.util.List.of(),
                 null,
                 null,
-                Map.of("hive.metastore.uris", "thrift://hms2:9083"))),
-        new ProxyConfig.BackendConfig(Map.of()),
-        new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false),
-        new ProxyConfig.FederationConfig(
+                Map.of("hive.metastore.uris", "thrift://hms2:9083"))))
+        .backend(new ProxyConfig.BackendConfig(Map.of()))
+        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
+        .federation(new ProxyConfig.FederationConfig(
             false,
             ProxyConfig.ViewTextRewriteMode.REWRITE,
-            preserveOriginalViewText),
-        new ProxyConfig.TransactionalDdlGuardConfig(
+            preserveOriginalViewText))
+        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(
             ProxyConfig.TransactionalDdlGuardMode.DISABLED,
-            java.util.List.of()),
-        new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083));
+            java.util.List.of()))
+        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
+        .build();
   }
 
   private static ProxyConfig exposureConfig(
@@ -211,19 +206,13 @@ public class FederationLayerTest {
       java.util.List<String> exposeDbPatterns,
       Map<String, java.util.List<String>> exposeTablePatterns
   ) {
-    return new ProxyConfig(
-        new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64),
-        new ProxyConfig.SecurityConfig(
-            ProxyConfig.SecurityMode.NONE,
-            null,
-            null,
-            null,
-            null,
-            false,
-            Map.of()),
-        "__",
-        "catalog1",
-        Map.of(
+    return ProxyConfig.builder()
+        .server(new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
+        .security(new ProxyConfig.SecurityConfig(
+            ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
             "catalog1",
             new ProxyConfig.CatalogConfig(
                 "catalog1",
@@ -237,16 +226,17 @@ public class FederationLayerTest {
                 exposeTablePatterns,
                 null,
                 null,
-                Map.of("hive.metastore.uris", "thrift://hms1:9083"))),
-        new ProxyConfig.BackendConfig(Map.of()),
-        new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false),
-        new ProxyConfig.FederationConfig(
+                Map.of("hive.metastore.uris", "thrift://hms1:9083"))))
+        .backend(new ProxyConfig.BackendConfig(Map.of()))
+        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
+        .federation(new ProxyConfig.FederationConfig(
             false,
             ProxyConfig.ViewTextRewriteMode.DISABLED,
-            false),
-        new ProxyConfig.TransactionalDdlGuardConfig(
+            false))
+        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(
             ProxyConfig.TransactionalDdlGuardMode.DISABLED,
-            java.util.List.of()),
-        new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083));
+            java.util.List.of()))
+        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
+        .build();
   }
 }
