@@ -142,11 +142,10 @@ public final class BackendRoutingController implements AutoCloseable {
     long probeTimeoutMs = config.latencyRouting().backendStatePolling().probeTimeoutMs();
     for (CatalogBackend backend : router.backends()) {
       try {
-        backend.ensureClientSocketTimeout(probeTimeoutMs);
         long startedAt = System.nanoTime();
         Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
           try {
-            backend.checkConnectivity();
+            backend.probeConnectivity(probeTimeoutMs);
             return null;
           } catch (Exception e) {
             throw e;

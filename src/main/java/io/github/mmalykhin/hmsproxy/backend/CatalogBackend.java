@@ -109,6 +109,14 @@ public final class CatalogBackend implements AutoCloseable {
     invokeRawByName("getStatus", new Class<?>[0], new Object[0], null);
   }
 
+  public void probeConnectivity(long timeoutMs) throws Throwable {
+    HiveConf probeConf = new HiveConf(hiveConf);
+    probeConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
+    try (BackendInvocationSession session = runtime.openEphemeralSession(probeConf, adapter.runtimeProfile())) {
+      session.invokeByName("getStatus", new Class<?>[0], new Object[0]);
+    }
+  }
+
   public void ensureClientSocketTimeout(long timeoutMs) throws MetaException {
     if (timeoutMs <= 0 || !shouldReconnectForTimeout(timeoutMs)) {
       return;

@@ -84,6 +84,11 @@ public final class BackendRuntime implements AutoCloseable {
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames);
   }
 
+  public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
+      throws MetaException {
+    return sessionFactory.open(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile);
+  }
+
   @Override
   public synchronized void close() {
     CatalogBackend.closeQuietly(sharedSession, "shared backend metastore session");
