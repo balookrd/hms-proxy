@@ -1,10 +1,105 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-04`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-18`.
 Тегированных релизов у проекта пока нет, поэтому записи сгруппированы по датам коммитов и
 сфокусированы на заметных для пользователей изменениях.
 
 English version: [CHANGELOG.md](CHANGELOG.md).
+
+## 2026-04-18
+
+### Добавлено
+
+- Добавлены настройки deadline для per-request hedged-read fanout и backend-state probe, а также
+  максимального размера и idle TTL для impersonation client cache.
+
+### Изменено
+
+- Ускорены hot path в routing: синхронизированный rate limiter заменён на lock-free GCRA, а
+  Thrift reflection в namespace translation и table-name extraction теперь кэшируется.
+- Routing, namespace translation и wiring handler'ов разбиты на более мелкие компоненты, чтобы
+  уменьшить package coupling и упростить unit tests.
+
+### Исправлено
+
+- Parallel fanout и backend-state probe теперь жёстко ограничены по времени, чтобы зависшие
+  backend'ы не блокировали запросы и не подвешивали single-thread poller.
+- При timeout fanout теперь отменяются все pending futures, чтобы не истощать thread pool.
+- Убран blocking reconnect I/O под `synchronized` в backend client path.
+- Исправлена утечка `ThreadLocal` в `RoutingMetaStoreHandler`.
+- В namespace translation добавлено обнаружение циклов, чтобы избежать бесконечной рекурсии на
+  циклических графах Thrift-объектов.
+
+## 2026-04-15
+
+### Добавлено
+
+- Добавлена best-effort очистка данных при удалении external table из файловой системы routed
+  catalog, если опция включена.
+
+### Документация
+
+- Задокументированы конфигурация и поведение external table drop purge в обоих README и в example
+  properties.
+
+## 2026-04-14
+
+### Добавлено
+
+- Добавлен rewrite location для external table на routed catalog; если исходная filesystem явно не
+  задана, по умолчанию используется filesystem default catalog.
+
+### Изменено
+
+- Разбор config mode сделан регистронезависимым, включая режимы view rewrite.
+
+### Исправлено
+
+- Исправлена обработка запросов статистики с union payload в view-definition compatibility layer.
+
+## 2026-04-13
+
+### Документация
+
+- Расширены smoke guides и smoke-покрытие для view rewrite и UDF-сценариев, включая
+  real-installation smoke script.
+
+## 2026-04-07
+
+### Добавлено
+
+- Добавлены режимы transactional DDL guard `REWRITE_TO_NON_TRANSACTIONAL` и
+  `REWRITE_MANAGED_TO_EXTERNAL`; существующие режимы переименованы в более явные варианты.
+
+### Исправлено
+
+- Убраны ложные SASL `ERROR`-логи от probe-соединений, которые открывают сокет, но не отправляют
+  SASL payload.
+
+## 2026-04-06
+
+### Изменено
+
+- Пакетированная сборка теперь кладёт runtime-зависимости в отдельный каталог `lib/`.
+
+### Исправлено
+
+- Исправлена совместимость Hortonworks frontend: исключения из HDP-only методов и payload
+  `alter_partitions_req` теперь корректно переводятся через границу classloader'ов.
+- Скорректирован routing ACID-операций: `allocate_table_write_ids` и `get_valid_write_ids`
+  направляются в default backend, а создание transactional tables на non-default catalog теперь
+  завершается понятным `MetaException`.
+
+## 2026-04-05
+
+### Изменено
+
+- Обработка запросов перестроена в interceptor chain, который разделяет rate limiting, lock
+  handling, compatibility adaptation и routing.
+
+### Исправлено
+
+- Исправлена потеря request context в parallel fanout tasks и убрана неограниченная fanout queue.
 
 ## 2026-04-04
 

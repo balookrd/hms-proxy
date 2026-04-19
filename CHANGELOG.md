@@ -1,10 +1,106 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-04`. The project has not published tagged releases yet, so entries are grouped by commit
+`2026-04-18`. The project has not published tagged releases yet, so entries are grouped by commit
 date and focused on user-visible changes.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-04-18
+
+### Added
+
+- Added configuration knobs for per-request hedged-read fanout deadlines, backend-state probe
+  deadlines, and impersonation-client cache sizing and idle TTL.
+
+### Changed
+
+- Improved routing hot paths by replacing the synchronized rate limiter with a lock-free GCRA
+  implementation and caching Thrift reflection used in namespace translation and table-name
+  extraction.
+- Refactored routing, namespace translation, and handler wiring into smaller components to reduce
+  package coupling and improve unit-test coverage.
+
+### Fixed
+
+- Bounded parallel fanout and backend-state probes so hung backends cannot block requests or starve
+  the single-threaded poller indefinitely.
+- Cancelled pending fanout futures on timeout to prevent thread-pool exhaustion.
+- Fixed blocking reconnect I/O under synchronization in backend clients.
+- Fixed a `ThreadLocal` leak in `RoutingMetaStoreHandler`.
+- Added cycle detection in namespace translation to avoid infinite recursion on cyclic Thrift object
+  graphs.
+
+## 2026-04-15
+
+### Added
+
+- Added best-effort external-table drop purge that removes table data from the routed catalog
+  filesystem when enabled.
+
+### Docs
+
+- Documented external-table drop purge configuration and behavior in both READMEs and the example
+  properties file.
+
+## 2026-04-14
+
+### Added
+
+- Added external-table location rewrite for routed catalogs, with the source filesystem defaulting
+  to the default catalog when not configured explicitly.
+
+### Changed
+
+- Made configuration mode parsing case-insensitive, including view rewrite modes.
+
+### Fixed
+
+- Fixed view-definition compatibility handling for statistics requests that use union payloads.
+
+## 2026-04-13
+
+### Docs
+
+- Expanded smoke coverage and smoke guides for view-rewrite and UDF scenarios, including the
+  real-installation smoke script.
+
+## 2026-04-07
+
+### Added
+
+- Added `REWRITE_TO_NON_TRANSACTIONAL` and `REWRITE_MANAGED_TO_EXTERNAL` transactional DDL guard
+  modes, and renamed the existing modes for clarity.
+
+### Fixed
+
+- Silenced benign SASL `ERROR` logs caused by probe connections that open a socket without sending
+  SASL data.
+
+## 2026-04-06
+
+### Changed
+
+- Updated the packaged build to ship project dependencies in a separate `lib/` directory.
+
+### Fixed
+
+- Fixed Hortonworks frontend compatibility so HDP-only exceptions and `alter_partitions_req`
+  payloads are translated across the classloader boundary correctly.
+- Corrected ACID routing so `allocate_table_write_ids` and `get_valid_write_ids` reach the default
+  backend, while transactional table creation on non-default catalogs now fails fast with a clear
+  `MetaException`.
+
+## 2026-04-05
+
+### Changed
+
+- Refactored request handling into an interceptor chain that separates rate limiting, lock
+  handling, compatibility adaptation, and routing.
+
+### Fixed
+
+- Fixed request-context loss in parallel fanout tasks and removed an unbounded fanout queue.
 
 ## 2026-04-04
 
