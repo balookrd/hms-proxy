@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.config;
 
-import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;

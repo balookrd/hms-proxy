@@ -6,7 +6,6 @@ import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
-import io.github.mmalykhin.hmsproxy.util.WriteTraceUtil;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;

@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
+import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 
 public final class MetastoreRuntimeProfileResolver {

@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy.compatibility;
+package io.github.mmalykhin.hmsproxy.config;
 
 public enum MetastoreRuntimeProfile {
   APACHE_3_1_3("Apache Hive Metastore", "3.1.3", "hive-metastore/hive-standalone-metastore-3.1.3.jar"),

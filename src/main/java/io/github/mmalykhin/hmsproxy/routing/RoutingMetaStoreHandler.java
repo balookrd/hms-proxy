@@ -10,7 +10,6 @@ import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
-import io.github.mmalykhin.hmsproxy.util.WriteTraceUtil;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;

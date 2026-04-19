@@ -10,7 +10,7 @@ import io.github.mmalykhin.hmsproxy.backend.IsolatedInvocationBridge;
 import io.github.mmalykhin.hmsproxy.backend.IsolatedMetastoreClient;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
-import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;

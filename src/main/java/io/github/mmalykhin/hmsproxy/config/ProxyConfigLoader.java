@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.config;
 
-import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
 import java.io.IOException;
 import java.io.InputStream;
