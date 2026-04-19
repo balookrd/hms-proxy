@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy.routing;
+package io.github.mmalykhin.hmsproxy.util;
 
 import java.util.Locale;
 import java.util.regex.Matcher;

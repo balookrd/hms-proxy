@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.util.List;
 import java.util.Optional;

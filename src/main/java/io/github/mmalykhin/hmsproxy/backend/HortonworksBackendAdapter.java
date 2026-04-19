@@ -1,7 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.routing.ImpersonationContext;
 import java.util.Collections;
 import java.util.Map;
 import java.util.List;

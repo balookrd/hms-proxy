@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.observability;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.routing.TimeoutValueParser;
+import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
