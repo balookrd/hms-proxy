@@ -78,7 +78,7 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public boolean hedgedReadEnabled(String methodName) {
-    return fanoutExecutor != null && HmsOperationRegistry.describe(methodName).safeFanout();
+    return fanoutExecutor != null && HmsOperationPolicy.describe(methodName).safeFanout();
   }
 
   public ExecutorService fanoutExecutor() {
@@ -90,7 +90,7 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public boolean shouldDegradeSafeFanout(String methodName, Throwable error) {
-    if (!HmsOperationRegistry.describe(methodName).safeFanout()
+    if (!HmsOperationPolicy.describe(methodName).safeFanout()
         || config.latencyRouting().degradedRoutingPolicy() != ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS) {
       return false;
     }

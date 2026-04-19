@@ -39,7 +39,7 @@ public final class WriteTraceUtil {
   }
 
   public static boolean shouldTrace(String methodName) {
-    return HmsOperationRegistry.describe(methodName).trace();
+    return HmsOperationPolicy.describe(methodName).trace();
   }
 
   public static String summarizeArgs(Object[] args) {

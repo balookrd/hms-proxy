@@ -11,7 +11,7 @@ public final class DefaultBackendRoutingPolicy {
   }
 
   public static Optional<Policy> policyFor(String methodName) {
-    return HmsOperationRegistry.describe(methodName).defaultBackendPolicyOptional();
+    return HmsOperationPolicy.describe(methodName).defaultBackendPolicyOptional();
   }
 
   public enum Policy {

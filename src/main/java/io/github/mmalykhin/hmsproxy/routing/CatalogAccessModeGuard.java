@@ -42,7 +42,7 @@ final class CatalogAccessModeGuard {
   }
 
   static boolean isWriteOperation(String methodName) {
-    return HmsOperationRegistry.describe(methodName).mutating();
+    return HmsOperationPolicy.describe(methodName).mutating();
   }
 
   private static String normalizeDbName(String backendDbName) {

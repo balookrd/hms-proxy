@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-public final class HmsOperationRegistry {
+public final class HmsOperationPolicy {
   private static final Set<String> READ_PREFIXES = Set.of("get_", "list_", "show_");
   private static final Set<String> WRITE_PREFIXES = Set.of(
       "create_",
@@ -92,11 +92,11 @@ public final class HmsOperationRegistry {
       "update_table_column_statistics",
       "update_partition_column_statistics");
 
-  private HmsOperationRegistry() {
+  private HmsOperationPolicy() {
   }
 
   public static OperationMetadata describe(String methodName) {
-    return DESCRIBE_CACHE.computeIfAbsent(methodName == null ? "" : methodName, HmsOperationRegistry::compute);
+    return DESCRIBE_CACHE.computeIfAbsent(methodName == null ? "" : methodName, HmsOperationPolicy::compute);
   }
 
   private static OperationMetadata compute(String methodName) {

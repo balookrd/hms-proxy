@@ -3,7 +3,7 @@ package io.github.mmalykhin.hmsproxy.frontend;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreRuntimeJarResolver;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.routing.HmsOperationRegistry;
+import io.github.mmalykhin.hmsproxy.routing.HmsOperationPolicy;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -57,7 +57,7 @@ public final class HortonworksFrontendBridge {
     return ifaceClass == null
         ? Set.of()
         : ifaceMethods(ifaceClass).stream()
-            .filter(m -> HmsOperationRegistry.describe(m).hdpAdapted())
+            .filter(m -> HmsOperationPolicy.describe(m).hdpAdapted())
             .collect(java.util.stream.Collectors.toUnmodifiableSet());
   }
 
@@ -93,7 +93,7 @@ public final class HortonworksFrontendBridge {
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
-      if (HmsOperationRegistry.describe(method.getName()).hdpAdapted()) {
+      if (HmsOperationPolicy.describe(method.getName()).hdpAdapted()) {
         try {
           return invokeHdpOnly(method, args);
         } catch (Throwable t) {

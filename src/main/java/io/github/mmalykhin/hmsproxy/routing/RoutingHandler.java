@@ -364,7 +364,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
     String methodName = method.getName();
-    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (args == null || args.length == 0) {
       return invokeGlobal(method, args);
     }
@@ -442,7 +442,7 @@ final class RoutingHandler implements InvocationHandler {
       return invokeGlobal(method, args);
     }
     String methodName = method.getName();
-    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     RequestContext.currentObservation().recordNamespace(extractedNamespace);
     validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
     validateReadExposure(methodName, extractedNamespace, args);
@@ -466,7 +466,7 @@ final class RoutingHandler implements InvocationHandler {
   );
 
   private void validateAcidNotOnNonDefaultCatalog(
-      HmsOperationRegistry.OperationMetadata operation,
+      HmsOperationPolicy.OperationMetadata operation,
       CatalogRouter.ResolvedNamespace namespace,
       String methodName
   ) throws MetaException {
@@ -513,7 +513,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
       throws TException {
-    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (operation.mutating()) {
       return;
     }
@@ -551,7 +551,7 @@ final class RoutingHandler implements InvocationHandler {
 
   private Object filterReadResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
       throws TException {
-    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (operation.mutating() || result == null) {
       return result;
     }
@@ -668,7 +668,7 @@ final class RoutingHandler implements InvocationHandler {
   }
 
   private static String extractExplicitTableReadName(
-      HmsOperationRegistry.OperationMetadata operation,
+      HmsOperationPolicy.OperationMetadata operation,
       Object[] args
   ) {
     if (args == null || args.length == 0) {

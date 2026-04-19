@@ -25,7 +25,7 @@ final class RequestObservation {
 
   RequestObservation(String method) {
     this.method = method;
-    this.operationClass = HmsOperationRegistry.describe(method).operationClass().wireName();
+    this.operationClass = HmsOperationPolicy.describe(method).operationClass().wireName();
   }
 
   String method() {

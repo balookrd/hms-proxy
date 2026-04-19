@@ -199,7 +199,7 @@ final class RequestRateLimiter {
   }
 
   private static RequestClassification classifyRequest(String methodName) {
-    HmsOperationRegistry.OperationMetadata operation = HmsOperationRegistry.describe(methodName);
+    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     String canonicalMethod = canonicalize(methodName);
     LinkedHashSet<String> rpcClasses = new LinkedHashSet<>();
     if (operation.mutating()) {
@@ -217,7 +217,7 @@ final class RequestRateLimiter {
     return new RequestClassification(operation.operationClass().wireName(), List.copyOf(rpcClasses));
   }
 
-  private static boolean isDdl(String canonicalMethod, HmsOperationRegistry.OperationMetadata operation) {
+  private static boolean isDdl(String canonicalMethod, HmsOperationPolicy.OperationMetadata operation) {
     if (!operation.mutating()) {
       return false;
     }
