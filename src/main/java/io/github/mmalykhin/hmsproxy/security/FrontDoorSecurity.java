@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
+import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URL;
@@ -289,7 +289,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
       String remoteAddress
   ) {
     String principal = trimToNull(authenticatedUser);
-    String proxyUser = RoutingMetaStoreHandler.shortUserName(principal);
+    String proxyUser = PrincipalUtil.shortUserName(principal);
     if (proxyUser == null) {
       proxyUser = "<service-user>";
     }

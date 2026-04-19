@@ -10,6 +10,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
+import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import io.github.mmalykhin.hmsproxy.util.WriteTraceUtil;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -267,27 +268,11 @@ public final class RoutingMetaStoreHandler implements InvocationHandler, Hortonw
     return DefaultBackendRoutingPolicy.routesToDefaultBackend(methodName);
   }
 
-  public static String shortUserName(String principalOrUser) {
-    if (principalOrUser == null || principalOrUser.isBlank()) {
-      return principalOrUser;
-    }
-    int slash = principalOrUser.indexOf('/');
-    int at = principalOrUser.indexOf('@');
-    int end = principalOrUser.length();
-    if (slash >= 0) {
-      end = Math.min(end, slash);
-    }
-    if (at >= 0) {
-      end = Math.min(end, at);
-    }
-    return principalOrUser.substring(0, end);
-  }
-
   static boolean isServicePrincipalUser(String userName, ProxyConfig.SecurityConfig security) {
     if (userName == null || security == null) {
       return false;
     }
-    return userName.equals(shortUserName(security.serverPrincipal()));
+    return userName.equals(PrincipalUtil.shortUserName(security.serverPrincipal()));
   }
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {

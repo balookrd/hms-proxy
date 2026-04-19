@@ -2,8 +2,8 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreHandler;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -71,7 +71,7 @@ public final class BackendInvocationSession implements AutoCloseable {
               + ". Backend HMS must allow proxy-user impersonation for outbound principal "
               + proxyConfig.security().outboundPrincipal()
               + " (for example via hadoop.proxyuser."
-              + RoutingMetaStoreHandler.shortUserName(proxyConfig.security().outboundPrincipal())
+              + PrincipalUtil.shortUserName(proxyConfig.security().outboundPrincipal())
               + ".*), or impersonation must be disabled for this backend via catalog."
               + catalogConfig.name()
               + ".impersonation-enabled=false");

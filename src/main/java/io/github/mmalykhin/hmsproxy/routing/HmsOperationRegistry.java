@@ -1,8 +1,8 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.HmsOperationClass;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -37,7 +37,7 @@ public final class HmsOperationRegistry {
       "compact_",
       "mark_");
 
-  private static final Map<String, OperationClass> OPERATION_CLASS_OVERRIDES = buildOperationClassOverrides();
+  private static final Map<String, HmsOperationClass> OPERATION_CLASS_OVERRIDES = buildHmsOperationClassOverrides();
   private static final Map<String, Boolean> MUTATION_OVERRIDES = buildMutationOverrides();
   private static final Map<String, NamespaceStrategy> NAMESPACE_STRATEGY_OVERRIDES = buildNamespaceStrategyOverrides();
   private static final Map<String, TableExposureMode> TABLE_EXPOSURE_OVERRIDES = buildTableExposureOverrides();
@@ -84,9 +84,9 @@ public final class HmsOperationRegistry {
 
   private static OperationMetadata compute(String methodName) {
     String normalizedMethod = normalizeMethod(methodName);
-    OperationClass operationClass = OPERATION_CLASS_OVERRIDES.getOrDefault(
+    HmsOperationClass operationClass = OPERATION_CLASS_OVERRIDES.getOrDefault(
         normalizedMethod,
-        deriveOperationClass(normalizedMethod));
+        deriveHmsOperationClass(normalizedMethod));
     boolean mutating = MUTATION_OVERRIDES.getOrDefault(normalizedMethod, deriveMutation(normalizedMethod));
     DefaultBackendRoutingPolicy.Policy defaultBackendPolicy = DEFAULT_BACKEND_POLICY_OVERRIDES.get(normalizedMethod);
     NamespaceStrategy namespaceStrategy = NAMESPACE_STRATEGY_OVERRIDES.getOrDefault(
@@ -110,22 +110,22 @@ public final class HmsOperationRegistry {
         defaultBackendPolicy);
   }
 
-  private static OperationClass deriveOperationClass(String methodName) {
+  private static HmsOperationClass deriveHmsOperationClass(String methodName) {
     if (methodName == null || methodName.isBlank()) {
-      return OperationClass.ADMIN_INTROSPECTION;
+      return HmsOperationClass.ADMIN_INTROSPECTION;
     }
     String normalized = canonicalizeForPrefixMatch(methodName);
     for (String prefix : READ_PREFIXES) {
       if (normalized.startsWith(prefix)) {
-        return OperationClass.METADATA_READ;
+        return HmsOperationClass.METADATA_READ;
       }
     }
     for (String prefix : WRITE_PREFIXES) {
       if (normalized.startsWith(prefix)) {
-        return OperationClass.METADATA_WRITE;
+        return HmsOperationClass.METADATA_WRITE;
       }
     }
-    return OperationClass.ADMIN_INTROSPECTION;
+    return HmsOperationClass.ADMIN_INTROSPECTION;
   }
 
   private static boolean deriveMutation(String methodName) {
@@ -150,7 +150,7 @@ public final class HmsOperationRegistry {
   }
 
   private static NamespaceStrategy deriveNamespaceStrategy(
-      OperationClass operationClass,
+      HmsOperationClass operationClass,
       DefaultBackendRoutingPolicy.Policy defaultBackendPolicy
   ) {
     if (defaultBackendPolicy != null) {
@@ -168,9 +168,9 @@ public final class HmsOperationRegistry {
     };
   }
 
-  private static Map<String, OperationClass> buildOperationClassOverrides() {
-    Map<String, OperationClass> overrides = new LinkedHashMap<>();
-    register(overrides, OperationClass.SERVICE_GLOBAL_READ, List.of(
+  private static Map<String, HmsOperationClass> buildHmsOperationClassOverrides() {
+    Map<String, HmsOperationClass> overrides = new LinkedHashMap<>();
+    register(overrides, HmsOperationClass.SERVICE_GLOBAL_READ, List.of(
         "getMetaConf",
         "get_current_notificationEventId",
         "get_next_notification",
@@ -190,13 +190,13 @@ public final class HmsOperationRegistry {
         "get_role_grants_for_principal",
         "get_privilege_set",
         "refresh_privileges"));
-    register(overrides, OperationClass.SERVICE_GLOBAL_WRITE, List.of(
+    register(overrides, HmsOperationClass.SERVICE_GLOBAL_WRITE, List.of(
         "setMetaConf",
         "create_role",
         "drop_role",
         "grant_role",
         "revoke_role"));
-    register(overrides, OperationClass.ACID_NAMESPACE_BOUND_WRITE, List.of(
+    register(overrides, HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE, List.of(
         "get_valid_write_ids",
         "allocate_table_write_ids",
         "lock",
@@ -205,7 +205,7 @@ public final class HmsOperationRegistry {
         "add_dynamic_partitions",
         "fire_listener_event",
         "repl_tbl_writeid_state"));
-    register(overrides, OperationClass.ACID_ID_BOUND_LIFECYCLE, List.of(
+    register(overrides, HmsOperationClass.ACID_ID_BOUND_LIFECYCLE, List.of(
         "open_txns",
         "commit_txn",
         "abort_txn",
@@ -214,7 +214,7 @@ public final class HmsOperationRegistry {
         "unlock",
         "heartbeat",
         "heartbeat_txn_range"));
-    register(overrides, OperationClass.ADMIN_INTROSPECTION, List.of(
+    register(overrides, HmsOperationClass.ADMIN_INTROSPECTION, List.of(
         "getName",
         "getVersion",
         "aliveSince",
@@ -226,7 +226,7 @@ public final class HmsOperationRegistry {
         "get_config_value",
         "flushCache",
         "partition_name_has_valid_characters"));
-    register(overrides, OperationClass.COMPATIBILITY_ONLY_RPC, List.of(
+    register(overrides, HmsOperationClass.COMPATIBILITY_ONLY_RPC, List.of(
         "set_ugi",
         "get_delegation_token",
         "renew_delegation_token",
@@ -420,21 +420,6 @@ public final class HmsOperationRegistry {
     return builder.toString();
   }
 
-  public enum OperationClass {
-    METADATA_READ,
-    METADATA_WRITE,
-    SERVICE_GLOBAL_READ,
-    SERVICE_GLOBAL_WRITE,
-    ACID_NAMESPACE_BOUND_WRITE,
-    ACID_ID_BOUND_LIFECYCLE,
-    ADMIN_INTROSPECTION,
-    COMPATIBILITY_ONLY_RPC;
-
-    public String wireName() {
-      return name().toLowerCase(Locale.ROOT);
-    }
-  }
-
   public enum NamespaceStrategy {
     NONE,
     DB_STRING_ARG0,
@@ -457,7 +442,7 @@ public final class HmsOperationRegistry {
 
   public record OperationMetadata(
       String methodName,
-      OperationClass operationClass,
+      HmsOperationClass operationClass,
       boolean mutating,
       boolean trace,
       NamespaceStrategy namespaceStrategy,

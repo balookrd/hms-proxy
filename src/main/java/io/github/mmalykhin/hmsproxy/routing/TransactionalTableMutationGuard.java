@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.security.ClientAddressMatcher;
+import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.util.LinkedHashMap;
 import java.util.List;

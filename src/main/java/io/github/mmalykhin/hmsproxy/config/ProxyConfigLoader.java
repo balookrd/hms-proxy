@@ -1,8 +1,7 @@
 package io.github.mmalykhin.hmsproxy.config;
 
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfile;
-import io.github.mmalykhin.hmsproxy.routing.HmsOperationRegistry;
-import io.github.mmalykhin.hmsproxy.security.ClientAddressMatcher;
+import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -22,8 +21,8 @@ import java.util.regex.PatternSyntaxException;
 
 public final class ProxyConfigLoader {
   private static final Set<String> SUPPORTED_RATE_LIMIT_METHOD_FAMILIES =
-      Arrays.stream(HmsOperationRegistry.OperationClass.values())
-          .map(HmsOperationRegistry.OperationClass::wireName)
+      Arrays.stream(HmsOperationClass.values())
+          .map(HmsOperationClass::wireName)
           .collect(Collectors.toUnmodifiableSet());
   private static final Set<String> SUPPORTED_RATE_LIMIT_RPC_CLASSES = Set.of("write", "ddl", "txn", "lock");
 

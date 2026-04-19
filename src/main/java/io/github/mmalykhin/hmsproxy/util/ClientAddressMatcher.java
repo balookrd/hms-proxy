@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy.security;
+package io.github.mmalykhin.hmsproxy.util;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
