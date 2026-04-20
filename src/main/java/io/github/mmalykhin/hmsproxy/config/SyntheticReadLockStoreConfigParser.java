@@ -8,8 +8,15 @@ final class SyntheticReadLockStoreConfigParser {
 
   static ProxyConfig.SyntheticReadLockStoreConfig parse(PropertyReader reader) {
     boolean zkConfigured = reader.hasPrefix("synthetic-read-lock.store.zookeeper.");
-    ProxyConfig.SyntheticReadLockStoreMode mode = parseMode(
-        reader.getOrNull("synthetic-read-lock.store.mode"), zkConfigured);
+    String rawMode = reader.getOrNull("synthetic-read-lock.store.mode");
+    if (rawMode == null && !zkConfigured) {
+      throw new IllegalArgumentException(
+          "synthetic-read-lock.store.mode must be set explicitly. "
+              + "Use IN_MEMORY for single-instance deployments (non-default catalog SELECT locks "
+              + "will be lost on proxy restart or load-balancer failover), or ZOOKEEPER with "
+              + "synthetic-read-lock.store.zookeeper.connect-string for HA / multi-instance setups.");
+    }
+    ProxyConfig.SyntheticReadLockStoreMode mode = parseMode(rawMode, zkConfigured);
     String znode = reader.getOrNull("synthetic-read-lock.store.zookeeper.znode");
     if (reader.has("synthetic-read-lock.store.zookeeper.znode") && znode == null) {
       throw new IllegalArgumentException("synthetic-read-lock.store.zookeeper.znode must not be blank");

@@ -13,6 +13,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           server.port=9088
           catalogs=catalog1,catalog2
           routing.default-catalog=catalog1
@@ -32,6 +33,47 @@ public class ProxyConfigLoaderTest {
       Assert.assertFalse(config.management().enabled());
       Assert.assertEquals(10088, config.management().port());
       Assert.assertEquals(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, config.syntheticReadLockStore().mode());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsUnsetSyntheticReadLockStoreMode() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for unset synthetic-read-lock.store.mode");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("synthetic-read-lock.store.mode"));
+        Assert.assertTrue(e.getMessage().contains("IN_MEMORY"));
+        Assert.assertTrue(e.getMessage().contains("ZOOKEEPER"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void inferSyntheticReadLockZooKeeperModeFromZooKeeperSettings() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          synthetic-read-lock.store.zookeeper.connect-string=zk1:2181
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER,
+          config.syntheticReadLockStore().mode());
     } finally {
       Files.deleteIfExists(file);
     }
@@ -76,6 +118,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           server.bind-host=127.0.0.2
           catalogs=catalog1
           management.port=19083
@@ -97,6 +140,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1,catalog2
           routing.default-catalog=catalog1
           backend.conf.hive.metastore.uris=thrift://shared:9083
@@ -127,6 +171,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           federation.external-table-drop-purge.mode=BEST_EFFORT
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -148,6 +193,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
@@ -170,6 +216,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
@@ -190,6 +237,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
@@ -210,6 +258,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           federation.view-text-rewrite.mode=REWRITE
@@ -230,6 +279,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
@@ -254,6 +304,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1,catalog2
           routing.default-catalog=catalog2
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -280,6 +331,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.catalog1.expose-mode=deny_by_default
@@ -308,6 +360,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1,catalog2
           routing.default-catalog=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -352,6 +405,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           rate-limit.catalog.catalog2.requests-per-second=50
@@ -372,6 +426,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           federation.view-text-rewrite.mode=unexpected
@@ -393,6 +448,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
@@ -413,6 +469,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.catalog1.expose-db-patterns=[
@@ -433,6 +490,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           guard.transactional-ddl.mode=unexpected
@@ -454,6 +512,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
@@ -491,6 +550,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           server.port=99999
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -511,6 +571,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           server.min-worker-threads=100
@@ -532,6 +593,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1,catalog2
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
@@ -552,6 +614,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.description=My catalog
           """);
@@ -571,6 +634,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           backend.conf.hive.metastore.uris=thrift://shared:9083
           """);
@@ -589,6 +653,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=only
           catalog.only.conf.hive.metastore.uris=thrift://hms:9083
           """);
@@ -607,6 +672,7 @@ public class ProxyConfigLoaderTest {
     Path keytab = Files.createTempFile("hms-proxy", ".keytab");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=KERBEROS
           security.server-principal=hive/_HOST@EXAMPLE.COM
           security.keytab=%s
@@ -633,6 +699,7 @@ public class ProxyConfigLoaderTest {
     Path clientKeytab = Files.createTempFile("hms-proxy-client", ".keytab");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=NONE
           security.client-principal=hive-metastore/_HOST@EXAMPLE.COM
           security.client-keytab=%s
@@ -656,6 +723,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=NONE
           security.client-principal=hive-metastore/_HOST@EXAMPLE.COM
           catalogs=catalog1
@@ -680,6 +748,7 @@ public class ProxyConfigLoaderTest {
     Path keytab = Files.createTempFile("hms-proxy", ".keytab");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=KERBEROS
           security.server-principal=hive/_HOST@EXAMPLE.COM
           security.keytab=%s
@@ -704,6 +773,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=KERBEROS
           security.server-principal=hive/_HOST@EXAMPLE.COM
           security.keytab=/tmp/ignored-in-this-test.keytab
@@ -724,6 +794,7 @@ public class ProxyConfigLoaderTest {
       Path keytab = Files.createTempFile("hms-proxy", ".keytab");
       try {
         Files.writeString(file, """
+            synthetic-read-lock.store.mode=IN_MEMORY
             security.mode=KERBEROS
             security.server-principal=hive/_HOST@EXAMPLE.COM
             security.keytab=%s
@@ -760,6 +831,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=NONE
           security.impersonation-enabled=true
           catalogs=catalog1
@@ -783,6 +855,7 @@ public class ProxyConfigLoaderTest {
     Path keytab = Files.createTempFile("hms-proxy", ".keytab");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=KERBEROS
           security.server-principal=hive/_HOST@EXAMPLE.COM
           security.keytab=%s
@@ -810,6 +883,7 @@ public class ProxyConfigLoaderTest {
     Path keytab = Files.createTempFile("hms-proxy", ".keytab");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=KERBEROS
           security.server-principal=hive/_HOST@EXAMPLE.COM
           security.keytab=%s
@@ -836,6 +910,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           security.mode=NONE
           security.impersonation-enabled=false
           catalogs=catalog1
@@ -859,6 +934,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           routing.catalog-db-separator=__
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -877,6 +953,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           routing.catalog-db-separator=
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -898,6 +975,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           federation.preserve-backend-catalog-name=true
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -917,6 +995,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
           compatibility.frontend-standalone-metastore-jar=/tmp/hdp-standalone-metastore.jar
@@ -945,6 +1024,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
           compatibility.frontend-standalone-metastore-jar=/tmp/hdp-6150-standalone-metastore.jar
@@ -969,6 +1049,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=hdp,apache
           routing.default-catalog=hdp
           compatibility.backend-standalone-metastore-jar=/tmp/global-backend.jar
@@ -1004,6 +1085,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.access-mode=READ_WRITE_DB_WHITELIST
           catalog.catalog1.write-db-whitelist=sales,analytics
@@ -1026,6 +1108,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
@@ -1044,6 +1127,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.access-mode=unexpected
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
@@ -1065,6 +1149,7 @@ public class ProxyConfigLoaderTest {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1,catalog2
           routing.default-catalog=catalog1
           routing.backend-state-polling.enabled=true

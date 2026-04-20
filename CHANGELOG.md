@@ -1,10 +1,21 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-20`. The project has not published tagged releases yet, so entries are grouped by commit
+`2026-04-21`. The project has not published tagged releases yet, so entries are grouped by commit
 date and focused on user-visible changes.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-04-21
+
+### Changed
+
+- **Breaking:** `synthetic-read-lock.store.mode` must now be set explicitly. The previous silent
+  `IN_MEMORY` default was unsafe for multi-instance deployments — synthetic SELECT locks on
+  non-default catalogs were lost on proxy restart or load-balancer failover without any signal at
+  startup. Choose `IN_MEMORY` for single-instance setups (the startup `WARN` about lost SELECT
+  locks still fires) or `ZOOKEEPER` for HA. If `synthetic-read-lock.store.zookeeper.*` is
+  configured, `ZOOKEEPER` is inferred.
 
 ## 2026-04-20
 
