@@ -53,6 +53,7 @@ public final class KerberosHealthProbe {
     }
   }
 
+  @SuppressWarnings("removal")
   private static Optional<Long> tgtExpiryEpochSecond(UserGroupInformation ugi) {
     try {
       return ugi.doAs((java.security.PrivilegedExceptionAction<Optional<Long>>) () -> {

@@ -23,9 +23,9 @@ public class HmsMetastoreSmokeCliTest {
   public void cliArgsParsesExtraConfPairs() throws Exception {
     Object cli = parse("--conf", "a=b", "--conf", "c=d=e");
 
-    @SuppressWarnings("unchecked")
     Method confMethod = cli.getClass().getDeclaredMethod("conf");
     confMethod.setAccessible(true);
+    @SuppressWarnings("unchecked")
     Map<String, String> conf = (Map<String, String>) confMethod.invoke(cli);
     Assert.assertEquals("b", conf.get("a"));
     Assert.assertEquals("d=e", conf.get("c"));
