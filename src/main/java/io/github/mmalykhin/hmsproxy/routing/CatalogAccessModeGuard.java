@@ -1,10 +1,10 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 final class CatalogAccessModeGuard {
   private CatalogAccessModeGuard() {

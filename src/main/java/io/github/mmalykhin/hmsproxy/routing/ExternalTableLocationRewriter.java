@@ -8,8 +8,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
-import io.github.mmalykhin.hmsproxy.config.ExternalTableLocationRewriteMode;
-import io.github.mmalykhin.hmsproxy.config.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableLocationRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
 
 final class ExternalTableLocationRewriter {
   private static final String EXTERNAL_TABLE = "EXTERNAL_TABLE";

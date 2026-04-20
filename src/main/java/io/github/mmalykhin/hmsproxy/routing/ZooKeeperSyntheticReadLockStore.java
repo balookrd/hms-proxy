@@ -21,7 +21,7 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreZooKeeperConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreZooKeeperConfig;
 
 final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperSyntheticReadLockStore.class);

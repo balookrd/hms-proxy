@@ -3,7 +3,7 @@ package io.github.mmalykhin.hmsproxy.frontend;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreRuntimeJarResolver;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;

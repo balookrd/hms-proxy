@@ -1,2 +1,2 @@
 package io.github.mmalykhin.hmsproxy.routing;
-// Moved to io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy
+// Moved to io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy

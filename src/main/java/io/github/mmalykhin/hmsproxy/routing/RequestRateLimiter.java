@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
@@ -16,10 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
-import io.github.mmalykhin.hmsproxy.config.RateLimitConfig;
-import io.github.mmalykhin.hmsproxy.config.RateLimitPolicyConfig;
-import io.github.mmalykhin.hmsproxy.config.SourceCidrRateLimitConfig;
-import io.github.mmalykhin.hmsproxy.config.OperationMetadata;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitPolicyConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.SourceCidrRateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
 
 final class RequestRateLimiter {
   private static final long BUCKET_IDLE_TTL_NANOS = 15L * 60L * 1_000_000_000L;

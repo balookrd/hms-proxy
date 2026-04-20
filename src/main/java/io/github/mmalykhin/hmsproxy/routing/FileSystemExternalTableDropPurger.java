@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -15,7 +15,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger {
   static final String EXTERNAL_TABLE_PURGE_KEY = "external.table.purge";

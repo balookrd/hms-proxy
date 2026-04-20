@@ -1,12 +1,21 @@
 package io.github.mmalykhin.hmsproxy.config;
 
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.Assert;
 import org.junit.Test;
 
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableDropPurgeMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableLocationRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreMode;
 public class ProxyConfigLoaderTest {
   @Test
   public void loadsCatalogsAndDefaultRouting() throws Exception {

@@ -5,30 +5,30 @@ import java.nio.file.Path;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
-final class ConfigParsing {
+public final class ConfigParsing {
   private ConfigParsing() {
   }
 
-  static void requireNonBlank(String value, String name) {
+  public static void requireNonBlank(String value, String name) {
     if (PropertyReader.trimToNull(value) == null) {
       throw new IllegalArgumentException("Missing required property: " + name);
     }
   }
 
-  static void requireReadableFile(String path, String propertyName) {
+  public static void requireReadableFile(String path, String propertyName) {
     if (!Files.isReadable(Path.of(path))) {
       throw new IllegalArgumentException(
           "File not found or not readable for " + propertyName + ": " + path);
     }
   }
 
-  static void validateRegexList(String propertyName, String[] patterns) {
+  public static void validateRegexList(String propertyName, String[] patterns) {
     for (String pattern : patterns) {
       validateRegex(propertyName, pattern);
     }
   }
 
-  static void validateRegex(String propertyName, String pattern) {
+  public static void validateRegex(String propertyName, String pattern) {
     try {
       Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
     } catch (PatternSyntaxException e) {

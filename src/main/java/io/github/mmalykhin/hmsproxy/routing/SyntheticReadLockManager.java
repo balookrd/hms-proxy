@@ -18,7 +18,7 @@ import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 final class SyntheticReadLockManager implements AutoCloseable {
   static final String SYNTHETIC_BACKEND_NAME = "proxy-synthetic";

@@ -4,6 +4,8 @@ import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import org.junit.Assert;
 import org.junit.Test;
 
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
 public class MetastoreThriftServerTest {
   @Test
   public void frontDoorAlwaysUsesServerPrincipalForInboundKerberos() {

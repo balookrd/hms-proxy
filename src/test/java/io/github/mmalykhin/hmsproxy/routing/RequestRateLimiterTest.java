@@ -8,9 +8,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.Assert;
 import org.junit.Test;
-import io.github.mmalykhin.hmsproxy.config.RateLimitConfig;
-import io.github.mmalykhin.hmsproxy.config.RateLimitPolicyConfig;
-import io.github.mmalykhin.hmsproxy.config.SourceCidrRateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitPolicyConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.SourceCidrRateLimitConfig;
 
 public class RequestRateLimiterTest {
   @Test

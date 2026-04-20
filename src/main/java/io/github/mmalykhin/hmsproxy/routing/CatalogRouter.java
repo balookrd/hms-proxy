@@ -7,7 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class CatalogRouter implements AutoCloseable {
   private final ProxyConfig config;

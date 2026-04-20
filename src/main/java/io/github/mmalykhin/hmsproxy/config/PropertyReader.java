@@ -9,22 +9,22 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.stream.Collectors;
 
-final class PropertyReader {
+public final class PropertyReader {
   private final Properties properties;
 
   PropertyReader(Properties properties) {
     this.properties = properties;
   }
 
-  String get(String key, String defaultValue) {
+  public String get(String key, String defaultValue) {
     return Objects.requireNonNullElse(trimToNull(properties.getProperty(key)), defaultValue);
   }
 
-  String getOrNull(String key) {
+  public String getOrNull(String key) {
     return trimToNull(properties.getProperty(key));
   }
 
-  String require(String key) {
+  public String require(String key) {
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       throw new IllegalArgumentException("Missing required property: " + key);
@@ -32,20 +32,20 @@ final class PropertyReader {
     return value;
   }
 
-  boolean has(String key) {
+  public boolean has(String key) {
     return properties.containsKey(key);
   }
 
-  boolean hasPrefix(String prefix) {
+  public boolean hasPrefix(String prefix) {
     return properties.stringPropertyNames().stream().anyMatch(name -> name.startsWith(prefix));
   }
 
-  boolean getBoolean(String key, boolean defaultValue) {
+  public boolean getBoolean(String key, boolean defaultValue) {
     String value = trimToNull(properties.getProperty(key));
     return value == null ? defaultValue : Boolean.parseBoolean(value);
   }
 
-  int getInt(String key, int defaultValue) {
+  public int getInt(String key, int defaultValue) {
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -57,7 +57,7 @@ final class PropertyReader {
     }
   }
 
-  int getNonNegativeInt(String key, int defaultValue) {
+  public int getNonNegativeInt(String key, int defaultValue) {
     int value = getInt(key, defaultValue);
     if (value < 0) {
       throw new IllegalArgumentException(key + " must be >= 0, got: " + value);
@@ -65,7 +65,7 @@ final class PropertyReader {
     return value;
   }
 
-  int getPositiveInt(String key, int defaultValue) {
+  public int getPositiveInt(String key, int defaultValue) {
     int value = getInt(key, defaultValue);
     if (value < 1) {
       throw new IllegalArgumentException(key + " must be >= 1, got: " + value);
@@ -73,7 +73,7 @@ final class PropertyReader {
     return value;
   }
 
-  long getLong(String key, long defaultValue) {
+  public long getLong(String key, long defaultValue) {
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -85,7 +85,7 @@ final class PropertyReader {
     }
   }
 
-  long getNonNegativeLong(String key, long defaultValue) {
+  public long getNonNegativeLong(String key, long defaultValue) {
     long value = getLong(key, defaultValue);
     if (value < 0L) {
       throw new IllegalArgumentException(key + " must be >= 0, got: " + value);
@@ -93,7 +93,7 @@ final class PropertyReader {
     return value;
   }
 
-  long getPositiveLong(String key, long defaultValue) {
+  public long getPositiveLong(String key, long defaultValue) {
     long value = getLong(key, defaultValue);
     if (value < 1L) {
       throw new IllegalArgumentException(key + " must be >= 1, got: " + value);
@@ -101,7 +101,7 @@ final class PropertyReader {
     return value;
   }
 
-  double getDouble(String key, double defaultValue) {
+  public double getDouble(String key, double defaultValue) {
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -113,7 +113,7 @@ final class PropertyReader {
     }
   }
 
-  double getPositiveDouble(String key, double defaultValue) {
+  public double getPositiveDouble(String key, double defaultValue) {
     double value = getDouble(key, defaultValue);
     if (value <= 0.0d) {
       throw new IllegalArgumentException(key + " must be > 0, got: " + value);
@@ -121,7 +121,7 @@ final class PropertyReader {
     return value;
   }
 
-  double getBoundedDouble(String key, double defaultValue, double minExclusive, double maxInclusive) {
+  public double getBoundedDouble(String key, double defaultValue, double minExclusive, double maxInclusive) {
     double value = getDouble(key, defaultValue);
     if (value <= minExclusive || value > maxInclusive) {
       throw new IllegalArgumentException(
@@ -131,7 +131,7 @@ final class PropertyReader {
   }
 
   /** Returns all property-name suffixes under {@code prefix}, sorted, mapped to their raw values. */
-  Map<String, String> collectPrefixed(String prefix) {
+  public Map<String, String> collectPrefixed(String prefix) {
     return properties.stringPropertyNames().stream()
         .filter(name -> name.startsWith(prefix))
         .sorted()
@@ -143,7 +143,7 @@ final class PropertyReader {
   }
 
   /** Returns sorted, distinct scoped names (first dot-separated token) under {@code prefix}. */
-  List<String> scopedNames(String prefix) {
+  public List<String> scopedNames(String prefix) {
     return properties.stringPropertyNames().stream()
         .filter(name -> name.startsWith(prefix))
         .map(name -> extractScopedName(name, prefix))
@@ -155,25 +155,25 @@ final class PropertyReader {
   }
 
   /** Returns sorted property names under {@code prefix} (full names, not stripped). */
-  List<String> namesWithPrefix(String prefix) {
+  public List<String> namesWithPrefix(String prefix) {
     return properties.stringPropertyNames().stream()
         .filter(name -> name.startsWith(prefix))
         .sorted()
         .toList();
   }
 
-  String rawValue(String key) {
+  public String rawValue(String key) {
     return properties.getProperty(key);
   }
 
-  static String[] splitCsv(String value) {
+  public static String[] splitCsv(String value) {
     return Arrays.stream(value.split(","))
         .map(String::trim)
         .filter(token -> !token.isEmpty())
         .toArray(String[]::new);
   }
 
-  static String trimToNull(String value) {
+  public static String trimToNull(String value) {
     if (value == null) {
       return null;
     }

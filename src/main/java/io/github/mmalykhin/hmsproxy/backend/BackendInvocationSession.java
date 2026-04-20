@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.Field;
@@ -17,8 +17,8 @@ import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
-import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
 public final class BackendInvocationSession implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendInvocationSession.class);

@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
-import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
 
 final class TransactionalTableMutationGuard {
   private static final Set<String> GUARDED_METHODS = Set.of(

@@ -1,12 +1,12 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreRuntimeProfileResolver;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class MetastoreRuntimeJarResolver {
   private MetastoreRuntimeJarResolver() {

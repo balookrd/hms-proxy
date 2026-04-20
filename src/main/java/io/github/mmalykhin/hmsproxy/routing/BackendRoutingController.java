@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
@@ -21,7 +21,7 @@ import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.DegradedRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
 
 public final class BackendRoutingController implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRoutingController.class);

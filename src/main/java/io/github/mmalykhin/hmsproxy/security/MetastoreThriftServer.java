@@ -14,7 +14,7 @@ import org.apache.thrift.transport.TTransportException;
 import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
 public final class MetastoreThriftServer {
   private static final Logger LOG = LoggerFactory.getLogger(MetastoreThriftServer.class);

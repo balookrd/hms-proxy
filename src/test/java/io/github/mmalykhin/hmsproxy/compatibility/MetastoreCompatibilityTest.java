@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
-import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.junit.Assert;
 import org.junit.Test;

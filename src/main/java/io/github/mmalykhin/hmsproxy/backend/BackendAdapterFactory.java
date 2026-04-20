@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 
 final class BackendAdapterFactory {
   private BackendAdapterFactory() {

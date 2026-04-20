@@ -12,9 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
-import io.github.mmalykhin.hmsproxy.config.AdaptiveTimeoutConfig;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
-import io.github.mmalykhin.hmsproxy.config.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.AdaptiveTimeoutConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 
 public final class ProxyRuntimeState {
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";

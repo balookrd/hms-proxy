@@ -6,8 +6,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
-import io.github.mmalykhin.hmsproxy.config.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
 
 final class ExposurePolicy {
   private final Map<String, CatalogExposurePolicy> catalogs;

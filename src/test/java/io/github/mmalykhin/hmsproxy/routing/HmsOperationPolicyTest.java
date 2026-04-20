@@ -1,14 +1,14 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
-import io.github.mmalykhin.hmsproxy.config.HmsOperationClass;
-import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationClass;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import org.junit.Assert;
 import org.junit.Test;
-import io.github.mmalykhin.hmsproxy.config.NamespaceStrategy;
-import io.github.mmalykhin.hmsproxy.config.OperationMetadata;
-import io.github.mmalykhin.hmsproxy.config.ReadResultFilterKind;
-import io.github.mmalykhin.hmsproxy.config.TableExposureMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.NamespaceStrategy;
+import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
+import io.github.mmalykhin.hmsproxy.config.catalog.ReadResultFilterKind;
+import io.github.mmalykhin.hmsproxy.config.catalog.TableExposureMode;
 
 public class HmsOperationPolicyTest {
   @Test

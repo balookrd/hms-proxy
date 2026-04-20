@@ -7,6 +7,27 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Properties;
 
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfigParser;
+import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfigParser;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfigParser;
+import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.federation.FederationConfigParser;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfigParser;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfigParser;
+import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfigParser;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfigParser;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfigParser;
 public final class ProxyConfigLoader {
   private ProxyConfigLoader() {
   }

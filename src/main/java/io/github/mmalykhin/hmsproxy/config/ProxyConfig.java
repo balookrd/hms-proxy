@@ -4,6 +4,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
+import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 public record ProxyConfig(
     ServerConfig server,
     SecurityConfig security,

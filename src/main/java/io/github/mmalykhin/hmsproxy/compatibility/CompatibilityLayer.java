@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
-import io.github.mmalykhin.hmsproxy.config.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.util.Map;

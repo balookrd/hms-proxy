@@ -1,7 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
-import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
@@ -21,7 +21,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
 public final class RoutingMetaStoreProxy implements InvocationHandler, HortonworksFrontendExtension, AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreProxy.class);

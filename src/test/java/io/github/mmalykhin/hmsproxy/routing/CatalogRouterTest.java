@@ -8,12 +8,12 @@ import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.junit.Assert;
 import org.junit.Test;
-import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
-import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
-import io.github.mmalykhin.hmsproxy.config.SecurityMode;
-import io.github.mmalykhin.hmsproxy.config.ServerConfig;
-import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 
 public class CatalogRouterTest {
   private static final ProxyConfig TWO_CATALOG_CONFIG = ProxyConfig.builder()

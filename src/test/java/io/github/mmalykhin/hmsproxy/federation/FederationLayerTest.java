@@ -15,21 +15,21 @@ import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
-import io.github.mmalykhin.hmsproxy.config.BackendConfig;
-import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
-import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
-import io.github.mmalykhin.hmsproxy.config.CatalogExposureMode;
-import io.github.mmalykhin.hmsproxy.config.CompatibilityConfig;
-import io.github.mmalykhin.hmsproxy.config.FederationConfig;
-import io.github.mmalykhin.hmsproxy.config.FrontendProfile;
-import io.github.mmalykhin.hmsproxy.config.ManagementConfig;
-import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
-import io.github.mmalykhin.hmsproxy.config.SecurityMode;
-import io.github.mmalykhin.hmsproxy.config.ServerConfig;
-import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
-import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardConfig;
-import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardMode;
-import io.github.mmalykhin.hmsproxy.config.ViewTextRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 
 public class FederationLayerTest {
   @Test
