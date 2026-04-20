@@ -115,7 +115,7 @@ public class HortonworksBackendAdapterTest {
       int wrapperCallsAfterFirstRequest = wrapperCalls.get();
       backend.invokeRequest("get_table_req", second, null);
 
-      Assert.assertEquals(2, wrapperCallsAfterFirstRequest);
+      Assert.assertEquals(1, wrapperCallsAfterFirstRequest);
       Assert.assertEquals(wrapperCallsAfterFirstRequest, wrapperCalls.get());
       Assert.assertEquals(2, legacyCalls.get());
     } finally {

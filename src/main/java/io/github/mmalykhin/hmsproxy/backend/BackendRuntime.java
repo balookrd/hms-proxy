@@ -9,7 +9,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -206,7 +205,7 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private static boolean isTransportFailure(Throwable cause) {
-    return cause instanceof TTransportException || cause instanceof TApplicationException;
+    return cause instanceof TTransportException;
   }
 
   @FunctionalInterface
