@@ -1,23 +1,10 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-21`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-20`.
 Тегированных релизов у проекта пока нет, поэтому записи сгруппированы по датам коммитов и
 сфокусированы на заметных для пользователей изменениях.
 
 English version: [CHANGELOG.md](CHANGELOG.md).
-
-## 2026-04-21
-
-### Изменено
-
-- **Breaking:** `synthetic-read-lock.store.mode` теперь обязательно задавать явно — как в
-  properties-конфиге, так и при программной сборке `ProxyConfig`. Прежний молчаливый default
-  `IN_MEMORY` был небезопасен для multi-instance deployment — synthetic SELECT-локи на non-default
-  каталогах терялись при рестарте proxy или failover через load balancer без сигнала на старте.
-  Выбирайте `IN_MEMORY` для одиночного инстанса (стартовый `WARN` про потерю SELECT-локов
-  по-прежнему пишется) или `ZOOKEEPER` для HA. Если сконфигурированы
-  `synthetic-read-lock.store.zookeeper.*`, `ZOOKEEPER` выводится автоматически. Для in-process
-  builder'ов добавлен хелпер `ProxyConfig.SyntheticReadLockStoreConfig.inMemory()`.
 
 ## 2026-04-20
 
@@ -30,13 +17,33 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   получить параллелизм, нужно явно выставить `catalog.<name>.shared-session-pool-size` (например,
   `8` или `16`) на каталог. Большие значения держат больше idle Thrift-сессий к backend HMS
   (с пропорциональной стоимостью Kerberos, если включён) и удлиняют дренаж в `reconnectShared`.
+- **Breaking:** `synthetic-read-lock.store.mode` теперь обязательно задавать явно — как в
+  properties-конфиге, так и при программной сборке `ProxyConfig`. Прежний молчаливый default
+  `IN_MEMORY` был небезопасен для multi-instance deployment — synthetic SELECT-локи на non-default
+  каталогах терялись при рестарте proxy или failover через load balancer без сигнала на старте.
+  Выбирайте `IN_MEMORY` для одиночного инстанса (стартовый `WARN` про потерю SELECT-локов
+  по-прежнему пишется) или `ZOOKEEPER` для HA. Если сконфигурированы
+  `synthetic-read-lock.store.zookeeper.*`, `ZOOKEEPER` выводится автоматически. Для in-process
+  builder'ов добавлен хелпер `ProxyConfig.SyntheticReadLockStoreConfig.inMemory()`.
+- Проведён крупный внутренний рефакторинг конфигурации и operation-policy: вложенные config-record
+  вынесены в top-level типы, пакет `config` разложен на тематические подпакеты, а реестр HMS
+  операций разбит на per-category contributors. Внешнее поведение не меняется, кроме явного
+  требования настроить synthetic-read-lock store.
 
 ### Исправлено
 
 - Однократный retry на транспортной ошибке теперь дискардит только ту сессию, которая упала, а не
   пересоздаёт весь shared connection.
+- `TApplicationException` больше не считается backend transport failure, поэтому proxy не делает
+  лишние retry к живому серверу при dispatch-level ошибках вроде unsupported HDP wrapper RPC.
 - Убраны некритичные compile/test warnings и добавлена минимальная test logging configuration,
   чтобы в тестах не шумело сообщение `"No appenders could be found"`.
+
+### Документация
+
+- Добавлены рекомендации по тюнингу shared-session pool, включая необходимость явно задавать
+  `catalog.<name>.shared-session-pool-size` для реального параллелизма и описание компромиссов по
+  idle session, Kerberos-cost и времени дренажа при reconnect.
 
 ## 2026-04-19
 
