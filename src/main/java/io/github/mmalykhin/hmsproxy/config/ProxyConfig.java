@@ -132,7 +132,8 @@ public record ProxyConfig(
       Map<String, String> hiveConf,
       long latencyBudgetMs,
       int maxImpersonationClients,
-      long impersonationClientIdleTtlMs
+      long impersonationClientIdleTtlMs,
+      int sharedSessionPoolSize
   ) {
     public CatalogConfig {
       accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
@@ -142,6 +143,7 @@ public record ProxyConfig(
       latencyBudgetMs = Math.max(latencyBudgetMs, 0L);
       maxImpersonationClients = maxImpersonationClients <= 0 ? 128 : maxImpersonationClients;
       impersonationClientIdleTtlMs = Math.max(impersonationClientIdleTtlMs, 0L);
+      sharedSessionPoolSize = sharedSessionPoolSize <= 0 ? 1 : sharedSessionPoolSize;
       Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
       for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
         copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -176,7 +178,8 @@ public record ProxyConfig(
           hiveConf,
           0L,
           128,
-          0L);
+          0L,
+          1);
     }
 
     public CatalogConfig(
@@ -208,7 +211,8 @@ public record ProxyConfig(
           hiveConf,
           0L,
           128,
-          0L);
+          0L,
+          1);
     }
   }
 

@@ -6,6 +6,17 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-04-20
+
+### Изменено
+
+- Per-catalog shared backend session и `synchronized` вокруг вызовов заменены на borrow/return пул
+  размером `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated вызовы к одному
+  каталогу теперь идут параллельно до размера пула, а не сериализуются через единственный Thrift
+  transport.
+- Однократный retry на транспортной ошибке теперь дискардит только ту сессию, которая упала, а не
+  пересоздаёт весь shared connection.
+
 ## 2026-04-18
 
 ### Добавлено

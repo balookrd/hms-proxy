@@ -6,6 +6,17 @@ date and focused on user-visible changes.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-04-20
+
+### Changed
+
+- Replaced the per-catalog single shared backend session and `synchronized` invocation gate with a
+  borrow/return pool sized by `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated
+  calls to the same catalog can now run in parallel up to the pool size instead of serializing
+  through one Thrift transport.
+- Single-shot transport-failure retry now discards only the failed pooled session instead of
+  resetting the entire shared connection.
+
 ## 2026-04-18
 
 ### Added

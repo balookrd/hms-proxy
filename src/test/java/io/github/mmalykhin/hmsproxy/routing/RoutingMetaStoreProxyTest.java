@@ -2902,6 +2902,7 @@ public class RoutingMetaStoreProxyTest {
         HiveConf.class,
         boolean.class,
         BackendRuntime.SessionFactory.class,
+        MetastoreRuntimeProfile.class,
         BackendInvocationSession.class);
     ctor.setAccessible(true);
     BackendRuntime.SessionFactory sessionFactory = new BackendRuntime.SessionFactory() {
@@ -2929,7 +2930,10 @@ public class RoutingMetaStoreProxyTest {
         return session;
       }
     };
-    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, sessionFactory, session);
+    MetastoreRuntimeProfile profile = catalogConfig.runtimeProfile() != null
+        ? catalogConfig.runtimeProfile()
+        : MetastoreRuntimeProfile.APACHE_3_1_3;
+    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, sessionFactory, profile, session);
   }
 
   private static BackendInvocationSession newSession() throws Exception {

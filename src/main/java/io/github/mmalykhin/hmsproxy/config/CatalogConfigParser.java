@@ -64,6 +64,7 @@ final class CatalogConfigParser {
     long latencyBudgetMs = reader.getNonNegativeLong(prefix + "latency-budget-ms", 0L);
     int maxImpersonationClients = reader.getPositiveInt(prefix + "impersonation-max-clients", 128);
     long impersonationClientIdleTtlMs = reader.getNonNegativeLong(prefix + "impersonation-client-idle-ttl-ms", 0L);
+    int sharedSessionPoolSize = reader.getPositiveInt(prefix + "shared-session-pool-size", 1);
 
     Map<String, String> hiveConfOverrides = reader.collectPrefixed(prefix + "conf.");
     Map<String, String> hiveConf = new LinkedHashMap<>(backendConf);
@@ -89,7 +90,8 @@ final class CatalogConfigParser {
         hiveConf,
         latencyBudgetMs,
         maxImpersonationClients,
-        impersonationClientIdleTtlMs);
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize);
   }
 
   private static Map<String, List<String>> parseExposeTablePatterns(PropertyReader reader, String prefix) {

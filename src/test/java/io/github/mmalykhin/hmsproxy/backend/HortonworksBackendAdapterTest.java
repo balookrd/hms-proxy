@@ -225,14 +225,19 @@ public class HortonworksBackendAdapterTest {
         HiveConf.class,
         boolean.class,
         BackendRuntime.SessionFactory.class,
+        MetastoreRuntimeProfile.class,
         BackendInvocationSession.class);
     ctor.setAccessible(true);
+    MetastoreRuntimeProfile profile = catalogConfig.runtimeProfile() != null
+        ? catalogConfig.runtimeProfile()
+        : MetastoreRuntimeProfile.APACHE_3_1_3;
     return ctor.newInstance(
         proxyConfig,
         catalogConfig,
         new HiveConf(),
         false,
         sessionFactory,
+        profile,
         newSession(invocationHandler));
   }
 

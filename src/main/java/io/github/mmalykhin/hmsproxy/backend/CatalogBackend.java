@@ -177,33 +177,11 @@ public final class CatalogBackend implements AutoCloseable {
       LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
           config.name(), impersonation.userName());
     }
-    try {
-      return runtime.invokeSharedByName(methodName, parameterTypes, args);
-    } catch (Throwable cause) {
-      if (!(cause instanceof org.apache.thrift.TApplicationException)
-          && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
-        throw cause;
-      }
-      LOG.warn("Backend catalog '{}' transport failed in method {}, reconnecting once",
-          config.name(), methodName, cause);
-      runtime.reconnectShared(adapter);
-      return runtime.invokeSharedByName(methodName, parameterTypes, args);
-    }
+    return runtime.invokeSharedByName(methodName, parameterTypes, args);
   }
 
   private Object invokeSharedClient(Method method, Object[] args) throws Throwable {
-    try {
-      return runtime.invokeShared(method, args);
-    } catch (Throwable cause) {
-      if (!(cause instanceof org.apache.thrift.TApplicationException)
-          && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
-        throw cause;
-      }
-      LOG.warn("Backend catalog '{}' transport failed in method {}, reconnecting once",
-          config.name(), method.getName(), cause);
-      runtime.reconnectShared(adapter);
-      return runtime.invokeShared(method, args);
-    }
+    return runtime.invokeShared(method, args);
   }
 
   private Object invokeWithImpersonation(
