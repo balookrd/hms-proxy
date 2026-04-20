@@ -16,6 +16,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
@@ -23,7 +24,7 @@ public final class CatalogBackend implements AutoCloseable {
   private static final long SOCKET_TIMEOUT_RECONNECT_DELTA_MS = 1_000L;
 
   private final ProxyConfig proxyConfig;
-  private final ProxyConfig.CatalogConfig config;
+  private final CatalogConfig config;
   private final HiveConf hiveConf;
   private final Map<String, ImpersonationClient> impersonationClients = new LinkedHashMap<>(16, 0.75f, true);
   private final BackendAdapter adapter;
@@ -34,7 +35,7 @@ public final class CatalogBackend implements AutoCloseable {
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig config,
+      CatalogConfig config,
       HiveConf hiveConf,
       BackendAdapter adapter,
       BackendRuntime runtime,
@@ -49,7 +50,7 @@ public final class CatalogBackend implements AutoCloseable {
     this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(hiveConf.get(SOCKET_TIMEOUT_KEY), 0L);
   }
 
-  public static CatalogBackend open(ProxyConfig proxyConfig, ProxyConfig.CatalogConfig catalogConfig)
+  public static CatalogBackend open(ProxyConfig proxyConfig, CatalogConfig catalogConfig)
       throws MetaException {
     HiveConf conf = new HiveConf();
     boolean backendKerberosEnabled = backendKerberosEnabled(catalogConfig);
@@ -201,7 +202,7 @@ public final class CatalogBackend implements AutoCloseable {
     impersonationClients.clear();
   }
 
-  private static boolean backendKerberosEnabled(ProxyConfig.CatalogConfig catalogConfig) {
+  private static boolean backendKerberosEnabled(CatalogConfig catalogConfig) {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
   }
 

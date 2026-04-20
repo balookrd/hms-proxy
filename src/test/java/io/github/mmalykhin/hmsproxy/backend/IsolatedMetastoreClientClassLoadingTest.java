@@ -7,6 +7,12 @@ import org.apache.hadoop.conf.Configuration;
 import org.junit.Assume;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class IsolatedMetastoreClientClassLoadingTest {
   @Test
@@ -60,17 +66,17 @@ public class IsolatedMetastoreClientClassLoadingTest {
   @Test
   public void configurationResolvesFilterHookInIsolatedLoader() throws Exception {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()))
         .catalogDbSeparator(".")
         .defaultCatalog("catalog1")
-        .catalogs(java.util.Map.of("catalog1", new ProxyConfig.CatalogConfig(
+        .catalogs(java.util.Map.of("catalog1", new CatalogConfig(
             "catalog1", "c1", "file:///c1", false,
-            ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+            CatalogAccessMode.READ_WRITE, java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
             java.util.Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")

@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
+import io.github.mmalykhin.hmsproxy.config.AdaptiveTimeoutConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.LatencyRoutingConfig;
 
 public final class ProxyRuntimeState {
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
@@ -23,8 +26,8 @@ public final class ProxyRuntimeState {
     this.startedAtEpochSecond = Instant.now().getEpochSecond();
     long now = System.currentTimeMillis();
     boolean pollingEnabled = config.latencyRouting().backendStatePolling().enabled();
-    for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
-      ProxyConfig.CatalogConfig catalog = entry.getValue();
+    for (Map.Entry<String, CatalogConfig> entry : config.catalogs().entrySet()) {
+      CatalogConfig catalog = entry.getValue();
       long baselineTimeoutMs = initialTimeoutMs(config, catalog);
       backends.put(entry.getKey(), new BackendRuntimeStatus(
           entry.getKey(),
@@ -50,7 +53,7 @@ public final class ProxyRuntimeState {
     return startedAtEpochSecond;
   }
 
-  public BackendCallAdmission admitBackendCall(String backend, ProxyConfig.LatencyRoutingConfig latencyRouting) {
+  public BackendCallAdmission admitBackendCall(String backend, LatencyRoutingConfig latencyRouting) {
     AtomicReference<BackendCallAdmission> admissionRef = new AtomicReference<>();
     long nowMs = System.currentTimeMillis();
     backends.compute(backend, (ignored, current) -> {
@@ -95,7 +98,7 @@ public final class ProxyRuntimeState {
   public void recordBackendSuccess(
       String backend,
       long latencyMs,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      LatencyRoutingConfig latencyRouting
   ) {
     long nowEpochSecond = Instant.now().getEpochSecond();
     backends.compute(backend, (ignored, current) ->
@@ -105,7 +108,7 @@ public final class ProxyRuntimeState {
   public void recordBackendProbeSuccess(
       String backend,
       long latencyMs,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      LatencyRoutingConfig latencyRouting
   ) {
     long nowEpochSecond = Instant.now().getEpochSecond();
     backends.compute(backend, (ignored, current) ->
@@ -116,7 +119,7 @@ public final class ProxyRuntimeState {
       String backend,
       Throwable error,
       long latencyMs,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      LatencyRoutingConfig latencyRouting
   ) {
     long nowEpochSecond = Instant.now().getEpochSecond();
     long nowMs = System.currentTimeMillis();
@@ -128,7 +131,7 @@ public final class ProxyRuntimeState {
   public void recordBackendProbeFailure(
       String backend,
       Throwable error,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      LatencyRoutingConfig latencyRouting
   ) {
     long nowEpochSecond = Instant.now().getEpochSecond();
     long nowMs = System.currentTimeMillis();
@@ -150,7 +153,7 @@ public final class ProxyRuntimeState {
   private static BackendRuntimeStatus statusOrDefault(
       String backend,
       BackendRuntimeStatus current,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      LatencyRoutingConfig latencyRouting
   ) {
     return current == null
         ? new BackendRuntimeStatus(
@@ -173,8 +176,8 @@ public final class ProxyRuntimeState {
         : current;
   }
 
-  private static long initialTimeoutMs(ProxyConfig config, ProxyConfig.CatalogConfig catalogConfig) {
-    ProxyConfig.AdaptiveTimeoutConfig adaptiveTimeout = config.latencyRouting().adaptiveTimeout();
+  private static long initialTimeoutMs(ProxyConfig config, CatalogConfig catalogConfig) {
+    AdaptiveTimeoutConfig adaptiveTimeout = config.latencyRouting().adaptiveTimeout();
     long configuredTimeoutMs = TimeoutValueParser.parseDurationMs(
         catalogConfig.hiveConf().get(SOCKET_TIMEOUT_KEY),
         adaptiveTimeout.initialTimeoutMs());
@@ -266,7 +269,7 @@ public final class ProxyRuntimeState {
     private BackendRuntimeStatus onSuccess(
         long nowEpochSecond,
         long latencyMs,
-        ProxyConfig.LatencyRoutingConfig latencyRouting,
+        LatencyRoutingConfig latencyRouting,
         boolean probe
     ) {
       long ewmaMs = latencyEwmaMs <= 0
@@ -307,7 +310,7 @@ public final class ProxyRuntimeState {
         long latencyMs,
         String errorSummary,
         Throwable error,
-        ProxyConfig.LatencyRoutingConfig latencyRouting,
+        LatencyRoutingConfig latencyRouting,
         boolean probe
     ) {
       boolean connectivityFailure = isConnectivityFailure(error) || isTimeoutFailure(error);

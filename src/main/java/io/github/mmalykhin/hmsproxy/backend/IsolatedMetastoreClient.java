@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 public final class IsolatedMetastoreClient implements AutoCloseable {
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
@@ -28,7 +29,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
 
   static IsolatedMetastoreClient open(
       ProxyConfig config,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile,
       Configuration conf
   ) throws Exception {
@@ -37,7 +38,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
 
   static IsolatedMetastoreClient open(
       ProxyConfig config,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile,
       String principal,
       String keytab,

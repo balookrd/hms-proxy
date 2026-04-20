@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 public final class CatalogRouter implements AutoCloseable {
   private final ProxyConfig config;
@@ -20,7 +21,7 @@ public final class CatalogRouter implements AutoCloseable {
   public static CatalogRouter open(ProxyConfig config) throws MetaException {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
     try {
-      for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
+      for (Map.Entry<String, CatalogConfig> entry : config.catalogs().entrySet()) {
         backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue()));
       }
       return new CatalogRouter(config, backends);

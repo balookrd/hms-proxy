@@ -6,16 +6,16 @@ final class FederationConfigParser {
   private FederationConfigParser() {
   }
 
-  static ProxyConfig.FederationConfig parse(
+  static FederationConfig parse(
       PropertyReader reader,
-      ProxyConfig.CatalogConfig defaultCatalogConfig
+      CatalogConfig defaultCatalogConfig
   ) {
     boolean preserveBackendCatalogName = reader.getBoolean("federation.preserve-backend-catalog-name", false);
-    ProxyConfig.ViewTextRewriteMode viewTextRewriteMode = parseViewTextRewriteMode(
+    ViewTextRewriteMode viewTextRewriteMode = parseViewTextRewriteMode(
         reader.getOrNull("federation.view-text-rewrite.mode"));
     boolean preserveOriginalViewText = reader.getBoolean(
         "federation.view-text-rewrite.preserve-original-text", false);
-    ProxyConfig.ExternalTableLocationRewriteMode externalTableLocationRewriteMode =
+    ExternalTableLocationRewriteMode externalTableLocationRewriteMode =
         parseExternalTableLocationRewriteMode(reader.getOrNull("federation.external-table-location-rewrite.mode"));
     String externalTableLocationRewriteSourceDefaultFs =
         reader.getOrNull("federation.external-table-location-rewrite.source-default-fs");
@@ -23,17 +23,17 @@ final class FederationConfigParser {
       externalTableLocationRewriteSourceDefaultFs =
           PropertyReader.trimToNull(defaultCatalogConfig.hiveConf().get("fs.defaultFS"));
     }
-    ProxyConfig.ExternalTableDropPurgeMode externalTableDropPurgeMode = parseExternalTableDropPurgeMode(
+    ExternalTableDropPurgeMode externalTableDropPurgeMode = parseExternalTableDropPurgeMode(
         reader.getOrNull("federation.external-table-drop-purge.mode"));
     if (externalTableLocationRewriteMode
-        == ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS
+        == ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS
         && externalTableLocationRewriteSourceDefaultFs == null) {
       throw new IllegalArgumentException(
           "Missing required property: federation.external-table-location-rewrite.source-default-fs"
               + " (or catalog." + (defaultCatalogConfig != null ? defaultCatalogConfig.name() : "<default>")
               + ".conf.fs.defaultFS)");
     }
-    return new ProxyConfig.FederationConfig(
+    return new FederationConfig(
         preserveBackendCatalogName,
         viewTextRewriteMode,
         preserveOriginalViewText,
@@ -42,12 +42,12 @@ final class FederationConfigParser {
         externalTableDropPurgeMode);
   }
 
-  private static ProxyConfig.ViewTextRewriteMode parseViewTextRewriteMode(String value) {
+  private static ViewTextRewriteMode parseViewTextRewriteMode(String value) {
     if (value == null) {
-      return ProxyConfig.ViewTextRewriteMode.DISABLED;
+      return ViewTextRewriteMode.DISABLED;
     }
     try {
-      return ProxyConfig.ViewTextRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return ViewTextRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for federation.view-text-rewrite.mode: " + value
@@ -56,12 +56,12 @@ final class FederationConfigParser {
     }
   }
 
-  private static ProxyConfig.ExternalTableLocationRewriteMode parseExternalTableLocationRewriteMode(String value) {
+  private static ExternalTableLocationRewriteMode parseExternalTableLocationRewriteMode(String value) {
     if (value == null) {
-      return ProxyConfig.ExternalTableLocationRewriteMode.DISABLED;
+      return ExternalTableLocationRewriteMode.DISABLED;
     }
     try {
-      return ProxyConfig.ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for federation.external-table-location-rewrite.mode: " + value
@@ -70,12 +70,12 @@ final class FederationConfigParser {
     }
   }
 
-  private static ProxyConfig.ExternalTableDropPurgeMode parseExternalTableDropPurgeMode(String value) {
+  private static ExternalTableDropPurgeMode parseExternalTableDropPurgeMode(String value) {
     if (value == null) {
-      return ProxyConfig.ExternalTableDropPurgeMode.DISABLED;
+      return ExternalTableDropPurgeMode.DISABLED;
     }
     try {
-      return ProxyConfig.ExternalTableDropPurgeMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return ExternalTableDropPurgeMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for federation.external-table-drop-purge.mode: " + value

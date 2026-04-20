@@ -8,14 +8,16 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
+import io.github.mmalykhin.hmsproxy.config.ExternalTableLocationRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.FederationConfig;
 
 final class ExternalTableLocationRewriter {
   private static final String EXTERNAL_TABLE = "EXTERNAL_TABLE";
 
-  private final ProxyConfig.FederationConfig federationConfig;
+  private final FederationConfig federationConfig;
   private final URI sourceDefaultFsUri;
 
-  ExternalTableLocationRewriter(ProxyConfig.FederationConfig federationConfig) {
+  ExternalTableLocationRewriter(FederationConfig federationConfig) {
     this.federationConfig = federationConfig;
     this.sourceDefaultFsUri = parseDefaultFsUri(
         federationConfig.externalTableLocationRewriteSourceDefaultFs(),
@@ -26,7 +28,7 @@ final class ExternalTableLocationRewriter {
       throws MetaException {
     if (args == null || args.length == 0 || !supports(methodName)
         || federationConfig.externalTableLocationRewriteMode()
-        == ProxyConfig.ExternalTableLocationRewriteMode.DISABLED) {
+        == ExternalTableLocationRewriteMode.DISABLED) {
       return;
     }
     for (Object argument : args) {
@@ -64,7 +66,7 @@ final class ExternalTableLocationRewriter {
       return qualifyToDefaultFs(locationUri, targetDefaultFs);
     }
     if (federationConfig.externalTableLocationRewriteMode()
-        != ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS) {
+        != ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS) {
       return location;
     }
     if (sourceDefaultFsUri == null || !sameFileSystem(locationUri, sourceDefaultFsUri)

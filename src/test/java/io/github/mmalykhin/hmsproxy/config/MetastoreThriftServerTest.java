@@ -7,8 +7,8 @@ import org.junit.Test;
 public class MetastoreThriftServerTest {
   @Test
   public void frontDoorAlwaysUsesServerPrincipalForInboundKerberos() {
-    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
-        ProxyConfig.SecurityMode.KERBEROS,
+    SecurityConfig security = new SecurityConfig(
+        SecurityMode.KERBEROS,
         "hive/proxy-host.example.com@EXAMPLE.COM",
         "hive/backend-host.example.com@EXAMPLE.COM",
         "/tmp/proxy.keytab",
@@ -23,8 +23,8 @@ public class MetastoreThriftServerTest {
 
   @Test
   public void frontDoorDoesNotExposeBackendClientPrincipal() {
-    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
-        ProxyConfig.SecurityMode.KERBEROS,
+    SecurityConfig security = new SecurityConfig(
+        SecurityMode.KERBEROS,
         "hive/proxy-host.example.com@EXAMPLE.COM",
         "hive/backend-host.example.com@EXAMPLE.COM",
         "/tmp/proxy.keytab",

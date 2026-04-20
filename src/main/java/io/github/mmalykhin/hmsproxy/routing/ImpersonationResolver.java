@@ -8,16 +8,18 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
 
 final class ImpersonationResolver {
   private static final Logger LOG = LoggerFactory.getLogger(ImpersonationResolver.class);
 
   private final boolean anyImpersonationEnabled;
-  private final ProxyConfig.SecurityConfig security;
+  private final SecurityConfig security;
 
   ImpersonationResolver(ProxyConfig config) {
     this.anyImpersonationEnabled = config.catalogs().values().stream()
-        .anyMatch(ProxyConfig.CatalogConfig::impersonationEnabled);
+        .anyMatch(CatalogConfig::impersonationEnabled);
     this.security = config.security();
   }
 

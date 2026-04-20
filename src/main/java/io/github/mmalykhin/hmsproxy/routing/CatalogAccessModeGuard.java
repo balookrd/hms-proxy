@@ -3,13 +3,15 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 final class CatalogAccessModeGuard {
   private CatalogAccessModeGuard() {
   }
 
   static void validate(
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       String methodName,
       String backendDbName
   ) throws MetaException {
@@ -17,7 +19,7 @@ final class CatalogAccessModeGuard {
       return;
     }
 
-    ProxyConfig.CatalogAccessMode accessMode = catalogConfig.accessMode();
+    CatalogAccessMode accessMode = catalogConfig.accessMode();
     switch (accessMode) {
       case READ_WRITE -> {
         return;

@@ -6,13 +6,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogExposureMode;
 
 final class ExposurePolicy {
   private final Map<String, CatalogExposurePolicy> catalogs;
 
   ExposurePolicy(ProxyConfig config) {
     Map<String, CatalogExposurePolicy> byCatalog = new LinkedHashMap<>();
-    for (Map.Entry<String, ProxyConfig.CatalogConfig> entry : config.catalogs().entrySet()) {
+    for (Map.Entry<String, CatalogConfig> entry : config.catalogs().entrySet()) {
       byCatalog.put(entry.getKey(), new CatalogExposurePolicy(entry.getValue()));
     }
     this.catalogs = Map.copyOf(byCatalog);
@@ -65,7 +67,7 @@ final class ExposurePolicy {
     if (catalogPolicy.hasDatabaseRules()) {
       return DatabaseExposure.HIDDEN;
     }
-    return catalogPolicy.exposeMode() == ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT
+    return catalogPolicy.exposeMode() == CatalogExposureMode.DENY_BY_DEFAULT
         ? DatabaseExposure.HIDDEN
         : DatabaseExposure.FALLBACK_ALLOW;
   }
@@ -86,11 +88,11 @@ final class ExposurePolicy {
   }
 
   private record CatalogExposurePolicy(
-      ProxyConfig.CatalogExposureMode exposeMode,
+      CatalogExposureMode exposeMode,
       List<Pattern> databasePatterns,
       List<TableExposureRule> tableRules
   ) {
-    private CatalogExposurePolicy(ProxyConfig.CatalogConfig catalogConfig) {
+    private CatalogExposurePolicy(CatalogConfig catalogConfig) {
       this(
           catalogConfig.exposeMode(),
           compilePatterns(catalogConfig.exposeDbPatterns()),

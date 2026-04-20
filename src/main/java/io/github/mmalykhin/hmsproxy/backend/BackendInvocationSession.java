@@ -17,6 +17,8 @@ import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
 
 public final class BackendInvocationSession implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendInvocationSession.class);
@@ -37,7 +39,7 @@ public final class BackendInvocationSession implements AutoCloseable {
 
   public static BackendInvocationSession open(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
@@ -49,7 +51,7 @@ public final class BackendInvocationSession implements AutoCloseable {
 
   public static BackendInvocationSession openImpersonating(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile,
@@ -115,7 +117,7 @@ public final class BackendInvocationSession implements AutoCloseable {
 
   private static BackendInvocationSession openApache(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled
   ) throws MetaException {
@@ -126,7 +128,7 @@ public final class BackendInvocationSession implements AutoCloseable {
 
   private static BackendInvocationSession openIsolated(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
@@ -145,7 +147,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       }
     }
 
-    ProxyConfig.SecurityConfig security = proxyConfig.security();
+    SecurityConfig security = proxyConfig.security();
     String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
     LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
@@ -173,7 +175,7 @@ public final class BackendInvocationSession implements AutoCloseable {
 
   private static HiveMetaStoreClient openApacheClient(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled
   ) throws MetaException {
@@ -181,7 +183,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       return new HiveMetaStoreClient(conf);
     }
 
-    ProxyConfig.SecurityConfig security = proxyConfig.security();
+    SecurityConfig security = proxyConfig.security();
     String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
     LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",

@@ -63,6 +63,33 @@ import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.AdaptiveTimeoutConfig;
+import io.github.mmalykhin.hmsproxy.config.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.BackendStatePollingConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.CircuitBreakerConfig;
+import io.github.mmalykhin.hmsproxy.config.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.DegradedRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.ExternalTableDropPurgeMode;
+import io.github.mmalykhin.hmsproxy.config.ExternalTableLocationRewriteMode;
+import io.github.mmalykhin.hmsproxy.config.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.HedgedReadConfig;
+import io.github.mmalykhin.hmsproxy.config.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.ManagementConfig;
+import io.github.mmalykhin.hmsproxy.config.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.RateLimitPolicyConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreMode;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreZooKeeperConfig;
+import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.ViewTextRewriteMode;
 
 public class RoutingMetaStoreProxyTest {
   private static final Path HDP_JAR =
@@ -70,14 +97,14 @@ public class RoutingMetaStoreProxyTest {
   private static final Path HDP_6150_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
   private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = ProxyConfig.builder()
-      .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-      .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+      .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+      .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
       .catalogDbSeparator("__")
       .defaultCatalog("catalog1")
       .catalogs(Map.of(
           "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
           "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+      .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static final CatalogRouter CUSTOM_SEPARATOR_ROUTER = routerFor(CUSTOM_SEPARATOR_CONFIG);
@@ -140,9 +167,9 @@ public class RoutingMetaStoreProxyTest {
 
   @Test
   public void rateLimitRejectsRepeatedPrincipalRequestsAndExportsMetrics() throws Throwable {
-    ProxyConfig config = rateLimitedConfig(new ProxyConfig.RateLimitConfig(
-        new ProxyConfig.RateLimitPolicyConfig(1, 1),
-        ProxyConfig.RateLimitPolicyConfig.disabled(),
+    ProxyConfig config = rateLimitedConfig(new RateLimitConfig(
+        new RateLimitPolicyConfig(1, 1),
+        RateLimitPolicyConfig.disabled(),
         Map.of(),
         Map.of(),
         Map.of(),
@@ -172,12 +199,12 @@ public class RoutingMetaStoreProxyTest {
 
   @Test
   public void rateLimitRejectsRepeatedCatalogRequestsBeforeSecondBackendCall() throws Throwable {
-    ProxyConfig config = rateLimitedConfig(new ProxyConfig.RateLimitConfig(
-        ProxyConfig.RateLimitPolicyConfig.disabled(),
-        ProxyConfig.RateLimitPolicyConfig.disabled(),
+    ProxyConfig config = rateLimitedConfig(new RateLimitConfig(
+        RateLimitPolicyConfig.disabled(),
+        RateLimitPolicyConfig.disabled(),
         Map.of(),
         Map.of(),
-        Map.of("catalog1", new ProxyConfig.RateLimitPolicyConfig(1, 1)),
+        Map.of("catalog1", new RateLimitPolicyConfig(1, 1)),
         Map.of()));
     AtomicInteger backendCalls = new AtomicInteger();
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -215,12 +242,12 @@ public class RoutingMetaStoreProxyTest {
         Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
-        new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
-            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
-            new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
-            new ProxyConfig.HedgedReadConfig(true, 2, 30_000L),
-            ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(true, 1, 200L),
+            new HedgedReadConfig(true, 2, 30_000L),
+            DegradedRoutingPolicy.SAFE_FANOUT_READS));
 
     CatalogBackend backend1 = newBackend(
         config,
@@ -272,12 +299,12 @@ public class RoutingMetaStoreProxyTest {
         Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
-        new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
-            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
-            new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
-            new ProxyConfig.HedgedReadConfig(true, 2, 100L),
-            ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(true, 1, 200L),
+            new HedgedReadConfig(true, 2, 100L),
+            DegradedRoutingPolicy.SAFE_FANOUT_READS));
 
     CatalogBackend backend1 = newBackend(
         config,
@@ -329,12 +356,12 @@ public class RoutingMetaStoreProxyTest {
         Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
-        new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
-            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
-            new ProxyConfig.CircuitBreakerConfig(true, 1, 200L),
-            new ProxyConfig.HedgedReadConfig(true, 2, 100L),
-            ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS));
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(true, 1, 200L),
+            new HedgedReadConfig(true, 2, 100L),
+            DegradedRoutingPolicy.SAFE_FANOUT_READS));
 
     CatalogBackend backend1 = newBackend(
         config,
@@ -384,12 +411,12 @@ public class RoutingMetaStoreProxyTest {
   public void circuitBreakerFailsFastAndHalfOpenRetryRecovers() throws Throwable {
     ProxyConfig config = latencyAwareConfig(
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
-        new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(false, 10_000, 5_000L),
-            new ProxyConfig.AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
-            new ProxyConfig.CircuitBreakerConfig(true, 1, 150L),
-            new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),
-            ProxyConfig.DegradedRoutingPolicy.STRICT));
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(true, 1, 150L),
+            new HedgedReadConfig(false, 1, 30_000L),
+            DegradedRoutingPolicy.STRICT));
 
     AtomicInteger backendCalls = new AtomicInteger();
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -436,12 +463,12 @@ public class RoutingMetaStoreProxyTest {
   public void backendStatePollingUpdatesProbeStatus() throws Throwable {
     ProxyConfig config = latencyAwareConfig(
         Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
-        new ProxyConfig.LatencyRoutingConfig(
-            new ProxyConfig.BackendStatePollingConfig(true, 50, 5_000L),
-            new ProxyConfig.AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
-            new ProxyConfig.CircuitBreakerConfig(false, 3, 30_000L),
-            new ProxyConfig.HedgedReadConfig(false, 1, 30_000L),
-            ProxyConfig.DegradedRoutingPolicy.STRICT));
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(true, 50, 5_000L),
+            new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 3, 30_000L),
+            new HedgedReadConfig(false, 1, 30_000L),
+            DegradedRoutingPolicy.STRICT));
 
     AtomicInteger probeCalls = new AtomicInteger();
     CatalogBackend backend = newBackend(
@@ -513,12 +540,12 @@ public class RoutingMetaStoreProxyTest {
     backendResponse.setFunctions(List.of());
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -547,12 +574,12 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getMetaConfWithoutCatalogContextUsesDefaultBackend() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -582,12 +609,12 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getMetastoreDbUuidWithoutCatalogContextUsesDefaultBackend() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -616,14 +643,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void dropFunctionRoutesByExplicitDbFirstMethodAllowlist() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -746,14 +773,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void lockRoutesByNamespaceAndRewritesNestedDbName() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
@@ -789,14 +816,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void backendLockTransportFailuresAreSurfacedAsMetaExceptions() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendAdapter failingAdapter = new BackendAdapter() {
@@ -860,14 +887,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger defaultBackendCalls = new AtomicInteger();
@@ -929,14 +956,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicReference<HeartbeatRequest> capturedHeartbeat = new AtomicReference<>();
@@ -997,14 +1024,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticNoTxnDbLockForNonDefaultCatalogUsesShim() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicReference<HeartbeatRequest> capturedHeartbeat = new AtomicReference<>();
@@ -1085,14 +1112,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticNoTxnExclusivePartitionLockForNonDefaultCatalogUsesShim() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger defaultAbortCalls = new AtomicInteger();
@@ -1160,14 +1187,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticReadLocksAreReleasedWhenTxnCompletes() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger commitCalls = new AtomicInteger();
@@ -1215,14 +1242,14 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void syntheticReadLockMetricsAreRecordedForInMemoryShim() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
             "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend defaultBackend = newBackend(
@@ -1293,18 +1320,18 @@ public class RoutingMetaStoreProxyTest {
   public void syntheticReadLocksCanFailOverAcrossProxyInstancesViaZooKeeperStore() throws Throwable {
     try (TestingServer zooKeeper = startTestingServerOrSkip()) {
       ProxyConfig config = ProxyConfig.builder()
-          .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-          .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+          .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+          .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
           .catalogDbSeparator("__")
           .defaultCatalog("catalog1")
           .catalogs(Map.of(
               "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
               "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
-          .backend(new ProxyConfig.BackendConfig(Map.of()))
-          .compatibility(new ProxyConfig.CompatibilityConfig(false))
-          .federation(new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false))
-          .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-          .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
+          .backend(new BackendConfig(Map.of()))
+          .compatibility(new CompatibilityConfig(false))
+          .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false))
+          .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+          .management(new ManagementConfig(false, "127.0.0.1", 10083))
           .syntheticReadLockStore(syntheticReadLockStoreConfig(zooKeeper.getConnectString()))
           .build();
 
@@ -1423,8 +1450,8 @@ public class RoutingMetaStoreProxyTest {
 
   @Test
   public void servicePrincipalTrafficDoesNotTriggerBackendImpersonation() {
-    ProxyConfig.SecurityConfig security = new ProxyConfig.SecurityConfig(
-        ProxyConfig.SecurityMode.KERBEROS,
+    SecurityConfig security = new SecurityConfig(
+        SecurityMode.KERBEROS,
         "hive/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
         "proxy-client/hd-hdp-31-08.dmp.vimpelcom.ru@BEE.VIMPELCOM.RU",
         "/etc/security/keytabs/hive.service.keytab",
@@ -1518,13 +1545,13 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getVersionUsesConfiguredFrontendProfile() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
     CatalogRouter router = routerFor(config);
     RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
@@ -1602,14 +1629,14 @@ public class RoutingMetaStoreProxyTest {
   public void transactionalDdlGuardWithoutAddressListAppliesToAllClients() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1638,14 +1665,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1693,14 +1720,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1756,14 +1783,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of("10.20.0.0/16")))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1805,14 +1832,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1856,14 +1883,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1900,14 +1927,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TO_NON_TRANSACTIONAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1944,14 +1971,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -1990,14 +2017,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -2041,14 +2068,14 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -2084,7 +2111,7 @@ public class RoutingMetaStoreProxyTest {
   public void externalTableLocationRewriteQualifiesUnqualifiedLocationForNonDefaultCatalog() throws Throwable {
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     RoutingMetaStoreProxy handler = locationRewriteHandler(
-        ProxyConfig.ExternalTableLocationRewriteMode.QUALIFY_UNQUALIFIED,
+        ExternalTableLocationRewriteMode.QUALIFY_UNQUALIFIED,
         null,
         capturedTable);
     Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
@@ -2102,7 +2129,7 @@ public class RoutingMetaStoreProxyTest {
   public void externalTableLocationRewriteMovesFrontendDefaultFsToTargetCatalog() throws Throwable {
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     RoutingMetaStoreProxy handler = locationRewriteHandler(
-        ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+        ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
         "hdfs://ns-frontend",
         capturedTable);
     Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
@@ -2119,7 +2146,7 @@ public class RoutingMetaStoreProxyTest {
   public void externalTableLocationRewriteLeavesExplicitForeignHdfsLocationUntouched() throws Throwable {
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     RoutingMetaStoreProxy handler = locationRewriteHandler(
-        ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+        ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
         "hdfs://ns-frontend",
         capturedTable);
     Table table = table("catalog2__sales", "events", Map.of("EXTERNAL", "TRUE"));
@@ -2136,7 +2163,7 @@ public class RoutingMetaStoreProxyTest {
   public void readOnlyCatalogBlocksWriteOperations() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler = accessModeHandler(
-        ProxyConfig.CatalogAccessMode.READ_ONLY,
+        CatalogAccessMode.READ_ONLY,
         List.of(),
         backendCalls,
         new AtomicReference<>());
@@ -2155,7 +2182,7 @@ public class RoutingMetaStoreProxyTest {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();
     RoutingMetaStoreProxy handler = accessModeHandler(
-        ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+        CatalogAccessMode.READ_WRITE_DB_WHITELIST,
         List.of("sales"),
         backendCalls,
         capturedTable);
@@ -2173,7 +2200,7 @@ public class RoutingMetaStoreProxyTest {
   public void whitelistCatalogBlocksWritesForNonWhitelistedDatabases() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler = accessModeHandler(
-        ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+        CatalogAccessMode.READ_WRITE_DB_WHITELIST,
         List.of("sales"),
         backendCalls,
         new AtomicReference<>());
@@ -2190,8 +2217,8 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getAllDatabasesFiltersHiddenDatabasesByExposurePolicy() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2201,11 +2228,11 @@ public class RoutingMetaStoreProxyTest {
                 "c1",
                 null,
                 null,
-                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                CatalogExposureMode.DENY_BY_DEFAULT,
                 List.of("sales", "finance"),
                 Map.of(),
                 Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -2232,8 +2259,8 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getTableRejectsHiddenTableByExposurePolicyWithoutBackendCall() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2243,11 +2270,11 @@ public class RoutingMetaStoreProxyTest {
                 "c1",
                 null,
                 null,
-                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                CatalogExposureMode.DENY_BY_DEFAULT,
                 List.of(),
                 Map.of("sales", List.of("orders")),
                 Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
@@ -2275,8 +2302,8 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getAllTablesFiltersHiddenTablesByExposurePolicyCaseInsensitively() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2286,11 +2313,11 @@ public class RoutingMetaStoreProxyTest {
                 "c1",
                 null,
                 null,
-                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                CatalogExposureMode.DENY_BY_DEFAULT,
                 List.of(),
                 Map.of("sales", List.of("orders")),
                 Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -2317,8 +2344,8 @@ public class RoutingMetaStoreProxyTest {
   @Test
   public void getTableMetaFiltersHiddenTablesByExposurePolicy() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2328,11 +2355,11 @@ public class RoutingMetaStoreProxyTest {
                 "c1",
                 null,
                 null,
-                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                CatalogExposureMode.DENY_BY_DEFAULT,
                 List.of(),
                 Map.of("sales", List.of("orders")),
                 Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -2368,8 +2395,8 @@ public class RoutingMetaStoreProxyTest {
     AtomicReference<String> capturedTable = new AtomicReference<>();
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2377,9 +2404,9 @@ public class RoutingMetaStoreProxyTest {
             "catalog2", catalogConfig(
                 "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
                 Map.of("hive.metastore.uris", "thrift://two"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend hdpBackend = newIsolatedHortonworksBackend(config, config.catalogs().get("catalog2"),
@@ -2417,14 +2444,14 @@ public class RoutingMetaStoreProxyTest {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), null, false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), null, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend apacheBackend = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
@@ -2457,8 +2484,8 @@ public class RoutingMetaStoreProxyTest {
     AtomicReference<String> capturedDb = new AtomicReference<>();
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2466,9 +2493,9 @@ public class RoutingMetaStoreProxyTest {
             "catalog2", catalogConfig(
                 "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
                 Map.of("hive.metastore.uris", "thrift://two"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
@@ -2514,8 +2541,8 @@ public class RoutingMetaStoreProxyTest {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog2")
         .catalogs(Map.of(
@@ -2525,13 +2552,13 @@ public class RoutingMetaStoreProxyTest {
                 "c2",
                 MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
                 HDP_6150_JAR.toString(),
-                ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+                CatalogExposureMode.DENY_BY_DEFAULT,
                 List.of(),
                 Map.of("sales", List.of("events")),
                 Map.of("hive.metastore.uris", "thrift://two"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
@@ -2576,16 +2603,16 @@ public class RoutingMetaStoreProxyTest {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
 
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog2")
         .catalogs(Map.of("catalog2", catalogConfig(
             "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
             Map.of("hive.metastore.uris", "thrift://two"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(
-            ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
@@ -2711,7 +2738,7 @@ public class RoutingMetaStoreProxyTest {
 
   private static CatalogBackend newIsolatedHortonworksBackend(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       AtomicReference<String> capturedDb,
       AtomicReference<String> capturedTable
   ) throws Exception {
@@ -2740,7 +2767,7 @@ public class RoutingMetaStoreProxyTest {
 
   private static CatalogBackend newIsolatedHortonworksBackend(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       Path jar,
       MetastoreRuntimeProfile runtimeProfile,
       java.lang.reflect.InvocationHandler delegateHandler
@@ -2780,7 +2807,7 @@ public class RoutingMetaStoreProxyTest {
 
   private static CatalogBackend newBackend(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       BackendAdapter adapter,
       BackendRuntime runtime
   ) throws Exception {
@@ -2790,7 +2817,7 @@ public class RoutingMetaStoreProxyTest {
     catalog.setLocationUri(catalogConfig.locationUri());
     Constructor<CatalogBackend> ctor = CatalogBackend.class.getDeclaredConstructor(
         ProxyConfig.class,
-        ProxyConfig.CatalogConfig.class,
+        CatalogConfig.class,
         HiveConf.class,
         BackendAdapter.class,
         BackendRuntime.class,
@@ -2846,8 +2873,8 @@ public class RoutingMetaStoreProxyTest {
 
   private static ProxyConfig dropPurgeConfig() {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -2860,16 +2887,16 @@ public class RoutingMetaStoreProxyTest {
                 Map.of(
                     "hive.metastore.uris", "thrift://one",
                     FileSystemExternalTableDropPurger.ALLOWED_PREFIXES_CONF_KEY, "hdfs://ns-dev3/tmp/"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .federation(new ProxyConfig.FederationConfig(
+        .compatibility(new CompatibilityConfig(false))
+        .federation(new FederationConfig(
             false,
-            ProxyConfig.ViewTextRewriteMode.DISABLED,
+            ViewTextRewriteMode.DISABLED,
             false,
-            ProxyConfig.ExternalTableLocationRewriteMode.DISABLED,
+            ExternalTableLocationRewriteMode.DISABLED,
             null,
-            ProxyConfig.ExternalTableDropPurgeMode.BEST_EFFORT))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+            ExternalTableDropPurgeMode.BEST_EFFORT))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 
@@ -2927,12 +2954,12 @@ public class RoutingMetaStoreProxyTest {
 
   private static BackendRuntime newBackendRuntime(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       BackendInvocationSession session
   ) throws Exception {
     Constructor<BackendRuntime> ctor = BackendRuntime.class.getDeclaredConstructor(
         ProxyConfig.class,
-        ProxyConfig.CatalogConfig.class,
+        CatalogConfig.class,
         HiveConf.class,
         boolean.class,
         BackendRuntime.SessionFactory.class,
@@ -2943,7 +2970,7 @@ public class RoutingMetaStoreProxyTest {
       @Override
       public BackendInvocationSession open(
           ProxyConfig ignoredProxyConfig,
-          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          CatalogConfig ignoredCatalogConfig,
           HiveConf ignoredHiveConf,
           boolean ignoredBackendKerberosEnabled,
           MetastoreRuntimeProfile ignoredRuntimeProfile
@@ -2954,7 +2981,7 @@ public class RoutingMetaStoreProxyTest {
       @Override
       public BackendInvocationSession openImpersonating(
           ProxyConfig ignoredProxyConfig,
-          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          CatalogConfig ignoredCatalogConfig,
           HiveConf ignoredHiveConf,
           boolean ignoredBackendKerberosEnabled,
           MetastoreRuntimeProfile ignoredRuntimeProfile,
@@ -2992,14 +3019,14 @@ public class RoutingMetaStoreProxyTest {
       String clientAddressRule
   ) throws Exception {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of(clientAddressRule)))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, List.of(clientAddressRule)))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -3022,58 +3049,58 @@ public class RoutingMetaStoreProxyTest {
     return new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
   }
 
-  private static ProxyConfig rateLimitedConfig(ProxyConfig.RateLimitConfig rateLimit) {
+  private static ProxyConfig rateLimitedConfig(RateLimitConfig rateLimit) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .backend(new ProxyConfig.BackendConfig(Map.of()))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .federation(new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
-        .syntheticReadLockStore(new ProxyConfig.SyntheticReadLockStoreConfig(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, null))
+        .backend(new BackendConfig(Map.of()))
+        .compatibility(new CompatibilityConfig(false))
+        .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .management(new ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null))
         .rateLimit(rateLimit)
         .build();
   }
 
   private static ProxyConfig latencyAwareConfig(
-      Map<String, ProxyConfig.CatalogConfig> catalogs,
-      ProxyConfig.LatencyRoutingConfig latencyRouting
+      Map<String, CatalogConfig> catalogs,
+      LatencyRoutingConfig latencyRouting
   ) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(catalogs)
-        .backend(new ProxyConfig.BackendConfig(Map.of()))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .federation(new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
-        .syntheticReadLockStore(new ProxyConfig.SyntheticReadLockStoreConfig(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, null))
-        .rateLimit(ProxyConfig.RateLimitConfig.disabled())
+        .backend(new BackendConfig(Map.of()))
+        .compatibility(new CompatibilityConfig(false))
+        .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .management(new ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null))
+        .rateLimit(RateLimitConfig.disabled())
         .latencyRouting(latencyRouting)
         .build();
   }
 
   private static RoutingMetaStoreProxy accessModeHandler(
-      ProxyConfig.CatalogAccessMode accessMode,
+      CatalogAccessMode accessMode,
       List<String> writeDbWhitelist,
       AtomicInteger backendCalls,
       AtomicReference<Table> capturedTable
   ) throws Exception {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1",
-            new ProxyConfig.CatalogConfig(
+            new CatalogConfig(
                 "catalog1",
                 "c1",
                 "file:///c1",
@@ -3083,9 +3110,9 @@ public class RoutingMetaStoreProxyTest {
                 null,
                 null,
                 Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession session = newSession((proxy, method, args) -> {
@@ -3109,13 +3136,13 @@ public class RoutingMetaStoreProxyTest {
   }
 
   private static RoutingMetaStoreProxy locationRewriteHandler(
-      ProxyConfig.ExternalTableLocationRewriteMode mode,
+      ExternalTableLocationRewriteMode mode,
       String sourceDefaultFs,
       AtomicReference<Table> capturedTable
   ) throws Exception {
     ProxyConfig config = ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
@@ -3127,10 +3154,10 @@ public class RoutingMetaStoreProxyTest {
             catalogConfig(
                 "catalog2", "c2", null, null,
                 Map.of("hive.metastore.uris", "thrift://two", "fs.defaultFS", "hdfs://ns-catalog2"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(false))
-        .federation(new ProxyConfig.FederationConfig(false, ProxyConfig.ViewTextRewriteMode.DISABLED, false, mode, sourceDefaultFs))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(ProxyConfig.TransactionalDdlGuardMode.DISABLED, List.of()))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(false))
+        .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false, mode, sourceDefaultFs))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     BackendInvocationSession backend1Session = newSession((proxy, method, args) -> null);
@@ -3175,41 +3202,41 @@ public class RoutingMetaStoreProxyTest {
     return ctor.newInstance(null, thriftClient, null);
   }
 
-  private static ProxyConfig.CatalogConfig catalogConfig(
+  private static CatalogConfig catalogConfig(
       String name,
       String description,
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
       Map<String, String> hiveConf
   ) {
-    return new ProxyConfig.CatalogConfig(
+    return new CatalogConfig(
         name,
         description,
         "file:///" + description,
         false,
-        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        CatalogAccessMode.READ_WRITE,
         List.of(),
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf);
   }
 
-  private static ProxyConfig.CatalogConfig catalogConfigWithExposure(
+  private static CatalogConfig catalogConfigWithExposure(
       String name,
       String description,
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
-      ProxyConfig.CatalogExposureMode exposeMode,
+      CatalogExposureMode exposeMode,
       List<String> exposeDbPatterns,
       Map<String, List<String>> exposeTablePatterns,
       Map<String, String> hiveConf
   ) {
-    return new ProxyConfig.CatalogConfig(
+    return new CatalogConfig(
         name,
         description,
         "file:///" + description,
         false,
-        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        CatalogAccessMode.READ_WRITE,
         List.of(),
         exposeMode,
         exposeDbPatterns,
@@ -3309,10 +3336,10 @@ public class RoutingMetaStoreProxyTest {
     return request;
   }
 
-  private static ProxyConfig.SyntheticReadLockStoreConfig syntheticReadLockStoreConfig(String connectString) {
-    return new ProxyConfig.SyntheticReadLockStoreConfig(
-        ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER,
-        new ProxyConfig.SyntheticReadLockStoreZooKeeperConfig(
+  private static SyntheticReadLockStoreConfig syntheticReadLockStoreConfig(String connectString) {
+    return new SyntheticReadLockStoreConfig(
+        SyntheticReadLockStoreMode.ZOOKEEPER,
+        new SyntheticReadLockStoreZooKeeperConfig(
             connectString,
             "/hms-proxy-test-synthetic-read-locks",
             15_000,

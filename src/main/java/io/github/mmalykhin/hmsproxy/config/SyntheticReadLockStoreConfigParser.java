@@ -6,7 +6,7 @@ final class SyntheticReadLockStoreConfigParser {
   private SyntheticReadLockStoreConfigParser() {
   }
 
-  static ProxyConfig.SyntheticReadLockStoreConfig parse(PropertyReader reader) {
+  static SyntheticReadLockStoreConfig parse(PropertyReader reader) {
     boolean zkConfigured = reader.hasPrefix("synthetic-read-lock.store.zookeeper.");
     String rawMode = reader.getOrNull("synthetic-read-lock.store.mode");
     if (rawMode == null && !zkConfigured) {
@@ -16,7 +16,7 @@ final class SyntheticReadLockStoreConfigParser {
               + "will be lost on proxy restart or load-balancer failover), or ZOOKEEPER with "
               + "synthetic-read-lock.store.zookeeper.connect-string for HA / multi-instance setups.");
     }
-    ProxyConfig.SyntheticReadLockStoreMode mode = parseMode(rawMode, zkConfigured);
+    SyntheticReadLockStoreMode mode = parseMode(rawMode, zkConfigured);
     String znode = reader.getOrNull("synthetic-read-lock.store.zookeeper.znode");
     if (reader.has("synthetic-read-lock.store.zookeeper.znode") && znode == null) {
       throw new IllegalArgumentException("synthetic-read-lock.store.zookeeper.znode must not be blank");
@@ -25,28 +25,28 @@ final class SyntheticReadLockStoreConfigParser {
     int sessionTimeoutMs = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.session-timeout-ms", 60_000);
     int baseSleepMs = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.base-sleep-ms", 1_000);
     int maxRetries = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.max-retries", 3);
-    ProxyConfig.SyntheticReadLockStoreZooKeeperConfig zk =
-        new ProxyConfig.SyntheticReadLockStoreZooKeeperConfig(
+    SyntheticReadLockStoreZooKeeperConfig zk =
+        new SyntheticReadLockStoreZooKeeperConfig(
             reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string"),
             znode,
             connectionTimeoutMs,
             sessionTimeoutMs,
             baseSleepMs,
             maxRetries);
-    if (mode == ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER) {
+    if (mode == SyntheticReadLockStoreMode.ZOOKEEPER) {
       ConfigParsing.requireNonBlank(zk.connectString(), "synthetic-read-lock.store.zookeeper.connect-string");
     }
-    return new ProxyConfig.SyntheticReadLockStoreConfig(mode, zk);
+    return new SyntheticReadLockStoreConfig(mode, zk);
   }
 
-  private static ProxyConfig.SyntheticReadLockStoreMode parseMode(String value, boolean zooKeeperConfigured) {
+  private static SyntheticReadLockStoreMode parseMode(String value, boolean zooKeeperConfigured) {
     if (value == null) {
       return zooKeeperConfigured
-          ? ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER
-          : ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY;
+          ? SyntheticReadLockStoreMode.ZOOKEEPER
+          : SyntheticReadLockStoreMode.IN_MEMORY;
     }
     try {
-      return ProxyConfig.SyntheticReadLockStoreMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return SyntheticReadLockStoreMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for synthetic-read-lock.store.mode: " + value

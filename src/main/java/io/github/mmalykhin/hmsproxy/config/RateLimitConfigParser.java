@@ -19,25 +19,25 @@ final class RateLimitConfigParser {
   private RateLimitConfigParser() {
   }
 
-  static ProxyConfig.RateLimitConfig parse(
+  static RateLimitConfig parse(
       PropertyReader reader,
-      Map<String, ProxyConfig.CatalogConfig> catalogs
+      Map<String, CatalogConfig> catalogs
   ) {
-    ProxyConfig.RateLimitPolicyConfig principalRateLimit = parsePolicy(reader, "rate-limit.principal");
-    ProxyConfig.RateLimitPolicyConfig sourceRateLimit = parsePolicy(reader, "rate-limit.source");
-    Map<String, ProxyConfig.SourceCidrRateLimitConfig> sourceCidrRateLimits = parseSourceCidrRateLimits(reader);
-    Map<String, ProxyConfig.RateLimitPolicyConfig> methodFamilyRateLimits =
+    RateLimitPolicyConfig principalRateLimit = parsePolicy(reader, "rate-limit.principal");
+    RateLimitPolicyConfig sourceRateLimit = parsePolicy(reader, "rate-limit.source");
+    Map<String, SourceCidrRateLimitConfig> sourceCidrRateLimits = parseSourceCidrRateLimits(reader);
+    Map<String, RateLimitPolicyConfig> methodFamilyRateLimits =
         parsePolicies(reader, "rate-limit.method-family.", SUPPORTED_METHOD_FAMILIES, true);
-    Map<String, ProxyConfig.RateLimitPolicyConfig> catalogRateLimits =
+    Map<String, RateLimitPolicyConfig> catalogRateLimits =
         parsePolicies(reader, "rate-limit.catalog.", null, false);
     for (String catalogName : catalogRateLimits.keySet()) {
       if (!catalogs.containsKey(catalogName)) {
         throw new IllegalArgumentException("Unknown rate-limit.catalog entry: " + catalogName);
       }
     }
-    Map<String, ProxyConfig.RateLimitPolicyConfig> rpcClassRateLimits =
+    Map<String, RateLimitPolicyConfig> rpcClassRateLimits =
         parsePolicies(reader, "rate-limit.rpc-class.", SUPPORTED_RPC_CLASSES, true);
-    return new ProxyConfig.RateLimitConfig(
+    return new RateLimitConfig(
         principalRateLimit,
         sourceRateLimit,
         sourceCidrRateLimits,
@@ -46,13 +46,13 @@ final class RateLimitConfigParser {
         rpcClassRateLimits);
   }
 
-  private static Map<String, ProxyConfig.SourceCidrRateLimitConfig> parseSourceCidrRateLimits(PropertyReader reader) {
+  private static Map<String, SourceCidrRateLimitConfig> parseSourceCidrRateLimits(PropertyReader reader) {
     String prefix = "rate-limit.source-cidr.";
-    Map<String, ProxyConfig.SourceCidrRateLimitConfig> parsed = new LinkedHashMap<>();
+    Map<String, SourceCidrRateLimitConfig> parsed = new LinkedHashMap<>();
     for (String ruleName : reader.scopedNames(prefix)) {
       String baseKey = prefix + ruleName;
       List<String> cidrRules = Arrays.asList(PropertyReader.splitCsv(reader.get(baseKey + ".cidrs", "")));
-      ProxyConfig.RateLimitPolicyConfig policy = parsePolicy(reader, baseKey);
+      RateLimitPolicyConfig policy = parsePolicy(reader, baseKey);
       if (cidrRules.isEmpty() && !policy.enabled()) {
         continue;
       }
@@ -64,24 +64,24 @@ final class RateLimitConfigParser {
         throw new IllegalArgumentException(
             baseKey + ".requests-per-second must be >= 1 when " + baseKey + " is configured");
       }
-      parsed.put(ruleName, new ProxyConfig.SourceCidrRateLimitConfig(cidrRules, policy));
+      parsed.put(ruleName, new SourceCidrRateLimitConfig(cidrRules, policy));
     }
     return parsed;
   }
 
-  private static Map<String, ProxyConfig.RateLimitPolicyConfig> parsePolicies(
+  private static Map<String, RateLimitPolicyConfig> parsePolicies(
       PropertyReader reader,
       String prefix,
       Set<String> allowedNames,
       boolean normalizeToLowerCase
   ) {
-    Map<String, ProxyConfig.RateLimitPolicyConfig> parsed = new LinkedHashMap<>();
+    Map<String, RateLimitPolicyConfig> parsed = new LinkedHashMap<>();
     for (String rawName : reader.scopedNames(prefix)) {
       String normalizedName = normalizeToLowerCase ? rawName.toLowerCase(Locale.ROOT) : rawName;
       if (allowedNames != null && !allowedNames.contains(normalizedName)) {
         throw new IllegalArgumentException("Unsupported rate-limit scope '" + rawName + "' under " + prefix);
       }
-      ProxyConfig.RateLimitPolicyConfig policy = parsePolicy(reader, prefix + rawName);
+      RateLimitPolicyConfig policy = parsePolicy(reader, prefix + rawName);
       if (policy.enabled()) {
         parsed.put(normalizedName, policy);
       }
@@ -89,13 +89,13 @@ final class RateLimitConfigParser {
     return parsed;
   }
 
-  private static ProxyConfig.RateLimitPolicyConfig parsePolicy(PropertyReader reader, String baseKey) {
+  private static RateLimitPolicyConfig parsePolicy(PropertyReader reader, String baseKey) {
     boolean rateConfigured = reader.has(baseKey + ".requests-per-second");
     boolean burstConfigured = reader.has(baseKey + ".burst");
     int requestsPerSecond = reader.getNonNegativeInt(baseKey + ".requests-per-second", 0);
     int burst = reader.getNonNegativeInt(baseKey + ".burst", 0);
     if (!rateConfigured && !burstConfigured) {
-      return ProxyConfig.RateLimitPolicyConfig.disabled();
+      return RateLimitPolicyConfig.disabled();
     }
     if (requestsPerSecond < 1) {
       throw new IllegalArgumentException(baseKey + ".requests-per-second must be >= 1");
@@ -103,6 +103,6 @@ final class RateLimitConfigParser {
     if (burstConfigured && burst < 1) {
       throw new IllegalArgumentException(baseKey + ".burst must be >= 1");
     }
-    return new ProxyConfig.RateLimitPolicyConfig(requestsPerSecond, burst);
+    return new RateLimitPolicyConfig(requestsPerSecond, burst);
   }
 }

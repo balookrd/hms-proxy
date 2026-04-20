@@ -15,6 +15,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger {
   static final String EXTERNAL_TABLE_PURGE_KEY = "external.table.purge";
@@ -90,7 +91,7 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
   }
 
   private List<String> allowedPrefixes(CatalogBackend backend) {
-    ProxyConfig.CatalogConfig catalogConfig = config.catalogs().get(backend.name());
+    CatalogConfig catalogConfig = config.catalogs().get(backend.name());
     if (catalogConfig == null) {
       return List.of();
     }

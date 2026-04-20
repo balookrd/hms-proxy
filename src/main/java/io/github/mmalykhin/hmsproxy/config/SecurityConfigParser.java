@@ -7,11 +7,11 @@ final class SecurityConfigParser {
   private SecurityConfigParser() {
   }
 
-  static ProxyConfig.SecurityConfig parse(
+  static SecurityConfig parse(
       PropertyReader reader,
-      Map<String, ProxyConfig.CatalogConfig> catalogs
+      Map<String, CatalogConfig> catalogs
   ) {
-    ProxyConfig.SecurityMode securityMode = ProxyConfig.SecurityMode.valueOf(
+    SecurityMode securityMode = SecurityMode.valueOf(
         reader.get("security.mode", "NONE").trim().toUpperCase(Locale.ROOT));
     String serverPrincipal = reader.getOrNull("security.server-principal");
     String clientPrincipal = reader.getOrNull("security.client-principal");
@@ -26,13 +26,13 @@ final class SecurityConfigParser {
     if (clientKeytab == null && keytab != null) {
       clientKeytab = keytab;
     }
-    if (securityMode == ProxyConfig.SecurityMode.KERBEROS) {
+    if (securityMode == SecurityMode.KERBEROS) {
       ConfigParsing.requireNonBlank(serverPrincipal, "security.server-principal");
       ConfigParsing.requireNonBlank(keytab, "security.keytab");
       ConfigParsing.requireReadableFile(keytab, "security.keytab");
     }
-    if (catalogs.values().stream().anyMatch(ProxyConfig.CatalogConfig::impersonationEnabled)
-        && securityMode != ProxyConfig.SecurityMode.KERBEROS) {
+    if (catalogs.values().stream().anyMatch(CatalogConfig::impersonationEnabled)
+        && securityMode != SecurityMode.KERBEROS) {
       throw new IllegalArgumentException(
           "security.impersonation-enabled and catalog.<name>.impersonation-enabled "
               + "require security.mode=KERBEROS so the proxy can derive the caller identity from SASL");
@@ -42,7 +42,7 @@ final class SecurityConfigParser {
       ConfigParsing.requireNonBlank(clientKeytab, "security.client-keytab");
       ConfigParsing.requireReadableFile(clientKeytab, "security.client-keytab");
     }
-    return new ProxyConfig.SecurityConfig(
+    return new SecurityConfig(
         securityMode,
         serverPrincipal,
         clientPrincipal,

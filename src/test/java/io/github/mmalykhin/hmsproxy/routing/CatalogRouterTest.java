@@ -8,47 +8,53 @@ import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class CatalogRouterTest {
   private static final ProxyConfig TWO_CATALOG_CONFIG = ProxyConfig.builder()
-      .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-      .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+      .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+      .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
       .catalogDbSeparator(".")
       .defaultCatalog("catalog1")
       .catalogs(Map.of(
-          "catalog1", new ProxyConfig.CatalogConfig(
-              "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+          "catalog1", new CatalogConfig(
+              "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://one")),
-          "catalog2", new ProxyConfig.CatalogConfig(
-              "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+          "catalog2", new CatalogConfig(
+              "catalog2", "c2", "file:///c2", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))))
-      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+      .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static final ProxyConfig ONE_CATALOG_CONFIG = ProxyConfig.builder()
-      .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-      .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+      .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+      .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
       .catalogDbSeparator(".")
       .defaultCatalog("catalog1")
-      .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
-          "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+      .catalogs(Map.of("catalog1", new CatalogConfig(
+          "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
           Map.of("hive.metastore.uris", "thrift://one"))))
-      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+      .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = ProxyConfig.builder()
-      .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-      .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+      .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+      .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
       .catalogDbSeparator("__")
       .defaultCatalog("catalog1")
       .catalogs(Map.of(
-          "catalog1", new ProxyConfig.CatalogConfig(
-              "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+          "catalog1", new CatalogConfig(
+              "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://one")),
-          "catalog2", new ProxyConfig.CatalogConfig(
-              "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+          "catalog2", new CatalogConfig(
+              "catalog2", "c2", "file:///c2", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))))
-      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+      .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static CatalogRouter routerFor(ProxyConfig config) {

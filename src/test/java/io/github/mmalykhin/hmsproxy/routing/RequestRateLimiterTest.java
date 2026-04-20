@@ -8,12 +8,15 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.RateLimitPolicyConfig;
+import io.github.mmalykhin.hmsproxy.config.SourceCidrRateLimitConfig;
 
 public class RequestRateLimiterTest {
   @Test
   public void classifiesRepresentativeMethodFamiliesAndRpcClasses() {
     RequestRateLimiter limiter =
-        new RequestRateLimiter(ProxyConfig.RateLimitConfig.disabled(), new PrometheusMetrics(), () -> 0L);
+        new RequestRateLimiter(RateLimitConfig.disabled(), new PrometheusMetrics(), () -> 0L);
 
     RequestRateLimiter.RequestClassification read = limiter.classify("get_table");
     RequestRateLimiter.RequestClassification ddl = limiter.classify("create_table");
@@ -34,9 +37,9 @@ public class RequestRateLimiterTest {
   public void enforcesPerPrincipalIndependently() throws Exception {
     AtomicLong nowNanos = new AtomicLong(1L);
     RequestRateLimiter limiter = new RequestRateLimiter(
-        new ProxyConfig.RateLimitConfig(
-            new ProxyConfig.RateLimitPolicyConfig(1, 1),
-            ProxyConfig.RateLimitPolicyConfig.disabled(),
+        new RateLimitConfig(
+            new RateLimitPolicyConfig(1, 1),
+            RateLimitPolicyConfig.disabled(),
             Map.of(),
             Map.of(),
             Map.of(),
@@ -58,14 +61,14 @@ public class RequestRateLimiterTest {
   public void enforcesAggregateSourceCidrLimitsAcrossDifferentIps() throws Exception {
     AtomicLong nowNanos = new AtomicLong(1L);
     RequestRateLimiter limiter = new RequestRateLimiter(
-        new ProxyConfig.RateLimitConfig(
-            ProxyConfig.RateLimitPolicyConfig.disabled(),
-            ProxyConfig.RateLimitPolicyConfig.disabled(),
+        new RateLimitConfig(
+            RateLimitPolicyConfig.disabled(),
+            RateLimitPolicyConfig.disabled(),
             Map.of(
                 "corp",
-                new ProxyConfig.SourceCidrRateLimitConfig(
+                new SourceCidrRateLimitConfig(
                     List.of("10.10.0.0/16"),
-                    new ProxyConfig.RateLimitPolicyConfig(1, 1))),
+                    new RateLimitPolicyConfig(1, 1))),
             Map.of(),
             Map.of(),
             Map.of()),
@@ -85,12 +88,12 @@ public class RequestRateLimiterTest {
   public void enforcesConfiguredCatalogLimits() throws Exception {
     AtomicLong nowNanos = new AtomicLong(1L);
     RequestRateLimiter limiter = new RequestRateLimiter(
-        new ProxyConfig.RateLimitConfig(
-            ProxyConfig.RateLimitPolicyConfig.disabled(),
-            ProxyConfig.RateLimitPolicyConfig.disabled(),
+        new RateLimitConfig(
+            RateLimitPolicyConfig.disabled(),
+            RateLimitPolicyConfig.disabled(),
             Map.of(),
             Map.of(),
-            Map.of("catalog1", new ProxyConfig.RateLimitPolicyConfig(1, 1)),
+            Map.of("catalog1", new RateLimitPolicyConfig(1, 1)),
             Map.of()),
         new PrometheusMetrics(),
         nowNanos::get);

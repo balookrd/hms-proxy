@@ -8,19 +8,19 @@ final class TransactionalDdlGuardConfigParser {
   private TransactionalDdlGuardConfigParser() {
   }
 
-  static ProxyConfig.TransactionalDdlGuardConfig parse(PropertyReader reader) {
-    ProxyConfig.TransactionalDdlGuardMode mode = parseMode(reader.getOrNull("guard.transactional-ddl.mode"));
+  static TransactionalDdlGuardConfig parse(PropertyReader reader) {
+    TransactionalDdlGuardMode mode = parseMode(reader.getOrNull("guard.transactional-ddl.mode"));
     String[] clientAddresses = PropertyReader.splitCsv(reader.get("guard.transactional-ddl.client-addresses", ""));
     ClientAddressMatcher.parseAll(Arrays.asList(clientAddresses));
-    return new ProxyConfig.TransactionalDdlGuardConfig(mode, Arrays.asList(clientAddresses));
+    return new TransactionalDdlGuardConfig(mode, Arrays.asList(clientAddresses));
   }
 
-  private static ProxyConfig.TransactionalDdlGuardMode parseMode(String value) {
+  private static TransactionalDdlGuardMode parseMode(String value) {
     if (value == null) {
-      return ProxyConfig.TransactionalDdlGuardMode.DISABLED;
+      return TransactionalDdlGuardMode.DISABLED;
     }
     try {
-      return ProxyConfig.TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return TransactionalDdlGuardMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for guard.transactional-ddl.mode: " + value

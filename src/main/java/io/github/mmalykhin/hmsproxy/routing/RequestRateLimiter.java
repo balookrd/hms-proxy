@@ -16,6 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
+import io.github.mmalykhin.hmsproxy.config.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.RateLimitPolicyConfig;
+import io.github.mmalykhin.hmsproxy.config.SourceCidrRateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.OperationMetadata;
 
 final class RequestRateLimiter {
   private static final long BUCKET_IDLE_TTL_NANOS = 15L * 60L * 1_000_000_000L;
@@ -35,7 +39,7 @@ final class RequestRateLimiter {
       "drop_partition_with_environment_context",
       "rename_partition");
 
-  private final ProxyConfig.RateLimitConfig config;
+  private final RateLimitConfig config;
   private final PrometheusMetrics metrics;
   private final LongSupplier clockNanos;
   private final TokenBucketGroup principalLimits;
@@ -50,7 +54,7 @@ final class RequestRateLimiter {
   }
 
   RequestRateLimiter(
-      ProxyConfig.RateLimitConfig config,
+      RateLimitConfig config,
       PrometheusMetrics metrics,
       LongSupplier clockNanos
   ) {
@@ -170,7 +174,7 @@ final class RequestRateLimiter {
 
   private static Map<String, TokenBucketGroup> buildGroups(
       String dimension,
-      Map<String, ProxyConfig.RateLimitPolicyConfig> policies
+      Map<String, RateLimitPolicyConfig> policies
   ) {
     if (policies.isEmpty()) {
       return Map.of();
@@ -181,7 +185,7 @@ final class RequestRateLimiter {
   }
 
   private static List<SourceCidrLimit> buildSourceCidrLimits(
-      Map<String, ProxyConfig.SourceCidrRateLimitConfig> sourceCidrs
+      Map<String, SourceCidrRateLimitConfig> sourceCidrs
   ) {
     if (sourceCidrs.isEmpty()) {
       return List.of();
@@ -200,7 +204,7 @@ final class RequestRateLimiter {
   }
 
   private static RequestClassification classifyRequest(String methodName) {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
+    OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     String canonicalMethod = canonicalize(methodName);
     LinkedHashSet<String> rpcClasses = new LinkedHashSet<>();
     if (operation.mutating()) {
@@ -218,7 +222,7 @@ final class RequestRateLimiter {
     return new RequestClassification(operation.operationClass().wireName(), List.copyOf(rpcClasses));
   }
 
-  private static boolean isDdl(String canonicalMethod, HmsOperationPolicy.OperationMetadata operation) {
+  private static boolean isDdl(String canonicalMethod, OperationMetadata operation) {
     if (!operation.mutating()) {
       return false;
     }
@@ -284,16 +288,16 @@ final class RequestRateLimiter {
   private static final class TokenBucketGroup {
     private final String dimension;
     private final String scope;
-    private final ProxyConfig.RateLimitPolicyConfig policy;
+    private final RateLimitPolicyConfig policy;
     private final long intervalNanos;
     private final long burstWindowNanos;
     private final ConcurrentMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final AtomicLong cleanupTicker = new AtomicLong();
 
-    private TokenBucketGroup(String dimension, String scope, ProxyConfig.RateLimitPolicyConfig policy) {
+    private TokenBucketGroup(String dimension, String scope, RateLimitPolicyConfig policy) {
       this.dimension = dimension;
       this.scope = scope;
-      this.policy = policy == null ? ProxyConfig.RateLimitPolicyConfig.disabled() : policy;
+      this.policy = policy == null ? RateLimitPolicyConfig.disabled() : policy;
       if (this.policy.enabled()) {
         this.intervalNanos = 1_000_000_000L / this.policy.requestsPerSecond();
         this.burstWindowNanos = (long) this.policy.burst() * this.intervalNanos;
@@ -315,7 +319,7 @@ final class RequestRateLimiter {
       return scope;
     }
 
-    private ProxyConfig.RateLimitPolicyConfig policy() {
+    private RateLimitPolicyConfig policy() {
       return policy;
     }
 

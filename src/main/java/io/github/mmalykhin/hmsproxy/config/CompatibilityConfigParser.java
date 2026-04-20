@@ -4,8 +4,8 @@ final class CompatibilityConfigParser {
   private CompatibilityConfigParser() {
   }
 
-  static ProxyConfig.CompatibilityConfig parse(PropertyReader reader) {
-    ProxyConfig.FrontendProfile frontendProfile = ProxyConfig.FrontendProfile.valueOf(
+  static CompatibilityConfig parse(PropertyReader reader) {
+    FrontendProfile frontendProfile = FrontendProfile.valueOf(
         reader.get("compatibility.frontend-profile", "APACHE_3_1_3").trim().toUpperCase());
     String frontendStandaloneMetastoreJar = reader.getOrNull("compatibility.frontend-standalone-metastore-jar");
     if (frontendStandaloneMetastoreJar == null) {
@@ -13,7 +13,7 @@ final class CompatibilityConfigParser {
     }
     String backendStandaloneMetastoreJar = reader.getOrNull("compatibility.backend-standalone-metastore-jar");
     boolean preserveBackendCatalogName = reader.getBoolean("federation.preserve-backend-catalog-name", false);
-    return new ProxyConfig.CompatibilityConfig(
+    return new CompatibilityConfig(
         frontendProfile,
         frontendStandaloneMetastoreJar,
         backendStandaloneMetastoreJar,

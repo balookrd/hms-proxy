@@ -14,13 +14,13 @@ final class CatalogConfigParser {
     return reader.collectPrefixed("backend.conf.");
   }
 
-  static Map<String, ProxyConfig.CatalogConfig> parse(
+  static Map<String, CatalogConfig> parse(
       PropertyReader reader,
       Map<String, String> backendConf,
       boolean globalImpersonation
   ) {
     String catalogsValue = reader.require("catalogs");
-    Map<String, ProxyConfig.CatalogConfig> catalogs = new LinkedHashMap<>();
+    Map<String, CatalogConfig> catalogs = new LinkedHashMap<>();
     for (String catalogName : PropertyReader.splitCsv(catalogsValue)) {
       catalogs.put(catalogName, parseCatalog(reader, catalogName, backendConf, globalImpersonation));
     }
@@ -29,7 +29,7 @@ final class CatalogConfigParser {
 
   static String resolveDefaultCatalog(
       PropertyReader reader,
-      Map<String, ProxyConfig.CatalogConfig> catalogs
+      Map<String, CatalogConfig> catalogs
   ) {
     String defaultCatalog = reader.getOrNull("routing.default-catalog");
     if (defaultCatalog == null) {
@@ -45,7 +45,7 @@ final class CatalogConfigParser {
     return defaultCatalog;
   }
 
-  private static ProxyConfig.CatalogConfig parseCatalog(
+  private static CatalogConfig parseCatalog(
       PropertyReader reader,
       String catalogName,
       Map<String, String> backendConf,
@@ -53,9 +53,9 @@ final class CatalogConfigParser {
   ) {
     String prefix = "catalog." + catalogName + ".";
     boolean impersonationEnabled = reader.getBoolean(prefix + "impersonation-enabled", globalImpersonation);
-    ProxyConfig.CatalogAccessMode accessMode = parseCatalogAccessMode(reader.getOrNull(prefix + "access-mode"));
+    CatalogAccessMode accessMode = parseCatalogAccessMode(reader.getOrNull(prefix + "access-mode"));
     String[] writeDbWhitelist = PropertyReader.splitCsv(reader.get(prefix + "write-db-whitelist", ""));
-    ProxyConfig.CatalogExposureMode exposureMode = parseCatalogExposureMode(reader.getOrNull(prefix + "expose-mode"));
+    CatalogExposureMode exposureMode = parseCatalogExposureMode(reader.getOrNull(prefix + "expose-mode"));
     String[] exposeDbPatterns = PropertyReader.splitCsv(reader.get(prefix + "expose-db-patterns", ""));
     ConfigParsing.validateRegexList(prefix + "expose-db-patterns", exposeDbPatterns);
     Map<String, List<String>> exposeTablePatterns = parseExposeTablePatterns(reader, prefix);
@@ -75,7 +75,7 @@ final class CatalogConfigParser {
               + catalogName);
     }
 
-    return new ProxyConfig.CatalogConfig(
+    return new CatalogConfig(
         catalogName,
         reader.get(prefix + "description", catalogName),
         reader.get(prefix + "location-uri", "file:///warehouse/" + catalogName),
@@ -121,12 +121,12 @@ final class CatalogConfigParser {
     return MetastoreRuntimeProfile.valueOf(value.trim().toUpperCase(Locale.ROOT));
   }
 
-  private static ProxyConfig.CatalogAccessMode parseCatalogAccessMode(String value) {
+  private static CatalogAccessMode parseCatalogAccessMode(String value) {
     if (value == null) {
-      return ProxyConfig.CatalogAccessMode.READ_WRITE;
+      return CatalogAccessMode.READ_WRITE;
     }
     try {
-      return ProxyConfig.CatalogAccessMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return CatalogAccessMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for catalog.<name>.access-mode: " + value
@@ -135,12 +135,12 @@ final class CatalogConfigParser {
     }
   }
 
-  private static ProxyConfig.CatalogExposureMode parseCatalogExposureMode(String value) {
+  private static CatalogExposureMode parseCatalogExposureMode(String value) {
     if (value == null) {
-      return ProxyConfig.CatalogExposureMode.ALLOW_ALL;
+      return CatalogExposureMode.ALLOW_ALL;
     }
     try {
-      return ProxyConfig.CatalogExposureMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return CatalogExposureMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for catalog.<name>.expose-mode: " + value

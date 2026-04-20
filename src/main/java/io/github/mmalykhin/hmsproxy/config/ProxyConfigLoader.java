@@ -18,24 +18,24 @@ public final class ProxyConfigLoader {
     }
     PropertyReader reader = new PropertyReader(properties);
 
-    ProxyConfig.ServerConfig server = ServerConfigParser.parse(reader);
+    ServerConfig server = ServerConfigParser.parse(reader);
     String catalogDbSeparator = loadCatalogDbSeparator(reader);
-    ProxyConfig.CompatibilityConfig compatibility = CompatibilityConfigParser.parse(reader);
+    CompatibilityConfig compatibility = CompatibilityConfigParser.parse(reader);
     Map<String, String> backendConf = CatalogConfigParser.parseBackendConf(reader);
     boolean globalImpersonation = reader.getBoolean("security.impersonation-enabled", false);
-    Map<String, ProxyConfig.CatalogConfig> catalogs =
+    Map<String, CatalogConfig> catalogs =
         CatalogConfigParser.parse(reader, backendConf, globalImpersonation);
     String defaultCatalog = CatalogConfigParser.resolveDefaultCatalog(reader, catalogs);
-    ProxyConfig.SecurityConfig security = SecurityConfigParser.parse(reader, catalogs);
-    ProxyConfig.FederationConfig federation =
+    SecurityConfig security = SecurityConfigParser.parse(reader, catalogs);
+    FederationConfig federation =
         FederationConfigParser.parse(reader, catalogs.get(defaultCatalog));
-    ProxyConfig.TransactionalDdlGuardConfig transactionalDdlGuard =
+    TransactionalDdlGuardConfig transactionalDdlGuard =
         TransactionalDdlGuardConfigParser.parse(reader);
-    ProxyConfig.ManagementConfig management = ManagementConfigParser.parse(reader, server);
-    ProxyConfig.SyntheticReadLockStoreConfig syntheticReadLockStore =
+    ManagementConfig management = ManagementConfigParser.parse(reader, server);
+    SyntheticReadLockStoreConfig syntheticReadLockStore =
         SyntheticReadLockStoreConfigParser.parse(reader);
-    ProxyConfig.RateLimitConfig rateLimit = RateLimitConfigParser.parse(reader, catalogs);
-    ProxyConfig.LatencyRoutingConfig latencyRouting =
+    RateLimitConfig rateLimit = RateLimitConfigParser.parse(reader, catalogs);
+    LatencyRoutingConfig latencyRouting =
         LatencyRoutingConfigParser.parse(reader, catalogs.size());
 
     return ProxyConfig.builder()
@@ -44,7 +44,7 @@ public final class ProxyConfigLoader {
         .catalogDbSeparator(catalogDbSeparator)
         .defaultCatalog(defaultCatalog)
         .catalogs(catalogs)
-        .backend(new ProxyConfig.BackendConfig(backendConf))
+        .backend(new BackendConfig(backendConf))
         .compatibility(compatibility)
         .federation(federation)
         .transactionalDdlGuard(transactionalDdlGuard)

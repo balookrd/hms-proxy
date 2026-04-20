@@ -18,6 +18,7 @@ import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 final class SyntheticReadLockManager implements AutoCloseable {
   static final String SYNTHETIC_BACKEND_NAME = "proxy-synthetic";
@@ -308,7 +309,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
   }
 
   private long parseTimeoutMs(ProxyConfig config) {
-    ProxyConfig.CatalogConfig defaultCatalogConfig = config.catalogs().get(config.defaultCatalog());
+    CatalogConfig defaultCatalogConfig = config.catalogs().get(config.defaultCatalog());
     String configuredTimeout = defaultCatalogConfig == null ? null : defaultCatalogConfig.hiveConf().get("metastore.txn.timeout");
     long timeoutSeconds = DEFAULT_TXN_TIMEOUT_SECONDS;
     if (configuredTimeout != null && !configuredTimeout.isBlank()) {

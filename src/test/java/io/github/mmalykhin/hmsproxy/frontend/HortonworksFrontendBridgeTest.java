@@ -20,6 +20,14 @@ import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class HortonworksFrontendBridgeTest {
   private static final Path HDP_78_JAR =
@@ -46,7 +54,7 @@ public class HortonworksFrontendBridgeTest {
     });
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
     Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
     Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
@@ -72,7 +80,7 @@ public class HortonworksFrontendBridgeTest {
     });
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
     Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
     Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
@@ -102,7 +110,7 @@ public class HortonworksFrontendBridgeTest {
     });
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableRequest");
     Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
     requestClass.getMethod("setPartNames", List.class).invoke(request, List.of("ds=2026-03-31"));
@@ -130,7 +138,7 @@ public class HortonworksFrontendBridgeTest {
     });
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest");
     Object request = requestClass.getConstructor().newInstance();
     requestClass.getMethod("setColStats", List.class).invoke(request, List.of());
@@ -162,7 +170,7 @@ public class HortonworksFrontendBridgeTest {
     }, HortonworksFrontendExtension.class);
 
     HortonworksFrontendBridge.BridgeBundle bridge =
-        HortonworksFrontendBridge.createBridge(config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
     Class<?> requestClass =
         bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.WriteNotificationLogRequest");
     Class<?> fileInfoClass =
@@ -200,7 +208,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetDatabaseRequest");
     Object request = requestClass.getConstructor().newInstance();
@@ -228,7 +236,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
     Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
@@ -269,7 +277,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             apacheHandler);
     Class<?> requestClass =
         bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
@@ -303,7 +311,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             apacheHandler);
     Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTablesExtRequest");
     Object request = requestClass.getConstructor(String.class, String.class, String.class, int.class)
@@ -332,7 +340,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             apacheHandler);
     Method method = bridge.ifaceClass().getMethod("get_all_materialized_view_objects_for_rewriting");
 
@@ -347,7 +355,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
             noopHandler());
 
     Set<String> apacheMethods = new HashSet<>();
@@ -381,7 +389,7 @@ public class HortonworksFrontendBridgeTest {
 
     HortonworksFrontendBridge.BridgeBundle bridge =
         HortonworksFrontendBridge.createBridge(
-            config(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
             noopHandler());
 
     Set<String> apacheMethods = new HashSet<>();
@@ -415,17 +423,17 @@ public class HortonworksFrontendBridgeTest {
     Assert.assertTrue(hortonworksOnlyMethods.containsAll(adaptedMethods));
   }
 
-  private static ProxyConfig config(ProxyConfig.FrontendProfile frontendProfile, Path jar) {
+  private static ProxyConfig config(FrontendProfile frontendProfile, Path jar) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
-            "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+        .catalogs(Map.of("catalog1", new CatalogConfig(
+            "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(frontendProfile, jar.toString(), null, false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(frontendProfile, jar.toString(), null, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 

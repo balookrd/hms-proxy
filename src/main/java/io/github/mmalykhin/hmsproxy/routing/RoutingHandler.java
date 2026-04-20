@@ -17,6 +17,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.OperationMetadata;
 
 /**
  * Terminal handler in the invocation chain. Performs namespace-aware routing to catalog backends.
@@ -114,7 +115,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   @Override
   public Object routeByNamespaceOrFail(Method method, Object[] args) throws Throwable {
     String methodName = method.getName();
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
+    OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (args == null || args.length == 0) {
       return invokeGlobal(method, args);
     }
@@ -193,7 +194,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       return invokeGlobal(method, args);
     }
     String methodName = method.getName();
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
+    OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     RequestContext.currentObservation().recordNamespace(extractedNamespace);
     support.validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
     validateReadExposure(methodName, extractedNamespace, args);
@@ -217,7 +218,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   );
 
   private void validateAcidNotOnNonDefaultCatalog(
-      HmsOperationPolicy.OperationMetadata operation,
+      OperationMetadata operation,
       CatalogRouter.ResolvedNamespace namespace,
       String methodName
   ) throws MetaException {
@@ -264,7 +265,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
   private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
       throws TException {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
+    OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (operation.mutating()) {
       return;
     }
@@ -277,7 +278,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
   private Object filterReadResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
       throws TException {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe(methodName);
+    OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (operation.mutating() || result == null) {
       return result;
     }
@@ -308,7 +309,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   }
 
   private static String extractExplicitTableReadName(
-      HmsOperationPolicy.OperationMetadata operation,
+      OperationMetadata operation,
       Object[] args
   ) {
     if (args == null || args.length == 0) {

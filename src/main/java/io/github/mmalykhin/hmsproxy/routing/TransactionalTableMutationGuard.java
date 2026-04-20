@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
+import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardConfig;
 
 final class TransactionalTableMutationGuard {
   private static final Set<String> GUARDED_METHODS = Set.of(
@@ -16,7 +17,7 @@ final class TransactionalTableMutationGuard {
       "alter_table",
       "alter_table_with_environment_context");
 
-  private final ProxyConfig.TransactionalDdlGuardConfig config;
+  private final TransactionalDdlGuardConfig config;
   private final List<ClientAddressMatcher> clientAddressMatchers;
 
   TransactionalTableMutationGuard(ProxyConfig proxyConfig) {

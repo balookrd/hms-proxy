@@ -3,7 +3,6 @@ package io.github.mmalykhin.hmsproxy.config;
 import io.github.mmalykhin.hmsproxy.config.DefaultBackendRoutingPolicy.Policy;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -391,40 +390,4 @@ public final class HmsOperationPolicy {
     }
   }
 
-  public enum NamespaceStrategy {
-    NONE,
-    DB_STRING_ARG0,
-    DB_FIRST_STRING_ARG0,
-    EXTRACT_FROM_ARGS
-  }
-
-  public enum TableExposureMode {
-    NONE,
-    TABLE_ARG1,
-    TABLE_REQUEST
-  }
-
-  public enum ReadResultFilterKind {
-    NONE,
-    TABLE_NAME_LIST,
-    SINGLE_TABLE,
-    TABLE_COLLECTION
-  }
-
-  public record OperationMetadata(
-      String methodName,
-      HmsOperationClass operationClass,
-      boolean mutating,
-      boolean trace,
-      NamespaceStrategy namespaceStrategy,
-      TableExposureMode tableExposureMode,
-      ReadResultFilterKind readResultFilterKind,
-      Policy defaultBackendPolicy,
-      boolean safeFanout,
-      boolean hdpAdapted
-  ) {
-    public Optional<Policy> defaultBackendPolicyOptional() {
-      return Optional.ofNullable(defaultBackendPolicy);
-    }
-  }
 }

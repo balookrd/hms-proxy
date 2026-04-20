@@ -18,6 +18,12 @@ import org.apache.thrift.TApplicationException;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class HortonworksBackendAdapterTest {
   private static final Path HDP_JAR =
@@ -125,7 +131,7 @@ public class HortonworksBackendAdapterTest {
 
   private static CatalogBackend newIsolatedBackend(InvocationHandler invocationHandler) throws Exception {
     ProxyConfig proxyConfig = config();
-    ProxyConfig.CatalogConfig catalogConfig = proxyConfig.catalogs().get("catalog1");
+    CatalogConfig catalogConfig = proxyConfig.catalogs().get("catalog1");
     return newBackend(
         proxyConfig,
         catalogConfig,
@@ -157,7 +163,7 @@ public class HortonworksBackendAdapterTest {
 
   private static CatalogBackend newBackend(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       BackendAdapter adapter,
       BackendRuntime runtime
   ) throws Exception {
@@ -167,7 +173,7 @@ public class HortonworksBackendAdapterTest {
     catalog.setLocationUri(catalogConfig.locationUri());
     Constructor<CatalogBackend> ctor = CatalogBackend.class.getDeclaredConstructor(
         ProxyConfig.class,
-        ProxyConfig.CatalogConfig.class,
+        CatalogConfig.class,
         HiveConf.class,
         BackendAdapter.class,
         BackendRuntime.class,
@@ -178,14 +184,14 @@ public class HortonworksBackendAdapterTest {
 
   private static BackendRuntime newBackendRuntime(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       InvocationHandler invocationHandler
   ) throws Exception {
     BackendRuntime.SessionFactory sessionFactory = new BackendRuntime.SessionFactory() {
       @Override
       public BackendInvocationSession open(
           ProxyConfig ignoredProxyConfig,
-          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          CatalogConfig ignoredCatalogConfig,
           HiveConf ignoredHiveConf,
           boolean ignoredBackendKerberosEnabled,
           MetastoreRuntimeProfile ignoredRuntimeProfile
@@ -203,7 +209,7 @@ public class HortonworksBackendAdapterTest {
       @Override
       public BackendInvocationSession openImpersonating(
           ProxyConfig ignoredProxyConfig,
-          ProxyConfig.CatalogConfig ignoredCatalogConfig,
+          CatalogConfig ignoredCatalogConfig,
           HiveConf ignoredHiveConf,
           boolean ignoredBackendKerberosEnabled,
           MetastoreRuntimeProfile ignoredRuntimeProfile,
@@ -221,7 +227,7 @@ public class HortonworksBackendAdapterTest {
 
     Constructor<BackendRuntime> ctor = BackendRuntime.class.getDeclaredConstructor(
         ProxyConfig.class,
-        ProxyConfig.CatalogConfig.class,
+        CatalogConfig.class,
         HiveConf.class,
         boolean.class,
         BackendRuntime.SessionFactory.class,
@@ -269,16 +275,16 @@ public class HortonworksBackendAdapterTest {
 
   private static ProxyConfig config() {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
+        .catalogs(Map.of("catalog1", new CatalogConfig(
             "catalog1", "c1", "file:///c1", false,
-            ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+            CatalogAccessMode.READ_WRITE, java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
             Map.of("hive.metastore.uris", "thrift://one"))))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 }

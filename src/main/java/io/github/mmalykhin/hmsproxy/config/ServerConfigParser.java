@@ -4,7 +4,7 @@ final class ServerConfigParser {
   private ServerConfigParser() {
   }
 
-  static ProxyConfig.ServerConfig parse(PropertyReader reader) {
+  static ServerConfig parse(PropertyReader reader) {
     int port = reader.getInt("server.port", 9083);
     if (port < 1 || port > 65535) {
       throw new IllegalArgumentException("server.port must be between 1 and 65535, got: " + port);
@@ -19,7 +19,7 @@ final class ServerConfigParser {
           "server.max-worker-threads (" + maxWorkerThreads
               + ") must be >= server.min-worker-threads (" + minWorkerThreads + ")");
     }
-    return new ProxyConfig.ServerConfig(
+    return new ServerConfig(
         reader.get("server.name", "hms-proxy"),
         reader.get("server.bind-host", "0.0.0.0"),
         port,

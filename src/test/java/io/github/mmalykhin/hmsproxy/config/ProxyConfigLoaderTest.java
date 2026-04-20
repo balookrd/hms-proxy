@@ -32,7 +32,7 @@ public class ProxyConfigLoaderTest {
       Assert.assertNull(config.catalogs().get("catalog1").runtimeProfile());
       Assert.assertFalse(config.management().enabled());
       Assert.assertEquals(10088, config.management().port());
-      Assert.assertEquals(ProxyConfig.SyntheticReadLockStoreMode.IN_MEMORY, config.syntheticReadLockStore().mode());
+      Assert.assertEquals(SyntheticReadLockStoreMode.IN_MEMORY, config.syntheticReadLockStore().mode());
     } finally {
       Files.deleteIfExists(file);
     }
@@ -72,7 +72,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER,
+          SyntheticReadLockStoreMode.ZOOKEEPER,
           config.syntheticReadLockStore().mode());
     } finally {
       Files.deleteIfExists(file);
@@ -97,7 +97,7 @@ public class ProxyConfigLoaderTest {
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.SyntheticReadLockStoreMode.ZOOKEEPER, config.syntheticReadLockStore().mode());
+      Assert.assertEquals(SyntheticReadLockStoreMode.ZOOKEEPER, config.syntheticReadLockStore().mode());
       Assert.assertEquals(
           "zk1:2181,zk2:2181",
           config.syntheticReadLockStore().zooKeeper().connectString());
@@ -180,7 +180,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.ExternalTableDropPurgeMode.BEST_EFFORT,
+          ExternalTableDropPurgeMode.BEST_EFFORT,
           config.federation().externalTableDropPurgeMode());
       Assert.assertTrue(config.federation().externalTableDropPurgeEnabled());
     } finally {
@@ -203,7 +203,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of("10.10.0.0/16", "192.168.1.20"),
           config.transactionalDdlGuard().clientAddressRules());
     } finally {
@@ -225,7 +225,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.transactionalDdlGuard().enabled());
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(TransactionalDdlGuardMode.REJECT_TRANSACTIONAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of(), config.transactionalDdlGuard().clientAddressRules());
     } finally {
       Files.deleteIfExists(file);
@@ -246,7 +246,7 @@ public class ProxyConfigLoaderTest {
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, config.transactionalDdlGuard().mode());
+      Assert.assertEquals(TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, config.transactionalDdlGuard().mode());
       Assert.assertEquals(List.of("10.10.0.0/16"), config.transactionalDdlGuard().clientAddressRules());
     } finally {
       Files.deleteIfExists(file);
@@ -267,7 +267,7 @@ public class ProxyConfigLoaderTest {
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.ViewTextRewriteMode.REWRITE, config.federation().viewTextRewriteMode());
+      Assert.assertEquals(ViewTextRewriteMode.REWRITE, config.federation().viewTextRewriteMode());
       Assert.assertTrue(config.federation().preserveOriginalViewText());
     } finally {
       Files.deleteIfExists(file);
@@ -289,7 +289,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+          ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
           config.federation().externalTableLocationRewriteMode());
       Assert.assertEquals(
           "hdfs://ns-frontend",
@@ -316,7 +316,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
+          ExternalTableLocationRewriteMode.REWRITE_IF_SOURCE_DEFAULT_FS,
           config.federation().externalTableLocationRewriteMode());
       Assert.assertEquals(
           "hdfs://ns-default",
@@ -342,7 +342,7 @@ public class ProxyConfigLoaderTest {
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT, config.catalogs().get("catalog1").exposeMode());
+      Assert.assertEquals(CatalogExposureMode.DENY_BY_DEFAULT, config.catalogs().get("catalog1").exposeMode());
       Assert.assertEquals(List.of("sales", "finance_.*"), config.catalogs().get("catalog1").exposeDbPatterns());
       Assert.assertEquals(
           List.of("orders_.*", "events"),
@@ -1006,7 +1006,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
+          FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
           config.compatibility().frontendProfile());
       Assert.assertEquals(
           "/tmp/hdp-standalone-metastore.jar",
@@ -1034,7 +1034,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+          FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
           config.compatibility().frontendProfile());
       Assert.assertEquals(
           "/tmp/hdp-6150-standalone-metastore.jar",
@@ -1095,7 +1095,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertEquals(
-          ProxyConfig.CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+          CatalogAccessMode.READ_WRITE_DB_WHITELIST,
           config.catalogs().get("catalog1").accessMode());
       Assert.assertEquals(List.of("sales", "analytics"), config.catalogs().get("catalog1").writeDbWhitelist());
     } finally {
@@ -1115,7 +1115,7 @@ public class ProxyConfigLoaderTest {
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertEquals(ProxyConfig.CatalogAccessMode.READ_WRITE, config.catalogs().get("catalog1").accessMode());
+      Assert.assertEquals(CatalogAccessMode.READ_WRITE, config.catalogs().get("catalog1").accessMode());
       Assert.assertEquals(List.of(), config.catalogs().get("catalog1").writeDbWhitelist());
     } finally {
       Files.deleteIfExists(file);
@@ -1189,7 +1189,7 @@ public class ProxyConfigLoaderTest {
       Assert.assertEquals(2, config.latencyRouting().hedgedRead().maxParallelism());
       Assert.assertEquals(12000L, config.latencyRouting().hedgedRead().fanoutTimeoutMs());
       Assert.assertEquals(
-          ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS,
+          DegradedRoutingPolicy.SAFE_FANOUT_READS,
           config.latencyRouting().degradedRoutingPolicy());
       Assert.assertEquals(850L, config.catalogs().get("catalog1").latencyBudgetMs());
       Assert.assertEquals(0L, config.catalogs().get("catalog2").latencyBudgetMs());

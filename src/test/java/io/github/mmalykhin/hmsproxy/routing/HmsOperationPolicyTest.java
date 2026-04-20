@@ -5,44 +5,48 @@ import io.github.mmalykhin.hmsproxy.config.HmsOperationClass;
 import io.github.mmalykhin.hmsproxy.config.HmsOperationPolicy;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.NamespaceStrategy;
+import io.github.mmalykhin.hmsproxy.config.OperationMetadata;
+import io.github.mmalykhin.hmsproxy.config.ReadResultFilterKind;
+import io.github.mmalykhin.hmsproxy.config.TableExposureMode;
 
 public class HmsOperationPolicyTest {
   @Test
   public void metadataReadsCarryNamespaceShapeAndReadFilters() {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe("get_table");
+    OperationMetadata operation = HmsOperationPolicy.describe("get_table");
 
     Assert.assertEquals(HmsOperationClass.METADATA_READ, operation.operationClass());
-    Assert.assertEquals(HmsOperationPolicy.NamespaceStrategy.DB_STRING_ARG0, operation.namespaceStrategy());
-    Assert.assertEquals(HmsOperationPolicy.TableExposureMode.TABLE_ARG1, operation.tableExposureMode());
-    Assert.assertEquals(HmsOperationPolicy.ReadResultFilterKind.SINGLE_TABLE, operation.readResultFilterKind());
+    Assert.assertEquals(NamespaceStrategy.DB_STRING_ARG0, operation.namespaceStrategy());
+    Assert.assertEquals(TableExposureMode.TABLE_ARG1, operation.tableExposureMode());
+    Assert.assertEquals(ReadResultFilterKind.SINGLE_TABLE, operation.readResultFilterKind());
     Assert.assertFalse(operation.mutating());
     Assert.assertTrue(operation.trace());
   }
 
   @Test
   public void globalWritesAreModeledSeparatelyFromMetadataWrites() {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe("setMetaConf");
+    OperationMetadata operation = HmsOperationPolicy.describe("setMetaConf");
 
     Assert.assertEquals(HmsOperationClass.SERVICE_GLOBAL_WRITE, operation.operationClass());
-    Assert.assertEquals(HmsOperationPolicy.NamespaceStrategy.NONE, operation.namespaceStrategy());
+    Assert.assertEquals(NamespaceStrategy.NONE, operation.namespaceStrategy());
     Assert.assertTrue(operation.mutating());
   }
 
   @Test
   public void acidLifecycleMethodsKeepDefaultBackendPolicy() {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe("open_txns");
+    OperationMetadata operation = HmsOperationPolicy.describe("open_txns");
 
     Assert.assertEquals(HmsOperationClass.ACID_ID_BOUND_LIFECYCLE, operation.operationClass());
     Assert.assertEquals(
         DefaultBackendRoutingPolicy.Policy.TXN_AND_LOCK_LIFECYCLE,
         operation.defaultBackendPolicy());
-    Assert.assertEquals(HmsOperationPolicy.NamespaceStrategy.NONE, operation.namespaceStrategy());
+    Assert.assertEquals(NamespaceStrategy.NONE, operation.namespaceStrategy());
     Assert.assertTrue(operation.trace());
   }
 
   @Test
   public void compatibilityOnlyMethodsCanStillBeMutating() {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe("add_write_notification_log");
+    OperationMetadata operation = HmsOperationPolicy.describe("add_write_notification_log");
 
     Assert.assertEquals(HmsOperationClass.COMPATIBILITY_ONLY_RPC, operation.operationClass());
     Assert.assertTrue(operation.mutating());
@@ -51,10 +55,10 @@ public class HmsOperationPolicyTest {
 
   @Test
   public void adminMethodsStayOutOfNamespaceRouting() {
-    HmsOperationPolicy.OperationMetadata operation = HmsOperationPolicy.describe("get_catalogs");
+    OperationMetadata operation = HmsOperationPolicy.describe("get_catalogs");
 
     Assert.assertEquals(HmsOperationClass.ADMIN_INTROSPECTION, operation.operationClass());
-    Assert.assertEquals(HmsOperationPolicy.NamespaceStrategy.NONE, operation.namespaceStrategy());
+    Assert.assertEquals(NamespaceStrategy.NONE, operation.namespaceStrategy());
     Assert.assertFalse(operation.mutating());
   }
 }

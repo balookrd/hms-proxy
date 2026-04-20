@@ -21,6 +21,7 @@ import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.DegradedRoutingPolicy;
 
 public final class BackendRoutingController implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRoutingController.class);
@@ -92,7 +93,7 @@ public final class BackendRoutingController implements AutoCloseable {
 
   public boolean shouldDegradeSafeFanout(String methodName, Throwable error) {
     if (!HmsOperationPolicy.describe(methodName).safeFanout()
-        || config.latencyRouting().degradedRoutingPolicy() != ProxyConfig.DegradedRoutingPolicy.SAFE_FANOUT_READS) {
+        || config.latencyRouting().degradedRoutingPolicy() != DegradedRoutingPolicy.SAFE_FANOUT_READS) {
       return false;
     }
     return error instanceof MetaException

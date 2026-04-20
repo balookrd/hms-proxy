@@ -5,6 +5,12 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class FrontDoorSecurityTest {
   @Test
@@ -67,9 +73,9 @@ public class FrontDoorSecurityTest {
 
     private static ProxyConfig kerberosConfig(java.util.Map<String, String> frontDoorConf) {
       return ProxyConfig.builder()
-          .server(new ProxyConfig.ServerConfig("hms-proxy", "0.0.0.0", 9083, 16, 256))
-          .security(new ProxyConfig.SecurityConfig(
-              ProxyConfig.SecurityMode.KERBEROS,
+          .server(new ServerConfig("hms-proxy", "0.0.0.0", 9083, 16, 256))
+          .security(new SecurityConfig(
+              SecurityMode.KERBEROS,
               "hive/proxy-host.example.com@EXAMPLE.COM",
               "hive/backend-host.example.com@EXAMPLE.COM",
               "/etc/security/keytabs/hms-proxy.keytab",
@@ -80,11 +86,11 @@ public class FrontDoorSecurityTest {
           .defaultCatalog("catalog1")
           .catalogs(java.util.Map.of(
               "catalog1",
-              new ProxyConfig.CatalogConfig(
+              new CatalogConfig(
                   "catalog1", "catalog1", "file:///warehouse/catalog1", false,
-                  ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+                  CatalogAccessMode.READ_WRITE, java.util.List.of(),
                   null, null, java.util.Map.of("hive.metastore.uris", "thrift://hms1:9083"))))
-          .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+          .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
           .build();
     }
   }

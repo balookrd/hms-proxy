@@ -21,6 +21,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
 
 public final class RoutingMetaStoreProxy implements InvocationHandler, HortonworksFrontendExtension, AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingMetaStoreProxy.class);
@@ -276,7 +277,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return DefaultBackendRoutingPolicy.routesToDefaultBackend(methodName);
   }
 
-  static boolean isServicePrincipalUser(String userName, ProxyConfig.SecurityConfig security) {
+  static boolean isServicePrincipalUser(String userName, SecurityConfig security) {
     if (userName == null || security == null) {
       return false;
     }

@@ -6,6 +6,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 public final class MetastoreRuntimeJarResolver {
   private MetastoreRuntimeJarResolver() {
@@ -29,7 +30,7 @@ public final class MetastoreRuntimeJarResolver {
 
   public static Path resolveBackendJar(
       ProxyConfig config,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile
   ) {
     String configuredJar = catalogConfig.backendStandaloneMetastoreJar() != null

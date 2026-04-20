@@ -15,6 +15,21 @@ import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.ManagementConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.ViewTextRewriteMode;
 
 public class FederationLayerTest {
   @Test
@@ -119,7 +134,7 @@ public class FederationLayerTest {
   @Test
   public void exposurePolicyMatchesDatabaseAndTableRegexCaseInsensitively() throws Exception {
     FederationLayer layer = federationLayer(exposureConfig(
-        ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+        CatalogExposureMode.DENY_BY_DEFAULT,
         java.util.List.of("sales", "finance"),
         Map.of("sales", java.util.List.of("orders_.*"))));
     CatalogRouter.ResolvedNamespace salesNamespace =
@@ -134,7 +149,7 @@ public class FederationLayerTest {
   @Test
   public void tableRulesCanExposeDatabaseWhenDenyByDefaultIsEnabled() throws Exception {
     FederationLayer layer = federationLayer(exposureConfig(
-        ProxyConfig.CatalogExposureMode.DENY_BY_DEFAULT,
+        CatalogExposureMode.DENY_BY_DEFAULT,
         java.util.List.of(),
         Map.of("sales", java.util.List.of("orders"))));
     CatalogRouter.ResolvedNamespace salesNamespace =
@@ -160,67 +175,67 @@ public class FederationLayerTest {
 
   private static ProxyConfig viewRewriteConfig(boolean preserveOriginalViewText) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
-        .security(new ProxyConfig.SecurityConfig(
-            ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
+        .security(new SecurityConfig(
+            SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1",
-            new ProxyConfig.CatalogConfig(
+            new CatalogConfig(
                 "catalog1",
                 "catalog1",
                 "file:///warehouse/catalog1",
                 false,
-                ProxyConfig.CatalogAccessMode.READ_WRITE,
+                CatalogAccessMode.READ_WRITE,
                 java.util.List.of(),
                 null,
                 null,
                 Map.of("hive.metastore.uris", "thrift://hms1:9083")),
             "catalog2",
-            new ProxyConfig.CatalogConfig(
+            new CatalogConfig(
                 "catalog2",
                 "catalog2",
                 "file:///warehouse/catalog2",
                 false,
-                ProxyConfig.CatalogAccessMode.READ_WRITE,
+                CatalogAccessMode.READ_WRITE,
                 java.util.List.of(),
                 null,
                 null,
                 Map.of("hive.metastore.uris", "thrift://hms2:9083"))))
-        .backend(new ProxyConfig.BackendConfig(Map.of()))
-        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
-        .federation(new ProxyConfig.FederationConfig(
+        .backend(new BackendConfig(Map.of()))
+        .compatibility(new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false))
+        .federation(new FederationConfig(
             false,
-            ProxyConfig.ViewTextRewriteMode.REWRITE,
+            ViewTextRewriteMode.REWRITE,
             preserveOriginalViewText))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(
-            ProxyConfig.TransactionalDdlGuardMode.DISABLED,
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(
+            TransactionalDdlGuardMode.DISABLED,
             java.util.List.of()))
-        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .management(new ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 
   private static ProxyConfig exposureConfig(
-      ProxyConfig.CatalogExposureMode exposeMode,
+      CatalogExposureMode exposeMode,
       java.util.List<String> exposeDbPatterns,
       Map<String, java.util.List<String>> exposeTablePatterns
   ) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
-        .security(new ProxyConfig.SecurityConfig(
-            ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("hms-proxy", "127.0.0.1", 9083, 16, 64))
+        .security(new SecurityConfig(
+            SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
             "catalog1",
-            new ProxyConfig.CatalogConfig(
+            new CatalogConfig(
                 "catalog1",
                 "catalog1",
                 "file:///warehouse/catalog1",
                 false,
-                ProxyConfig.CatalogAccessMode.READ_WRITE,
+                CatalogAccessMode.READ_WRITE,
                 java.util.List.of(),
                 exposeMode,
                 exposeDbPatterns,
@@ -228,17 +243,17 @@ public class FederationLayerTest {
                 null,
                 null,
                 Map.of("hive.metastore.uris", "thrift://hms1:9083"))))
-        .backend(new ProxyConfig.BackendConfig(Map.of()))
-        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
-        .federation(new ProxyConfig.FederationConfig(
+        .backend(new BackendConfig(Map.of()))
+        .compatibility(new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false))
+        .federation(new FederationConfig(
             false,
-            ProxyConfig.ViewTextRewriteMode.DISABLED,
+            ViewTextRewriteMode.DISABLED,
             false))
-        .transactionalDdlGuard(new ProxyConfig.TransactionalDdlGuardConfig(
-            ProxyConfig.TransactionalDdlGuardMode.DISABLED,
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(
+            TransactionalDdlGuardMode.DISABLED,
             java.util.List.of()))
-        .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .management(new ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 }

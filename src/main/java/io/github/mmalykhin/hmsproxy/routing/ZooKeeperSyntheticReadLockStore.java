@@ -21,6 +21,7 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreZooKeeperConfig;
 
 final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperSyntheticReadLockStore.class);
@@ -30,7 +31,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
   private final String locksRootPath;
 
   ZooKeeperSyntheticReadLockStore(ProxyConfig config) throws Exception {
-    ProxyConfig.SyntheticReadLockStoreZooKeeperConfig zooKeeper = config.syntheticReadLockStore().zooKeeper();
+    SyntheticReadLockStoreZooKeeperConfig zooKeeper = config.syntheticReadLockStore().zooKeeper();
     configureSecurity(config);
     this.client = CuratorFrameworkFactory.builder()
         .connectString(zooKeeper.connectString())

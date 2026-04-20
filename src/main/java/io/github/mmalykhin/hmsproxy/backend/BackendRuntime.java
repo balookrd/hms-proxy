@@ -12,13 +12,14 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
 
 public final class BackendRuntime implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRuntime.class);
   private static final SessionFactory DEFAULT_SESSION_FACTORY = new DefaultSessionFactory();
 
   private final ProxyConfig proxyConfig;
-  private final ProxyConfig.CatalogConfig catalogConfig;
+  private final CatalogConfig catalogConfig;
   private final HiveConf hiveConf;
   private final boolean backendKerberosEnabled;
   private final SessionFactory sessionFactory;
@@ -29,7 +30,7 @@ public final class BackendRuntime implements AutoCloseable {
 
   private BackendRuntime(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf hiveConf,
       boolean backendKerberosEnabled,
       SessionFactory sessionFactory,
@@ -50,7 +51,7 @@ public final class BackendRuntime implements AutoCloseable {
 
   public static BackendRuntime open(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf hiveConf,
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
@@ -60,7 +61,7 @@ public final class BackendRuntime implements AutoCloseable {
 
   public static BackendRuntime open(
       ProxyConfig proxyConfig,
-      ProxyConfig.CatalogConfig catalogConfig,
+      CatalogConfig catalogConfig,
       HiveConf hiveConf,
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile,
@@ -216,7 +217,7 @@ public final class BackendRuntime implements AutoCloseable {
   public interface SessionFactory {
     BackendInvocationSession open(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile
@@ -224,7 +225,7 @@ public final class BackendRuntime implements AutoCloseable {
 
     BackendInvocationSession openImpersonating(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile,
@@ -237,7 +238,7 @@ public final class BackendRuntime implements AutoCloseable {
     @Override
     public BackendInvocationSession open(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile
@@ -249,7 +250,7 @@ public final class BackendRuntime implements AutoCloseable {
     @Override
     public BackendInvocationSession openImpersonating(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile,

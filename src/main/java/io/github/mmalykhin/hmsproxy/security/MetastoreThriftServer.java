@@ -14,6 +14,7 @@ import org.apache.thrift.transport.TTransportException;
 import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
 
 public final class MetastoreThriftServer {
   private static final Logger LOG = LoggerFactory.getLogger(MetastoreThriftServer.class);
@@ -50,7 +51,7 @@ public final class MetastoreThriftServer {
     this.server = new TThreadPoolServer(args);
   }
 
-  public static String frontDoorClientPrincipal(ProxyConfig.SecurityConfig security) {
+  public static String frontDoorClientPrincipal(SecurityConfig security) {
     // Hive's thrift bridge uses this principal to validate inbound Kerberos/SASL clients for the
     // proxy listener itself. Backend credentials are configured separately via client-principal.
     return security.serverPrincipal();

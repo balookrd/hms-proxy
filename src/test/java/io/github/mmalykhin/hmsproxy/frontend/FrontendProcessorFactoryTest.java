@@ -9,6 +9,14 @@ import org.apache.thrift.TProcessor;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class FrontendProcessorFactoryTest {
   private static final Path HDP_78_JAR =
@@ -30,7 +38,7 @@ public class FrontendProcessorFactoryTest {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
 
     TProcessor processor = FrontendProcessorFactory.create(
-        hortonworksConfig(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
+        hortonworksConfig(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
         noopHandler());
 
     Assert.assertEquals(
@@ -46,7 +54,7 @@ public class FrontendProcessorFactoryTest {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
 
     TProcessor processor = FrontendProcessorFactory.create(
-        hortonworksConfig(ProxyConfig.FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+        hortonworksConfig(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
         noopHandler());
 
     Assert.assertEquals(
@@ -59,29 +67,29 @@ public class FrontendProcessorFactoryTest {
 
   private static ProxyConfig apacheConfig() {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
-            "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+        .catalogs(Map.of("catalog1", new CatalogConfig(
+            "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, null, false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 
-  private static ProxyConfig hortonworksConfig(ProxyConfig.FrontendProfile frontendProfile, Path jar) {
+  private static ProxyConfig hortonworksConfig(FrontendProfile frontendProfile, Path jar) {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
-            "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
+        .catalogs(Map.of("catalog1", new CatalogConfig(
+            "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))))
-        .compatibility(new ProxyConfig.CompatibilityConfig(frontendProfile, jar.toString(), null, false))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .compatibility(new CompatibilityConfig(frontendProfile, jar.toString(), null, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 

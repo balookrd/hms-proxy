@@ -11,6 +11,12 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.junit.Assert;
 import org.junit.Test;
+import io.github.mmalykhin.hmsproxy.config.CatalogAccessMode;
+import io.github.mmalykhin.hmsproxy.config.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.SyntheticReadLockStoreConfig;
 
 public class BackendRuntimeTest {
   @Test
@@ -71,25 +77,25 @@ public class BackendRuntimeTest {
 
   private static ProxyConfig config() {
     return ProxyConfig.builder()
-        .server(new ProxyConfig.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
-        .security(new ProxyConfig.SecurityConfig(ProxyConfig.SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig(null, null)))
-        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 
-  private static ProxyConfig.CatalogConfig catalogConfig(
+  private static CatalogConfig catalogConfig(
       MetastoreRuntimeProfile runtimeProfile,
       String backendJar
   ) {
-    return new ProxyConfig.CatalogConfig(
+    return new CatalogConfig(
         "catalog1",
         "c1",
         "file:///c1",
         false,
-        ProxyConfig.CatalogAccessMode.READ_WRITE,
+        CatalogAccessMode.READ_WRITE,
         java.util.List.of(),
         runtimeProfile,
         backendJar,
@@ -117,7 +123,7 @@ public class BackendRuntimeTest {
     @Override
     public BackendInvocationSession open(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile
@@ -136,7 +142,7 @@ public class BackendRuntimeTest {
     @Override
     public BackendInvocationSession openImpersonating(
         ProxyConfig proxyConfig,
-        ProxyConfig.CatalogConfig catalogConfig,
+        CatalogConfig catalogConfig,
         HiveConf hiveConf,
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile,

@@ -6,7 +6,7 @@ final class LatencyRoutingConfigParser {
   private LatencyRoutingConfigParser() {
   }
 
-  static ProxyConfig.LatencyRoutingConfig parse(PropertyReader reader, int catalogCount) {
+  static LatencyRoutingConfig parse(PropertyReader reader, int catalogCount) {
     boolean backendStatePollingEnabled = reader.getBoolean("routing.backend-state-polling.enabled", false);
     int backendStatePollingIntervalMs =
         reader.getPositiveInt("routing.backend-state-polling.interval-ms", 10_000);
@@ -23,23 +23,23 @@ final class LatencyRoutingConfigParser {
     long circuitBreakerOpenStateMs = reader.getPositiveLong("routing.circuit-breaker.open-state-ms", 30_000L);
     boolean hedgedReadEnabled = reader.getBoolean("routing.hedged-read.enabled", false);
     long hedgedReadFanoutTimeoutMs = reader.getPositiveLong("routing.hedged-read.fanout-timeout-ms", 30_000L);
-    ProxyConfig.DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
+    DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
         reader.getOrNull("routing.degraded-routing-policy"));
-    return new ProxyConfig.LatencyRoutingConfig(
-        new ProxyConfig.BackendStatePollingConfig(
+    return new LatencyRoutingConfig(
+        new BackendStatePollingConfig(
             backendStatePollingEnabled, backendStatePollingIntervalMs, backendStatePollingProbeTimeoutMs),
-        new ProxyConfig.AdaptiveTimeoutConfig(
+        new AdaptiveTimeoutConfig(
             adaptiveTimeoutEnabled,
             adaptiveTimeoutInitialMs,
             adaptiveTimeoutMinMs,
             adaptiveTimeoutMaxMs,
             adaptiveTimeoutMultiplier,
             adaptiveTimeoutAlpha),
-        new ProxyConfig.CircuitBreakerConfig(
+        new CircuitBreakerConfig(
             circuitBreakerEnabled,
             circuitBreakerFailureThreshold,
             circuitBreakerOpenStateMs),
-        new ProxyConfig.HedgedReadConfig(
+        new HedgedReadConfig(
             hedgedReadEnabled,
             Math.max(1, Math.min(catalogCount, reader.getPositiveInt(
                 "routing.hedged-read.max-parallelism",
@@ -48,12 +48,12 @@ final class LatencyRoutingConfigParser {
         degradedRoutingPolicy);
   }
 
-  private static ProxyConfig.DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {
+  private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {
     if (value == null) {
-      return ProxyConfig.DegradedRoutingPolicy.STRICT;
+      return DegradedRoutingPolicy.STRICT;
     }
     try {
-      return ProxyConfig.DegradedRoutingPolicy.valueOf(value.trim().toUpperCase(Locale.ROOT));
+      return DegradedRoutingPolicy.valueOf(value.trim().toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid value for routing.degraded-routing-policy: " + value
