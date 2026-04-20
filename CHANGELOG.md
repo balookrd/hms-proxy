@@ -1,7 +1,7 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-18`. The project has not published tagged releases yet, so entries are grouped by commit
+`2026-04-20`. The project has not published tagged releases yet, so entries are grouped by commit
 date and focused on user-visible changes.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
@@ -14,8 +14,35 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   borrow/return pool sized by `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated
   calls to the same catalog can now run in parallel up to the pool size instead of serializing
   through one Thrift transport.
+
+### Fixed
+
 - Single-shot transport-failure retry now discards only the failed pooled session instead of
   resetting the entire shared connection.
+- Silenced non-critical compile and test warnings, and added a minimal test logging configuration
+  to avoid noisy "No appenders could be found" output in the test suite.
+
+## 2026-04-19
+
+### Changed
+
+- Hardened backend health probing and `/readyz`: probes now use ephemeral sessions, `/readyz`
+  checks backends in parallel, and its JSON escaping now covers control characters fully.
+- Refactored routing and configuration internals into smaller components: renamed
+  `RoutingMetaStoreHandler` to `RoutingMetaStoreProxy`, split `BackendCallDispatcher`,
+  `RoutingHandler`, and `ProxyConfigLoader` into focused collaborators and parsers, and
+  consolidated per-RPC metadata into declarative policy registries.
+- Reduced package coupling across routing, config, backend, frontend, federation, and utility
+  layers by moving shared types to more appropriate packages and routing against the
+  `FederationOperations` interface.
+
+### Fixed
+
+- Fixed parallel fanout head-of-line blocking by harvesting completed futures under a shared
+  deadline instead of waiting on each backend sequentially.
+- Backend health probes no longer mutate live shared sessions or evict impersonation clients when
+  probe timeouts drift.
+- Fixed stale `capabilities.yaml` references after the `RoutingMetaStoreProxy` rename.
 
 ## 2026-04-18
 

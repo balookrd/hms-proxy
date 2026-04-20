@@ -1,6 +1,6 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-18`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-20`.
 Тегированных релизов у проекта пока нет, поэтому записи сгруппированы по датам коммитов и
 сфокусированы на заметных для пользователей изменениях.
 
@@ -14,8 +14,36 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   размером `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated вызовы к одному
   каталогу теперь идут параллельно до размера пула, а не сериализуются через единственный Thrift
   transport.
+
+### Исправлено
+
 - Однократный retry на транспортной ошибке теперь дискардит только ту сессию, которая упала, а не
   пересоздаёт весь shared connection.
+- Убраны некритичные compile/test warnings и добавлена минимальная test logging configuration,
+  чтобы в тестах не шумело сообщение `"No appenders could be found"`.
+
+## 2026-04-19
+
+### Изменено
+
+- Усилены backend health probe и `/readyz`: probe теперь используют ephemeral sessions, `/readyz`
+  проверяет backend'ы параллельно, а JSON escaping теперь полностью покрывает control characters.
+- Routing и config internals разбиты на более мелкие компоненты: `RoutingMetaStoreHandler`
+  переименован в `RoutingMetaStoreProxy`, `BackendCallDispatcher`, `RoutingHandler` и
+  `ProxyConfigLoader` разложены на focused collaborators и parsers, а per-RPC metadata сведена в
+  декларативные policy registry.
+- Снижен package coupling между routing, config, backend, frontend, federation и utility слоями:
+  общие типы перенесены в более подходящие пакеты, а routing теперь завязан на интерфейс
+  `FederationOperations`.
+
+### Исправлено
+
+- Исправлен head-of-line blocking в parallel fanout: готовые futures теперь собираются в рамках
+  общего deadline, а не через последовательное ожидание каждого backend.
+- Backend health probe больше не меняют живые shared sessions и не выбрасывают impersonation
+  clients при дрейфе probe timeout.
+- Исправлены устаревшие ссылки в `capabilities.yaml` после переименования в
+  `RoutingMetaStoreProxy`.
 
 ## 2026-04-18
 
