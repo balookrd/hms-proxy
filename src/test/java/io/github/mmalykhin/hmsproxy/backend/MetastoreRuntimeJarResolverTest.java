@@ -22,6 +22,7 @@ public class MetastoreRuntimeJarResolverTest {
               "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
               null, jar.toString(), Map.of("hive.metastore.uris", "thrift://one"))))
           .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, jar.toString(), false))
+          .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
           .build();
 
       Assert.assertEquals(
@@ -47,6 +48,7 @@ public class MetastoreRuntimeJarResolverTest {
             "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, null, Map.of("hive.metastore.uris", "thrift://one"))))
         .compatibility(new ProxyConfig.CompatibilityConfig(ProxyConfig.FrontendProfile.APACHE_3_1_3, null, jar.toString(), false))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     Assert.assertEquals(

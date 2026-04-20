@@ -70,6 +70,7 @@ public class IsolatedMetastoreClientClassLoadingTest {
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
             "hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar",
             java.util.Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")

@@ -76,6 +76,7 @@ public class BackendRuntimeTest {
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 

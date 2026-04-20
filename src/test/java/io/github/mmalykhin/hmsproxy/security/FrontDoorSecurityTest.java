@@ -84,6 +84,7 @@ public class FrontDoorSecurityTest {
                   "catalog1", "catalog1", "file:///warehouse/catalog1", false,
                   ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
                   null, null, java.util.Map.of("hive.metastore.uris", "thrift://hms1:9083"))))
+          .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
           .build();
     }
   }

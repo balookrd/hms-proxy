@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public record ProxyConfig(
     ServerConfig server,
@@ -35,9 +36,9 @@ public record ProxyConfig(
     management = management == null
         ? new ManagementConfig(false, server.bindHost(), server.port() + 1000)
         : management;
-    syntheticReadLockStore = syntheticReadLockStore == null
-        ? new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null)
-        : syntheticReadLockStore;
+    Objects.requireNonNull(syntheticReadLockStore,
+        "syntheticReadLockStore must be set explicitly: use SyntheticReadLockStoreConfig.inMemory() "
+            + "for single-instance deployments or a ZOOKEEPER-backed config for HA.");
     rateLimit = rateLimit == null ? RateLimitConfig.disabled() : rateLimit;
     latencyRouting = latencyRouting == null ? LatencyRoutingConfig.disabled() : latencyRouting;
   }
@@ -560,10 +561,15 @@ public record ProxyConfig(
       SyntheticReadLockStoreZooKeeperConfig zooKeeper
   ) {
     public SyntheticReadLockStoreConfig {
-      mode = mode == null ? SyntheticReadLockStoreMode.IN_MEMORY : mode;
+      Objects.requireNonNull(mode,
+          "SyntheticReadLockStoreConfig.mode must be set explicitly (IN_MEMORY or ZOOKEEPER).");
       zooKeeper = zooKeeper == null
           ? new SyntheticReadLockStoreZooKeeperConfig(null, "/hms-proxy-synthetic-read-locks", 15_000, 60_000, 1_000, 3)
           : zooKeeper;
+    }
+
+    public static SyntheticReadLockStoreConfig inMemory() {
+      return new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null);
     }
 
     public boolean zooKeeperEnabled() {

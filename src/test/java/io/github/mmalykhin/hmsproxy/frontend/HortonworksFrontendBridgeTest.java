@@ -425,6 +425,7 @@ public class HortonworksFrontendBridgeTest {
             "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             null, null, Map.of("hive.metastore.uris", "thrift://one"))))
         .compatibility(new ProxyConfig.CompatibilityConfig(frontendProfile, jar.toString(), null, false))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 

@@ -278,6 +278,7 @@ public class HortonworksBackendAdapterTest {
             ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(),
             MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
             Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 }

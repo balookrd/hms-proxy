@@ -22,6 +22,7 @@ public class CatalogRouterTest {
           "catalog2", new ProxyConfig.CatalogConfig(
               "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))))
+      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static final ProxyConfig ONE_CATALOG_CONFIG = ProxyConfig.builder()
@@ -32,6 +33,7 @@ public class CatalogRouterTest {
       .catalogs(Map.of("catalog1", new ProxyConfig.CatalogConfig(
           "catalog1", "c1", "file:///c1", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
           Map.of("hive.metastore.uris", "thrift://one"))))
+      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = ProxyConfig.builder()
@@ -46,6 +48,7 @@ public class CatalogRouterTest {
           "catalog2", new ProxyConfig.CatalogConfig(
               "catalog2", "c2", "file:///c2", false, ProxyConfig.CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
               Map.of("hive.metastore.uris", "thrift://two"))))
+      .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
       .build();
 
   private static CatalogRouter routerFor(ProxyConfig config) {

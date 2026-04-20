@@ -10,12 +10,14 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Изменено
 
-- **Breaking:** `synthetic-read-lock.store.mode` теперь обязательно задавать явно. Прежний
-  молчаливый default `IN_MEMORY` был небезопасен для multi-instance deployment — synthetic
-  SELECT-локи на non-default каталогах терялись при рестарте proxy или failover через load
-  balancer без сигнала на старте. Выбирайте `IN_MEMORY` для одиночного инстанса (стартовый `WARN`
-  про потерю SELECT-локов по-прежнему пишется) или `ZOOKEEPER` для HA. Если сконфигурированы
-  `synthetic-read-lock.store.zookeeper.*`, `ZOOKEEPER` выводится автоматически.
+- **Breaking:** `synthetic-read-lock.store.mode` теперь обязательно задавать явно — как в
+  properties-конфиге, так и при программной сборке `ProxyConfig`. Прежний молчаливый default
+  `IN_MEMORY` был небезопасен для multi-instance deployment — synthetic SELECT-локи на non-default
+  каталогах терялись при рестарте proxy или failover через load balancer без сигнала на старте.
+  Выбирайте `IN_MEMORY` для одиночного инстанса (стартовый `WARN` про потерю SELECT-локов
+  по-прежнему пишется) или `ZOOKEEPER` для HA. Если сконфигурированы
+  `synthetic-read-lock.store.zookeeper.*`, `ZOOKEEPER` выводится автоматически. Для in-process
+  builder'ов добавлен хелпер `ProxyConfig.SyntheticReadLockStoreConfig.inMemory()`.
 
 ## 2026-04-20
 

@@ -198,6 +198,7 @@ public class FederationLayerTest {
             ProxyConfig.TransactionalDdlGuardMode.DISABLED,
             java.util.List.of()))
         .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 
@@ -237,6 +238,7 @@ public class FederationLayerTest {
             ProxyConfig.TransactionalDdlGuardMode.DISABLED,
             java.util.List.of()))
         .management(new ProxyConfig.ManagementConfig(false, "127.0.0.1", 10083))
+        .syntheticReadLockStore(ProxyConfig.SyntheticReadLockStoreConfig.inMemory())
         .build();
   }
 }
