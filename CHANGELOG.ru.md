@@ -13,7 +13,10 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 - Per-catalog shared backend session и `synchronized` вокруг вызовов заменены на borrow/return пул
   размером `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated вызовы к одному
   каталогу теперь идут параллельно до размера пула, а не сериализуются через единственный Thrift
-  transport.
+  transport. **Внимание:** дефолт `1` сохраняет прежнее сериализованное поведение — чтобы реально
+  получить параллелизм, нужно явно выставить `catalog.<name>.shared-session-pool-size` (например,
+  `8` или `16`) на каталог. Большие значения держат больше idle Thrift-сессий к backend HMS
+  (с пропорциональной стоимостью Kerberos, если включён) и удлиняют дренаж в `reconnectShared`.
 
 ### Исправлено
 

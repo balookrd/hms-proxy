@@ -159,6 +159,38 @@ read-only fanout methods, currently `get_all_databases`, `get_databases`, and `g
 Single-backend writes and namespace-sensitive mutations still follow the deterministic routing model
 described above and do not race multiple metastores.
 
+## Shared backend session pool
+
+Non-impersonated calls to a catalog go through a borrow/return pool of backend Thrift sessions sized
+by `catalog.<name>.shared-session-pool-size`. The default is `1`, which preserves the previous
+single-session, serialized behavior — concurrent shared calls will queue on a single Thrift
+transport. To benefit from parallelism, set this explicitly per catalog, e.g.:
+
+```properties
+catalog.catalog1.shared-session-pool-size=8
+```
+
+Trade-offs to consider when raising it:
+
+- More idle Thrift sessions held open against the backend HMS (with proportional Kerberos cost when
+  `KERBEROS` is enabled on the backend).
+- `reconnectShared` drains the full pool, so larger pools take longer to swap on a runtime profile
+  change or forced reconnect.
+
+When impersonation is enabled on the catalog, real authenticated client traffic does not use this
+pool — each caller is served from the per-user impersonation client cache governed by
+`catalog.<name>.impersonation-max-clients` and `catalog.<name>.impersonation-client-idle-ttl-ms`.
+The shared pool then carries only:
+
+- internal proxy-driven calls such as backend health probes and reconnect bookkeeping;
+- requests authenticated as a service principal listed under `security.service-principals.*`, which
+  by design bypass impersonation and reuse a shared backend session.
+
+In a pure-impersonation deployment with no service-principal client traffic, raising
+`shared-session-pool-size` therefore has no effect on application throughput. Tune it when at least
+one catalog has `impersonation-enabled=false`, or when service-principal callers (for example
+HiveServer2 itself) drive a meaningful share of requests against the catalog.
+
 ## Build
 
 ```bash
@@ -825,10 +857,11 @@ such as `CREATE TABLE` and partition rename/drop flows that Hive still runs thro
 txn/lock APIs. The proxy serves those locks locally when backend txn ids do not line up
 across catalogs. This does not turn the proxy into a distributed ACID coordinator.
 
-By default that synthetic lock state is kept in memory, which is fine for a single proxy
-instance. For HA / load-balanced deployments you can persist it in ZooKeeper so
-`check_lock`, `unlock`, `heartbeat`, `commit_txn`, and `abort_txn` can continue through a
-different proxy instance after the first one dies.
+`synthetic-read-lock.store.mode` must be set explicitly — there is no default. Use `IN_MEMORY`
+for single-instance deployments (non-default catalog SELECT locks are lost on proxy restart or
+load-balancer failover, and the proxy logs a `WARN` on startup to surface that), or `ZOOKEEPER`
+for HA / load-balanced deployments so `check_lock`, `unlock`, `heartbeat`, `commit_txn`, and
+`abort_txn` can continue through a different proxy instance after the first one dies.
 
 Example:
 

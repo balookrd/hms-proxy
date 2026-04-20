@@ -13,7 +13,10 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 - Replaced the per-catalog single shared backend session and `synchronized` invocation gate with a
   borrow/return pool sized by `catalog.<name>.shared-session-pool-size` (default `1`). Non-impersonated
   calls to the same catalog can now run in parallel up to the pool size instead of serializing
-  through one Thrift transport.
+  through one Thrift transport. **Note:** the default of `1` preserves the previous serialized
+  behavior — to actually benefit from parallelism, set `catalog.<name>.shared-session-pool-size`
+  explicitly (e.g. `8` or `16`) per catalog. Higher values keep more idle Thrift sessions open to the
+  backend HMS (with proportional Kerberos cost when applicable) and lengthen `reconnectShared` drains.
 
 ### Fixed
 

@@ -161,6 +161,38 @@ read-only fanout method, сейчас это `get_all_databases`, `get_databases
 Single-backend write и namespace-sensitive mutation по-прежнему идут по детерминированной
 маршрутизации выше и не race'ят несколько metastore одновременно.
 
+## Пул shared backend-сессий
+
+Non-impersonated вызовы к каталогу идут через borrow/return пул backend Thrift-сессий размером
+`catalog.<name>.shared-session-pool-size`. Дефолт — `1`, и он сохраняет прежнее поведение с
+единственной сессией: параллельные shared-вызовы упрутся в один Thrift transport. Чтобы реально
+получить параллелизм, выставляй это значение явно по каталогам, например:
+
+```properties
+catalog.catalog1.shared-session-pool-size=8
+```
+
+Что учитывать при повышении:
+
+- Больше idle Thrift-сессий держится открытыми к backend HMS (с пропорциональной стоимостью
+  Kerberos, если он включён на backend).
+- `reconnectShared` дренирует весь пул, поэтому большие пулы дольше пересоздаются при смене runtime
+  profile или принудительном reconnect.
+
+Если на каталоге включена impersonation, реальный аутентифицированный клиентский трафик через этот
+пул не идёт — каждый caller обслуживается из per-user кэша impersonation client'ов, управляемого
+`catalog.<name>.impersonation-max-clients` и `catalog.<name>.impersonation-client-idle-ttl-ms`.
+В shared пуле тогда остаются только:
+
+- внутренние proxy-driven вызовы: backend health probe и reconnect-логика;
+- запросы от service principal'ов, перечисленных в `security.service-principals.*`, — они by design
+  обходят impersonation и переиспользуют общую backend-сессию.
+
+В чистом impersonation-deployment без service-principal клиентского трафика повышать
+`shared-session-pool-size` бессмысленно — на throughput приложения это не влияет. Тюнить пул нужно,
+если хотя бы на одном каталоге `impersonation-enabled=false` или если значимую долю запросов к
+каталогу гонят service principal'ы (например, сам HiveServer2).
+
 ## Сборка
 
 ```bash
@@ -777,10 +809,11 @@ security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keyta
 Такие lock proxy обслуживает локально, когда backend txn id рассинхронизированы между
 каталогами. Это не превращает proxy в distributed ACID coordinator.
 
-По умолчанию этот synthetic lock state хранится в памяти, что нормально для одного proxy
-инстанса. Для HA / load-balanced deployment его можно вынести в ZooKeeper, чтобы
-`check_lock`, `unlock`, `heartbeat`, `commit_txn` и `abort_txn` продолжали работать через
-соседний proxy после падения первого.
+`synthetic-read-lock.store.mode` обязан быть задан явно — default'а нет. Используйте `IN_MEMORY`
+для одиночного инстанса proxy (SELECT-локи на non-default каталогах теряются при рестарте или
+failover через load balancer, и proxy пишет `WARN` в лог на старте, чтобы это было видно), либо
+`ZOOKEEPER` для HA / load-balanced deployment, чтобы `check_lock`, `unlock`, `heartbeat`,
+`commit_txn` и `abort_txn` продолжали работать через соседний proxy после падения первого.
 
 Пример:
 
