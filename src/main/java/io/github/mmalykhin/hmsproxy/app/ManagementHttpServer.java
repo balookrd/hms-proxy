@@ -11,6 +11,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -37,8 +38,15 @@ public final class ManagementHttpServer implements AutoCloseable {
       return null;
     }
 
-    HttpServer server = HttpServer.create(
-        new InetSocketAddress(config.management().bindHost(), config.management().port()), 0);
+    HttpServer server;
+    try {
+      server = HttpServer.create(
+          new InetSocketAddress(config.management().bindHost(), config.management().port()), 0);
+    } catch (BindException e) {
+      LOG.error("Failed to bind management HTTP listener on {}:{} - {}",
+          config.management().bindHost(), config.management().port(), e.getMessage());
+      throw e;
+    }
     server.createContext("/healthz", exchange -> {
       String body = "{\"status\":\"ok\",\"alive\":true,\"uptimeSeconds\":"
           + (System.currentTimeMillis() / 1000L - observability.runtimeState().startedAtEpochSecond())

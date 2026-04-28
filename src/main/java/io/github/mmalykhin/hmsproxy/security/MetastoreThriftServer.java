@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TProcessor;
@@ -31,8 +32,18 @@ public final class MetastoreThriftServer {
     this.config = config;
     this.frontDoorSecurity = frontDoorSecurity;
     TProcessor processor = FrontendProcessorFactory.create(config, handler);
-    TServerSocket serverSocket = new TServerSocket(
-        new InetSocketAddress(config.server().bindHost(), config.server().port()));
+    TServerSocket serverSocket;
+    try {
+      serverSocket = new TServerSocket(
+          new InetSocketAddress(config.server().bindHost(), config.server().port()));
+    } catch (TTransportException e) {
+      String reason = e.getCause() instanceof BindException
+          ? e.getCause().getMessage()
+          : e.getMessage();
+      LOG.error("Failed to bind metastore Thrift listener on {}:{} - {}",
+          config.server().bindHost(), config.server().port(), reason);
+      throw e;
+    }
 
     TTransportFactory transportFactory = new TTransportFactory();
     if (frontDoorSecurity != null) {
