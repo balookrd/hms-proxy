@@ -1,0 +1,152 @@
+name: Release Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      prerelease:
+        required: false
+        type: boolean
+        default: false
+      make_latest:
+        required: false
+        type: string
+        default: "true"
+      release_name:
+        required: false
+        type: string
+        default: ""
+      rolling_tag:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - id: vars
+        name: Resolve workflow variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ inputs.tag }}"
+          checkout_ref="${{ inputs.checkout_ref }}"
+          release_name="${{ inputs.release_name }}"
+
+          if [[ -z "$checkout_ref" ]]; then
+            checkout_ref="$tag"
+          fi
+
+          if [[ -z "$release_name" ]]; then
+            release_name="Release $tag"
+          fi
+
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.vars.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run unit tests
+        run: mvn -B test
+
+      - name: Build jars
+        run: mvn -B -DskipTests package
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          assets=(target/*.jar)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No jars produced under target/" >&2
+            exit 1
+          fi
+          for jar in "${assets[@]}"; do
+            cp "$jar" dist/
+          done
+          cd dist
+          sha256sum *.jar > SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: hms-proxy-${{ inputs.tag }}
+          path: |
+            dist/*.jar
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Move rolling tag
+        if: ${{ inputs.rolling_tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ steps.vars.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags --force
+          git tag -f "$TAG" "$REF"
+          git push origin "refs/tags/$TAG" --force
+
+      - name: Delete old rolling assets
+        if: ${{ inputs.rolling_tag }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Rolling release $TAG does not exist yet, nothing to clean."
+            exit 0
+          fi
+
+          mapfile -t assets < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          if (( ${#assets[@]} == 0 )); then
+            echo "No old assets to delete."
+            exit 0
+          fi
+
+          for asset in "${assets[@]}"; do
+            echo "Deleting old asset: $asset"
+            gh release delete-asset "$TAG" "$asset" --yes
+          done
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ steps.vars.outputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ inputs.make_latest }}
+          generate_release_notes: ${{ !inputs.rolling_tag }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.jar
+            dist/SHA256SUMS.txt
