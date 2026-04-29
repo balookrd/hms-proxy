@@ -1,10 +1,47 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-20`. The project has not published tagged releases yet, so entries are grouped by commit
-date and focused on user-visible changes.
+`2026-04-29`. Entries are grouped by commit date and focused on user-visible changes. The first
+tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-04-29
+
+### Added
+
+- Console log output is now also written to two file appenders: `logs/hms-proxy.log` (rolling at
+  50MB with 10 backups) and `logs/hms-proxy-daily.log` (date-suffixed). Log history survives
+  restarts and is available for offline analysis.
+
+### Changed
+
+- Rewrote the Grafana dashboard to cover all 13 exported metrics, grouped into six sections —
+  Requests & Latency, Backend Operations, Routing, Rate Limiting, Metadata Filtering, Synthetic
+  Read Locks. Added panels for the previously missing `hms_proxy_rate_limited_total`,
+  `hms_proxy_filtered_objects_total`, and `hms_proxy_synthetic_read_lock_store_info` metrics.
+- Restructured GitHub Actions release workflows around a single reusable `_release-build.yml`
+  pipeline. The manual `Release` dispatch now only computes the next `vX.Y.Z` and prints
+  instructions for creating a signed tag locally; pushing the tag triggers `Tag Release` which
+  builds and publishes. Pushes to `main` publish a rolling `nightly` prerelease that replaces the
+  previous per-commit `build-*` and dated `nightly-*` releases.
+
+### Fixed
+
+- The Maven artifact version on tagged commits now reflects the tag (for example,
+  `hms-proxy-1.0.0.jar` at `v1.0.0`) instead of the snapshot pattern. The jgitver
+  `tagVersionPattern` was hardcoded to the same expression as the non-tagged path; it is now set
+  to the default `${v}`. Snapshot builds on non-tagged commits keep the existing
+  `0.1.<distance>-<sha>` naming.
+
+## 2026-04-28
+
+### Fixed
+
+- When the management HTTP or metastore Thrift listener cannot bind its configured `host:port`
+  (for example, the port is already in use), the proxy now logs an explicit ERROR identifying
+  which listener failed and why before letting the exception propagate, instead of emitting only
+  a raw stack trace on its way to a non-zero exit.
 
 ## 2026-04-20
 
