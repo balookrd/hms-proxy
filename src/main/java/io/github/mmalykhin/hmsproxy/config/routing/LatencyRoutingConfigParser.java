@@ -13,6 +13,11 @@ public final class LatencyRoutingConfigParser {
         reader.getPositiveInt("routing.backend-state-polling.interval-ms", 10_000);
     long backendStatePollingProbeTimeoutMs =
         reader.getPositiveLong("routing.backend-state-polling.probe-timeout-ms", 5_000L);
+    int backendStatePollingMaxParallelism = Math.max(1, Math.min(
+        Math.max(1, catalogCount),
+        reader.getPositiveInt(
+            "routing.backend-state-polling.max-parallelism",
+            Math.max(1, catalogCount))));
     boolean adaptiveTimeoutEnabled = reader.getBoolean("routing.adaptive-timeout.enabled", false);
     long adaptiveTimeoutInitialMs = reader.getPositiveLong("routing.adaptive-timeout.initial-ms", 5_000L);
     long adaptiveTimeoutMinMs = reader.getPositiveLong("routing.adaptive-timeout.min-ms", 1_000L);
@@ -30,7 +35,10 @@ public final class LatencyRoutingConfigParser {
         reader.getOrNull("routing.degraded-routing-policy"));
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
-            backendStatePollingEnabled, backendStatePollingIntervalMs, backendStatePollingProbeTimeoutMs),
+            backendStatePollingEnabled,
+            backendStatePollingIntervalMs,
+            backendStatePollingProbeTimeoutMs,
+            backendStatePollingMaxParallelism),
         new AdaptiveTimeoutConfig(
             adaptiveTimeoutEnabled,
             adaptiveTimeoutInitialMs,

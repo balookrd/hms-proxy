@@ -5,7 +5,10 @@ import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -41,9 +44,21 @@ public final class BackendRoutingController implements AutoCloseable {
     this.pollingExecutor = pollingEnabled
         ? Executors.newSingleThreadScheduledExecutor(namedThreadFactory("hms-proxy-backend-poll"))
         : null;
-    this.probeExecutor = pollingEnabled
-        ? Executors.newSingleThreadExecutor(namedThreadFactory("hms-proxy-backend-probe"))
-        : null;
+    if (pollingEnabled) {
+      int probePoolSize = Math.max(1, Math.min(
+          config.latencyRouting().backendStatePolling().maxParallelism(),
+          Math.max(1, router.backends().size())));
+      this.probeExecutor = new ThreadPoolExecutor(
+          probePoolSize,
+          probePoolSize,
+          0L,
+          TimeUnit.MILLISECONDS,
+          new ArrayBlockingQueue<>(Math.max(1, router.backends().size())),
+          namedThreadFactory("hms-proxy-backend-probe"),
+          new ThreadPoolExecutor.CallerRunsPolicy());
+    } else {
+      this.probeExecutor = null;
+    }
     if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
       int poolSize = Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size());
       // Bound the queue to the number of backends: each request submits at most backends.size() tasks.
@@ -147,40 +162,57 @@ public final class BackendRoutingController implements AutoCloseable {
 
   private void runPollCycle() {
     long probeTimeoutMs = config.latencyRouting().backendStatePolling().probeTimeoutMs();
-    for (CatalogBackend backend : router.backends()) {
-      try {
-        long startedAt = System.nanoTime();
-        Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
-          try {
-            backend.probeConnectivity(probeTimeoutMs);
-            return null;
-          } catch (Exception e) {
-            throw e;
-          } catch (Throwable t) {
-            throw new RuntimeException(t);
-          }
-        });
+    var backends = router.backends();
+    List<ProbeInFlight> inFlight = new ArrayList<>(backends.size());
+    for (CatalogBackend backend : backends) {
+      long startedAt = System.nanoTime();
+      Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
         try {
-          probe.get(probeTimeoutMs, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-          probe.cancel(true);
+          backend.probeConnectivity(probeTimeoutMs);
+        } catch (Exception e) {
           throw e;
-        } catch (ExecutionException e) {
-          throw e.getCause();
-        } catch (InterruptedException e) {
-          probe.cancel(true);
-          Thread.currentThread().interrupt();
-          throw e;
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
         }
+        return null;
+      });
+      inFlight.add(new ProbeInFlight(backend, startedAt, probe));
+    }
+    long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(probeTimeoutMs);
+    for (ProbeInFlight entry : inFlight) {
+      try {
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0L) {
+          entry.probe.cancel(true);
+          throw new TimeoutException("probe deadline exceeded");
+        }
+        entry.probe.get(remainingNanos, TimeUnit.NANOSECONDS);
         observability.runtimeState().recordBackendProbeSuccess(
-            backend.name(),
-            elapsedMillis(startedAt),
+            entry.backend.name(),
+            elapsedMillis(entry.startedAt),
             config.latencyRouting());
-      } catch (Throwable error) {
-        LOG.warn("Backend catalog '{}' health poll failed", backend.name(), error);
-        observability.runtimeState().recordBackendProbeFailure(backend.name(), error, config.latencyRouting());
+      } catch (TimeoutException e) {
+        entry.probe.cancel(true);
+        recordPollFailure(entry.backend, e);
+      } catch (ExecutionException e) {
+        recordPollFailure(entry.backend, e.getCause() != null ? e.getCause() : e);
+      } catch (InterruptedException e) {
+        entry.probe.cancel(true);
+        Thread.currentThread().interrupt();
+        recordPollFailure(entry.backend, e);
+        return;
+      } catch (Throwable t) {
+        recordPollFailure(entry.backend, t);
       }
     }
+  }
+
+  private void recordPollFailure(CatalogBackend backend, Throwable error) {
+    LOG.warn("Backend catalog '{}' health poll failed", backend.name(), error);
+    observability.runtimeState().recordBackendProbeFailure(backend.name(), error, config.latencyRouting());
+  }
+
+  private record ProbeInFlight(CatalogBackend backend, long startedAt, Future<?> probe) {
   }
 
   private static long elapsedMillis(long startedAt) {

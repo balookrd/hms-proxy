@@ -920,6 +920,8 @@ fanout read и degraded omission настраиваются через `routing.
 ```properties
 routing.backend-state-polling.enabled=true
 routing.backend-state-polling.interval-ms=10000
+routing.backend-state-polling.probe-timeout-ms=5000
+routing.backend-state-polling.max-parallelism=8
 routing.adaptive-timeout.enabled=true
 routing.adaptive-timeout.initial-ms=5000
 routing.adaptive-timeout.min-ms=1000
