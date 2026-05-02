@@ -56,6 +56,10 @@ public final class PrometheusMetrics {
       "hms_proxy_synthetic_read_lock_store_failures_total",
       "Synthetic read-lock store failures grouped by operation, store mode, and exception type",
       List.of("operation", "store_mode", "exception"));
+  private final Counter backendSessionAcquireTimeoutsTotal = new Counter(
+      "hms_proxy_backend_session_acquire_timeouts_total",
+      "Backend metastore session acquisitions that timed out waiting for a free pool permit",
+      List.of("catalog", "operation"));
   private final Counter syntheticReadLockHandoffsTotal = new Counter(
       "hms_proxy_synthetic_read_lock_handoffs_total",
       "Synthetic read-lock operations served by a different proxy instance than the original lock owner",
@@ -116,6 +120,10 @@ public final class PrometheusMetrics {
         "method", method,
         "catalog", catalog,
         "object_type", objectType), count);
+  }
+
+  public void recordBackendSessionAcquireTimeout(String catalog, String operation) {
+    backendSessionAcquireTimeoutsTotal.inc(labels("catalog", catalog, "operation", operation));
   }
 
   public void recordSyntheticReadLockEvent(
@@ -179,6 +187,7 @@ public final class PrometheusMetrics {
     routingAmbiguousTotal.renderInto(builder);
     defaultCatalogRoutedTotal.renderInto(builder);
     rateLimitedTotal.renderInto(builder);
+    backendSessionAcquireTimeoutsTotal.renderInto(builder);
     filteredObjectsTotal.renderInto(builder);
     syntheticReadLockEventsTotal.renderInto(builder);
     syntheticReadLockStoreFailuresTotal.renderInto(builder);

@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,7 @@ public final class BackendRuntime implements AutoCloseable {
   private final int poolSize;
   private final Semaphore permits;
   private final LinkedBlockingQueue<BackendInvocationSession> pool;
+  private final PrometheusMetrics metrics;
   private volatile MetastoreRuntimeProfile activeProfile;
 
   private BackendRuntime(
@@ -37,7 +39,8 @@ public final class BackendRuntime implements AutoCloseable {
       boolean backendKerberosEnabled,
       SessionFactory sessionFactory,
       MetastoreRuntimeProfile activeProfile,
-      BackendInvocationSession initialSession
+      BackendInvocationSession initialSession,
+      PrometheusMetrics metrics
   ) {
     this.proxyConfig = proxyConfig;
     this.catalogConfig = catalogConfig;
@@ -47,6 +50,7 @@ public final class BackendRuntime implements AutoCloseable {
     this.poolSize = catalogConfig.sharedSessionPoolSize();
     this.permits = new Semaphore(poolSize);
     this.pool = new LinkedBlockingQueue<>(poolSize);
+    this.metrics = metrics;
     this.activeProfile = activeProfile;
     this.pool.offer(initialSession);
   }
@@ -58,7 +62,20 @@ public final class BackendRuntime implements AutoCloseable {
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
   ) throws MetaException {
-    return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, DEFAULT_SESSION_FACTORY);
+    return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile,
+        DEFAULT_SESSION_FACTORY, null);
+  }
+
+  public static BackendRuntime open(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf hiveConf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      PrometheusMetrics metrics
+  ) throws MetaException {
+    return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile,
+        DEFAULT_SESSION_FACTORY, metrics);
   }
 
   public static BackendRuntime open(
@@ -69,10 +86,23 @@ public final class BackendRuntime implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile,
       SessionFactory sessionFactory
   ) throws MetaException {
+    return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile,
+        sessionFactory, null);
+  }
+
+  public static BackendRuntime open(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf hiveConf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      SessionFactory sessionFactory,
+      PrometheusMetrics metrics
+  ) throws MetaException {
     BackendInvocationSession initial = sessionFactory.open(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
     return new BackendRuntime(
-        proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory, runtimeProfile, initial);
+        proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory, runtimeProfile, initial, metrics);
   }
 
   public Object invokeShared(Method method, Object[] args) throws Throwable {
@@ -110,6 +140,9 @@ public final class BackendRuntime implements AutoCloseable {
     if (!acquired) {
       LOG.warn("Backend catalog '{}' reconnect timed out waiting to drain {} permits within {} ms",
           catalogConfig.name(), poolSize, timeoutMs);
+      if (metrics != null) {
+        metrics.recordBackendSessionAcquireTimeout(catalogConfig.name(), "reconnect");
+      }
       throw new MetaException(
           "Timed out waiting to quiesce backend metastore pool for catalog " + catalogConfig.name()
               + " after " + timeoutMs + " ms");
@@ -223,6 +256,9 @@ public final class BackendRuntime implements AutoCloseable {
     if (!acquired) {
       LOG.warn("Backend catalog '{}' session pool exhausted: no permit available within {} ms (poolSize={})",
           catalogConfig.name(), timeoutMs, poolSize);
+      if (metrics != null) {
+        metrics.recordBackendSessionAcquireTimeout(catalogConfig.name(), "borrow");
+      }
       throw new MetaException(
           "Timed out waiting for backend metastore session for catalog " + catalogConfig.name()
               + " after " + timeoutMs + " ms");

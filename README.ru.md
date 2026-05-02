@@ -304,6 +304,7 @@ curl -s http://127.0.0.1:19083/metrics
 - `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
 - `hms_proxy_synthetic_read_locks_active{store_mode}`
 - `hms_proxy_synthetic_read_lock_store_info{store_mode}`
+- `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 
 Пример Prometheus scrape config:
 
@@ -330,6 +331,7 @@ scrape_configs:
 - `hms_proxy_synthetic_read_lock_handoffs_total` считает случаи, когда synthetic lock, открытый через один proxy instance, продолжает обслуживаться через другой instance
 - `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend
 - `hms_proxy_synthetic_read_lock_store_info` это constant-info gauge, который помечает, работает ли proxy с `in_memory` или `zookeeper` storage для synthetic lock
+- `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock на non-default catalog.

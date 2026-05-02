@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -52,6 +53,14 @@ public final class CatalogBackend implements AutoCloseable {
 
   public static CatalogBackend open(ProxyConfig proxyConfig, CatalogConfig catalogConfig)
       throws MetaException {
+    return open(proxyConfig, catalogConfig, null);
+  }
+
+  public static CatalogBackend open(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      PrometheusMetrics metrics
+  ) throws MetaException {
     HiveConf conf = new HiveConf();
     boolean backendKerberosEnabled = backendKerberosEnabled(catalogConfig);
     conf.set("hadoop.security.authentication", backendKerberosEnabled ? "kerberos" : "simple");
@@ -63,7 +72,8 @@ public final class CatalogBackend implements AutoCloseable {
         ? catalogConfig.runtimeProfile()
         : MetastoreRuntimeProfile.APACHE_3_1_3;
     BackendAdapter adapter = BackendAdapterFactory.create(runtimeProfile);
-    BackendRuntime runtime = BackendRuntime.open(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile);
+    BackendRuntime runtime = BackendRuntime.open(
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, metrics);
     LOG.info("Backend catalog '{}' selected runtimeProfile={} compatibilityProfile={}",
         catalogConfig.name(), adapter.runtimeProfile(), adapter.backendProfile());
     Catalog catalog = new Catalog();

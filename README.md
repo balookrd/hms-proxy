@@ -303,6 +303,7 @@ Current Prometheus metrics:
 - `hms_proxy_synthetic_read_lock_handoffs_total{operation,catalog,store_mode}`
 - `hms_proxy_synthetic_read_locks_active{store_mode}`
 - `hms_proxy_synthetic_read_lock_store_info{store_mode}`
+- `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 
 Example Prometheus scrape config:
 
@@ -329,6 +330,7 @@ Metric semantics:
 - `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
 - `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend
 - `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
+- `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks on non-default catalogs.

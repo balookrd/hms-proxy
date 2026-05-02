@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -19,10 +20,14 @@ public final class CatalogRouter implements AutoCloseable {
   }
 
   public static CatalogRouter open(ProxyConfig config) throws MetaException {
+    return open(config, null);
+  }
+
+  public static CatalogRouter open(ProxyConfig config, PrometheusMetrics metrics) throws MetaException {
     Map<String, CatalogBackend> backends = new LinkedHashMap<>();
     try {
       for (Map.Entry<String, CatalogConfig> entry : config.catalogs().entrySet()) {
-        backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue()));
+        backends.put(entry.getKey(), CatalogBackend.open(config, entry.getValue(), metrics));
       }
       return new CatalogRouter(config, backends);
     } catch (Throwable t) {

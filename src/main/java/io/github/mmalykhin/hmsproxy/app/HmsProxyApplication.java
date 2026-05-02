@@ -37,7 +37,7 @@ public final class HmsProxyApplication {
       ProxyObservability observability = new ProxyObservability(config);
       FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
       try (frontDoorSecurity;
-           CatalogRouter router = CatalogRouter.open(config);
+           CatalogRouter router = CatalogRouter.open(config, observability.metrics());
            ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability);
            RoutingMetaStoreProxy handler =
                new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router),

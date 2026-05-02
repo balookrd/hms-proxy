@@ -232,7 +232,8 @@ public class HortonworksBackendAdapterTest {
         boolean.class,
         BackendRuntime.SessionFactory.class,
         MetastoreRuntimeProfile.class,
-        BackendInvocationSession.class);
+        BackendInvocationSession.class,
+        io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics.class);
     ctor.setAccessible(true);
     MetastoreRuntimeProfile profile = catalogConfig.runtimeProfile() != null
         ? catalogConfig.runtimeProfile()
@@ -244,7 +245,8 @@ public class HortonworksBackendAdapterTest {
         false,
         sessionFactory,
         profile,
-        newSession(invocationHandler));
+        newSession(invocationHandler),
+        null);
   }
 
   private static BackendInvocationSession newSession(InvocationHandler invocationHandler) throws Exception {

@@ -2964,7 +2964,8 @@ public class RoutingMetaStoreProxyTest {
         boolean.class,
         BackendRuntime.SessionFactory.class,
         MetastoreRuntimeProfile.class,
-        BackendInvocationSession.class);
+        BackendInvocationSession.class,
+        io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics.class);
     ctor.setAccessible(true);
     BackendRuntime.SessionFactory sessionFactory = new BackendRuntime.SessionFactory() {
       @Override
@@ -2994,7 +2995,7 @@ public class RoutingMetaStoreProxyTest {
     MetastoreRuntimeProfile profile = catalogConfig.runtimeProfile() != null
         ? catalogConfig.runtimeProfile()
         : MetastoreRuntimeProfile.APACHE_3_1_3;
-    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, sessionFactory, profile, session);
+    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), false, sessionFactory, profile, session, null);
   }
 
   private static BackendInvocationSession newSession() throws Exception {
