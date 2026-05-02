@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -23,6 +24,7 @@ public final class IsolatedInvocationBridge {
   private final Object delegate;
   private final Class<?> ifaceClass;
   private final ConcurrentHashMap<MethodKey, Method> methodCache = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<Class<?>, Constructor<?>> CONSTRUCTOR_CACHE = new ConcurrentHashMap<>();
 
   public IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
     this.classLoader = classLoader;
@@ -238,10 +240,19 @@ public final class IsolatedInvocationBridge {
     if (value == null || targetType.isInstance(value)) {
       return value;
     }
-    Object target = targetType.getConstructor().newInstance();
+    Object target = newTargetInstance(targetType);
     byte[] bytes = SERIALIZER.get().serialize((TBase<?, ?>) value);
     DESERIALIZER.get().deserialize((TBase<?, ?>) target, bytes);
     return target;
+  }
+
+  private Object newTargetInstance(Class<?> targetType) throws Exception {
+    Constructor<?> constructor = CONSTRUCTOR_CACHE.get(targetType);
+    if (constructor == null) {
+      constructor = targetType.getConstructor();
+      CONSTRUCTOR_CACHE.putIfAbsent(targetType, constructor);
+    }
+    return constructor.newInstance();
   }
 
   private Object convertDynamicValue(Object value, ClassLoader targetClassLoader) throws Exception {
