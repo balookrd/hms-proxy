@@ -248,6 +248,7 @@ public final class CatalogBackend implements AutoCloseable {
       impersonationClient.closeQuietly();
     }
     impersonationClients.clear();
+    publishImpersonationGauges();
   }
 
   private static boolean backendKerberosEnabled(CatalogConfig catalogConfig) {
@@ -296,6 +297,7 @@ public final class CatalogBackend implements AutoCloseable {
     client = new ImpersonationClient(impersonation.userName(), impersonation.groupNames());
     impersonationClients.put(impersonation.userName(), client);
     evictOldImpersonationClientsIfNeeded();
+    publishImpersonationGauges();
     return client;
   }
 
@@ -307,104 +309,310 @@ public final class CatalogBackend implements AutoCloseable {
         LOG.info("Evicting cached impersonation client for user '{}' in catalog '{}'",
             eldestUser, config.name());
         evicted.closeQuietly();
+        if (metrics != null) {
+          metrics.recordImpersonationSessionEviction(config.name(), "user_capacity");
+        }
       }
     }
   }
 
-  private final class ImpersonationClient implements AutoCloseable {
+  private void publishImpersonationGauges() {
+    if (metrics == null) {
+      return;
+    }
+    metrics.setImpersonationPoolUsers(config.name(), impersonationClients.size());
+    metrics.setImpersonationPoolSessions(
+        config.name(),
+        impersonationActiveSessions.get(),
+        impersonationIdleSessions.get());
+  }
+
+  private static boolean isTransportFailure(Throwable cause) {
+    return cause instanceof org.apache.thrift.TApplicationException
+        || cause instanceof org.apache.thrift.transport.TTransportException;
+  }
+
+  private final class ImpersonationClient {
+    private static final long DEFAULT_BORROW_TIMEOUT_MS = 30_000L;
+
     private final String userName;
     private final List<String> groupNames;
-    private BackendInvocationSession session;
+    private final int maxSize;
+    private final long sessionIdleTtlMs;
+    private final Semaphore permits;
+    private final Object lock = new Object();
+    private final Deque<PooledSession> idle = new ArrayDeque<>();
+    private int totalSessions;
     private volatile boolean evicted;
     volatile long lastUsedMs = System.currentTimeMillis();
 
     private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
       this.userName = userName;
       this.groupNames = List.copyOf(groupNames);
-      open();
+      this.maxSize = config.impersonationPoolMaxSize();
+      this.sessionIdleTtlMs = config.impersonationSessionIdleTtlMs();
+      this.permits = new Semaphore(maxSize, true);
+      BackendInvocationSession initial = openSession();
+      synchronized (lock) {
+        idle.addFirst(new PooledSession(initial, System.currentTimeMillis()));
+        totalSessions = 1;
+      }
+      impersonationIdleSessions.incrementAndGet();
     }
 
-    synchronized Object invoke(Method method, Object[] args) throws Throwable {
+    Object invoke(Method method, Object[] args) throws Throwable {
+      if ("set_ugi".equals(method.getName())) {
+        lastUsedMs = System.currentTimeMillis();
+        return List.copyOf(groupNames);
+      }
+      return invokeOnPool(
+          method.getName(),
+          session -> session.invoke(method, args));
+    }
+
+    Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
+      if ("set_ugi".equals(methodName)) {
+        lastUsedMs = System.currentTimeMillis();
+        return List.copyOf(groupNames);
+      }
+      return invokeOnPool(
+          methodName,
+          session -> session.invokeByName(methodName, parameterTypes, args));
+    }
+
+    private Object invokeOnPool(String label, SessionCall call) throws Throwable {
       lastUsedMs = System.currentTimeMillis();
+      BackendInvocationSession session = borrow();
       try {
-        if ("set_ugi".equals(method.getName())) {
-          return List.copyOf(groupNames);
-        }
-        return session.invoke(method, args);
+        Object result = call.apply(session);
+        release(session);
+        session = null;
+        return result;
       } catch (Throwable cause) {
-        if (!(cause instanceof org.apache.thrift.TApplicationException)
-            && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
-          throw cause;
-        }
-        if (evicted) {
-          throw cause;
-        }
-        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
-            config.name(), userName, method.getName(), cause);
-        reconnect();
-        try {
-          if ("set_ugi".equals(method.getName())) {
-            return List.copyOf(groupNames);
+        if (!isTransportFailure(cause) || evicted) {
+          if (session != null) {
+            release(session);
+            session = null;
           }
-          return session.invoke(method, args);
+          throw cause;
+        }
+        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, retrying once",
+            config.name(), userName, label, cause);
+        discard(session, "transport_failure");
+        session = null;
+        BackendInvocationSession retry = borrow();
+        try {
+          Object result = call.apply(retry);
+          release(retry);
+          retry = null;
+          return result;
         } catch (Throwable retryError) {
+          if (retry != null) {
+            if (isTransportFailure(retryError)) {
+              discard(retry, "transport_failure");
+            } else {
+              release(retry);
+            }
+          }
           throw retryError;
         }
+      } finally {
+        if (session != null) {
+          release(session);
+        }
       }
     }
 
-    synchronized Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
-      lastUsedMs = System.currentTimeMillis();
+    private BackendInvocationSession borrow() throws MetaException {
+      if (evicted) {
+        throw new MetaException(
+            "Impersonation client for user '" + userName + "' in catalog '" + config.name()
+                + "' has been evicted");
+      }
+      long timeoutMs = config.latencyBudgetMs() > 0L
+          ? config.latencyBudgetMs()
+          : DEFAULT_BORROW_TIMEOUT_MS;
+      boolean acquired;
       try {
-        if ("set_ugi".equals(methodName)) {
-          return List.copyOf(groupNames);
+        acquired = permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        MetaException me = new MetaException(
+            "Interrupted while waiting for impersonation session for user '" + userName
+                + "' in catalog '" + config.name() + "'");
+        me.initCause(e);
+        throw me;
+      }
+      if (!acquired) {
+        LOG.warn("Backend catalog '{}' impersonation pool exhausted for user '{}': no permit within {} ms (poolSize={})",
+            config.name(), userName, timeoutMs, maxSize);
+        if (metrics != null) {
+          metrics.recordImpersonationSessionAcquireTimeout(config.name());
         }
-        return session.invokeByName(methodName, parameterTypes, args);
-      } catch (Throwable cause) {
-        if (!(cause instanceof org.apache.thrift.TApplicationException)
-            && !(cause instanceof org.apache.thrift.transport.TTransportException)) {
-          throw cause;
+        throw new MetaException(
+            "Timed out waiting for impersonation session for user '" + userName
+                + "' in catalog '" + config.name() + "' after " + timeoutMs + " ms");
+      }
+      List<BackendInvocationSession> expired = null;
+      PooledSession reuse;
+      synchronized (lock) {
+        reuse = pollFreshLocked();
+        if (reuse == null && sessionIdleTtlMs > 0) {
+          expired = drainExpiredLocked();
         }
-        if (evicted) {
-          throw cause;
+      }
+      if (expired != null) {
+        for (BackendInvocationSession s : expired) {
+          CatalogBackend.closeQuietly(s, "idle impersonation session for user '" + userName + "'");
+          impersonationIdleSessions.decrementAndGet();
+          if (metrics != null) {
+            metrics.recordImpersonationSessionEviction(config.name(), "idle");
+          }
         }
-        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, reconnecting once",
-            config.name(), userName, methodName, cause);
-        reconnect();
-        if ("set_ugi".equals(methodName)) {
-          return List.copyOf(groupNames);
+        publishImpersonationGauges();
+      }
+      if (reuse != null) {
+        impersonationIdleSessions.decrementAndGet();
+        impersonationActiveSessions.incrementAndGet();
+        publishImpersonationGauges();
+        return reuse.session;
+      }
+      try {
+        BackendInvocationSession fresh = openSession();
+        synchronized (lock) {
+          totalSessions++;
         }
-        return session.invokeByName(methodName, parameterTypes, args);
+        impersonationActiveSessions.incrementAndGet();
+        publishImpersonationGauges();
+        return fresh;
+      } catch (Throwable t) {
+        permits.release();
+        if (t instanceof MetaException me) {
+          throw me;
+        }
+        MetaException me = new MetaException(
+            "Unable to open impersonation session for user '" + userName + "' in catalog '"
+                + config.name() + "'");
+        me.initCause(t);
+        throw me;
       }
     }
 
-    @Override
-    public synchronized void close() {
-      CatalogBackend.closeQuietly(session, "impersonation backend metastore session for user '" + userName + "'");
+    private void release(BackendInvocationSession session) {
+      boolean drop = false;
+      synchronized (lock) {
+        if (evicted) {
+          drop = true;
+          totalSessions--;
+        } else {
+          idle.addFirst(new PooledSession(session, System.currentTimeMillis()));
+        }
+      }
+      impersonationActiveSessions.decrementAndGet();
+      if (drop) {
+        CatalogBackend.closeQuietly(session, "impersonation session (evicted) for user '" + userName + "'");
+      } else {
+        impersonationIdleSessions.incrementAndGet();
+      }
+      permits.release();
+      publishImpersonationGauges();
+    }
+
+    private void discard(BackendInvocationSession session, String reason) {
+      synchronized (lock) {
+        totalSessions--;
+      }
+      impersonationActiveSessions.decrementAndGet();
+      CatalogBackend.closeQuietly(session, "impersonation session (" + reason + ") for user '" + userName + "'");
+      if (metrics != null) {
+        metrics.recordImpersonationSessionEviction(config.name(), reason);
+      }
+      permits.release();
+      publishImpersonationGauges();
+    }
+
+    private PooledSession pollFreshLocked() {
+      while (!idle.isEmpty()) {
+        PooledSession candidate = idle.pollFirst();
+        if (sessionIdleTtlMs > 0
+            && System.currentTimeMillis() - candidate.releasedAtMs > sessionIdleTtlMs) {
+          totalSessions--;
+          CatalogBackend.closeQuietly(
+              candidate.session, "expired idle impersonation session for user '" + userName + "'");
+          impersonationIdleSessions.decrementAndGet();
+          if (metrics != null) {
+            metrics.recordImpersonationSessionEviction(config.name(), "idle");
+          }
+          continue;
+        }
+        return candidate;
+      }
+      return null;
+    }
+
+    private List<BackendInvocationSession> drainExpiredLocked() {
+      List<BackendInvocationSession> expired = new ArrayList<>();
+      long now = System.currentTimeMillis();
+      Iterator<PooledSession> it = idle.iterator();
+      while (it.hasNext()) {
+        PooledSession s = it.next();
+        if (now - s.releasedAtMs > sessionIdleTtlMs) {
+          it.remove();
+          totalSessions--;
+          expired.add(s.session);
+        }
+      }
+      return expired;
+    }
+
+    private void evict() {
+      List<PooledSession> drained;
+      synchronized (lock) {
+        evicted = true;
+        drained = new ArrayList<>(idle);
+        idle.clear();
+        totalSessions -= drained.size();
+      }
+      for (PooledSession s : drained) {
+        CatalogBackend.closeQuietly(
+            s.session, "impersonation session (user_evicted) for user '" + userName + "'");
+        impersonationIdleSessions.decrementAndGet();
+        if (metrics != null) {
+          metrics.recordImpersonationSessionEviction(config.name(), "user_evicted");
+        }
+      }
+      publishImpersonationGauges();
     }
 
     private void closeQuietly() {
       try {
-        close();
+        evict();
       } catch (RuntimeException e) {
         LOG.warn("Failed to close cached impersonation client for user '{}' in catalog '{}'",
             userName, config.name(), e);
       }
     }
 
-    private void evict() {
-      evicted = true;
-      closeQuietly();
+    private BackendInvocationSession openSession() throws MetaException {
+      BackendInvocationSession s = runtime.openImpersonationSession(
+          adapter.runtimeProfile(), userName, groupNames);
+      LOG.debug("Opened impersonation session for user '{}' in catalog '{}'", userName, config.name());
+      return s;
     }
+  }
 
-    private void open() throws MetaException {
-      session = runtime.openImpersonationSession(adapter.runtimeProfile(), userName, groupNames);
-      LOG.debug("Opened cached impersonation client for user '{}' in catalog '{}'", userName, config.name());
-    }
+  private static final class PooledSession {
+    final BackendInvocationSession session;
+    final long releasedAtMs;
 
-    private synchronized void reconnect() throws MetaException {
-      close();
-      open();
+    PooledSession(BackendInvocationSession session, long releasedAtMs) {
+      this.session = session;
+      this.releasedAtMs = releasedAtMs;
     }
+  }
+
+  @FunctionalInterface
+  private interface SessionCall {
+    Object apply(BackendInvocationSession session) throws Throwable;
   }
 }

@@ -180,6 +180,14 @@ Trade-offs to consider when raising it:
 When impersonation is enabled on the catalog, real authenticated client traffic does not use this
 pool — each caller is served from the per-user impersonation client cache governed by
 `catalog.<name>.impersonation-max-clients` and `catalog.<name>.impersonation-client-idle-ttl-ms`.
+Each cached user owns an internal pool of backend Thrift sessions sized by
+`catalog.<name>.impersonation-pool-max-size` (default `4`); idle sessions inside that pool can be
+closed via `catalog.<name>.impersonation-session-idle-ttl-ms` (default `0` = never). Concurrent
+calls from the same user (or the HiveServer2 driving them) borrow distinct sessions in parallel
+instead of serializing on a single Thrift transport. Grafana surfaces this as
+`hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,
+`hms_proxy_impersonation_session_acquire_timeouts_total` (per-user borrow timeouts) and
+`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|user_evicted|user_capacity}`.
 The shared pool then carries only:
 
 - internal proxy-driven calls such as backend health probes and reconnect bookkeeping;

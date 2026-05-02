@@ -2,10 +2,12 @@ package io.github.mmalykhin.hmsproxy.observability;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -15,6 +17,28 @@ import java.util.concurrent.atomic.LongAdder;
 public final class PrometheusMetrics {
   private static final double[] REQUEST_DURATION_BUCKETS =
       new double[] {0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0};
+
+  static final int DEFAULT_MAX_SERIES_PER_METRIC = 5000;
+  static final String OVERFLOW_LABEL_VALUE = "overflow";
+  static final String UNKNOWN_EXCEPTION_LABEL_VALUE = "other";
+
+  private static final Set<String> KNOWN_EXCEPTION_SIMPLE_NAMES = Set.of(
+      "IllegalStateException", "IllegalArgumentException", "NullPointerException",
+      "UnsupportedOperationException", "ClassCastException", "ArithmeticException",
+      "ArrayIndexOutOfBoundsException", "IndexOutOfBoundsException", "NumberFormatException",
+      "ConcurrentModificationException", "RuntimeException",
+      "InterruptedException", "TimeoutException", "ExecutionException",
+      "CancellationException", "RejectedExecutionException",
+      "IOException", "EOFException", "FileNotFoundException", "InterruptedIOException",
+      "SocketException", "SocketTimeoutException", "ConnectException", "UnknownHostException",
+      "MetaException", "NoSuchObjectException", "AlreadyExistsException",
+      "InvalidObjectException", "InvalidOperationException", "UnknownDBException",
+      "UnknownTableException", "InvalidPartitionException", "UnknownPartitionException",
+      "ConfigValSecurityException", "InvalidInputException", "NoSuchTxnException",
+      "TxnAbortedException", "TxnOpenException",
+      "TException", "TApplicationException", "TTransportException", "TProtocolException",
+      "RateLimitExceededException", "ProxyConfigurationException",
+      "KeeperException", "ConnectionLossException", "SessionExpiredException");
 
   private final Counter requestsTotal = new Counter(
       "hms_proxy_requests_total",
@@ -106,7 +130,7 @@ public final class PrometheusMetrics {
   public void recordBackendFailure(String backend, Throwable error) {
     backendFailuresTotal.inc(labels(
         "backend", backend,
-        "exception", error == null ? "unknown" : error.getClass().getSimpleName()));
+        "exception", classifyException(error)));
   }
 
   public void recordBackendFallback(String method, String fromApi, String toApi) {

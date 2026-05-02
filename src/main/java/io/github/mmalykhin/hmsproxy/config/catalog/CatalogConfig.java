@@ -22,7 +22,9 @@ public record CatalogConfig(
     long latencyBudgetMs,
     int maxImpersonationClients,
     long impersonationClientIdleTtlMs,
-    int sharedSessionPoolSize
+    int sharedSessionPoolSize,
+    int impersonationPoolMaxSize,
+    long impersonationSessionIdleTtlMs
 ) {
   public CatalogConfig {
     accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
@@ -33,6 +35,8 @@ public record CatalogConfig(
     maxImpersonationClients = maxImpersonationClients <= 0 ? 128 : maxImpersonationClients;
     impersonationClientIdleTtlMs = Math.max(impersonationClientIdleTtlMs, 0L);
     sharedSessionPoolSize = sharedSessionPoolSize <= 0 ? 1 : sharedSessionPoolSize;
+    impersonationPoolMaxSize = impersonationPoolMaxSize <= 0 ? 4 : impersonationPoolMaxSize;
+    impersonationSessionIdleTtlMs = Math.max(impersonationSessionIdleTtlMs, 0L);
     Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
     for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
       copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -68,7 +72,9 @@ public record CatalogConfig(
         0L,
         128,
         0L,
-        1);
+        1,
+        4,
+        0L);
   }
 
   public CatalogConfig(
@@ -101,6 +107,8 @@ public record CatalogConfig(
         0L,
         128,
         0L,
-        1);
+        1,
+        4,
+        0L);
   }
 }

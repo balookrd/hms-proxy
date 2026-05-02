@@ -2269,6 +2269,209 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 150 },
+      "id": 1010,
+      "panels": [],
+      "title": "Impersonation Pool  (hms_proxy_impersonation_pool_users, hms_proxy_impersonation_pool_sessions, hms_proxy_impersonation_session_acquire_timeouts_total, hms_proxy_impersonation_session_evictions_total)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "sum by (catalog) (hms_proxy_impersonation_pool_users) — distinct users currently holding a per-user impersonation session pool. Compare against catalog.<name>.impersonation-max-clients.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 151 },
+      "id": 60,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (catalog) (hms_proxy_impersonation_pool_users{catalog=~\"$catalog\"})",
+          "legendFormat": "{{catalog}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Impersonation Pool — Cached Users by Catalog",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "sum by (catalog, state) (hms_proxy_impersonation_pool_sessions) — backend Thrift sessions held across all per-user impersonation pools, split into active (currently borrowed) and idle (returned, kept warm). Active staying close to (users × catalog.<name>.impersonation-pool-max-size) means pools are saturated and callers may queue.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 151 },
+      "id": 61,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (catalog, state) (hms_proxy_impersonation_pool_sessions{catalog=~\"$catalog\"})",
+          "legendFormat": "{{catalog}} :: {{state}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Impersonation Pool — Backend Sessions by State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "sum(rate(hms_proxy_impersonation_session_acquire_timeouts_total)) — borrow attempts on a per-user impersonation pool that timed out. Persistent rate means the per-user pool is undersized for the user's concurrency or backend calls exceed the latency budget.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.1 }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 159 },
+      "id": 62,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(hms_proxy_impersonation_session_acquire_timeouts_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "timeouts/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Impersonation Pool Acquire Timeout Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "sum by (catalog, reason) (rate(hms_proxy_impersonation_session_evictions_total)) — per-user impersonation backend sessions discarded grouped by reason: idle (TTL), transport_failure (retry-once after Thrift error), user_evicted (whole user pool dropped on adaptive-timeout reconnect or LRU capacity), user_capacity (per-catalog impersonation-max-clients eviction).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 159 },
+      "id": 63,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (catalog, reason) (rate(hms_proxy_impersonation_session_evictions_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "{{catalog}} :: {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Impersonation Session Evictions by Reason",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

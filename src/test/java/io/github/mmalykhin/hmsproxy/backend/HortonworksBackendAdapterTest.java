@@ -177,9 +177,10 @@ public class HortonworksBackendAdapterTest {
         HiveConf.class,
         BackendAdapter.class,
         BackendRuntime.class,
-        Catalog.class);
+        Catalog.class,
+        io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics.class);
     ctor.setAccessible(true);
-    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), adapter, runtime, catalog);
+    return ctor.newInstance(proxyConfig, catalogConfig, new HiveConf(), adapter, runtime, catalog, null);
   }
 
   private static BackendRuntime newBackendRuntime(

@@ -182,6 +182,14 @@ catalog.catalog1.shared-session-pool-size=8
 Если на каталоге включена impersonation, реальный аутентифицированный клиентский трафик через этот
 пул не идёт — каждый caller обслуживается из per-user кэша impersonation client'ов, управляемого
 `catalog.<name>.impersonation-max-clients` и `catalog.<name>.impersonation-client-idle-ttl-ms`.
+Внутри кэша на каждого пользователя живёт собственный пул backend Thrift-сессий размером
+`catalog.<name>.impersonation-pool-max-size` (дефолт `4`); idle-сессии внутри пула можно закрывать
+по `catalog.<name>.impersonation-session-idle-ttl-ms` (дефолт `0` — никогда). Параллельные вызовы
+одного пользователя (или гонящего их HiveServer2) занимают разные сессии и реально идут в параллель,
+а не сериализуются на одном Thrift transport. В Grafana это видно по метрикам
+`hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,
+`hms_proxy_impersonation_session_acquire_timeouts_total` (timeout per-user borrow) и
+`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|user_evicted|user_capacity}`.
 В shared пуле тогда остаются только:
 
 - внутренние proxy-driven вызовы: backend health probe и reconnect-логика;
