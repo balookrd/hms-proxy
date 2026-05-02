@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -354,7 +355,7 @@ public final class PrometheusMetrics {
   }
 
   private static final class Gauge extends Metric {
-    private final ConcurrentMap<LabelValues, DoubleAdder> values = new ConcurrentHashMap<>();
+    private final ConcurrentMap<LabelValues, AtomicLong> values = new ConcurrentHashMap<>();
 
     private Gauge(String name, String help, List<String> labelNames) {
       super(name, help, labelNames);
@@ -362,29 +363,23 @@ public final class PrometheusMetrics {
 
     private void set(Map<String, String> labels, double value) {
       LabelValues key = LabelValues.from(labelNames(), labels);
-      DoubleAdder gauge = values.computeIfAbsent(key, ignored -> new DoubleAdder());
-      synchronized (gauge) {
-        double current = gauge.sum();
-        if (current != 0.0d) {
-          gauge.add(-current);
-        }
-        gauge.add(value);
-      }
+      values.computeIfAbsent(key, ignored -> new AtomicLong())
+          .set(Double.doubleToRawLongBits(value));
     }
 
     private void renderInto(StringBuilder builder) {
       appendHeader(builder, "gauge");
-      List<Map.Entry<LabelValues, DoubleAdder>> entries = new ArrayList<>(values.entrySet());
+      List<Map.Entry<LabelValues, AtomicLong>> entries = new ArrayList<>(values.entrySet());
       entries.sort(Map.Entry.comparingByKey());
       if (entries.isEmpty()) {
         builder.append(name()).append(" 0\n");
         return;
       }
-      for (Map.Entry<LabelValues, DoubleAdder> entry : entries) {
+      for (Map.Entry<LabelValues, AtomicLong> entry : entries) {
         builder.append(name())
             .append(formatLabels(labelNames(), entry.getKey()))
             .append(' ')
-            .append(entry.getValue().sum())
+            .append(Double.longBitsToDouble(entry.getValue().get()))
             .append('\n');
       }
     }
