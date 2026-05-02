@@ -3,9 +3,11 @@ package io.github.mmalykhin.hmsproxy.backend;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TSerializer;
@@ -20,6 +22,7 @@ public final class IsolatedInvocationBridge {
   private final ClassLoader classLoader;
   private final Object delegate;
   private final Class<?> ifaceClass;
+  private final ConcurrentHashMap<MethodKey, Method> methodCache = new ConcurrentHashMap<>();
 
   public IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
     this.classLoader = classLoader;
@@ -65,6 +68,17 @@ public final class IsolatedInvocationBridge {
   }
 
   private Method findMethod(String methodName, Class<?>[] parameterTypes) throws NoSuchMethodException {
+    MethodKey key = new MethodKey(methodName, parameterTypes);
+    Method cached = methodCache.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    Method resolved = resolveMethod(methodName, parameterTypes);
+    methodCache.putIfAbsent(key, resolved);
+    return resolved;
+  }
+
+  private Method resolveMethod(String methodName, Class<?>[] parameterTypes) throws NoSuchMethodException {
     try {
       return ifaceClass.getMethod(methodName, remapParameterTypes(parameterTypes));
     } catch (NoSuchMethodException ignored) {
@@ -80,6 +94,24 @@ public final class IsolatedInvocationBridge {
         }
       }
       throw new NoSuchMethodException(methodName);
+    }
+  }
+
+  private record MethodKey(String name, Class<?>[] parameterTypes) {
+    @Override
+    public boolean equals(Object other) {
+      if (this == other) {
+        return true;
+      }
+      if (!(other instanceof MethodKey that)) {
+        return false;
+      }
+      return name.equals(that.name) && Arrays.equals(parameterTypes, that.parameterTypes);
+    }
+
+    @Override
+    public int hashCode() {
+      return 31 * name.hashCode() + Arrays.hashCode(parameterTypes);
     }
   }
 
