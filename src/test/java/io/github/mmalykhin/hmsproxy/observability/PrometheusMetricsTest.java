@@ -39,4 +39,45 @@ public class PrometheusMetricsTest {
     Assert.assertTrue(rendered.contains("hms_proxy_synthetic_read_locks_active{store_mode=\"zookeeper\"} 7.0"));
     Assert.assertTrue(rendered.contains("hms_proxy_synthetic_read_lock_store_info{store_mode=\"zookeeper\"} 1.0"));
   }
+
+  @Test
+  public void unknownExceptionTypesCollapseIntoOtherLabel() {
+    PrometheusMetrics metrics = new PrometheusMetrics();
+
+    metrics.recordBackendFailure("catalog1", new ExoticVendorException("synthetic"));
+    metrics.recordBackendFailure("catalog1", new ExoticVendorException("synthetic"));
+    metrics.recordBackendFailure("catalog1", new IllegalStateException("known"));
+
+    String rendered = metrics.render();
+
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_backend_failures_total{backend=\"catalog1\",exception=\"other\"} 2"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_backend_failures_total{backend=\"catalog1\",exception=\"IllegalStateException\"} 1"));
+    Assert.assertFalse(rendered.contains("ExoticVendorException"));
+  }
+
+  @Test
+  public void labelCardinalityCapRedirectsExcessSeriesToOverflow() {
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    int cap = PrometheusMetrics.DEFAULT_MAX_SERIES_PER_METRIC;
+
+    for (int index = 0; index < cap; index++) {
+      metrics.recordDefaultCatalogRoute("method_" + index);
+    }
+    metrics.recordDefaultCatalogRoute("method_overflow_a");
+    metrics.recordDefaultCatalogRoute("method_overflow_b");
+
+    String rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_default_catalog_routed_total{method=\"overflow\"} 2"));
+    Assert.assertFalse(rendered.contains("method_overflow_a"));
+    Assert.assertFalse(rendered.contains("method_overflow_b"));
+  }
+
+  private static final class ExoticVendorException extends RuntimeException {
+    private ExoticVendorException(String message) {
+      super(message);
+    }
+  }
 }

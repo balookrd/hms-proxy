@@ -10,6 +10,13 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Изменено
 
+- Prometheus-метрики теперь ограничивают cardinality лейблов. Лейбл `exception` у
+  `hms_proxy_backend_failures_total` и `hms_proxy_synthetic_read_lock_store_failures_total`
+  нормализуется по whitelist известных исключений; неизвестные классы складываются в
+  `other`. Каждая метрика дополнительно имеет soft-cap в 5000 различных серий — после
+  достижения порога новые комбинации лейблов направляются в единую серию `overflow`,
+  а не растят внутреннюю карту и Prometheus output без границ.
+
 - Adaptive socket timeout теперь троттлит reconnect backend, чтобы избежать reconnect storm
   при нестабильной latency. Hysteresis расширен с фиксированных 1 s до
   `max(2 s, 25 % от текущего применённого таймаута)`, плюс добавлен настраиваемый cooldown

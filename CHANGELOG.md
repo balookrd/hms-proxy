@@ -10,6 +10,13 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ### Changed
 
+- Prometheus metrics now bound label cardinality. The `exception` label on
+  `hms_proxy_backend_failures_total` and `hms_proxy_synthetic_read_lock_store_failures_total`
+  is normalized against a known-exception whitelist; unknown exception classes collapse to
+  `other`. Each metric also enforces a soft cap of 5000 distinct label series — once reached,
+  new label combinations are routed to a single `overflow` series instead of growing the
+  internal map and Prometheus output without bound.
+
 - Adaptive socket timeout now throttles backend reconnects to prevent reconnect storms under
   volatile latency. Hysteresis was widened from a fixed 1 s delta to `max(2 s, 25 % of the
   current applied timeout)`, and a configurable cooldown

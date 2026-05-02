@@ -227,7 +227,21 @@ public final class PrometheusMetrics {
     syntheticReadLockStoreFailuresTotal.inc(labels(
         "operation", operation,
         "store_mode", storeMode,
-        "exception", error == null ? "unknown" : error.getClass().getSimpleName()));
+        "exception", classifyException(error)));
+  }
+
+  static String classifyException(Throwable error) {
+    if (error == null) {
+      return "unknown";
+    }
+    String simpleName = error.getClass().getSimpleName();
+    if (simpleName == null || simpleName.isEmpty()) {
+      return UNKNOWN_EXCEPTION_LABEL_VALUE;
+    }
+    if (KNOWN_EXCEPTION_SIMPLE_NAMES.contains(simpleName)) {
+      return simpleName;
+    }
+    return UNKNOWN_EXCEPTION_LABEL_VALUE;
   }
 
   public void recordSyntheticReadLockHandoff(String operation, String catalog, String storeMode) {
@@ -299,11 +313,24 @@ public final class PrometheusMetrics {
     private final String name;
     private final String help;
     private final List<String> labelNames;
+    private final int maxSeries;
+    private final LabelValues overflowKey;
 
     private Metric(String name, String help, List<String> labelNames) {
+      this(name, help, labelNames, DEFAULT_MAX_SERIES_PER_METRIC);
+    }
+
+    private Metric(String name, String help, List<String> labelNames, int maxSeries) {
       this.name = Objects.requireNonNull(name, "name");
       this.help = Objects.requireNonNull(help, "help");
       this.labelNames = List.copyOf(labelNames);
+      if (maxSeries < 1) {
+        throw new IllegalArgumentException("maxSeries must be positive");
+      }
+      this.maxSeries = maxSeries;
+      this.overflowKey = this.labelNames.isEmpty()
+          ? null
+          : new LabelValues(Collections.nCopies(this.labelNames.size(), OVERFLOW_LABEL_VALUE));
     }
 
     protected String name() {
@@ -312,6 +339,19 @@ public final class PrometheusMetrics {
 
     protected List<String> labelNames() {
       return labelNames;
+    }
+
+    protected LabelValues admit(ConcurrentMap<LabelValues, ?> series, LabelValues requested) {
+      if (overflowKey == null) {
+        return requested;
+      }
+      if (series.containsKey(requested)) {
+        return requested;
+      }
+      if (series.size() >= maxSeries) {
+        return overflowKey;
+      }
+      return requested;
     }
 
     protected void appendHeader(StringBuilder builder, String type) {
@@ -357,7 +397,8 @@ public final class PrometheusMetrics {
       if (value <= 0) {
         return;
       }
-      values.computeIfAbsent(LabelValues.from(labelNames(), labels), ignored -> new LongAdder()).add(value);
+      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
+      values.computeIfAbsent(key, ignored -> new LongAdder()).add(value);
     }
 
     private void renderInto(StringBuilder builder) {
@@ -386,7 +427,7 @@ public final class PrometheusMetrics {
     }
 
     private void set(Map<String, String> labels, double value) {
-      LabelValues key = LabelValues.from(labelNames(), labels);
+      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
       values.computeIfAbsent(key, ignored -> new AtomicLong())
           .set(Double.doubleToRawLongBits(value));
     }
@@ -419,7 +460,8 @@ public final class PrometheusMetrics {
     }
 
     private void observe(Map<String, String> labels, double value) {
-      values.computeIfAbsent(LabelValues.from(labelNames(), labels), ignored -> new HistogramSample(buckets.length))
+      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
+      values.computeIfAbsent(key, ignored -> new HistogramSample(buckets.length))
           .observe(value, buckets);
     }
 
