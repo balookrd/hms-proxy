@@ -15,15 +15,28 @@ import org.apache.thrift.TFieldRequirementType;
 import org.apache.thrift.meta_data.FieldMetaData;
 
 final class ThriftReflectionCache {
-  private static final ConcurrentMap<Class<?>, Field> METADATA_FIELD_CACHE = new ConcurrentHashMap<>();
-  private static final ConcurrentMap<Class<?>, ConcurrentMap<String, Optional<Method>>> METHOD_CACHE =
-      new ConcurrentHashMap<>();
+  private static final ClassValue<Field> METADATA_FIELD_CACHE = new ClassValue<>() {
+    @Override
+    protected Field computeValue(Class<?> type) {
+      try {
+        return type.getField("metaDataMap");
+      } catch (NoSuchFieldException e) {
+        throw new IllegalStateException("Unable to locate metaDataMap on " + type.getName(), e);
+      }
+    }
+  };
+  private static final ClassValue<ConcurrentMap<String, Optional<Method>>> METHOD_CACHE =
+      new ClassValue<>() {
+        @Override
+        protected ConcurrentMap<String, Optional<Method>> computeValue(Class<?> type) {
+          return new ConcurrentHashMap<>();
+        }
+      };
 
   private ThriftReflectionCache() {}
 
   static String readString(Object target, String... getterNames) {
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     for (String getterName : getterNames) {
       Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
         try {
@@ -50,8 +63,7 @@ final class ThriftReflectionCache {
 
   @SuppressWarnings("unchecked")
   static List<String> readStringList(Object target, String getterName) {
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     Optional<Method> cached = classCache.computeIfAbsent(getterName, name -> {
       try {
         return Optional.of(target.getClass().getMethod(name));
@@ -75,8 +87,7 @@ final class ThriftReflectionCache {
     if (target == null) {
       return null;
     }
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     Optional<Method> cached = classCache.computeIfAbsent(methodName, name -> {
       try {
         return Optional.of(target.getClass().getMethod(name));
@@ -100,8 +111,7 @@ final class ThriftReflectionCache {
       return;
     }
     String cacheKey = methodName + "(List)";
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
       try {
         return Optional.of(target.getClass().getMethod(methodName, List.class));
@@ -127,8 +137,7 @@ final class ThriftReflectionCache {
 
   static void invokeStringSetter(Object target, String methodName, String argument) {
     String cacheKey = methodName + "(String)";
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
       try {
         return Optional.of(target.getClass().getMethod(methodName, String.class));
@@ -149,8 +158,7 @@ final class ThriftReflectionCache {
 
   static void invokeStringListSetter(Object target, String methodName, List<String> values) {
     String cacheKey = methodName + "(List)";
-    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE
-        .computeIfAbsent(target.getClass(), ignored -> new ConcurrentHashMap<>());
+    ConcurrentMap<String, Optional<Method>> classCache = METHOD_CACHE.get(target.getClass());
     Optional<Method> cached = classCache.computeIfAbsent(cacheKey, ignored -> {
       try {
         return Optional.of(target.getClass().getMethod(methodName, List.class));
@@ -172,7 +180,7 @@ final class ThriftReflectionCache {
   @SuppressWarnings("unchecked")
   static List<TFieldIdEnum> fieldIds(TBase<?, ?> thriftValue) {
     try {
-      Field metadataField = metadataField(thriftValue.getClass());
+      Field metadataField = METADATA_FIELD_CACHE.get(thriftValue.getClass());
       Map<?, ?> metadata = (Map<?, ?>) metadataField.get(null);
       List<TFieldIdEnum> result = new ArrayList<>();
       for (Object fieldId : metadata.keySet()) {
@@ -205,7 +213,7 @@ final class ThriftReflectionCache {
 
   static boolean hasRequiredField(TBase<?, ?> thriftValue, String expectedFieldName) {
     try {
-      Map<?, ?> metadata = (Map<?, ?>) metadataField(thriftValue.getClass()).get(null);
+      Map<?, ?> metadata = (Map<?, ?>) METADATA_FIELD_CACHE.get(thriftValue.getClass()).get(null);
       for (Map.Entry<?, ?> entry : metadata.entrySet()) {
         TFieldIdEnum fieldId = (TFieldIdEnum) entry.getKey();
         if (!fieldId.getFieldName().equals(expectedFieldName)) {
@@ -221,13 +229,4 @@ final class ThriftReflectionCache {
     }
   }
 
-  private static Field metadataField(Class<?> cls) {
-    return METADATA_FIELD_CACHE.computeIfAbsent(cls, c -> {
-      try {
-        return c.getField("metaDataMap");
-      } catch (NoSuchFieldException e) {
-        throw new IllegalStateException("Unable to locate metaDataMap on " + c.getName(), e);
-      }
-    });
-  }
 }
