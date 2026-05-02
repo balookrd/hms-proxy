@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.transport.TTransportException;
@@ -17,6 +18,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 public final class BackendRuntime implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRuntime.class);
   private static final SessionFactory DEFAULT_SESSION_FACTORY = new DefaultSessionFactory();
+  private static final long DEFAULT_BORROW_TIMEOUT_MS = 30_000L;
 
   private final ProxyConfig proxyConfig;
   private final CatalogConfig catalogConfig;
@@ -92,7 +94,26 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   public String reconnectShared(BackendAdapter adapter) throws MetaException {
-    permits.acquireUninterruptibly(poolSize);
+    long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
+        ? catalogConfig.latencyBudgetMs()
+        : DEFAULT_BORROW_TIMEOUT_MS;
+    boolean acquired;
+    try {
+      acquired = permits.tryAcquire(poolSize, timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      MetaException me = new MetaException(
+          "Interrupted while quiescing backend metastore pool for catalog " + catalogConfig.name());
+      me.initCause(e);
+      throw me;
+    }
+    if (!acquired) {
+      LOG.warn("Backend catalog '{}' reconnect timed out waiting to drain {} permits within {} ms",
+          catalogConfig.name(), poolSize, timeoutMs);
+      throw new MetaException(
+          "Timed out waiting to quiesce backend metastore pool for catalog " + catalogConfig.name()
+              + " after " + timeoutMs + " ms");
+    }
     try {
       activeProfile = adapter.runtimeProfile();
       drainAndCloseLocked();
@@ -121,11 +142,29 @@ public final class BackendRuntime implements AutoCloseable {
 
   @Override
   public void close() {
-    permits.acquireUninterruptibly(poolSize);
+    long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
+        ? catalogConfig.latencyBudgetMs()
+        : DEFAULT_BORROW_TIMEOUT_MS;
+    boolean acquired;
     try {
+      acquired = permits.tryAcquire(poolSize, timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LOG.warn("Backend catalog '{}' close interrupted while quiescing pool; draining without full permit acquisition",
+          catalogConfig.name());
+      drainAndCloseLocked();
+      return;
+    }
+    try {
+      if (!acquired) {
+        LOG.warn("Backend catalog '{}' close timed out waiting to drain {} permits within {} ms; draining anyway",
+            catalogConfig.name(), poolSize, timeoutMs);
+      }
       drainAndCloseLocked();
     } finally {
-      permits.release(poolSize);
+      if (acquired) {
+        permits.release(poolSize);
+      }
     }
   }
 
@@ -168,7 +207,26 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private BackendInvocationSession borrow() throws MetaException {
-    permits.acquireUninterruptibly();
+    long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
+        ? catalogConfig.latencyBudgetMs()
+        : DEFAULT_BORROW_TIMEOUT_MS;
+    boolean acquired;
+    try {
+      acquired = permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      MetaException me = new MetaException(
+          "Interrupted while waiting for backend metastore session for catalog " + catalogConfig.name());
+      me.initCause(e);
+      throw me;
+    }
+    if (!acquired) {
+      LOG.warn("Backend catalog '{}' session pool exhausted: no permit available within {} ms (poolSize={})",
+          catalogConfig.name(), timeoutMs, poolSize);
+      throw new MetaException(
+          "Timed out waiting for backend metastore session for catalog " + catalogConfig.name()
+              + " after " + timeoutMs + " ms");
+    }
     BackendInvocationSession s = pool.poll();
     if (s != null) {
       return s;
