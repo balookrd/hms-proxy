@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
@@ -61,7 +60,8 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       ProxyObservability observability,
       ExternalTableDropPurger externalTableDropPurger
   ) {
-    this(observability, assemble(config, router, federation, frontDoorSecurity, observability, externalTableDropPurger));
+    this(observability, RoutingPipelineFactory.assemble(
+        config, router, federation, frontDoorSecurity, observability, externalTableDropPurger));
   }
 
   RoutingMetaStoreProxy(
@@ -78,53 +78,9 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     this.chain = chain;
   }
 
-  private RoutingMetaStoreProxy(ProxyObservability observability, Assembly assembly) {
-    this(observability, assembly.syntheticReadLockManager, assembly.backendRoutingController,
-        assembly.routingHandler, assembly.chain);
-  }
-
-  private record Assembly(
-      SyntheticReadLockManager syntheticReadLockManager,
-      BackendRoutingController backendRoutingController,
-      RoutingHandler routingHandler,
-      InvocationHandler chain
-  ) {}
-
-  private static Assembly assemble(
-      ProxyConfig config,
-      CatalogRouter router,
-      FederationOperations federationLayer,
-      FrontDoorSecurity frontDoorSecurity,
-      ProxyObservability observability,
-      ExternalTableDropPurger externalTableDropPurger
-  ) {
-    CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
-    TransactionalTableMutationGuard transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
-    SyntheticReadLockManager syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
-    RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
-    BackendRoutingController backendRoutingController = new BackendRoutingController(config, router, observability);
-    AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
-    FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
-    BackendCallDispatcher dispatcher = new BackendCallDispatcher(
-        compatibilityLayer, admissionGate, observability, fanoutExecutor);
-    long aliveSince = System.currentTimeMillis() / 1000L;
-    ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
-    RoutingHandler routingHandler = new RoutingHandler(
-        config,
-        router,
-        federationLayer,
-        compatibilityLayer,
-        observability,
-        dispatcher,
-        impersonationResolver,
-        externalTableDropPurger);
-    CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
-        config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
-        routingHandler);
-    LockHandler lockHandler = new LockHandler(
-        syntheticReadLockManager, requestRateLimiter, router, federationLayer, observability, compatibilityHandler);
-    InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
-    return new Assembly(syntheticReadLockManager, backendRoutingController, routingHandler, chain);
+  private RoutingMetaStoreProxy(ProxyObservability observability, RoutingPipelineFactory.Pipeline pipeline) {
+    this(observability, pipeline.syntheticReadLockManager(), pipeline.backendRoutingController(),
+        pipeline.routingHandler(), pipeline.chain());
   }
 
   @SuppressWarnings("unchecked")
