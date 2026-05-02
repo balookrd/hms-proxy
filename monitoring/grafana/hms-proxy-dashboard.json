@@ -852,6 +852,159 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "id": 1006,
+      "panels": [],
+      "title": "Adaptive Timeout  (hms_proxy_adaptive_timeout_reconnect_total, hms_proxy_adaptive_timeout_reconnect_skipped_total)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Rate of backend client reconnects triggered by adaptive socket timeout adjustments. A persistent rate suggests latency volatility — consider raising routing.adaptive-timeout.reconnect-cooldown-ms or alpha.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.05 },
+              { "color": "red", "value": 0.2 }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 51 },
+      "id": 42,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(hms_proxy_adaptive_timeout_reconnect_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "reconnects/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Adaptive Timeout Reconnect Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Adaptive timeout reconnects per catalog. Each event tears down the shared backend session and evicts impersonation clients (Kerberos re-login).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 51 },
+      "id": 43,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (catalog) (rate(hms_proxy_adaptive_timeout_reconnect_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "{{catalog}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Adaptive Timeout Reconnects by Catalog",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Reconnect attempts suppressed by hysteresis (delta below threshold) or cooldown (too soon after a previous reconnect). Healthy throttling keeps reconnects bounded under volatile latency.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 59 },
+      "id": 44,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (catalog, reason) (rate(hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "{{catalog}} :: {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Adaptive Timeout Reconnects Suppressed (hysteresis / cooldown)",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 67 },
       "id": 1002,
       "panels": [],
       "title": "Routing  (hms_proxy_routing_ambiguous_total, hms_proxy_default_catalog_routed_total)",

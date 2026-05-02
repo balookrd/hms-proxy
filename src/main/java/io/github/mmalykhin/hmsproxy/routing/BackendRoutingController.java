@@ -66,7 +66,17 @@ public final class BackendRoutingController implements AutoCloseable {
     ProxyRuntimeState.BackendCallAdmission admission =
         observability.runtimeState().admitBackendCall(backend.name(), config.latencyRouting());
     if (admission.allowed() && config.latencyRouting().adaptiveTimeout().enabled()) {
-      backend.ensureClientSocketTimeout(admission.timeoutMs());
+      CatalogBackend.AdaptiveTimeoutResult result = backend.ensureClientSocketTimeout(
+          admission.timeoutMs(),
+          config.latencyRouting().adaptiveTimeout().reconnectCooldownMs());
+      switch (result) {
+        case APPLIED -> observability.metrics().recordAdaptiveTimeoutReconnect(backend.name());
+        case SKIPPED_HYSTERESIS ->
+            observability.metrics().recordAdaptiveTimeoutReconnectSkipped(backend.name(), "hysteresis");
+        case SKIPPED_COOLDOWN ->
+            observability.metrics().recordAdaptiveTimeoutReconnectSkipped(backend.name(), "cooldown");
+        case UNCHANGED -> { }
+      }
     }
     return admission;
   }

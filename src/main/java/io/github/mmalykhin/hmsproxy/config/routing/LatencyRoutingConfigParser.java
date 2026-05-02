@@ -19,6 +19,8 @@ public final class LatencyRoutingConfigParser {
     long adaptiveTimeoutMaxMs = reader.getPositiveLong("routing.adaptive-timeout.max-ms", 60_000L);
     double adaptiveTimeoutMultiplier = reader.getPositiveDouble("routing.adaptive-timeout.multiplier", 4.0d);
     double adaptiveTimeoutAlpha = reader.getBoundedDouble("routing.adaptive-timeout.alpha", 0.2d, 0.0d, 1.0d);
+    long adaptiveTimeoutReconnectCooldownMs =
+        reader.getPositiveLong("routing.adaptive-timeout.reconnect-cooldown-ms", 30_000L);
     boolean circuitBreakerEnabled = reader.getBoolean("routing.circuit-breaker.enabled", false);
     int circuitBreakerFailureThreshold = reader.getPositiveInt("routing.circuit-breaker.failure-threshold", 3);
     long circuitBreakerOpenStateMs = reader.getPositiveLong("routing.circuit-breaker.open-state-ms", 30_000L);
@@ -35,7 +37,8 @@ public final class LatencyRoutingConfigParser {
             adaptiveTimeoutMinMs,
             adaptiveTimeoutMaxMs,
             adaptiveTimeoutMultiplier,
-            adaptiveTimeoutAlpha),
+            adaptiveTimeoutAlpha,
+            adaptiveTimeoutReconnectCooldownMs),
         new CircuitBreakerConfig(
             circuitBreakerEnabled,
             circuitBreakerFailureThreshold,

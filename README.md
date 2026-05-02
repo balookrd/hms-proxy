@@ -304,6 +304,8 @@ Current Prometheus metrics:
 - `hms_proxy_synthetic_read_locks_active{store_mode}`
 - `hms_proxy_synthetic_read_lock_store_info{store_mode}`
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
+- `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
+- `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
 
 Example Prometheus scrape config:
 
@@ -331,6 +333,8 @@ Metric semantics:
 - `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend
 - `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
+- `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
+- `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks on non-default catalogs.
@@ -992,6 +996,7 @@ routing.adaptive-timeout.min-ms=1000
 routing.adaptive-timeout.max-ms=60000
 routing.adaptive-timeout.multiplier=4.0
 routing.adaptive-timeout.alpha=0.2
+routing.adaptive-timeout.reconnect-cooldown-ms=30000
 routing.circuit-breaker.enabled=true
 routing.circuit-breaker.failure-threshold=3
 routing.circuit-breaker.open-state-ms=30000
@@ -1001,7 +1006,13 @@ routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
 The adaptive timeout starts from `routing.adaptive-timeout.initial-ms`, then follows backend
-latency EWMA within the configured min/max bounds. Transport failures and latency-budget breaches
+latency EWMA within the configured min/max bounds. Each timeout change reconnects the shared
+backend client and evicts cached impersonation clients (Kerberos re-login), so the proxy
+applies hysteresis (`max(2s, 25 % of the current value)`) and a cooldown
+(`routing.adaptive-timeout.reconnect-cooldown-ms`, default 30 s) before reconnecting again. The
+counters `hms_proxy_adaptive_timeout_reconnect_total` and
+`hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` expose how
+often reconnects fire vs. are suppressed. Transport failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.

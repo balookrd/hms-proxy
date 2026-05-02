@@ -6,6 +6,26 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-05-02
+
+### Changed
+
+- Adaptive socket timeout now throttles backend reconnects to prevent reconnect storms under
+  volatile latency. Hysteresis was widened from a fixed 1 s delta to `max(2 s, 25 % of the
+  current applied timeout)`, and a configurable cooldown
+  (`routing.adaptive-timeout.reconnect-cooldown-ms`, default 30 s) blocks back-to-back
+  reconnects. Each reconnect previously evicted the impersonation cache and forced a full
+  Kerberos re-login, which made oscillation costly.
+
+### Added
+
+- Two new Prometheus counters expose adaptive-timeout dynamics:
+  `hms_proxy_adaptive_timeout_reconnect_total{catalog}` for applied reconnects and
+  `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}` for events suppressed
+  by hysteresis or cooldown. The bundled Grafana dashboard ships with three new panels — an
+  overall reconnect rate stat, per-catalog reconnect timeseries, and a stacked breakdown of
+  suppressed events by reason.
+
 ## 2026-04-29
 
 ### Added

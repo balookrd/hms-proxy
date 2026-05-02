@@ -1169,6 +1169,7 @@ public class ProxyConfigLoaderTest {
           routing.adaptive-timeout.max-ms=25000
           routing.adaptive-timeout.multiplier=3.5
           routing.adaptive-timeout.alpha=0.4
+          routing.adaptive-timeout.reconnect-cooldown-ms=45000
           routing.circuit-breaker.enabled=true
           routing.circuit-breaker.failure-threshold=5
           routing.circuit-breaker.open-state-ms=45000
@@ -1191,6 +1192,7 @@ public class ProxyConfigLoaderTest {
       Assert.assertEquals(25000L, config.latencyRouting().adaptiveTimeout().maxTimeoutMs());
       Assert.assertEquals(3.5d, config.latencyRouting().adaptiveTimeout().multiplier(), 0.0001d);
       Assert.assertEquals(0.4d, config.latencyRouting().adaptiveTimeout().alpha(), 0.0001d);
+      Assert.assertEquals(45000L, config.latencyRouting().adaptiveTimeout().reconnectCooldownMs());
       Assert.assertTrue(config.latencyRouting().circuitBreaker().enabled());
       Assert.assertEquals(5, config.latencyRouting().circuitBreaker().failureThreshold());
       Assert.assertEquals(45000L, config.latencyRouting().circuitBreaker().openStateMs());

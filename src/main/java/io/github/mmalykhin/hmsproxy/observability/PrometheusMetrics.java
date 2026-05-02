@@ -60,10 +60,34 @@ public final class PrometheusMetrics {
       "hms_proxy_backend_session_acquire_timeouts_total",
       "Backend metastore session acquisitions that timed out waiting for a free pool permit",
       List.of("catalog", "operation"));
+  private final Counter adaptiveTimeoutReconnectTotal = new Counter(
+      "hms_proxy_adaptive_timeout_reconnect_total",
+      "Adaptive socket timeout changes that triggered a backend client reconnect grouped by catalog",
+      List.of("catalog"));
+  private final Counter adaptiveTimeoutReconnectSkippedTotal = new Counter(
+      "hms_proxy_adaptive_timeout_reconnect_skipped_total",
+      "Adaptive socket timeout reconnects suppressed by hysteresis or cooldown grouped by catalog and reason",
+      List.of("catalog", "reason"));
   private final Counter syntheticReadLockHandoffsTotal = new Counter(
       "hms_proxy_synthetic_read_lock_handoffs_total",
       "Synthetic read-lock operations served by a different proxy instance than the original lock owner",
       List.of("operation", "catalog", "store_mode"));
+  private final Gauge impersonationPoolUsers = new Gauge(
+      "hms_proxy_impersonation_pool_users",
+      "Distinct users currently holding a per-user impersonation session pool, grouped by catalog",
+      List.of("catalog"));
+  private final Gauge impersonationPoolSessions = new Gauge(
+      "hms_proxy_impersonation_pool_sessions",
+      "Per-user impersonation backend sessions grouped by catalog and pool state (active or idle)",
+      List.of("catalog", "state"));
+  private final Counter impersonationSessionAcquireTimeoutsTotal = new Counter(
+      "hms_proxy_impersonation_session_acquire_timeouts_total",
+      "Per-user impersonation pool borrow attempts that timed out waiting for a free session",
+      List.of("catalog"));
+  private final Counter impersonationSessionEvictionsTotal = new Counter(
+      "hms_proxy_impersonation_session_evictions_total",
+      "Per-user impersonation backend sessions discarded grouped by catalog and reason",
+      List.of("catalog", "reason"));
   private final Gauge syntheticReadLocksActive = new Gauge(
       "hms_proxy_synthetic_read_locks_active",
       "Current number of active synthetic read locks visible to this proxy instance",
@@ -124,6 +148,31 @@ public final class PrometheusMetrics {
 
   public void recordBackendSessionAcquireTimeout(String catalog, String operation) {
     backendSessionAcquireTimeoutsTotal.inc(labels("catalog", catalog, "operation", operation));
+  }
+
+  public void setImpersonationPoolUsers(String catalog, long users) {
+    impersonationPoolUsers.set(labels("catalog", catalog), users);
+  }
+
+  public void setImpersonationPoolSessions(String catalog, long active, long idle) {
+    impersonationPoolSessions.set(labels("catalog", catalog, "state", "active"), active);
+    impersonationPoolSessions.set(labels("catalog", catalog, "state", "idle"), idle);
+  }
+
+  public void recordImpersonationSessionAcquireTimeout(String catalog) {
+    impersonationSessionAcquireTimeoutsTotal.inc(labels("catalog", catalog));
+  }
+
+  public void recordImpersonationSessionEviction(String catalog, String reason) {
+    impersonationSessionEvictionsTotal.inc(labels("catalog", catalog, "reason", reason));
+  }
+
+  public void recordAdaptiveTimeoutReconnect(String catalog) {
+    adaptiveTimeoutReconnectTotal.inc(labels("catalog", catalog));
+  }
+
+  public void recordAdaptiveTimeoutReconnectSkipped(String catalog, String reason) {
+    adaptiveTimeoutReconnectSkippedTotal.inc(labels("catalog", catalog, "reason", reason));
   }
 
   public void recordSyntheticReadLockEvent(
@@ -188,6 +237,12 @@ public final class PrometheusMetrics {
     defaultCatalogRoutedTotal.renderInto(builder);
     rateLimitedTotal.renderInto(builder);
     backendSessionAcquireTimeoutsTotal.renderInto(builder);
+    impersonationPoolUsers.renderInto(builder);
+    impersonationPoolSessions.renderInto(builder);
+    impersonationSessionAcquireTimeoutsTotal.renderInto(builder);
+    impersonationSessionEvictionsTotal.renderInto(builder);
+    adaptiveTimeoutReconnectTotal.renderInto(builder);
+    adaptiveTimeoutReconnectSkippedTotal.renderInto(builder);
     filteredObjectsTotal.renderInto(builder);
     syntheticReadLockEventsTotal.renderInto(builder);
     syntheticReadLockStoreFailuresTotal.renderInto(builder);

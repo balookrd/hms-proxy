@@ -6,7 +6,8 @@ public record AdaptiveTimeoutConfig(
     long minTimeoutMs,
     long maxTimeoutMs,
     double multiplier,
-    double alpha
+    double alpha,
+    long reconnectCooldownMs
 ) {
   public AdaptiveTimeoutConfig {
     initialTimeoutMs = initialTimeoutMs <= 0 ? 5_000L : initialTimeoutMs;
@@ -23,5 +24,17 @@ public record AdaptiveTimeoutConfig(
     }
     multiplier = multiplier <= 1.0d ? 4.0d : multiplier;
     alpha = alpha <= 0.0d || alpha > 1.0d ? 0.2d : alpha;
+    reconnectCooldownMs = reconnectCooldownMs < 0 ? 30_000L : reconnectCooldownMs;
+  }
+
+  public AdaptiveTimeoutConfig(
+      boolean enabled,
+      long initialTimeoutMs,
+      long minTimeoutMs,
+      long maxTimeoutMs,
+      double multiplier,
+      double alpha
+  ) {
+    this(enabled, initialTimeoutMs, minTimeoutMs, maxTimeoutMs, multiplier, alpha, 30_000L);
   }
 }

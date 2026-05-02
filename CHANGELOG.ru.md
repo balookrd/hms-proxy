@@ -6,6 +6,25 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-05-02
+
+### Изменено
+
+- Adaptive socket timeout теперь троттлит reconnect backend, чтобы избежать reconnect storm
+  при нестабильной latency. Hysteresis расширен с фиксированных 1 s до
+  `max(2 s, 25 % от текущего применённого таймаута)`, плюс добавлен настраиваемый cooldown
+  (`routing.adaptive-timeout.reconnect-cooldown-ms`, по умолчанию 30 s), блокирующий
+  reconnect подряд. Раньше каждый reconnect сбрасывал кэш impersonation-клиентов и заставлял
+  заново выполнять Kerberos login, что делало осцилляцию дорогой.
+
+### Добавлено
+
+- Два новых Prometheus счётчика отражают динамику adaptive timeout:
+  `hms_proxy_adaptive_timeout_reconnect_total{catalog}` для применённых реконнектов и
+  `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}` для событий,
+  подавленных hysteresis или cooldown. В Grafana dashboard добавлены три новых панели —
+  общий rate реконнектов, per-catalog timeseries и стек подавленных событий по reason.
+
 ## 2026-04-29
 
 ### Добавлено

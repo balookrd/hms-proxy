@@ -305,6 +305,8 @@ curl -s http://127.0.0.1:19083/metrics
 - `hms_proxy_synthetic_read_locks_active{store_mode}`
 - `hms_proxy_synthetic_read_lock_store_info{store_mode}`
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
+- `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
+- `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
 
 Пример Prometheus scrape config:
 
@@ -332,6 +334,8 @@ scrape_configs:
 - `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend
 - `hms_proxy_synthetic_read_lock_store_info` это constant-info gauge, который помечает, работает ли proxy с `in_memory` или `zookeeper` storage для synthetic lock
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
+- `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
+- `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock на non-default catalog.
@@ -914,6 +918,7 @@ routing.adaptive-timeout.min-ms=1000
 routing.adaptive-timeout.max-ms=60000
 routing.adaptive-timeout.multiplier=4.0
 routing.adaptive-timeout.alpha=0.2
+routing.adaptive-timeout.reconnect-cooldown-ms=30000
 routing.circuit-breaker.enabled=true
 routing.circuit-breaker.failure-threshold=3
 routing.circuit-breaker.open-state-ms=30000
@@ -923,7 +928,13 @@ routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
 Adaptive timeout стартует с `routing.adaptive-timeout.initial-ms`, затем следует за backend
-latency EWMA в заданных min/max пределах. Transport failure и превышение latency budget
+latency EWMA в заданных min/max пределах. Каждое изменение таймаута приводит к reconnect
+shared backend client и сбросу кэша impersonation-клиентов (Kerberos re-login), поэтому proxy
+применяет hysteresis (`max(2s, 25 % от текущего значения)`) и cooldown
+(`routing.adaptive-timeout.reconnect-cooldown-ms`, по умолчанию 30 s) перед повторным
+реконнектом. Счётчики `hms_proxy_adaptive_timeout_reconnect_total` и
+`hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` показывают,
+сколько реконнектов сработало и сколько было подавлено троттлингом. Transport failure и превышение latency budget
 учитываются в circuit breaker. Когда backend достигает
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова

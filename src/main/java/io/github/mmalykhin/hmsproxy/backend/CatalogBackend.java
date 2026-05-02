@@ -7,9 +7,16 @@ import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
@@ -22,7 +29,15 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
-  private static final long SOCKET_TIMEOUT_RECONNECT_DELTA_MS = 1_000L;
+  private static final long SOCKET_TIMEOUT_MIN_HYSTERESIS_MS = 2_000L;
+  private static final double SOCKET_TIMEOUT_HYSTERESIS_FRACTION = 0.25d;
+
+  public enum AdaptiveTimeoutResult {
+    APPLIED,
+    SKIPPED_HYSTERESIS,
+    SKIPPED_COOLDOWN,
+    UNCHANGED
+  }
 
   private final ProxyConfig proxyConfig;
   private final CatalogConfig config;
@@ -31,8 +46,12 @@ public final class CatalogBackend implements AutoCloseable {
   private final BackendAdapter adapter;
   private final BackendRuntime runtime;
   private final Catalog catalog;
+  private final PrometheusMetrics metrics;
+  private final AtomicLong impersonationActiveSessions = new AtomicLong();
+  private final AtomicLong impersonationIdleSessions = new AtomicLong();
   private final Object reconnectLock = new Object();
   private volatile long appliedClientTimeoutMs;
+  private volatile long lastReconnectAtNanos;
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
@@ -40,7 +59,8 @@ public final class CatalogBackend implements AutoCloseable {
       HiveConf hiveConf,
       BackendAdapter adapter,
       BackendRuntime runtime,
-      Catalog catalog
+      Catalog catalog,
+      PrometheusMetrics metrics
   ) {
     this.proxyConfig = proxyConfig;
     this.config = config;
@@ -48,7 +68,9 @@ public final class CatalogBackend implements AutoCloseable {
     this.adapter = adapter;
     this.runtime = runtime;
     this.catalog = catalog;
+    this.metrics = metrics;
     this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(hiveConf.get(SOCKET_TIMEOUT_KEY), 0L);
+    publishImpersonationGauges();
   }
 
   public static CatalogBackend open(ProxyConfig proxyConfig, CatalogConfig catalogConfig)
@@ -80,7 +102,7 @@ public final class CatalogBackend implements AutoCloseable {
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
     catalog.setLocationUri(catalogConfig.locationUri());
-    return new CatalogBackend(proxyConfig, catalogConfig, conf, adapter, runtime, catalog);
+    return new CatalogBackend(proxyConfig, catalogConfig, conf, adapter, runtime, catalog, metrics);
   }
 
   public String name() {
@@ -127,13 +149,27 @@ public final class CatalogBackend implements AutoCloseable {
     }
   }
 
-  public void ensureClientSocketTimeout(long timeoutMs) throws MetaException {
-    if (timeoutMs <= 0 || !shouldReconnectForTimeout(timeoutMs)) {
-      return;
+  public AdaptiveTimeoutResult ensureClientSocketTimeout(long timeoutMs, long cooldownMs)
+      throws MetaException {
+    if (timeoutMs <= 0) {
+      return AdaptiveTimeoutResult.UNCHANGED;
+    }
+    if (!exceedsHysteresis(timeoutMs)) {
+      return appliedClientTimeoutMs == timeoutMs
+          ? AdaptiveTimeoutResult.UNCHANGED
+          : AdaptiveTimeoutResult.SKIPPED_HYSTERESIS;
     }
     synchronized (reconnectLock) {
-      if (!shouldReconnectForTimeout(timeoutMs)) {
-        return;
+      if (!exceedsHysteresis(timeoutMs)) {
+        return appliedClientTimeoutMs == timeoutMs
+            ? AdaptiveTimeoutResult.UNCHANGED
+            : AdaptiveTimeoutResult.SKIPPED_HYSTERESIS;
+      }
+      if (cooldownMs > 0 && lastReconnectAtNanos != 0L) {
+        long elapsedMs = (System.nanoTime() - lastReconnectAtNanos) / 1_000_000L;
+        if (elapsedMs < cooldownMs) {
+          return AdaptiveTimeoutResult.SKIPPED_COOLDOWN;
+        }
       }
       hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
       runtime.reconnectShared(adapter);
@@ -144,9 +180,11 @@ public final class CatalogBackend implements AutoCloseable {
         impersonationClients.clear();
       }
       appliedClientTimeoutMs = timeoutMs;
+      lastReconnectAtNanos = System.nanoTime();
     }
     LOG.info("Backend catalog '{}' applied adaptive socket timeout {}",
         config.name(), TimeoutValueParser.formatDurationMs(timeoutMs));
+    return AdaptiveTimeoutResult.APPLIED;
   }
 
   public Object invoke(Method method, Object[] args, ImpersonationContext impersonation)
@@ -216,11 +254,15 @@ public final class CatalogBackend implements AutoCloseable {
     return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
   }
 
-  private boolean shouldReconnectForTimeout(long timeoutMs) {
-    if (appliedClientTimeoutMs <= 0L) {
+  private boolean exceedsHysteresis(long timeoutMs) {
+    long applied = appliedClientTimeoutMs;
+    if (applied <= 0L) {
       return true;
     }
-    return Math.abs(timeoutMs - appliedClientTimeoutMs) >= SOCKET_TIMEOUT_RECONNECT_DELTA_MS;
+    long hysteresis = Math.max(
+        SOCKET_TIMEOUT_MIN_HYSTERESIS_MS,
+        Math.round(applied * SOCKET_TIMEOUT_HYSTERESIS_FRACTION));
+    return Math.abs(timeoutMs - applied) >= hysteresis;
   }
 
   public static void closeQuietly(AutoCloseable closeable, String description) {
