@@ -16,7 +16,15 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,9 +32,11 @@ public final class ManagementHttpServer implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(ManagementHttpServer.class);
 
   private final HttpServer server;
+  private final ExecutorService readinessProbeExecutor;
 
-  private ManagementHttpServer(HttpServer server) {
+  private ManagementHttpServer(HttpServer server, ExecutorService readinessProbeExecutor) {
     this.server = server;
+    this.readinessProbeExecutor = readinessProbeExecutor;
   }
 
   public static ManagementHttpServer open(
@@ -53,7 +63,21 @@ public final class ManagementHttpServer implements AutoCloseable {
           + "}\n";
       respond(exchange, 200, "application/json; charset=utf-8", body);
     });
-    server.createContext("/readyz", new ReadinessHandler(config, router, observability));
+    ExecutorService readinessProbeExecutor = null;
+    if (!config.latencyRouting().backendStatePolling().enabled() && !router.backends().isEmpty()) {
+      int probePoolSize = Math.max(1, Math.min(
+          config.latencyRouting().backendStatePolling().maxParallelism(),
+          router.backends().size()));
+      readinessProbeExecutor = new ThreadPoolExecutor(
+          probePoolSize,
+          probePoolSize,
+          0L,
+          TimeUnit.MILLISECONDS,
+          new ArrayBlockingQueue<>(router.backends().size()),
+          namedThreadFactory("hms-proxy-readyz-probe"),
+          new ThreadPoolExecutor.CallerRunsPolicy());
+    }
+    server.createContext("/readyz", new ReadinessHandler(config, router, observability, readinessProbeExecutor));
     server.createContext("/metrics", exchange -> respond(
         exchange,
         200,
@@ -63,12 +87,31 @@ public final class ManagementHttpServer implements AutoCloseable {
     server.start();
     LOG.info("Management HTTP listener started on {}:{}",
         config.management().bindHost(), config.management().port());
-    return new ManagementHttpServer(server);
+    return new ManagementHttpServer(server, readinessProbeExecutor);
   }
 
   @Override
   public void close() {
     server.stop(0);
+    if (readinessProbeExecutor != null) {
+      readinessProbeExecutor.shutdownNow();
+      try {
+        if (!readinessProbeExecutor.awaitTermination(5L, TimeUnit.SECONDS)) {
+          LOG.warn("Readiness probe executor did not terminate within 5s after shutdown");
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
+  private static ThreadFactory namedThreadFactory(String prefix) {
+    return runnable -> {
+      Thread thread = new Thread(runnable);
+      thread.setName(prefix + "-" + thread.getId());
+      thread.setDaemon(true);
+      return thread;
+    };
   }
 
   private static void respond(HttpExchange exchange, int status, String contentType, String body) throws IOException {
@@ -84,36 +127,23 @@ public final class ManagementHttpServer implements AutoCloseable {
     private final ProxyConfig config;
     private final CatalogRouter router;
     private final ProxyObservability observability;
+    private final ExecutorService probeExecutor;
 
-    private ReadinessHandler(ProxyConfig config, CatalogRouter router, ProxyObservability observability) {
+    private ReadinessHandler(
+        ProxyConfig config,
+        CatalogRouter router,
+        ProxyObservability observability,
+        ExecutorService probeExecutor) {
       this.config = config;
       this.router = router;
       this.observability = observability;
+      this.probeExecutor = probeExecutor;
     }
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-      if (!config.latencyRouting().backendStatePolling().enabled()) {
-        List<CatalogBackend> backends = new ArrayList<>(router.backends());
-        List<CompletableFuture<Void>> probes = new ArrayList<>(backends.size());
-        for (CatalogBackend backend : backends) {
-          probes.add(CompletableFuture.runAsync(() -> {
-            try {
-              long startedAt = System.nanoTime();
-              backend.checkConnectivity();
-              observability.runtimeState().recordBackendProbeSuccess(
-                  backend.name(),
-                  (System.nanoTime() - startedAt) / 1_000_000L,
-                  config.latencyRouting());
-            } catch (Throwable error) {
-              observability.runtimeState().recordBackendProbeFailure(
-                  backend.name(),
-                  error,
-                  config.latencyRouting());
-            }
-          }));
-        }
-        CompletableFuture.allOf(probes.toArray(new CompletableFuture[0])).join();
+      if (!config.latencyRouting().backendStatePolling().enabled() && probeExecutor != null) {
+        runReadinessProbes();
       }
 
       KerberosHealthProbe.KerberosStatus frontDoorKerberos = configKerberosStatus();
@@ -164,6 +194,59 @@ public final class ManagementHttpServer implements AutoCloseable {
       }
       body.append("]}\n");
       respond(exchange, ready ? 200 : 503, "application/json; charset=utf-8", body.toString());
+    }
+
+    private void runReadinessProbes() {
+      long probeTimeoutMs = config.latencyRouting().backendStatePolling().probeTimeoutMs();
+      List<CatalogBackend> backends = new ArrayList<>(router.backends());
+      List<ProbeInFlight> inFlight = new ArrayList<>(backends.size());
+      for (CatalogBackend backend : backends) {
+        long startedAt = System.nanoTime();
+        Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
+          try {
+            backend.probeConnectivity(probeTimeoutMs);
+          } catch (Exception e) {
+            throw e;
+          } catch (Throwable t) {
+            throw new RuntimeException(t);
+          }
+          return null;
+        });
+        inFlight.add(new ProbeInFlight(backend, startedAt, probe));
+      }
+      long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(probeTimeoutMs);
+      for (ProbeInFlight entry : inFlight) {
+        try {
+          long remainingNanos = deadlineNanos - System.nanoTime();
+          if (remainingNanos <= 0L) {
+            entry.probe.cancel(true);
+            throw new TimeoutException("readiness probe deadline exceeded");
+          }
+          entry.probe.get(remainingNanos, TimeUnit.NANOSECONDS);
+          observability.runtimeState().recordBackendProbeSuccess(
+              entry.backend.name(),
+              (System.nanoTime() - entry.startedAt) / 1_000_000L,
+              config.latencyRouting());
+        } catch (TimeoutException e) {
+          entry.probe.cancel(true);
+          observability.runtimeState().recordBackendProbeFailure(
+              entry.backend.name(), e, config.latencyRouting());
+        } catch (ExecutionException e) {
+          observability.runtimeState().recordBackendProbeFailure(
+              entry.backend.name(),
+              e.getCause() != null ? e.getCause() : e,
+              config.latencyRouting());
+        } catch (InterruptedException e) {
+          entry.probe.cancel(true);
+          Thread.currentThread().interrupt();
+          observability.runtimeState().recordBackendProbeFailure(
+              entry.backend.name(), e, config.latencyRouting());
+          return;
+        }
+      }
+    }
+
+    private record ProbeInFlight(CatalogBackend backend, long startedAt, Future<?> probe) {
     }
 
     private KerberosHealthProbe.KerberosStatus configKerberosStatus() {
