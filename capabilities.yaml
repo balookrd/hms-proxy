@@ -242,7 +242,7 @@ capabilities:
       ru: >-
         Поддержано, пока routing может однозначно вычислить целевой каталог.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
   - id: txn_lock_without_namespace_degraded
     status: degraded
@@ -303,8 +303,8 @@ capabilities:
         single-catalog control plane, пока не проведена отдельная валидация.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyLocksTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyLocksTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
   - id: kerberos_frontdoor_with_impersonation
     status: supported
     client:
@@ -684,7 +684,7 @@ method_matrix:
         каталогами, поэтому эти RPC стоит считать production-unsafe до
         отдельной валидации
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
 
   - id: hdp_frontdoor_bridge_safe_mappings
     method:
