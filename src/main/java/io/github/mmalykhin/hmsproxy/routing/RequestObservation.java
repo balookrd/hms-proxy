@@ -7,10 +7,10 @@ import java.util.Set;
 /**
  * Mutable per-request observation state accumulated while processing one HMS call.
  * Lives on the request thread via {@link RequestContext#REQUEST_OBSERVATION}.
- * Not thread-safe — all mutation must happen on the thread that owns the request,
- * except for the idempotent {@link #markFallback()} which may be called from a
- * fanout worker thread that has been given the same instance via ThreadLocal
- * propagation in {@link BackendCallDispatcher}.
+ * Not thread-safe — all mutation must happen on the request thread. Fanout workers
+ * receive their own throwaway {@link RequestObservation}; {@link FanoutExecutor}
+ * harvests per-task signals (e.g. fallback) and folds them into the parent
+ * observation on the request thread.
  */
 final class RequestObservation {
   private final String method;

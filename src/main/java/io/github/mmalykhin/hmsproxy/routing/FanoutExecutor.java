@@ -52,16 +52,17 @@ final class FanoutExecutor {
       FanoutBackendCall<T> call
   ) throws Throwable {
     RequestObservation parentObservation = RequestContext.REQUEST_OBSERVATION.get();
+    String observationMethod = parentObservation != null ? parentObservation.method() : methodName;
     List<CompletableFuture<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
     for (CatalogBackend backend : backends) {
       futures.add(CompletableFuture.supplyAsync(() -> {
-        if (parentObservation != null) {
-          RequestContext.REQUEST_OBSERVATION.set(parentObservation);
-        }
+        RequestObservation workerObservation = new RequestObservation(observationMethod);
+        RequestContext.REQUEST_OBSERVATION.set(workerObservation);
         try {
-          return FanoutTaskResult.success(backend, call.call(backend, impersonation, requestId));
+          T value = call.call(backend, impersonation, requestId);
+          return FanoutTaskResult.success(backend, value, workerObservation.fallback());
         } catch (Throwable error) {
-          return FanoutTaskResult.failure(backend, error);
+          return FanoutTaskResult.failure(backend, error, workerObservation.fallback());
         } finally {
           RequestContext.REQUEST_OBSERVATION.remove();
         }
@@ -96,6 +97,9 @@ final class FanoutExecutor {
         } catch (ExecutionException e) {
           Throwable cause = e.getCause() == null ? e : e.getCause();
           throw new MetaException("Fanout backend execution failed: " + cause.getMessage());
+        }
+        if (taskResult.fallback() && parentObservation != null) {
+          parentObservation.markFallback();
         }
         if (taskResult.error() != null) {
           handleFanoutFailure(methodName, taskResult.backend(), requestId, taskResult.error());
@@ -150,13 +154,13 @@ final class FanoutExecutor {
   record FanoutBackendResult<T>(CatalogBackend backend, T value) {
   }
 
-  private record FanoutTaskResult<T>(CatalogBackend backend, T value, Throwable error) {
-    private static <T> FanoutTaskResult<T> success(CatalogBackend backend, T value) {
-      return new FanoutTaskResult<>(backend, value, null);
+  private record FanoutTaskResult<T>(CatalogBackend backend, T value, Throwable error, boolean fallback) {
+    private static <T> FanoutTaskResult<T> success(CatalogBackend backend, T value, boolean fallback) {
+      return new FanoutTaskResult<>(backend, value, null, fallback);
     }
 
-    private static <T> FanoutTaskResult<T> failure(CatalogBackend backend, Throwable error) {
-      return new FanoutTaskResult<>(backend, null, error);
+    private static <T> FanoutTaskResult<T> failure(CatalogBackend backend, Throwable error, boolean fallback) {
+      return new FanoutTaskResult<>(backend, null, error, fallback);
     }
   }
 }
