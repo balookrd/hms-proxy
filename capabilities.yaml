@@ -37,7 +37,7 @@ capabilities:
       en: Supported as the baseline deployment.
       ru: Базовый полностью поддержанный сценарий.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultRewritesMaterializedViewTextForClientNamespace
   - id: apache_frontdoor_to_hdp_backend_downgrade
     status: degraded
@@ -119,7 +119,7 @@ capabilities:
       ru: >-
         Поддержано, если клиенту достаточно только смены advertised profile.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getVersionUsesConfiguredFrontendProfile
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getVersionUsesConfiguredFrontendProfile
       - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
   - id: hdp_only_methods_with_matching_runtime
     status: supported
@@ -160,9 +160,9 @@ capabilities:
         Поддержано при наличии совместимых Hortonworks front-door и backend
         runtime jar.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
   - id: hdp_only_methods_rejected_without_matching_runtime
     status: rejected
     client:
@@ -199,7 +199,7 @@ capabilities:
         Явно отклоняется, если target backend не даёт совместимый Hortonworks
         runtime.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#addWriteNotificationLogRejectsNonHortonworksBackendRuntime
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#addWriteNotificationLogRejectsNonHortonworksBackendRuntime
   - id: hs2_multicatalog_namespace_rewrite
     status: supported
     client:
@@ -404,9 +404,9 @@ capabilities:
         routing, explicit namespace ownership и не допустить silent
         split-brain writes.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#catalogManagementRpcsAreRejected
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#catalogManagementRpcsAreRejected
 method_matrix:
   - id: object_scoped_reads_and_writes
     method:
@@ -445,7 +445,7 @@ method_matrix:
       en: Low, as long as the request resolves one catalog unambiguously.
       ru: Низкий, пока запрос однозначно разрешается в один catalog.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
 
   - id: list_and_discovery_reads
     method:
@@ -487,7 +487,7 @@ method_matrix:
         каталогами, поэтому клиент видит externalized names, а не сырые
         backend names
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAccessControlTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
 
   - id: apache_request_wrappers_to_hdp_backend
     method:
@@ -794,7 +794,7 @@ method_matrix:
       en: Low when the target backend runtime is explicitly Hortonworks.
       ru: Низкий, если target backend runtime явно Hortonworks.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
 
   - id: hdp_get_tables_ext
     method:
@@ -825,7 +825,7 @@ method_matrix:
       en: Low; the main risk is runtime mismatch, which is rejected explicitly.
       ru: Низкий; основной риск — runtime mismatch, и он отклоняется явно.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTablesExtRoutesToResolvedCatalogAndRewritesNamespace
 
   - id: hdp_get_all_materialized_view_objects_for_rewriting
     method:
@@ -860,7 +860,7 @@ method_matrix:
         Средний; вызов scoped через default-catalog, а semantics materialized
         view rewrite остаются runtime-specific
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
 
   - id: ambiguous_global_writes
     method:
@@ -907,7 +907,7 @@ method_matrix:
         Заблокировано по design, чтобы гарантировать deterministic routing и
         не допустить silent split-brain writes или drift global state
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
 
   - id: catalog_registry_rpcs
     method:
@@ -944,4 +944,4 @@ method_matrix:
         Заблокировано по design, чтобы namespace ownership оставался явным и
         централизованно управляемым.
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRoutingTest#catalogManagementRpcsAreRejected
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#catalogManagementRpcsAreRejected
