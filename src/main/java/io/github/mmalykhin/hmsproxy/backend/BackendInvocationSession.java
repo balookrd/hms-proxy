@@ -44,8 +44,19 @@ public final class BackendInvocationSession implements AutoCloseable {
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile
   ) throws MetaException {
-    return runtimeProfile.isHortonworks()
-        ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile)
+    return open(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, null);
+  }
+
+  static BackendInvocationSession open(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader isolatedClassLoader
+  ) throws MetaException {
+    return runtimeProfile != null && runtimeProfile.isHortonworks()
+        ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader)
         : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
   }
 
@@ -58,8 +69,22 @@ public final class BackendInvocationSession implements AutoCloseable {
       String userName,
       List<String> groupNames
   ) throws MetaException {
+    return openImpersonating(
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, userName, groupNames, null);
+  }
+
+  static BackendInvocationSession openImpersonating(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      String userName,
+      List<String> groupNames,
+      ClassLoader isolatedClassLoader
+  ) throws MetaException {
     BackendInvocationSession session = open(
-        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile);
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
     try {
       session.setUgi(userName, groupNames);
       return session;
@@ -131,14 +156,15 @@ public final class BackendInvocationSession implements AutoCloseable {
       CatalogConfig catalogConfig,
       HiveConf conf,
       boolean backendKerberosEnabled,
-      MetastoreRuntimeProfile runtimeProfile
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader isolatedClassLoader
   ) throws MetaException {
     if (!backendKerberosEnabled) {
       try {
         return new BackendInvocationSession(
             null,
             null,
-            IsolatedMetastoreClient.open(proxyConfig, catalogConfig, runtimeProfile, conf));
+            IsolatedMetastoreClient.open(proxyConfig, catalogConfig, runtimeProfile, isolatedClassLoader, conf));
       } catch (Exception e) {
         MetaException metaException = new MetaException(
             "Unable to open isolated backend metastore client for catalog " + catalogConfig.name());
@@ -158,6 +184,7 @@ public final class BackendInvocationSession implements AutoCloseable {
           proxyConfig,
           catalogConfig,
           runtimeProfile,
+          isolatedClassLoader,
           principal,
           keytab,
           conf);

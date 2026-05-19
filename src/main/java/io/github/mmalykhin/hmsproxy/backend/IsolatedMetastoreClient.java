@@ -33,41 +33,53 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile,
       Configuration conf
   ) throws Exception {
-    return open(config, catalogConfig, runtimeProfile, null, null, conf);
+    return open(config, catalogConfig, runtimeProfile, null, conf);
   }
 
   static IsolatedMetastoreClient open(
       ProxyConfig config,
       CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader classLoader,
+      Configuration conf
+  ) throws Exception {
+    return open(config, catalogConfig, runtimeProfile, classLoader, null, null, conf);
+  }
+
+  static IsolatedMetastoreClient open(
+      ProxyConfig config,
+      CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader classLoader,
       String principal,
       String keytab,
       Configuration conf
   ) throws Exception {
-    Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
-    ClassLoader classLoader = new MetastoreApiClassLoader(
-        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarPath),
-        IsolatedMetastoreClient.class.getClassLoader());
-    Class<?> childConfigurationClass = Class.forName("org.apache.hadoop.conf.Configuration", true, classLoader);
-    Object isolatedConf = withContextClassLoader(classLoader, () -> childConfigurationClass.getConstructor(boolean.class)
+    ClassLoader effectiveClassLoader = classLoader == null
+        ? newIsolatedClassLoader(config, catalogConfig, runtimeProfile)
+        : classLoader;
+    Class<?> childConfigurationClass =
+        Class.forName("org.apache.hadoop.conf.Configuration", true, effectiveClassLoader);
+    Object isolatedConf = withContextClassLoader(effectiveClassLoader, () -> childConfigurationClass.getConstructor(boolean.class)
         .newInstance(false));
     Method setClassLoader = childConfigurationClass.getMethod("setClassLoader", ClassLoader.class);
-    setClassLoader.invoke(isolatedConf, classLoader);
+    setClassLoader.invoke(isolatedConf, effectiveClassLoader);
     Method set = childConfigurationClass.getMethod("set", String.class, String.class);
     for (Map.Entry<String, String> entry : conf) {
       set.invoke(isolatedConf, entry.getKey(), entry.getValue());
     }
     applyHortonworksCompatibilityWorkarounds(isolatedConf, childConfigurationClass, runtimeProfile);
-    Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, classLoader);
+    Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, effectiveClassLoader);
     Object client = principal == null || keytab == null
-        ? withContextClassLoader(classLoader, () ->
+        ? withContextClassLoader(effectiveClassLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf))
-        : loginAndOpenClient(classLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab);
+        : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab);
     Field clientField = clientClass.getDeclaredField("client");
     clientField.setAccessible(true);
     Object thriftClient = clientField.get(client);
-    Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, classLoader);
-    return new IsolatedMetastoreClient(client, new IsolatedInvocationBridge(classLoader, thriftClient, ifaceClass));
+    Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, effectiveClassLoader);
+    return new IsolatedMetastoreClient(
+        client, new IsolatedInvocationBridge(effectiveClassLoader, thriftClient, ifaceClass));
   }
 
   void setUgi(String userName, List<String> groupNames) throws Throwable {
@@ -99,6 +111,17 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     } finally {
       thread.setContextClassLoader(previous);
     }
+  }
+
+  private static ClassLoader newIsolatedClassLoader(
+      ProxyConfig config,
+      CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile
+  ) throws Exception {
+    Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
+    return new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarPath),
+        IsolatedMetastoreClient.class.getClassLoader());
   }
 
   static void applyHortonworksCompatibilityWorkarounds(

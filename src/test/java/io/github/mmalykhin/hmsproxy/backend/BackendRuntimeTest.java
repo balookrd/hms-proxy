@@ -4,11 +4,14 @@ import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.junit.Assume;
 import org.junit.Assert;
 import org.junit.Test;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
@@ -75,6 +78,37 @@ public class BackendRuntimeTest {
         factory.openProfiles);
   }
 
+  @Test
+  public void hortonworksRuntimeReusesIsolatedClassLoaderAcrossReconnects() throws Exception {
+    Path hdpJar = Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
+        .toAbsolutePath();
+    Assume.assumeTrue(Files.isReadable(hdpJar));
+    RecordingSessionFactory factory = new RecordingSessionFactory(true);
+    CatalogConfig catalogConfig = catalogConfig(
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        hdpJar.toString());
+
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        catalogConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        factory);
+    try {
+      HortonworksBackendAdapter adapter =
+          new HortonworksBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+
+      runtime.reconnectShared(adapter);
+    } finally {
+      runtime.close();
+    }
+
+    Assert.assertEquals(2, factory.isolatedClassLoaders.size());
+    Assert.assertNotNull(factory.isolatedClassLoaders.get(0));
+    Assert.assertSame(factory.isolatedClassLoaders.get(0), factory.isolatedClassLoaders.get(1));
+  }
+
   private static ProxyConfig config() {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
@@ -119,6 +153,21 @@ public class BackendRuntimeTest {
 
   private static final class RecordingSessionFactory implements BackendRuntime.SessionFactory {
     private final List<MetastoreRuntimeProfile> openProfiles = new ArrayList<>();
+    private final List<ClassLoader> isolatedClassLoaders = new ArrayList<>();
+    private final boolean requiresIsolatedClassLoader;
+
+    private RecordingSessionFactory() {
+      this(false);
+    }
+
+    private RecordingSessionFactory(boolean requiresIsolatedClassLoader) {
+      this.requiresIsolatedClassLoader = requiresIsolatedClassLoader;
+    }
+
+    @Override
+    public boolean requiresIsolatedClassLoader(MetastoreRuntimeProfile runtimeProfile) {
+      return requiresIsolatedClassLoader && runtimeProfile != null && runtimeProfile.isHortonworks();
+    }
 
     @Override
     public BackendInvocationSession open(
@@ -128,7 +177,20 @@ public class BackendRuntimeTest {
         boolean backendKerberosEnabled,
         MetastoreRuntimeProfile runtimeProfile
     ) throws org.apache.hadoop.hive.metastore.api.MetaException {
+      return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, null);
+    }
+
+    @Override
+    public BackendInvocationSession open(
+        ProxyConfig proxyConfig,
+        CatalogConfig catalogConfig,
+        HiveConf hiveConf,
+        boolean backendKerberosEnabled,
+        MetastoreRuntimeProfile runtimeProfile,
+        ClassLoader isolatedClassLoader
+    ) throws org.apache.hadoop.hive.metastore.api.MetaException {
       openProfiles.add(runtimeProfile);
+      isolatedClassLoaders.add(isolatedClassLoader);
       try {
         return newSession();
       } catch (Exception e) {
@@ -149,7 +211,22 @@ public class BackendRuntimeTest {
         String userName,
         List<String> groupNames
     ) throws org.apache.hadoop.hive.metastore.api.MetaException {
-      return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
+      return openImpersonating(
+          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames, null);
+    }
+
+    @Override
+    public BackendInvocationSession openImpersonating(
+        ProxyConfig proxyConfig,
+        CatalogConfig catalogConfig,
+        HiveConf hiveConf,
+        boolean backendKerberosEnabled,
+        MetastoreRuntimeProfile runtimeProfile,
+        String userName,
+        List<String> groupNames,
+        ClassLoader isolatedClassLoader
+    ) throws org.apache.hadoop.hive.metastore.api.MetaException {
+      return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
     }
   }
 }
