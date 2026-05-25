@@ -520,6 +520,16 @@ method_matrix:
       status: supported
       en: Same routing model for overlapping Apache RPCs on Hortonworks backends.
       ru: Та же routing-модель для пересекающихся Apache RPC на Hortonworks backend.
+    hive4_backend:
+      status: supported
+      en: >-
+        Same routing model; positional `get_table` and `get_table_objects_by_name`
+        (removed in Hive 4) are auto-upgraded to their `*_req` equivalents by the
+        Hive 4 backend adapter, everything else flows through binary-compatible Thrift delegation.
+      ru: >-
+        Та же routing-модель; позиционные `get_table` и `get_table_objects_by_name`
+        (удалены в Hive 4) автоматически поднимаются до `*_req` эквивалентов через
+        Hive 4 backend adapter, всё остальное идёт через binary-compatible Thrift делегацию.
     front_door_support:
       en: >-
         `APACHE_3_1_3`; overlapping RPCs also work through `HORTONWORKS_*`
@@ -559,6 +569,10 @@ method_matrix:
       status: supported
       en: Same fanout/list aggregation model across Hortonworks backends.
       ru: Та же модель fanout/list aggregation работает и на Hortonworks backend.
+    hive4_backend:
+      status: supported
+      en: Same fanout/list aggregation model across Hive 4 backends.
+      ru: Та же модель fanout/list aggregation работает и на Hive 4 backend.
     front_door_support:
       en: Any front-door profile that exposes the overlapping RPCs.
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
@@ -601,6 +615,14 @@ method_matrix:
       ru: >-
         Повторяет вызов через legacy `get_database`, `get_table` или
         `get_table_objects_by_name`, если wrapper API отсутствует
+    hive4_backend:
+      status: supported
+      en: >-
+        Native Hive 4 request-wrapper handling; `*_req` methods are the canonical
+        Hive 4 shape and reach the backend through binary-compatible delegation.
+      ru: >-
+        Нативная обработка Hive 4 request-wrapper методов; `*_req` — каноническая
+        форма для Hive 4, доходит до backend через binary-compatible делегацию.
     front_door_support:
       en: "`APACHE_3_1_3`"
       ru: "`APACHE_3_1_3`"
@@ -630,6 +652,10 @@ method_matrix:
       en: Served from `routing.default-catalog` only.
       ru: Обслуживаются только из `routing.default-catalog`.
     hdp_backend:
+      status: degraded
+      en: Served from `routing.default-catalog` only.
+      ru: Обслуживаются только из `routing.default-catalog`.
+    hive4_backend:
       status: degraded
       en: Served from `routing.default-catalog` only.
       ru: Обслуживаются только из `routing.default-catalog`.
@@ -667,6 +693,10 @@ method_matrix:
       en: Default-catalog scoped and may emit compatibility empty responses.
       ru: Scoped через default-catalog и может возвращать empty compatibility response.
     hdp_backend:
+      status: degraded
+      en: Default-catalog scoped and may emit compatibility empty responses.
+      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+    hive4_backend:
       status: degraded
       en: Default-catalog scoped and may emit compatibility empty responses.
       ru: Scoped через default-catalog и может возвращать empty compatibility response.
@@ -715,6 +745,14 @@ method_matrix:
       status: degraded
       en: Same default-catalog control-plane constraint on Hortonworks backends.
       ru: То же ограничение default-catalog control plane на Hortonworks backend.
+    hive4_backend:
+      status: degraded
+      en: >-
+        Same default-catalog control-plane constraint on Hive 4 backends; Hive 4
+        ACID v2 extensions are not exposed by this proxy and stay out of scope.
+      ru: >-
+        То же ограничение default-catalog control plane на Hive 4 backend; ACID v2
+        расширения Hive 4 этим proxy не публикуются и остаются за рамками.
     front_door_support:
       en: Any front-door profile.
       ru: Любой front-door profile.
@@ -758,6 +796,16 @@ method_matrix:
       ru: >-
         Та же payload-based маршрутизация, но backend/runtime semantics всё
         равно требуют отдельной валидации
+    hive4_backend:
+      status: unsafe
+      en: >-
+        Same payload-based routing; Hive 4 has additional ACID v2 lifecycle RPCs
+        that this proxy does not expose, so multi-catalog ACID semantics still need
+        validation per workload.
+      ru: >-
+        Та же payload-based маршрутизация; у Hive 4 есть дополнительные ACID v2
+        lifecycle RPC, которые этот proxy не публикует, так что multi-catalog ACID
+        semantics всё равно требуют валидации под конкретный workload.
     front_door_support:
       en: Any front-door profile that exposes the RPC.
       ru: Любой front-door profile, который экспортирует RPC.
@@ -806,6 +854,14 @@ method_matrix:
       ru: >-
         Тот же bridge на front door, после чего выполняется обычная
         маршрутизация в разрешённый backend
+    hive4_backend:
+      status: supported
+      en: >-
+        Same bridge on the front door produces an Apache-shaped request that flows
+        through binary-compatible delegation to the Hive 4 backend.
+      ru: >-
+        Тот же bridge на front door выдаёт Apache-форму запроса, которая идёт через
+        binary-compatible делегацию в Hive 4 backend.
     front_door_support:
       en: "`HORTONWORKS_*` with standalone jar"
       ru: "`HORTONWORKS_*` с standalone jar"
@@ -844,6 +900,14 @@ method_matrix:
       status: degraded
       en: Same bridge behavior before routing to the resolved backend.
       ru: То же bridge-поведение до маршрутизации в разрешённый backend.
+    hive4_backend:
+      status: degraded
+      en: >-
+        Same bridge behavior before routing the resulting Apache-shaped call to
+        the Hive 4 backend.
+      ru: >-
+        То же bridge-поведение до маршрутизации получившегося Apache-вызова в
+        Hive 4 backend.
     front_door_support:
       en: "`HORTONWORKS_*` with standalone jar"
       ru: "`HORTONWORKS_*` с standalone jar"
@@ -877,6 +941,10 @@ method_matrix:
       status: supported
       en: Direct Hortonworks passthrough to the resolved Hortonworks backend.
       ru: Прямой Hortonworks passthrough в разрешённый Hortonworks backend.
+    hive4_backend:
+      status: rejected
+      en: Hive 4 backends do not provide the Hortonworks extension runtime.
+      ru: Hive 4 backend не предоставляют Hortonworks extension runtime.
     front_door_support:
       en: "`HORTONWORKS_*` with standalone jar"
       ru: "`HORTONWORKS_*` с standalone jar"
@@ -908,6 +976,10 @@ method_matrix:
       ru: >-
         Прямой Hortonworks passthrough только к
         `HORTONWORKS_3_1_0_3_1_5_6150_1`
+    hive4_backend:
+      status: rejected
+      en: Hive 4 backends do not implement this Hortonworks-only RPC.
+      ru: Hive 4 backend не реализуют этот Hortonworks-only RPC.
     front_door_support:
       en: "`HORTONWORKS_*` with standalone jar"
       ru: "`HORTONWORKS_*` с standalone jar"
@@ -939,6 +1011,10 @@ method_matrix:
       ru: >-
         Прямой Hortonworks passthrough только к
         `HORTONWORKS_3_1_0_3_1_5_6150_1`
+    hive4_backend:
+      status: rejected
+      en: Hive 4 backends do not implement this Hortonworks-only RPC.
+      ru: Hive 4 backend не реализуют этот Hortonworks-only RPC.
     front_door_support:
       en: "`HORTONWORKS_*` with standalone jar"
       ru: "`HORTONWORKS_*` с standalone jar"
@@ -982,6 +1058,14 @@ method_matrix:
       ru: >-
         Безопасно отклоняются, если запрос не разрешается ровно в один
         catalog в рамках routing policy.
+    hive4_backend:
+      status: rejected
+      en: >-
+        Safely failed when the request does not resolve exactly one catalog
+        under the routing policy.
+      ru: >-
+        Безопасно отклоняются, если запрос не разрешается ровно в один
+        catalog в рамках routing policy.
     front_door_support:
       en: Any front-door profile.
       ru: Любой front-door profile.
@@ -1017,6 +1101,13 @@ method_matrix:
       ru: >-
         Registry catalog policy-owned конфигом, а не runtime client RPC.
     hdp_backend:
+      status: rejected
+      en: >-
+        Catalog registry is policy-owned by config, not runtime-managed through
+        client RPCs.
+      ru: >-
+        Registry catalog policy-owned конфигом, а не runtime client RPC.
+    hive4_backend:
       status: rejected
       en: >-
         Catalog registry is policy-owned by config, not runtime-managed through

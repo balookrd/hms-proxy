@@ -5,31 +5,41 @@
 Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
 
 HMS Proxy is a catalog-aware Hive Metastore federation and compatibility proxy for mixed
-Apache Hive and Hortonworks Data Platform environments.
+Apache Hive `3.1.3`, Hive `4.1.x`, and Hortonworks Data Platform `3.1.0.x` environments.
 
-It gives you one production-facing HMS Thrift endpoint that can federate catalogs across
-multiple backend metastores, bridge Apache/HDP API differences, and establish a clear
-security boundary between clients and backend HMS services.
+It gives you one (or several) production-facing HMS Thrift endpoint(s) that can federate
+catalogs across multiple backend metastores, bridge Apache 3.1.3 / HDP 3.1.0.x / Hive 4.1.x
+API differences in either direction, and establish a clear security boundary between clients
+and backend HMS services.
 
 ## Three pillars
 
 ### 1. Federation
 
-Use one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients, while
-routing requests to multiple backend metastores by explicit `catName` or by legacy
-`catalog<separator>db` database names.
+Use one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients (or
+several, on different ports, when clients of different Hive versions cannot share a single
+front door — Thrift has no version-negotiation handshake), while routing requests to multiple
+backend metastores by explicit `catName` or by legacy `catalog<separator>db` database names.
 
 This lets you centralize catalog-aware routing and selective exposure without forcing clients to
 understand backend metastore layout.
 
 ### 2. Compatibility bridge
 
-Expose an Apache Hive Metastore `3.1.3` front door, downgrade selected calls for older
-Hortonworks `3.1.0.x` backends, and optionally present the proxy itself as a Hortonworks
-front door through an HDP `standalone-metastore` jar.
+Expose an Apache Hive Metastore `3.1.3`, Hortonworks `3.1.0.x` or Hive `4.1.x` front door (one
+primary listener plus optional additional listeners on separate ports) and connect it to any
+mix of Apache 3.1.3, Hortonworks 3.1.0.x, or Hive 4.1.x backends. The proxy downgrades
+selected `*_req` APIs for older Hortonworks backends, upgrades the two positional read methods
+Hive 4 removed (`get_table`, `get_table_objects_by_name`) when fronting a Hive 4 backend with
+an Apache 3.1.3 client, and downgrades Hive 4-only read/standard-DDL `*_req` wrappers to their
+positional Apache 3.1.3 equivalents when serving Hive 4 clients against an Apache 3.1.3
+backend. Hortonworks-specific RPCs are exposed via the HDP `standalone-metastore` jar when a
+matching HDP backend is configured; truly Hive 4-only APIs (data connectors, scheduled
+queries, stored procedures, packages, ACID v2 extensions) respond with
+`TApplicationException UNKNOWN_METHOD`.
 
-This makes the proxy a practical bridge for mixed Apache/HDP estates and staged migrations, not
-just a request router.
+This makes the proxy a practical bridge for mixed Apache/HDP/Hive 4 estates and staged
+migrations in either direction, not just a request router.
 
 ### 3. Security boundary
 
@@ -84,6 +94,9 @@ These switches change client-visible names or SQL text, not backend selection:
 | Catalog-aware metadata reads and writes with explicit namespace (`catName`, `dbName`, `fullTableName`) | supported | Routed to the resolved catalog/backend normally. |
 | Legacy reads and writes using `catalog<separator>db` database names | supported | Routed by externalized database name; table/database objects are rewritten on the way back. |
 | Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
+| Apache `3.1.3` positional RPCs against Hive `4.1.x` backends (`catalog.<name>.runtime-profile=APACHE_4_1_0`) | degraded | Backend adapter auto-upgrades the two positional methods Hive 4 removed (`get_table`, `get_table_objects_by_name`) to their `*_req` equivalents; everything else flows through binary-compatible Thrift delegation unchanged. |
+| Hive `4.1.x` clients (`compatibility.frontend-profile=APACHE_4_1_0`) against Apache `3.1.3` or Hortonworks `3.1.0.x` backends | degraded | Frontend bridge downgrades selected Hive 4-only `*_req` wrappers on read and standard-DDL paths (`get_database_req`, `get_table_req`, `get_partition*_req`, `create_table_req`, `alter_table_req`, etc.) to their positional Apache 3.1.3 equivalents; the 199 shared methods flow through binary-compatible delegation. |
+| Hive 4-only APIs (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions) on `APACHE_4_1_0` front door | rejected | Responded with `TApplicationException UNKNOWN_METHOD`; there is no safe downgrade to an Apache 3.1.3 backend for these RPCs. |
 | Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. |
 | ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator. |

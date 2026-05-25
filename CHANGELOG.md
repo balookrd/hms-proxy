@@ -1,7 +1,7 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-04-29`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
@@ -53,6 +53,42 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   The latter rejects being used as a backend (`BackendAdapterFactory` throws)
   — Hive 4 is supported as a front-door profile only.
 
+## 2026-05-19
+
+### Changed
+
+- The isolated backend classloader is now reused across `BackendRuntime` reloads of the same
+  profile + jar pair instead of being rebuilt every time. Reduces classloader churn (and the
+  metaspace/PermGen-style pressure that came with it) when several catalogs share the same
+  isolated runtime, and shortens reconnect/reload latency.
+
+## 2026-05-03
+
+### Added
+
+- New `Bump version series to 1.0` switch for nightly artifacts: jgitver now produces
+  `hms-proxy-1.0.<distance>-<sha>.jar` instead of `0.1.<distance>-<sha>.jar`, matching the
+  intended release series after `v1.0.0`. Tagged builds are unaffected (`hms-proxy-1.0.0.jar`
+  at `v1.0.0`).
+
+### Changed
+
+- `/readyz` backend probes now run on a dedicated bounded executor sized by
+  `routing.backend-state-polling.max-parallelism`, with a shared deadline propagated through
+  `probeConnectivity(timeoutMs)` so the socket itself honours the probe budget. Previously,
+  when backend-state polling was disabled, every readiness request fanned out
+  `checkConnectivity()` through the common `ForkJoinPool` and joined without any timeout,
+  letting a slow or hung HMS turn `/readyz` into a load source and starve the common pool.
+  The probe executor is shut down with the management server.
+
+### Fixed
+
+- Parallel fanout workers no longer mutate the parent `RequestObservation` through
+  `ThreadLocal` propagation. Each worker now owns a throwaway observation and surfaces the
+  compat-fallback signal back through `FanoutTaskResult`, so the parent observation is updated
+  only on the request thread (previously compat-fallback paths from worker threads could race
+  on non-volatile state).
+
 ## 2026-05-02
 
 ### Changed
@@ -71,6 +107,26 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   reconnects. Each reconnect previously evicted the impersonation cache and forced a full
   Kerberos re-login, which made oscillation costly.
 
+- **Impersonation:** each user now gets a per-user borrow/return pool of backend Thrift
+  sessions instead of a single shared session serialized through one transport. Pool size and
+  idle TTL are configurable per catalog via `catalog.<name>.impersonation-pool-max-size`
+  (default `4`) and `catalog.<name>.impersonation-session-idle-ttl-ms` (default `0` = never
+  close idle). Borrow timeout is bounded by the catalog's `latency-budget-ms`; transport
+  failures discard only the faulted session and retry once on a fresh one. Adaptive-timeout
+  reconnects and per-user LRU eviction close all sessions held by the affected user.
+
+- Backend session pool borrow now fails fast instead of waiting forever. The shared pool
+  borrow path uses `tryAcquire` bounded by the catalog's `latencyBudgetMs` (or 30 s default);
+  exhaustion logs a warning and surfaces as `MetaException` to the client. The pool's
+  `reconnectShared()` and `close()` paths use the same bounded acquire to prevent management
+  operations from hanging when in-flight RPCs hold permits.
+
+- Backend health polling is now parallel and bounded. The new
+  `routing.backend-state-polling.max-parallelism` knob (default: number of catalogs) sizes a
+  dedicated `ThreadPoolExecutor` that submits all probes concurrently under a shared deadline,
+  replacing the sequential `Future.get` per backend. With 20 backends and a 5 s timeout, a
+  poll cycle drops from roughly 100 s to roughly 5 s.
+
 ### Added
 
 - Two new Prometheus counters expose adaptive-timeout dynamics:
@@ -79,6 +135,34 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   by hysteresis or cooldown. The bundled Grafana dashboard ships with three new panels — an
   overall reconnect rate stat, per-catalog reconnect timeseries, and a stacked breakdown of
   suppressed events by reason.
+
+- New Prometheus metrics for the per-user impersonation pool:
+  `hms_proxy_impersonation_pool_users{catalog}` (distinct users currently cached),
+  `hms_proxy_impersonation_pool_sessions{catalog,state=active|idle}` (sessions by state),
+  `hms_proxy_impersonation_session_acquire_timeouts_total{catalog}` (per-user borrow
+  timeouts) and
+  `hms_proxy_impersonation_session_evictions_total{catalog,reason=idle|transport_failure|user_evicted|user_capacity}`.
+  The Grafana dashboard ships with a new "Impersonation Pool" section with four panels for
+  these metrics.
+
+- New Prometheus counter `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
+  for fail-fast events on the shared backend session pool. `operation=borrow` covers regular
+  RPC dispatch; `operation=reconnect` covers admin reconnect attempts that could not quiesce
+  the pool. Matching panels were added to the Grafana dashboard.
+
+### Fixed
+
+- `Gauge` values are now stored as `AtomicLong` (via `Double.doubleToRawLongBits`) instead of
+  `DoubleAdder`, giving lock-free atomic `set()`/read. The previous `DoubleAdder` path used
+  `add(-current); add(value)` under a lock, which let concurrent readers observe a partial
+  update between the two adds.
+- Reflection cache for `ThriftReflectionCache` switched from a static `ConcurrentHashMap`
+  keyed by `Class<?>` to `ClassValue` so that entries are tied to the `Class` lifecycle and
+  released when the isolated runtime is reloaded. Prevents classloader leaks on repeated
+  isolated-runtime reloads.
+- `IsolatedInvocationBridge` and `TBase` cross-classloader conversion now cache `Method` and
+  `Constructor` lookups, eliminating repeated `getMethod`/`getConstructor` reflection on hot
+  paths.
 
 ## 2026-04-29
 

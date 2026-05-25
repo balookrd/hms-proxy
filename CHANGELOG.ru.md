@@ -1,6 +1,6 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-04-29`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-05-26`.
 Записи сгруппированы по датам коммитов и сфокусированы на заметных для пользователей изменениях.
 Первый тегированный релиз — `v1.0.0`, выпущен 2026-04-29.
 
@@ -54,6 +54,42 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   Последний запрещает использовать себя как backend (`BackendAdapterFactory`
   throws) — Hive 4 поддержан только как front-door profile.
 
+## 2026-05-19
+
+### Изменено
+
+- Изолированный backend classloader теперь переиспользуется между перезагрузками
+  `BackendRuntime` для одной и той же пары profile + jar, а не пересоздаётся каждый раз.
+  Снижает classloader churn (и соответствующее давление на metaspace), когда несколько
+  каталогов делят один изолированный runtime, и сокращает latency reconnect/reload.
+
+## 2026-05-03
+
+### Добавлено
+
+- Серия версий nightly-сборок повышена с `0.1.x` до `1.0.x`: jgitver теперь выпускает
+  `hms-proxy-1.0.<distance>-<sha>.jar` вместо `0.1.<distance>-<sha>.jar`, соответствуя
+  заданной release-серии после `v1.0.0`. Тегированные сборки не затронуты
+  (`hms-proxy-1.0.0.jar` для `v1.0.0`).
+
+### Изменено
+
+- Пробы `/readyz` к бэкендам теперь выполняются на выделенном bounded executor, размер
+  которого задаётся через `routing.backend-state-polling.max-parallelism`, под общим
+  дедлайном, прокинутым в `probeConnectivity(timeoutMs)` — так что таймаут на самом сокете
+  тоже учитывает probe-бюджет. Раньше при выключенном backend-state polling каждый запрос
+  readiness фанаутил `checkConnectivity()` через общий `ForkJoinPool` и джойнил без
+  таймаута, из-за чего медленный или зависший HMS превращал `/readyz` в источник нагрузки
+  и истощал общий пул. Probe-executor останавливается вместе с management-сервером.
+
+### Исправлено
+
+- Параллельные fanout-воркеры больше не мутируют родительский `RequestObservation` через
+  ThreadLocal-пропагацию. У каждого воркера теперь собственный одноразовый observation, а
+  сигнал compat-fallback возвращается родителю через `FanoutTaskResult`, так что родительский
+  observation обновляется только в потоке запроса (раньше compat-fallback пути из
+  воркер-потоков могли гонять non-volatile state).
+
 ## 2026-05-02
 
 ### Изменено
@@ -72,6 +108,26 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   reconnect подряд. Раньше каждый reconnect сбрасывал кэш impersonation-клиентов и заставлял
   заново выполнять Kerberos login, что делало осцилляцию дорогой.
 
+- **Impersonation:** для каждого пользователя теперь поднимается персональный borrow/return
+  пул backend Thrift-сессий вместо одной общей сессии, сериализованной через один транспорт.
+  Размер пула и idle TTL настраиваются per-catalog: `catalog.<name>.impersonation-pool-max-size`
+  (дефолт `4`) и `catalog.<name>.impersonation-session-idle-ttl-ms` (дефолт `0` — никогда не
+  закрывать idle). Borrow-таймаут ограничен `latency-budget-ms` каталога; transport-фейл
+  отбрасывает только сбойную сессию и retry-once делается на свежей. Adaptive-timeout
+  reconnect и LRU-вытеснение per-user закрывают все сессии затронутого пользователя.
+
+- Borrow из shared backend session pool теперь fail-fast, а не ждёт бесконечно. Borrow-путь
+  использует `tryAcquire` с границей `latencyBudgetMs` каталога (или 30 s по умолчанию);
+  exhaustion логируется WARN и поднимается клиенту как `MetaException`. Те же bounded
+  `tryAcquire` применены в `reconnectShared()` и `close()`, чтобы admin-операции не зависали
+  на in-flight RPC, удерживающих permits.
+
+- Backend health-polling теперь параллельный и ограниченный. Новый параметр
+  `routing.backend-state-polling.max-parallelism` (дефолт: число каталогов) задаёт размер
+  выделенного `ThreadPoolExecutor`, который сабмитит все пробы параллельно под общим
+  дедлайном — вместо последовательных `Future.get` по каждому бэкенду. На 20 бэкендах с
+  таймаутом 5 s цикл polling падает с примерно 100 s до примерно 5 s.
+
 ### Добавлено
 
 - Два новых Prometheus счётчика отражают динамику adaptive timeout:
@@ -79,6 +135,35 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}` для событий,
   подавленных hysteresis или cooldown. В Grafana dashboard добавлены три новых панели —
   общий rate реконнектов, per-catalog timeseries и стек подавленных событий по reason.
+
+- Новые Prometheus-метрики для per-user impersonation pool:
+  `hms_proxy_impersonation_pool_users{catalog}` (распределённые пользователи, кэшированные
+  сейчас), `hms_proxy_impersonation_pool_sessions{catalog,state=active|idle}` (сессии по
+  состоянию), `hms_proxy_impersonation_session_acquire_timeouts_total{catalog}` (per-user
+  borrow-таймауты) и
+  `hms_proxy_impersonation_session_evictions_total{catalog,reason=idle|transport_failure|user_evicted|user_capacity}`.
+  В Grafana dashboard добавлена секция "Impersonation Pool" с четырьмя панелями по этим
+  метрикам.
+
+- Новый Prometheus-счётчик
+  `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}` для fail-fast
+  событий на shared backend session pool. `operation=borrow` — обычная RPC-диспетчеризация;
+  `operation=reconnect` — admin reconnect, который не смог quiesce пул. В Grafana dashboard
+  добавлены соответствующие панели.
+
+### Исправлено
+
+- Значения `Gauge` теперь хранятся как `AtomicLong` (через `Double.doubleToRawLongBits`)
+  вместо `DoubleAdder`, что даёт lock-free атомарный `set()`/read. Прежний путь через
+  `DoubleAdder` использовал `add(-current); add(value)` под локом, и конкурентные читатели
+  могли видеть частичное обновление между двумя add.
+- Кэш рефлексии в `ThriftReflectionCache` переехал со статической `ConcurrentHashMap` по
+  ключу `Class<?>` на `ClassValue`, чтобы записи были привязаны к жизненному циклу `Class`
+  и освобождались при перезагрузке изолированного runtime. Предотвращает classloader-утечки
+  при повторных reload изолированного runtime.
+- `IsolatedInvocationBridge` и cross-classloader конвертация `TBase` теперь кэшируют
+  поиски `Method` и `Constructor`, убирая повторные `getMethod`/`getConstructor` на горячих
+  путях.
 
 ## 2026-04-29
 

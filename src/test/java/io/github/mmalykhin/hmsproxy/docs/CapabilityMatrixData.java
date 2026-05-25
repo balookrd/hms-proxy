@@ -98,6 +98,8 @@ final class CapabilityMatrixData {
         .append(" | ")
         .append(language == Language.EN ? "HDP backend" : "HDP backend")
         .append(" | ")
+        .append(language == Language.EN ? "Hive 4 backend" : "Hive 4 backend")
+        .append(" | ")
         .append(language == Language.EN ? "Frontend profile support" : "Поддержка front-door profile")
         .append(" | ")
         .append(language == Language.EN ? "Routing mode" : "Режим маршрутизации")
@@ -106,7 +108,7 @@ final class CapabilityMatrixData {
         .append(" | ")
         .append(language == Language.EN ? "Semantic risk flag" : "Флаг semantic-risk")
         .append(" |\n");
-    builder.append("| --- | --- | --- | --- | --- | --- | --- |\n");
+    builder.append("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for (MethodMatrixRow row : matrix.methodMatrixRows()) {
       builder.append("| ")
           .append(escapeCell(row.method().value(language)))
@@ -114,6 +116,8 @@ final class CapabilityMatrixData {
           .append(escapeCell(formatSupportCell(row.apacheBackend(), language)))
           .append(" | ")
           .append(escapeCell(formatSupportCell(row.hdpBackend(), language)))
+          .append(" | ")
+          .append(escapeCell(formatSupportCell(row.hive4Backend(), language)))
           .append(" | ")
           .append(escapeCell(row.frontDoorSupport().value(language)))
           .append(" | ")
@@ -170,6 +174,7 @@ final class CapabilityMatrixData {
         parseLocalizedText(map, "method"),
         parseSupportCell(map, "apache_backend"),
         parseSupportCell(map, "hdp_backend"),
+        parseSupportCell(map, "hive4_backend"),
         parseLocalizedText(map, "front_door_support"),
         parseLocalizedText(map, "routing_mode"),
         parseLocalizedText(map, "fallback_strategy"),
@@ -348,6 +353,7 @@ final class CapabilityMatrixData {
       LocalizedText method,
       SupportCell apacheBackend,
       SupportCell hdpBackend,
+      SupportCell hive4Backend,
       LocalizedText frontDoorSupport,
       LocalizedText routingMode,
       LocalizedText fallbackStrategy,
