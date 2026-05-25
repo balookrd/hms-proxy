@@ -579,6 +579,39 @@ compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 ```
 
+### Несколько front-end listener'ов на разных портах
+
+В Thrift-протоколе нет version-negotiation handshake, поэтому proxy не может по первому
+запросу определить версию клиента (так же как HiveServer2 разделяет binary и HTTP по портам).
+Когда нужны два разных типа клиентов с разными `getVersion()` identity или разными runtime
+jars — поднимаем **несколько Thrift listener'ов на разных портах**:
+
+```properties
+server.port=9083
+compatibility.frontend-profile=APACHE_3_1_3
+
+additional-frontends=hdp
+additional-frontends.hdp.port=9084
+additional-frontends.hdp.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+additional-frontends.hdp.standalone-metastore-jar=hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
+Primary listener живёт на `server.port` со своим `compatibility.frontend-profile`. Каждый
+блок `additional-frontends.<name>.*` задаёт независимый listener:
+
+| Ключ | Обязательный | По умолчанию |
+| --- | --- | --- |
+| `additional-frontends.<name>.port` | да | — |
+| `additional-frontends.<name>.frontend-profile` | да | — |
+| `additional-frontends.<name>.standalone-metastore-jar` | да для не-`APACHE_3_1_3` | — |
+| `additional-frontends.<name>.bind-host` | нет | `server.bind-host` |
+| `additional-frontends.<name>.min-worker-threads` | нет | `server.min-worker-threads` |
+| `additional-frontends.<name>.max-worker-threads` | нет | `server.max-worker-threads` |
+
+Все listener'ы используют один `RoutingMetaStoreProxy`, federation, security
+(`FrontDoorSecurity` включая SASL/Kerberos), audit и Prometheus метрики. Отличается
+только wire-level Thrift API на конкретном порту.
+
 Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
 
 ```properties

@@ -6,6 +6,22 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-05-25
+
+### Added
+
+- Multiple Thrift front-end listeners on different ports via
+  `additional-frontends.<name>.*`. Each additional listener advertises its own
+  `frontend-profile` (and uses its own `standalone-metastore-jar` for
+  non-`APACHE_3_1_3` profiles) but shares the same `RoutingMetaStoreProxy`,
+  federation, security, audit and Prometheus stack with the primary listener.
+  This unblocks running, for example, an Apache 3.1.3 listener on 9083 and a
+  Hortonworks 3.1.0.x listener on 9084 in the same JVM; clients have to be
+  routed to the right port because the Thrift protocol has no version
+  negotiation. Validation: unique listener names, unique `bindHost:port`
+  bindings, port collision with primary rejected, readable jar required for
+  non-Apache profiles.
+
 ## 2026-05-02
 
 ### Changed
