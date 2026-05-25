@@ -10,6 +10,16 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Добавлено
 
+- Несколько Thrift front-end listener'ов на разных портах через
+  `additional-frontends.<name>.*`. Каждый дополнительный listener выставляет
+  свой `frontend-profile` (и использует свой `standalone-metastore-jar` для
+  не-`APACHE_3_1_3` профилей), но шарит общий `RoutingMetaStoreProxy`,
+  federation, security, audit и Prometheus стек с primary listener'ом.
+  Позволяет, например, поднять в одном JVM Apache 3.1.3 listener на 9083 и
+  Hortonworks 3.1.0.x на 9084; клиенты должны коннектиться на нужный порт,
+  потому что Thrift-протокол не имеет version-negotiation handshake.
+  Валидация: уникальные имена listener'ов, уникальные `bindHost:port`,
+  коллизия с primary портом отклоняется, jar required для не-Apache профилей.
 - Hive 4.1.x front-door bridge (`compatibility.frontend-profile=APACHE_4_1_0`).
   Принимает Hive 4 Thrift-клиентов и обслуживает их против Apache 3.1.3 backend
   через изолированный classloader и динамический Proxy — симметрично уже
