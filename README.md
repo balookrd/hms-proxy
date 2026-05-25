@@ -578,6 +578,39 @@ compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 
 That changes the value returned by `getVersion()` while keeping the same proxy routing logic.
 
+### Multiple front-end listeners on different ports
+
+The Thrift protocol has no version-negotiation handshake, so the proxy cannot tell which Hive
+version a client speaks from the first request (much like HiveServer2's split between binary
+and HTTP protocols). When two different client populations need different `getVersion()`
+identities or different runtime jars, run **multiple Thrift listeners on different ports**:
+
+```properties
+server.port=9083
+compatibility.frontend-profile=APACHE_3_1_3
+
+additional-frontends=hdp
+additional-frontends.hdp.port=9084
+additional-frontends.hdp.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+additional-frontends.hdp.standalone-metastore-jar=hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+```
+
+The primary listener stays on `server.port` with its own `compatibility.frontend-profile`.
+Each `additional-frontends.<name>.*` block defines an independent listener:
+
+| Key | Required | Default |
+| --- | --- | --- |
+| `additional-frontends.<name>.port` | yes | — |
+| `additional-frontends.<name>.frontend-profile` | yes | — |
+| `additional-frontends.<name>.standalone-metastore-jar` | yes for non-`APACHE_3_1_3` | — |
+| `additional-frontends.<name>.bind-host` | no | `server.bind-host` |
+| `additional-frontends.<name>.min-worker-threads` | no | `server.min-worker-threads` |
+| `additional-frontends.<name>.max-worker-threads` | no | `server.max-worker-threads` |
+
+All listeners share the same `RoutingMetaStoreProxy`, federation, security (`FrontDoorSecurity`
+including SASL/Kerberos), audit and Prometheus metrics. Only the wire-level Thrift API
+differs per port.
+
 For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
 
 ```properties

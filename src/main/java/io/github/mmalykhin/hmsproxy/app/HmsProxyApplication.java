@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.app;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
+import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
@@ -47,10 +48,16 @@ public final class HmsProxyApplication {
                 ThriftHiveMetastore.Iface.class,
                 handler,
                 HortonworksFrontendExtension.class);
+        try (AdditionalFrontendThriftServers extras =
+            AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity)) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server);
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
             config.server().bindHost(), config.server().port());
+        for (AdditionalFrontendConfig extra : extras.running()) {
+          LOG.info("Additional frontend '{}' on {}:{} advertising profile {}",
+              extra.name(), extra.bindHost(), extra.port(), extra.frontendProfile());
+        }
         LOG.info("Routing config: defaultCatalog='{}', catalogDbSeparator='{}', catalogs={}",
             config.defaultCatalog(), config.catalogDbSeparator(), config.catalogNames());
         LOG.info("Compatibility config: frontendProfile={}, frontendVersion={}, preserveBackendCatalogName={}",
@@ -76,6 +83,7 @@ public final class HmsProxyApplication {
               catalogName, router.externalDatabaseName(catalogName, "default"));
         }
         server.serve();
+        }
       }
     } catch (Exception e) {
       emitKerberosJvmHint(e);

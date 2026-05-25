@@ -10,6 +10,7 @@ import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
 import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
+import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
@@ -31,7 +32,8 @@ public record ProxyConfig(
     ManagementConfig management,
     SyntheticReadLockStoreConfig syntheticReadLockStore,
     RateLimitConfig rateLimit,
-    LatencyRoutingConfig latencyRouting
+    LatencyRoutingConfig latencyRouting,
+    List<AdditionalFrontendConfig> additionalFrontends
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -53,6 +55,7 @@ public record ProxyConfig(
             + "for single-instance deployments or a ZOOKEEPER-backed config for HA.");
     rateLimit = rateLimit == null ? RateLimitConfig.disabled() : rateLimit;
     latencyRouting = latencyRouting == null ? LatencyRoutingConfig.disabled() : latencyRouting;
+    additionalFrontends = additionalFrontends == null ? List.of() : List.copyOf(additionalFrontends);
   }
 
   public static Builder builder() {
@@ -73,6 +76,7 @@ public record ProxyConfig(
     private SyntheticReadLockStoreConfig syntheticReadLockStore;
     private RateLimitConfig rateLimit;
     private LatencyRoutingConfig latencyRouting;
+    private List<AdditionalFrontendConfig> additionalFrontends;
 
     public Builder server(ServerConfig server) { this.server = server; return this; }
     public Builder security(SecurityConfig security) { this.security = security; return this; }
@@ -87,11 +91,15 @@ public record ProxyConfig(
     public Builder syntheticReadLockStore(SyntheticReadLockStoreConfig store) { this.syntheticReadLockStore = store; return this; }
     public Builder rateLimit(RateLimitConfig rateLimit) { this.rateLimit = rateLimit; return this; }
     public Builder latencyRouting(LatencyRoutingConfig latencyRouting) { this.latencyRouting = latencyRouting; return this; }
+    public Builder additionalFrontends(List<AdditionalFrontendConfig> additionalFrontends) {
+      this.additionalFrontends = additionalFrontends;
+      return this;
+    }
 
     public ProxyConfig build() {
       return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
           backend, compatibility, federation, transactionalDdlGuard, management,
-          syntheticReadLockStore, rateLimit, latencyRouting);
+          syntheticReadLockStore, rateLimit, latencyRouting, additionalFrontends);
     }
   }
 

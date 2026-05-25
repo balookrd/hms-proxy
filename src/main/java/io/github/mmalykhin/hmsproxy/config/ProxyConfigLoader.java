@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
@@ -15,6 +16,8 @@ import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfigParser;
 import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
 import io.github.mmalykhin.hmsproxy.config.federation.FederationConfigParser;
+import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
+import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfigParser;
 import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.management.ManagementConfigParser;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
@@ -58,6 +61,8 @@ public final class ProxyConfigLoader {
     RateLimitConfig rateLimit = RateLimitConfigParser.parse(reader, catalogs);
     LatencyRoutingConfig latencyRouting =
         LatencyRoutingConfigParser.parse(reader, catalogs.size());
+    List<AdditionalFrontendConfig> additionalFrontends =
+        AdditionalFrontendConfigParser.parse(reader, server);
 
     return ProxyConfig.builder()
         .server(server)
@@ -73,6 +78,7 @@ public final class ProxyConfigLoader {
         .syntheticReadLockStore(syntheticReadLockStore)
         .rateLimit(rateLimit)
         .latencyRouting(latencyRouting)
+        .additionalFrontends(additionalFrontends)
         .build();
   }
 
