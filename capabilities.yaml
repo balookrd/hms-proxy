@@ -81,6 +81,53 @@ capabilities:
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestCachesUnsupportedWrapperAndSkipsSecondProbe
+  - id: hive4_frontdoor_to_apache_backend_downgrade
+    status: degraded
+    client:
+      en: >-
+        Hive `4.1.x` clients (beeline, JDBC, Spark, Trino-Hive) that speak the Hive 4
+        request-wrapper Thrift API
+      ru: >-
+        Hive `4.1.x` клиенты (beeline, JDBC, Spark, Trino-Hive), говорящие на
+        Hive 4 request-wrapper Thrift API
+    front_door:
+      profiles:
+        - APACHE_4_1_0
+      en: "`APACHE_4_1_0`"
+      ru: "`APACHE_4_1_0`"
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+      en: "`APACHE_3_1_3` or Hortonworks `3.1.0.x`"
+      ru: "`APACHE_3_1_3` или Hortonworks `3.1.0.x`"
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - 199 read/write methods shared with Apache 3.1.3 (binary-compatible)
+        - selected Hive 4-only `*_req` wrappers downgraded to positional Apache 3.1.3 RPCs
+      ru:
+        - 199 read/write методов общих с Apache 3.1.3 (binary-compatible)
+        - часть Hive 4-only `*_req` wrappers понижается до позиционных Apache 3.1.3 RPC
+    expected_result:
+      en: >-
+        Supported with compatibility downgrade for read + standard DDL; Hive 4-only
+        APIs (data connectors, scheduled queries, stored procedures, packages, ACID v2
+        extensions) respond with `TApplicationException UNKNOWN_METHOD`.
+      ru: >-
+        Поддержано через compatibility downgrade для read + стандартного DDL;
+        Hive 4-only API (data connectors, scheduled queries, stored procedures,
+        packages, ACID v2 extensions) отвечают `TApplicationException UNKNOWN_METHOD`.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
+      - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeMapsHive4OnlyGetDatabaseReqToLegacyApacheMethod
+      - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeRejectsHive4OnlyDataConnectorMethod
   - id: hdp_frontdoor_identity_only
     status: supported
     client:

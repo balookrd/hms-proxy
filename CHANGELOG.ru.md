@@ -6,6 +6,28 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-05-25
+
+### Добавлено
+
+- Hive 4.1.x front-door bridge (`compatibility.frontend-profile=APACHE_4_1_0`).
+  Принимает Hive 4 Thrift-клиентов и обслуживает их против Apache 3.1.3 backend
+  через изолированный classloader и динамический Proxy — симметрично уже
+  существующему `HortonworksFrontendBridge`. Покрывает 199 методов, общих с
+  Apache 3.1.3, через binary-compatible Thrift делегацию плюс explicit
+  positional mapping для Hive 4-only `*_req` wrappers, которые большинство
+  клиентов вызывают на read/стандартном DDL (`get_database_req`,
+  `get_databases_req`, `get_table_req`, `get_partition*_req`, `get_fields_req`,
+  `create_table_req`, `drop_table_req`, `alter_table_req`, `truncate_table_req`
+  и т.п.). Truly Hive 4-only API (data connectors, scheduled queries, stored
+  procedures, packages, ACID v2 extensions) отвечают
+  `TApplicationException UNKNOWN_METHOD`.
+- `hive-metastore/hive-standalone-metastore-common-4.1.0.jar` добавлен в
+  bundle для isolated frontend runtime.
+- `APACHE_4_1_0` enum value в `FrontendProfile` и `MetastoreRuntimeProfile`.
+  Последний запрещает использовать себя как backend (`BackendAdapterFactory`
+  throws) — Hive 4 поддержан только как front-door profile.
+
 ## 2026-05-02
 
 ### Изменено

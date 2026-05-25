@@ -17,6 +17,7 @@ public final class FrontendProcessorFactory {
       case APACHE_3_1_3 -> ApacheFrontendBridge.createProcessor(config, apacheHandler);
       case HORTONWORKS_3_1_0_3_1_0_78, HORTONWORKS_3_1_0_3_1_5_6150_1 ->
           HortonworksFrontendBridge.createProcessor(config, apacheHandler);
+      case APACHE_4_1_0 -> Hive4FrontendBridge.createProcessor(config, apacheHandler);
     };
   }
 }
