@@ -6,6 +6,22 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-05-26
+
+### Добавлено
+
+- Hive 4.1.x backend adapter. `APACHE_4_1_0` теперь принимается как backend
+  runtime profile per-catalog (`catalog.<name>.runtime-profile=APACHE_4_1_0`),
+  когда внешний HMS этого каталога уже работает на Hive 4. Новый
+  `Hive4BackendAdapter` поднимает два positional read метода, удалённых в
+  Hive 4 (`get_table`, `get_table_objects_by_name`), до их `*_req`
+  эквивалентов и разворачивает ответ обратно в Apache 3.1.3 return type;
+  всё остальное идёт через стандартный изолированный `IMetaStoreClient` и
+  binary-compatible Thrift делегацию. `BackendRuntime` и
+  `BackendInvocationSession` теперь активируют изолированный classloader
+  для любого профиля, у которого новый `MetastoreRuntimeProfile#requiresIsolation()`
+  возвращает true (Hortonworks 3.1.0.x или Hive 4.1.0).
+
 ## 2026-05-25
 
 ### Добавлено

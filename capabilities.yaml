@@ -100,8 +100,9 @@ capabilities:
         - APACHE_3_1_3
         - HORTONWORKS_3_1_0_3_1_0_78
         - HORTONWORKS_3_1_0_3_1_5_6150_1
-      en: "`APACHE_3_1_3` or Hortonworks `3.1.0.x`"
-      ru: "`APACHE_3_1_3` или Hortonworks `3.1.0.x`"
+        - APACHE_4_1_0
+      en: "`APACHE_3_1_3`, Hortonworks `3.1.0.x`, or `APACHE_4_1_0`"
+      ru: "`APACHE_3_1_3`, Hortonworks `3.1.0.x` или `APACHE_4_1_0`"
     auth:
       modes:
         - NONE
@@ -128,6 +129,54 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeMapsHive4OnlyGetDatabaseReqToLegacyApacheMethod
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeRejectsHive4OnlyDataConnectorMethod
+  - id: apache_frontdoor_to_hive4_backend_upgrade
+    status: degraded
+    client:
+      en: >-
+        Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
+      ru: >-
+        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
+        request wrappers
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+      en: "`APACHE_3_1_3`"
+      ru: "`APACHE_3_1_3`"
+    backend:
+      runtime_profiles:
+        - APACHE_4_1_0
+      en: "Hive `4.1.x`"
+      ru: "Hive `4.1.x`"
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - 199 read/write methods shared with Hive 4 via binary-compatible Thrift delegation
+        - positional `get_table` and `get_table_objects_by_name` (removed in Hive 4) auto-upgraded
+          to their `*_req` equivalents
+      ru:
+        - 199 read/write методов общих с Hive 4 через binary-compatible Thrift делегацию
+        - позиционные `get_table` и `get_table_objects_by_name` (удалены в Hive 4) автоматически
+          поднимаются до `*_req` эквивалентов
+    expected_result:
+      en: >-
+        Supported with compatibility upgrade for the two positional methods Hive 4
+        removed; all other RPCs flow through unchanged. Hive 4-only APIs (data
+        connectors, scheduled queries, etc.) are not reachable from an Apache 3.1.3
+        front door because Apache 3.1.3 has no Thrift bindings for them.
+      ru: >-
+        Поддержано через compatibility upgrade для двух позиционных методов,
+        удалённых в Hive 4; остальные RPC проходят прозрачно. Hive 4-only API
+        (data connectors, scheduled queries и т.п.) недоступны с Apache 3.1.3
+        front door, потому что у Apache 3.1.3 нет Thrift bindings для них.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.backend.Hive4BackendAdapterTest#invokeUpgradesGetTableToGetTableReq
+      - io.github.mmalykhin.hmsproxy.backend.Hive4BackendAdapterTest#invokeUpgradesGetTableObjectsByNameToReqVersion
+      - io.github.mmalykhin.hmsproxy.backend.Hive4BackendAdapterTest#invokeDelegatesCommonMethodWithoutTouchingIt
   - id: hdp_frontdoor_identity_only
     status: supported
     client:

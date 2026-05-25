@@ -6,6 +6,21 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-05-26
+
+### Added
+
+- Hive 4.1.x backend adapter. `APACHE_4_1_0` can now be configured as a
+  per-catalog backend runtime profile (`catalog.<name>.runtime-profile=APACHE_4_1_0`)
+  when the catalog's external HMS already runs Hive 4. The new `Hive4BackendAdapter`
+  upgrades the two positional read methods Hive 4 removed (`get_table`,
+  `get_table_objects_by_name`) to their `*_req` equivalents and unwraps the
+  response back to the Apache 3.1.3 return type; everything else flows through
+  the standard isolated `IMetaStoreClient` and the binary-compatible Thrift
+  delegation. `BackendRuntime` and `BackendInvocationSession` now activate the
+  isolated classloader for any profile whose new `MetastoreRuntimeProfile#requiresIsolation()`
+  returns true (Hortonworks 3.1.0.x or Hive 4.1.0).
+
 ## 2026-05-25
 
 ### Added
