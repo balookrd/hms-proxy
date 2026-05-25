@@ -974,6 +974,79 @@ SELECT * FROM `catalog2__sales`.orders LIMIT 10;
 If you keep the default separator `.`, older Hive SQL clients can treat `catalog.db.table`
 ambiguously, so `__` is usually the safer choice.
 
+## Iceberg REST Catalog frontend
+
+The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
+Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
+front door. Status: **experimental, read-only**. Iceberg clients (PyIceberg,
+Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg
+tables stored in HMS via the standard `metadata_location` table parameter;
+writes, commits, view operations, and multi-catalog routing are NOT supported
+in this iteration.
+
+Enable it via:
+
+```properties
+rest-catalog.enabled=true
+rest-catalog.port=9183
+# Optional but recommended for production: SPNEGO. Requires security.mode=KERBEROS.
+rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
+rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
+```
+
+### Supported endpoints
+
+| Endpoint                                              | Status                          |
+| ----------------------------------------------------- | ------------------------------- |
+| `GET /v1/config`                                      | supported                       |
+| `GET /v1/{prefix}/namespaces`                         | supported                       |
+| `GET /v1/{prefix}/namespaces/{ns}`                    | supported                       |
+| `GET /v1/{prefix}/namespaces/{ns}/tables`             | supported (Iceberg tables only) |
+| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
+| `POST`, `DELETE`, view operations, commits            | unsupported                     |
+
+`{prefix}` must equal the proxy's `routing.default-catalog`. Multi-catalog REST
+(prefix-per-catalog with namespace prefix rewriting on both request and
+response paths) is a planned follow-up.
+
+### SPNEGO setup
+
+SPNEGO is an HTTP RFC requirement: the principal must be `HTTP/<host>@REALM`.
+This is a **separate** principal from `security.server-principal` (which is
+usually `hms/<host>@REALM` for the Thrift listener). Both can live in the same
+keytab file or in two separate keytabs. The REST listener calls
+`UserGroupInformation.loginUserFromKeytabAndReturnUGI` to acquire its own UGI
+without overwriting the Thrift one, so they coexist in the same JVM.
+
+### Client examples
+
+PyIceberg:
+
+```python
+from pyiceberg.catalog.rest import RestCatalog
+catalog = RestCatalog("my-catalog", **{
+    "uri": "http://hms-proxy:9183",
+})
+```
+
+Spark:
+
+```properties
+spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
+spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
+```
+
+### Caveats
+
+- Iceberg REST is **Iceberg-spec only** by design. Non-Iceberg Hive tables
+  (parquet/orc/text without `metadata_location`) are filtered out by HiveCatalog
+  and stay invisible through REST. Continue to use the Thrift listener for
+  native Hive tables.
+- `RoutingHiveCatalog` uses reflection on Iceberg's private `HiveCatalog.clients`
+  field, pinned to Iceberg `1.5.2`. Bumping the Iceberg version requires
+  running `RoutingHiveCatalogTest` to confirm the inject still works.
+
 ## Security
 
 ### Without Kerberos

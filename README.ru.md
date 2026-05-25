@@ -971,6 +971,80 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 данные уже удалены — результат purge смотри в логе proxy. При остановке proxy запущенные purge
 дожидаются завершения; оставшиеся в очереди логируются и пропускаются.
 
+## Iceberg REST Catalog frontend
+
+Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
+Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
+Thrift HMS front door. Статус: **экспериментально, read-only**. Iceberg-клиенты
+(PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) могут discover и load
+Iceberg-таблицы, хранящиеся в HMS через стандартный параметр
+`metadata_location`. Writes, commits, view-операции и multi-catalog routing в
+этой итерации НЕ поддерживаются.
+
+Включается так:
+
+```properties
+rest-catalog.enabled=true
+rest-catalog.port=9183
+# Опционально, но рекомендуется для прода: SPNEGO. Требует security.mode=KERBEROS.
+rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
+rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
+```
+
+### Поддерживаемые endpoint'ы
+
+| Endpoint                                              | Статус                                  |
+| ----------------------------------------------------- | --------------------------------------- |
+| `GET /v1/config`                                      | поддержан                               |
+| `GET /v1/{prefix}/namespaces`                         | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}`                    | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}/tables`             | поддержан (только Iceberg-таблицы)      |
+| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан (только Iceberg-таблицы)      |
+| `POST`, `DELETE`, view-операции, commits              | не поддержан                            |
+
+`{prefix}` должен совпадать с `routing.default-catalog` прокси. Multi-catalog
+REST (prefix-per-catalog с rewriting namespace prefix на request и response
+путях) — запланированный follow-up.
+
+### Настройка SPNEGO
+
+SPNEGO по RFC требует principal вида `HTTP/<host>@REALM`. Это **отдельный**
+principal от `security.server-principal` (обычно `hms/<host>@REALM` для
+Thrift listener). Оба могут лежать в одном keytab или в двух разных. REST
+listener делает `UserGroupInformation.loginUserFromKeytabAndReturnUGI`, чтобы
+получить отдельный UGI и не перезаписать Thrift'овый — оба сосуществуют в
+одном JVM.
+
+### Примеры клиентов
+
+PyIceberg:
+
+```python
+from pyiceberg.catalog.rest import RestCatalog
+catalog = RestCatalog("my-catalog", **{
+    "uri": "http://hms-proxy:9183",
+})
+```
+
+Spark:
+
+```properties
+spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
+spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
+```
+
+### Особенности и ограничения
+
+- Iceberg REST по дизайну работает **только с Iceberg-таблицами**. Native
+  Hive-таблицы (parquet/orc/text без `metadata_location`) HiveCatalog
+  отфильтровывает, и через REST их не видно. Для native Hive продолжайте
+  использовать Thrift listener.
+- `RoutingHiveCatalog` использует reflection на private поле
+  `HiveCatalog.clients`, привязанное к Iceberg `1.5.2`. При апгрейде Iceberg
+  обязательно прогнать `RoutingHiveCatalogTest`, чтобы убедиться, что inject
+  ещё работает.
+
 ## Безопасность
 
 ### Без Kerberos

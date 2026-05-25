@@ -275,6 +275,22 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 - `APACHE_4_1_0` enum value in `FrontendProfile` and `MetastoreRuntimeProfile`.
   The latter rejects being used as a backend (`BackendAdapterFactory` throws)
   — Hive 4 is supported as a front-door profile only.
+- Iceberg REST Catalog frontend (experimental, read-only). A parallel HTTP
+  listener configured via `rest-catalog.*` properties exposes a subset of the
+  Iceberg REST Catalog spec — `GET /v1/config`, namespace list/load, and table
+  list/load — backed by the same routing/federation pipeline as the Thrift HMS
+  front door via an in-process `IMetaStoreClient` proxy. Only the proxy's
+  `routing.default-catalog` is exposed (multi-catalog REST is planned).
+- SPNEGO/Kerberos protection for the REST endpoint. The listener uses a
+  separate `HTTP/<host>@REALM` principal (`rest-catalog.kerberos.principal` +
+  `.keytab`); the authenticated principal is propagated into
+  `ClientRequestContext.remoteUser` so audit logs match the user. Requires
+  `security.mode=KERBEROS` on the front door.
+
+### Tests
+
+- `hadoop-minikdc` test dependency was added so the SPNEGO handshake can be
+  validated end-to-end inside a single JVM (`SpnegoIntegrationTest`).
 
 ## 2026-05-19
 
