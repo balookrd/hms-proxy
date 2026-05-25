@@ -55,7 +55,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile,
       ClassLoader isolatedClassLoader
   ) throws MetaException {
-    return runtimeProfile != null && runtimeProfile.isHortonworks()
+    return runtimeProfile != null && runtimeProfile.requiresIsolation()
         ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader)
         : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
   }

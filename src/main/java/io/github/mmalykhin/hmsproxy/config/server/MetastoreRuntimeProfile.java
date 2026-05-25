@@ -45,6 +45,15 @@ public enum MetastoreRuntimeProfile {
     return this == APACHE_4_1_0;
   }
 
+  /**
+   * True for profiles whose IMetaStoreClient lives in a different jar than the
+   * compile-time Hive 3.1.3 client; the runtime loads it through an isolated
+   * MetastoreApiClassLoader. APACHE_3_1_3 stays on the bootstrap classloader.
+   */
+  public boolean requiresIsolation() {
+    return isHortonworks() || isHive4();
+  }
+
   public boolean usesLegacyRequestCompatibility() {
     return this == HORTONWORKS_3_1_0_3_1_0_78;
   }

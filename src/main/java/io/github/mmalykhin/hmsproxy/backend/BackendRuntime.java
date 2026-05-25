@@ -356,7 +356,7 @@ public final class BackendRuntime implements AutoCloseable {
       CatalogConfig catalogConfig,
       MetastoreRuntimeProfile runtimeProfile
   ) throws MetaException {
-    if (runtimeProfile == null || !runtimeProfile.isHortonworks()) {
+    if (runtimeProfile == null || !runtimeProfile.requiresIsolation()) {
       return null;
     }
     try {
@@ -440,7 +440,7 @@ public final class BackendRuntime implements AutoCloseable {
   private static final class DefaultSessionFactory implements SessionFactory {
     @Override
     public boolean requiresIsolatedClassLoader(MetastoreRuntimeProfile runtimeProfile) {
-      return runtimeProfile != null && runtimeProfile.isHortonworks();
+      return runtimeProfile != null && runtimeProfile.requiresIsolation();
     }
 
     @Override
