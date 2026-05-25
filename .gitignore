@@ -15,5 +15,7 @@ buildNumber.properties
 .project
 # JDT-specific (Eclipse Java Development Tools)
 .classpath
-.idea
+.idea/
+*.iml
+.claude/
 logs/
