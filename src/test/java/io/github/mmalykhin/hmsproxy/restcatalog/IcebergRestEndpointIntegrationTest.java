@@ -137,7 +137,7 @@ public class IcebergRestEndpointIntegrationTest {
             null,
             Map.of("hive.metastore.uris", "thrift://hms-test:9083"))))
         .backend(new BackendConfig(Map.of()))
-        .restCatalog(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4))
+        .restCatalog(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }

@@ -2,6 +2,8 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpPrincipal;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -40,6 +42,22 @@ final class IcebergHttpHandler implements HttpHandler {
 
   @Override
   public void handle(HttpExchange exchange) throws IOException {
+    String remoteAddress = exchange.getRemoteAddress() != null
+        ? exchange.getRemoteAddress().getAddress().getHostAddress()
+        : null;
+    HttpPrincipal principal = exchange.getPrincipal();
+    String remoteUser = principal != null ? principal.getUsername() : null;
+    String previousAddress = ClientRequestContext.setRemoteAddress(remoteAddress);
+    String previousUser = ClientRequestContext.setRemoteUser(remoteUser);
+    try {
+      doHandle(exchange);
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousAddress);
+      ClientRequestContext.restoreRemoteUser(previousUser);
+    }
+  }
+
+  private void doHandle(HttpExchange exchange) throws IOException {
     try {
       String rawPath = exchange.getRequestURI().getPath();
       if (!rawPath.startsWith(V1_PREFIX) && !rawPath.equals("/v1")) {

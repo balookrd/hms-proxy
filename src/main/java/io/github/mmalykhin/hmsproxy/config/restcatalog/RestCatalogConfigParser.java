@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.restcatalog;
 
+import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 
@@ -27,6 +28,16 @@ public final class RestCatalogConfigParser {
           "rest-catalog.max-worker-threads (" + maxWorkerThreads
               + ") must be >= rest-catalog.min-worker-threads (" + minWorkerThreads + ")");
     }
-    return new RestCatalogConfig(enabled, bindHost, port, minWorkerThreads, maxWorkerThreads);
+    String principal = reader.getOrNull("rest-catalog.kerberos.principal");
+    String keytab = reader.getOrNull("rest-catalog.kerberos.keytab");
+    if ((principal == null) != (keytab == null)) {
+      throw new IllegalArgumentException(
+          "rest-catalog.kerberos.principal and rest-catalog.kerberos.keytab must be set together");
+    }
+    if (enabled && keytab != null) {
+      ConfigParsing.requireReadableFile(keytab, "rest-catalog.kerberos.keytab");
+    }
+    return new RestCatalogConfig(
+        enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab);
   }
 }

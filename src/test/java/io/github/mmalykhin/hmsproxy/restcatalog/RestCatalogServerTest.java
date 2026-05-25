@@ -22,14 +22,14 @@ public class RestCatalogServerTest {
 
   @Test
   public void returnsNullWhenDisabled() throws Exception {
-    ProxyConfig config = buildConfig(new RestCatalogConfig(false, "127.0.0.1", 0, 1, 4));
+    ProxyConfig config = buildConfig(new RestCatalogConfig(false, "127.0.0.1", 0, 1, 4, null, null));
     RestCatalogServer server = RestCatalogServer.open(config);
     Assert.assertNull(server);
   }
 
   @Test
   public void servesEmptyIcebergConfigOnGet() throws Exception {
-    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4));
+    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null));
     try (RestCatalogServer server = RestCatalogServer.open(config)) {
       Assert.assertNotNull(server);
       HttpResponse<String> response = request(server, "/v1/config", "GET");
@@ -42,7 +42,7 @@ public class RestCatalogServerTest {
 
   @Test
   public void rejectsNonReadMethodsOnConfig() throws Exception {
-    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4));
+    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null));
     try (RestCatalogServer server = RestCatalogServer.open(config)) {
       HttpResponse<String> response = request(server, "/v1/config", "POST");
       Assert.assertEquals(405, response.statusCode());
@@ -52,7 +52,7 @@ public class RestCatalogServerTest {
 
   @Test
   public void respondsWithNotFoundForUnknownPath() throws Exception {
-    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4));
+    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null));
     try (RestCatalogServer server = RestCatalogServer.open(config)) {
       HttpResponse<String> response = request(server, "/v1/namespaces", "GET");
       Assert.assertEquals(404, response.statusCode());
@@ -62,7 +62,7 @@ public class RestCatalogServerTest {
 
   @Test
   public void boundPortReflectsActualListener() throws Exception {
-    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4));
+    ProxyConfig config = buildConfig(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null));
     try (RestCatalogServer server = RestCatalogServer.open(config)) {
       Assert.assertTrue("port must be allocated", server.boundPort() > 0);
     }

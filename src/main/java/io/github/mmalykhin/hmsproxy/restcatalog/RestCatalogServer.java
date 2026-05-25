@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
+import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -16,6 +17,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,10 +54,27 @@ public final class RestCatalogServer implements AutoCloseable {
       throw e;
     }
 
+    SpnegoAuthenticator authenticator = null;
+    if (restConfig.kerberosEnabled()) {
+      try {
+        UserGroupInformation ugi = RestKerberosBootstrap.login(restConfig);
+        authenticator = new SpnegoAuthenticator(ugi, restConfig.kerberosPrincipal());
+        LOG.info("Iceberg REST SPNEGO enabled for principal {}", restConfig.kerberosPrincipal());
+      } catch (Exception e) {
+        server.stop(0);
+        throw new IOException(
+            "Failed to initialise SPNEGO authenticator for Iceberg REST listener: " + e.getMessage(), e);
+      }
+    }
+
+    HttpContext v1Context;
     if (service != null) {
-      server.createContext("/v1/", new IcebergHttpHandler(service));
+      v1Context = server.createContext("/v1/", new IcebergHttpHandler(service));
     } else {
-      server.createContext("/v1/config", new ConfigHandler());
+      v1Context = server.createContext("/v1/config", new ConfigHandler());
+    }
+    if (authenticator != null) {
+      v1Context.setAuthenticator(authenticator);
     }
     server.createContext("/", new NotFoundHandler());
 
