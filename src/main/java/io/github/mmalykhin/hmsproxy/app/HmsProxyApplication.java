@@ -6,6 +6,7 @@ import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
+import io.github.mmalykhin.hmsproxy.restcatalog.RestCatalogServer;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
@@ -45,6 +46,7 @@ public final class HmsProxyApplication {
       try (frontDoorSecurity;
            CatalogRouter router = CatalogRouter.open(config, observability.metrics());
            ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability);
+           RestCatalogServer restServer = RestCatalogServer.open(config);
            RoutingMetaStoreProxy handler =
                new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router),
                    frontDoorSecurity, observability)) {

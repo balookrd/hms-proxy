@@ -22,6 +22,8 @@ import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.management.ManagementConfigParser;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfigParser;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfigParser;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser;
@@ -57,6 +59,7 @@ public final class ProxyConfigLoader {
     TransactionalDdlGuardConfig transactionalDdlGuard =
         TransactionalDdlGuardConfigParser.parse(reader);
     ManagementConfig management = ManagementConfigParser.parse(reader, server);
+    RestCatalogConfig restCatalog = RestCatalogConfigParser.parse(reader, server);
     SyntheticReadLockStoreConfig syntheticReadLockStore =
         SyntheticReadLockStoreConfigParser.parse(reader);
     RateLimitConfig rateLimit = RateLimitConfigParser.parse(reader, catalogs);
@@ -76,6 +79,7 @@ public final class ProxyConfigLoader {
         .federation(federation)
         .transactionalDdlGuard(transactionalDdlGuard)
         .management(management)
+        .restCatalog(restCatalog)
         .syntheticReadLockStore(syntheticReadLockStore)
         .rateLimit(rateLimit)
         .latencyRouting(latencyRouting)
