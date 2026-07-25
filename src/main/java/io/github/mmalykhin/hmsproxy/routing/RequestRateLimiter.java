@@ -99,8 +99,10 @@ final class RequestRateLimiter {
     String sourceAddress = ClientRequestContext.remoteAddress().orElse(null);
     if (sourceAddress != null && !sourceAddress.isBlank()) {
       consume(sourceLimits, sourceAddress, nowNanos, methodName, classification, null, sourceAddress);
+      byte[] decodedSourceAddress =
+          sourceCidrLimits.isEmpty() ? null : ClientAddressMatcher.decodeAddress(sourceAddress);
       for (SourceCidrLimit sourceCidrLimit : sourceCidrLimits) {
-        if (sourceCidrLimit.matches(sourceAddress)) {
+        if (sourceCidrLimit.matches(decodedSourceAddress)) {
           consume(
               sourceCidrLimit.group(),
               sourceCidrLimit.name(),
@@ -272,7 +274,7 @@ final class RequestRateLimiter {
       List<ClientAddressMatcher> matchers,
       TokenBucketGroup group
   ) {
-    private boolean matches(String sourceAddress) {
+    private boolean matches(byte[] sourceAddress) {
       for (ClientAddressMatcher matcher : matchers) {
         if (matcher.matches(sourceAddress)) {
           return true;
