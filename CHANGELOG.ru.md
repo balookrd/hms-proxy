@@ -1,10 +1,42 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-05-26`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-07-25`.
 Записи сгруппированы по датам коммитов и сфокусированы на заметных для пользователей изменениях.
 Первый тегированный релиз — `v1.0.0`, выпущен 2026-04-29.
 
 English version: [CHANGELOG.md](CHANGELOG.md).
+
+## 2026-07-25
+
+### Добавлено
+
+- Ограниченный жизненный цикл front-door клиентских сокетов. Принятые соединения
+  теперь получают read timeout (`server.client-socket-timeout-ms`, по умолчанию
+  `600000`, `0` отключает) и настраиваемый TCP keepalive (`server.tcp-keepalive`,
+  `server.tcp-keepalive-idle-seconds`, `server.tcp-keepalive-interval-seconds`,
+  `server.tcp-keepalive-count`). Раньше libthrift принимал сокеты с бесконечным
+  read timeout и системными keepalive-таймерами, поэтому клиент, умерший без
+  FIN/RST, держал worker-поток заблокированным, пока ОС не сдастся, — с медленным
+  вымыванием `server.max-worker-threads`. Дополнительные frontend listener'ы
+  наследуют значения primary и могут переопределить каждый ключ по отдельности.
+- `server.shutdown-timeout-seconds` (по умолчанию `30`) ограничивает упорядоченную
+  остановку по SIGTERM.
+
+### Исправлено
+
+- Shutdown hook теперь дожидается полной упорядоченной остановки. Раньше он
+  останавливал только primary listener и сразу завершался, из-за чего JVM успевала
+  сделать halt до того, как main-поток закроет дополнительные frontend listener'ы,
+  management listener, backend-ресурсы router'а и front-door security.
+- `MetastoreThriftServer.stop()` больше не гоняется с `serve()`. Остановка, попавшая
+  в окно до сброса внутреннего флага `stopped_` в libthrift, раньше либо пропускалась
+  целиком (guard `isServing()`), либо затиралась, оставляя accept-цикл крутиться на
+  закрытом сокете. Потоки дополнительных listener'ов стали daemon-потоками, поэтому
+  авария при старте одного listener'а больше не может оставить зомби-JVM с занятыми
+  портами.
+- `MetastoreThriftServer.stop()` больше не закрывает общий `FrontDoorSecurity`.
+  Остановка одного listener'а раньше глушила потоки delegation-token secret manager'а
+  для всех остальных; теперь закрывает тот компонент, который его создал.
 
 ## 2026-05-26
 

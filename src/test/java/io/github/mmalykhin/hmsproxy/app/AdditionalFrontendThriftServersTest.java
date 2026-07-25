@@ -83,6 +83,60 @@ public class AdditionalFrontendThriftServersTest {
     }
   }
 
+  @Test
+  public void listenerThreadsAreDaemonThreads() throws Exception {
+    List<AdditionalFrontendConfig> extras = List.of(
+        new AdditionalFrontendConfig("daemoncheck", "127.0.0.1", freePort(), 1, 4,
+            FrontendProfile.APACHE_3_1_3, null));
+
+    try (AdditionalFrontendThriftServers servers =
+        AdditionalFrontendThriftServers.open(buildConfig(extras), noopHandler(), null)) {
+      Assert.assertEquals(1, servers.running().size());
+      List<Thread> threads = listenerThreads("hms-proxy-fe-daemoncheck");
+      Assert.assertEquals("listener thread must exist while serving", 1, threads.size());
+      Assert.assertTrue("a listener thread must never keep a failed JVM alive",
+          threads.get(0).isDaemon());
+    }
+  }
+
+  @Test
+  public void failureOnSecondListenerLeavesNoLiveListenerThreads() throws Exception {
+    int sharedPort = freePort();
+    try (ServerSocket hog = new ServerSocket()) {
+      hog.bind(new InetSocketAddress("127.0.0.1", sharedPort), 1);
+      List<AdditionalFrontendConfig> extras = List.of(
+          new AdditionalFrontendConfig("leakcheck", "127.0.0.1", freePort(), 1, 4,
+              FrontendProfile.APACHE_3_1_3, null),
+          new AdditionalFrontendConfig("leakcheckbad", "127.0.0.1", sharedPort, 1, 4,
+              FrontendProfile.APACHE_3_1_3, null));
+
+      try {
+        AdditionalFrontendThriftServers.open(buildConfig(extras), noopHandler(), null);
+        Assert.fail("expected bind failure for occupied port " + sharedPort);
+      } catch (Exception expected) {
+        Assert.assertTrue("partial-start cleanup must not leave a listener thread running",
+            awaitNoListenerThreads("hms-proxy-fe-leakcheck"));
+      }
+    }
+  }
+
+  private static List<Thread> listenerThreads(String namePrefix) {
+    return Thread.getAllStackTraces().keySet().stream()
+        .filter(Thread::isAlive)
+        .filter(thread -> thread.getName().startsWith(namePrefix))
+        .toList();
+  }
+
+  private static boolean awaitNoListenerThreads(String namePrefix) throws Exception {
+    for (int attempt = 0; attempt < 50; attempt++) {
+      if (listenerThreads(namePrefix).isEmpty()) {
+        return true;
+      }
+      Thread.sleep(100L);
+    }
+    return false;
+  }
+
   private static int freePort() throws Exception {
     try (ServerSocket socket = new ServerSocket(0)) {
       return socket.getLocalPort();

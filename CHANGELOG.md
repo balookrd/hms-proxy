@@ -1,10 +1,40 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-07-25
+
+### Added
+
+- Bounded front-door client socket lifetime. Accepted connections now get a read
+  timeout (`server.client-socket-timeout-ms`, default `600000`, `0` disables) and
+  tunable TCP keepalive (`server.tcp-keepalive`, `server.tcp-keepalive-idle-seconds`,
+  `server.tcp-keepalive-interval-seconds`, `server.tcp-keepalive-count`). Previously
+  libthrift accepted sockets with an infinite read timeout and OS-default keepalive
+  timers, so a client that died without FIN/RST pinned a worker thread until the
+  OS gave up, slowly draining `server.max-worker-threads`. Additional frontend
+  listeners inherit the primary values and can override each key per listener.
+- `server.shutdown-timeout-seconds` (default `30`) bounds the ordered teardown on
+  SIGTERM.
+
+### Fixed
+
+- Shutdown hook now waits for the full ordered teardown. It previously stopped only
+  the primary listener and returned immediately, letting the JVM halt before the main
+  thread could close the additional frontend listeners, the management listener, the
+  router backends and the front-door security.
+- `MetastoreThriftServer.stop()` is now race-free against `serve()`. A stop that landed
+  before libthrift cleared its internal `stopped_` flag used to be either skipped
+  entirely (the `isServing()` guard) or erased, leaving the accept loop spinning on a
+  closed socket. Additional listener threads are daemon threads, so a failure while
+  starting one listener can no longer leave a zombie JVM holding ports.
+- `MetastoreThriftServer.stop()` no longer closes the shared `FrontDoorSecurity`.
+  Stopping one listener used to stop the delegation-token secret manager threads for
+  every other listener; the component that opens it now owns closing it.
 
 ## 2026-05-26
 

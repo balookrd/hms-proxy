@@ -2,8 +2,10 @@ package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
+import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import java.net.BindException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
@@ -19,23 +21,30 @@ import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
 public final class MetastoreThriftServer {
   private static final Logger LOG = LoggerFactory.getLogger(MetastoreThriftServer.class);
+  private static final long STOP_POLL_MILLIS = 25L;
+  private static final long STOP_TIMEOUT_MILLIS = 10_000L;
 
-  private final ProxyConfig config;
-  private final FrontDoorSecurity frontDoorSecurity;
+  private final String listenerName;
+  private final TServerSocket serverSocket;
   private final TServer server;
+
+  private final Object lifecycle = new Object();
+  private boolean stopRequested;
+  private volatile boolean insideServe;
 
   public MetastoreThriftServer(
       ProxyConfig config,
       ThriftHiveMetastore.Iface handler,
       FrontDoorSecurity frontDoorSecurity
   ) throws Exception {
-    this.config = config;
-    this.frontDoorSecurity = frontDoorSecurity;
+    this.listenerName = config.server().name();
     TProcessor processor = FrontendProcessorFactory.create(config, handler);
-    TServerSocket serverSocket;
+    ClientSocketConfig clientSocket = config.server().clientSocket();
     try {
-      serverSocket = new TServerSocket(
-          new InetSocketAddress(config.server().bindHost(), config.server().port()));
+      this.serverSocket = new FrontDoorServerSocket(
+          new InetSocketAddress(config.server().bindHost(), config.server().port()),
+          clientSocket,
+          listenerName);
     } catch (TTransportException e) {
       String reason = e.getCause() instanceof BindException
           ? e.getCause().getMessage()
@@ -44,6 +53,7 @@ public final class MetastoreThriftServer {
           config.server().bindHost(), config.server().port(), reason);
       throw e;
     }
+    logClientSocketSettings(clientSocket);
 
     TTransportFactory transportFactory = new TTransportFactory();
     if (frontDoorSecurity != null) {
@@ -60,6 +70,23 @@ public final class MetastoreThriftServer {
         .minWorkerThreads(config.server().minWorkerThreads())
         .maxWorkerThreads(config.server().maxWorkerThreads());
     this.server = new TThreadPoolServer(args);
+  }
+
+  private void logClientSocketSettings(ClientSocketConfig clientSocket) {
+    if (!clientSocket.clientTimeoutEnabled()) {
+      LOG.warn("Listener '{}' accepts client sockets without a read timeout "
+              + "(server.client-socket-timeout-ms=0); a client dying without FIN/RST can pin a "
+              + "worker thread until TCP keepalive gives up", listenerName);
+    }
+    LOG.info("Listener '{}' front-door socket settings: clientTimeoutMs={}, tcpKeepAlive={}{}",
+        listenerName,
+        clientSocket.clientTimeoutMs(),
+        clientSocket.tcpKeepAlive(),
+        clientSocket.tcpKeepAlive()
+            ? " (idle=" + clientSocket.keepAliveIdleSeconds() + "s, interval="
+                + clientSocket.keepAliveIntervalSeconds() + "s, count=" + clientSocket.keepAliveCount()
+                + ", dead-peer detection <= " + clientSocket.keepAliveDetectionSeconds() + "s)"
+            : "");
   }
 
   public static String frontDoorClientPrincipal(SecurityConfig security) {
@@ -100,16 +127,75 @@ public final class MetastoreThriftServer {
     throw (E) t;
   }
 
+  /**
+   * Blocks in the Thrift accept loop until {@link #stop()} is called. Returns immediately when a
+   * stop was already requested: libthrift's {@code serve()} clears its own {@code stopped_} flag
+   * on entry, so a stop that lost the race would otherwise be discarded and the listener would
+   * keep accepting.
+   */
   public void serve() {
-    server.serve();
+    synchronized (lifecycle) {
+      if (stopRequested) {
+        LOG.info("Listener '{}' was stopped before it started serving", listenerName);
+        return;
+      }
+      insideServe = true;
+    }
+    try {
+      server.serve();
+    } finally {
+      insideServe = false;
+    }
   }
 
+  /**
+   * Stops the listener and releases its port. Idempotent and safe to call concurrently with
+   * {@link #serve()}, including before {@code serve()} has started.
+   *
+   * <p>Ownership note: the shared {@link FrontDoorSecurity} is deliberately not closed here.
+   * Every listener of the proxy shares one instance, so stopping a single listener must not
+   * stop the delegation-token secret manager threads for the others. The component that opened
+   * it closes it.
+   */
   public void stop() {
-    if (server.isServing()) {
-      server.stop();
+    synchronized (lifecycle) {
+      if (stopRequested) {
+        return;
+      }
+      stopRequested = true;
+      if (!insideServe) {
+        // serve() can no longer enter the Thrift loop, so release the port directly instead of
+        // going through TServer.stop() (which would be a no-op on a server that never started).
+        serverSocket.close();
+        return;
+      }
     }
-    if (frontDoorSecurity != null) {
-      frontDoorSecurity.close();
+    stopServingLoop();
+  }
+
+  private void stopServingLoop() {
+    // TThreadPoolServer.serve() clears stopped_ exactly once, after listen() and just before the
+    // accept loop. A stop() landing in that window is erased, and the accept loop then spins on
+    // an already-closed socket logging a warning per iteration. Re-requesting the stop until the
+    // serve loop has actually left bounds that window to a single poll interval.
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STOP_TIMEOUT_MILLIS);
+    while (true) {
+      server.stop();
+      if (!insideServe) {
+        return;
+      }
+      if (System.nanoTime() - deadline >= 0L) {
+        LOG.warn("Listener '{}' did not leave the Thrift accept loop within {}ms of stop()",
+            listenerName, STOP_TIMEOUT_MILLIS);
+        return;
+      }
+      try {
+        Thread.sleep(STOP_POLL_MILLIS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        LOG.warn("Interrupted while stopping listener '{}'", listenerName);
+        return;
+      }
     }
   }
 }

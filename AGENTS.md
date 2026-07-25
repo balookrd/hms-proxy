@@ -98,6 +98,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - `logs/`, `target/`, IDE metadata и локальные smoke env files - локальные артефакты. Не включай их в обычные code changes без явной просьбы.
 - Игнорируй директории и файлы `.claude/`, `.idea/` и `*.iml`: не читай их, не анализируй и не упоминай в ответах. Это персональные/IDE-артефакты, не относящиеся к проекту.
 - Smoke scripts могут требовать реальные HMS/HS2/Kerberos credentials; не запускай их бездумно против production-like окружений.
+- Жизненный цикл Thrift-listener'ов: `MetastoreThriftServer` владеет только своим сокетом. Общий `FrontDoorSecurity` закрывает тот, кто его открыл (`HmsProxyApplication`), а не `stop()` отдельного listener'а. `stop()` обязан оставаться идемпотентным и безопасным в гонке с `serve()` — libthrift 0.9.3 сбрасывает свой флаг `stopped_` уже внутри `serve()`. Shutdown hook останавливает primary listener и ждёт упорядоченную остановку в main-потоке: JVM делает halt сразу после возврата последнего hook.
 
 ## Поддержка AGENTS.md
 

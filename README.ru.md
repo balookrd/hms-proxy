@@ -256,6 +256,43 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+### Жизненный цикл front-door сокетов и shutdown
+
+libthrift принимает клиентские сокеты с бесконечным read timeout, поэтому клиент, исчезнувший
+без FIN/RST (сбой сети, kill процесса за NAT), навсегда оставляет свой worker-поток
+заблокированным в read. Пул worker'ов ограничен `server.max-worker-threads`, так что listener
+медленно вымывается вплоть до полного отказа принимать новые соединения. Поэтому каждый
+listener ограничивает жизненный цикл сокета:
+
+| Ключ | По умолчанию | Смысл |
+| --- | --- | --- |
+| `server.client-socket-timeout-ms` | `600000` | Read timeout на принятом соединении; `0` возвращает неограниченное поведение libthrift |
+| `server.tcp-keepalive` | `true` | SO_KEEPALIVE на принятых соединениях |
+| `server.tcp-keepalive-idle-seconds` | `120` | Простой до первой keepalive-пробы |
+| `server.tcp-keepalive-interval-seconds` | `30` | Интервал между keepalive-пробами |
+| `server.tcp-keepalive-count` | `4` | Сколько проб должно провалиться, прежде чем соединение будет закрыто |
+| `server.shutdown-timeout-seconds` | `30` | Ограничение на упорядоченную остановку после SIGTERM |
+
+`client-socket-timeout-ms` — именно **read** timeout: он ограничивает, сколько worker ждёт
+следующего запроса на уже установленном соединении, и не обрывает долгие серверные вызовы вроде
+`drop_table` с purge, потому что во время обработки запроса чтения нет. Дефолт согласован по
+порядку величины с хайвовым `hive.metastore.client.socket.timeout` (600s); клиенты, обёрнутые в
+`RetryingMetaStoreClient` (HiveServer2, Spark), переподключаются прозрачно, когда idle-соединение
+рециклится.
+
+Keepalive-таймеры ограничивают детект мёртвого peer'а величиной `idle + interval * count` секунд —
+4 минуты на дефолтах вместо примерно двух часов, которые дают системные `tcp_keepalive_*`.
+Тюнинг таймеров требует per-socket keepalive-опций (Linux и macOS); на платформе без них proxy
+пишет одну запись в лог на listener и откатывается к системным таймерам, сохраняя обычный
+SO_KEEPALIVE.
+
+По SIGTERM shutdown hook останавливает primary listener и затем ждёт, пока main-поток закроет по
+порядку дополнительные frontend listener'ы, management listener, backend-ресурсы router'а и
+front-door security. JVM выполняет halt сразу после возврата последнего shutdown hook, поэтому
+именно это ожидание не даёт оборвать in-flight запросы дополнительных фронтендов и оставить
+незакрытыми backend-ресурсы. Ожидание ограничено `server.shutdown-timeout-seconds`; если
+остановка не уложилась в лимит, proxy пишет WARN и всё равно отпускает JVM.
+
 ## Observability
 
 ### Management listener
@@ -623,10 +660,20 @@ Primary listener живёт на `server.port` со своим `compatibility.fr
 | `additional-frontends.<name>.bind-host` | нет | `server.bind-host` |
 | `additional-frontends.<name>.min-worker-threads` | нет | `server.min-worker-threads` |
 | `additional-frontends.<name>.max-worker-threads` | нет | `server.max-worker-threads` |
+| `additional-frontends.<name>.client-socket-timeout-ms` | нет | `server.client-socket-timeout-ms` |
+| `additional-frontends.<name>.tcp-keepalive` | нет | `server.tcp-keepalive` |
+| `additional-frontends.<name>.tcp-keepalive-idle-seconds` | нет | `server.tcp-keepalive-idle-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-interval-seconds` | нет | `server.tcp-keepalive-interval-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-count` | нет | `server.tcp-keepalive-count` |
 
 Все listener'ы используют один `RoutingMetaStoreProxy`, federation, security
 (`FrontDoorSecurity` включая SASL/Kerberos), audit и Prometheus метрики. Отличается
 только wire-level Thrift API на конкретном порту.
+
+Дополнительные listener'ы работают на daemon-потоках и останавливаются раньше, чем
+закрываются router и front-door security, поэтому авария при старте одного listener'а не
+оставит JVM живой с занятым портом. См.
+[Жизненный цикл front-door сокетов и shutdown](#жизненный-цикл-front-door-сокетов-и-shutdown).
 
 Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
 

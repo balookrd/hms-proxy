@@ -400,9 +400,29 @@ Expected:
 - one catalog runtime does not “stick” to another
 - namespace rewrite remains correct after notification/ACID calls
 
-**13. What To Watch In Proxy Logs**
+**13. Graceful shutdown check**
+
+With at least one `additional-frontends.*` listener configured, start the proxy, open a client
+session against each listener, then send `SIGTERM` to the proxy process (`kill <pid>`, not
+`kill -9`).
+
+Expected:
+- the log shows `Shutdown requested, stopping HMS proxy` followed by `HMS proxy stopped`
+- the process exits well within `server.shutdown-timeout-seconds` (default 30s)
+- every listening port — primary, additional frontends, management — is released after exit
+  (`ss -ltnp | grep <port>` returns nothing)
+- no `did not finish within` / `did not leave the Thrift accept loop` warnings
+- no leftover JVM process holding ports (`ps` + `ss` after exit)
+
+Also check the failure path once: configure an additional frontend on a port that is already
+taken, start the proxy, and confirm it exits instead of leaving a JVM alive with the other
+listener's port still bound.
+
+**14. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
+- `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
+- `runs on a platform without per-socket TCP keepalive tuning` (expected only on exotic platforms)
 - `Routing config: defaultCatalog=...`
 - `Compatibility config: frontendProfile=..., frontendVersion=...`
 - `Backend catalog '...' selected runtimeProfile=... compatibilityProfile=...`

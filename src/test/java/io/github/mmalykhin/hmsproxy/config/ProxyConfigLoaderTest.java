@@ -14,6 +14,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreMode;
 public class ProxyConfigLoaderTest {
@@ -1204,6 +1205,85 @@ public class ProxyConfigLoaderTest {
           config.latencyRouting().degradedRoutingPolicy());
       Assert.assertEquals(850L, config.catalogs().get("catalog1").latencyBudgetMs());
       Assert.assertEquals(0L, config.catalogs().get("catalog2").latencyBudgetMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void frontDoorSocketSettingsDefaultToBoundedLifetime() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      ClientSocketConfig clientSocket = config.server().clientSocket();
+      Assert.assertEquals(600_000, clientSocket.clientTimeoutMs());
+      Assert.assertTrue(clientSocket.clientTimeoutEnabled());
+      Assert.assertTrue(clientSocket.tcpKeepAlive());
+      Assert.assertEquals(120, clientSocket.keepAliveIdleSeconds());
+      Assert.assertEquals(30, clientSocket.keepAliveIntervalSeconds());
+      Assert.assertEquals(4, clientSocket.keepAliveCount());
+      Assert.assertEquals(240, clientSocket.keepAliveDetectionSeconds());
+      Assert.assertEquals(30, config.server().shutdownTimeoutSeconds());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void frontDoorSocketSettingsAreConfigurable() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          server.client-socket-timeout-ms=0
+          server.tcp-keepalive=false
+          server.tcp-keepalive-idle-seconds=60
+          server.tcp-keepalive-interval-seconds=15
+          server.tcp-keepalive-count=6
+          server.shutdown-timeout-seconds=45
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      ClientSocketConfig clientSocket = config.server().clientSocket();
+      Assert.assertEquals(0, clientSocket.clientTimeoutMs());
+      Assert.assertFalse(clientSocket.clientTimeoutEnabled());
+      Assert.assertFalse(clientSocket.tcpKeepAlive());
+      Assert.assertEquals(60, clientSocket.keepAliveIdleSeconds());
+      Assert.assertEquals(15, clientSocket.keepAliveIntervalSeconds());
+      Assert.assertEquals(6, clientSocket.keepAliveCount());
+      Assert.assertEquals(45, config.server().shutdownTimeoutSeconds());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsNegativeClientSocketTimeout() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          server.client-socket-timeout-ms=-1
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("expected IllegalArgumentException for negative client socket timeout");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("server.client-socket-timeout-ms must be >= 0"));
+      }
     } finally {
       Files.deleteIfExists(file);
     }

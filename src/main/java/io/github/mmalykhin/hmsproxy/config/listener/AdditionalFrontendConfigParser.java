@@ -2,8 +2,10 @@ package io.github.mmalykhin.hmsproxy.config.listener;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
+import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfigParser;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,6 +81,9 @@ public final class AdditionalFrontendConfigParser {
       }
       ConfigParsing.requireReadableFile(jar, "additional-frontends." + name + ".standalone-metastore-jar");
     }
-    return new AdditionalFrontendConfig(name, bindHost, port, minThreads, maxThreads, profile, jar);
+    ClientSocketConfig clientSocket =
+        ServerConfigParser.parseClientSocket(reader, scope, primary.clientSocket());
+    return new AdditionalFrontendConfig(
+        name, bindHost, port, minThreads, maxThreads, profile, jar, clientSocket);
   }
 }
