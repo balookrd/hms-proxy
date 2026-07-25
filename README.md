@@ -1348,6 +1348,10 @@ client:
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
 
+When a `txn` or `lock` run fails after `open_txns`, the client issues a best-effort `abort_txn`
+before propagating the error, `--close-txn none` included: a failed smoke run must not leave a
+transaction holding back the `ValidTxnList` watermark until the heartbeat timeout expires.
+
 The current smoke coverage is summarized in the [SMOKE.md](SMOKE.md) test matrix by:
 
 - client version

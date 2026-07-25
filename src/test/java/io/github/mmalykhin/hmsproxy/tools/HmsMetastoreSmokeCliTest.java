@@ -1,12 +1,17 @@
 package io.github.mmalykhin.hmsproxy.tools;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockType;
+import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.thrift.TException;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -82,6 +87,79 @@ public class HmsMetastoreSmokeCliTest {
     Assert.assertEquals("p=2026-03-31", request.getComponent().get(0).getPartitionname());
     Assert.assertEquals(DataOperationType.NO_TXN, request.getComponent().get(0).getOperationType());
     Assert.assertFalse(request.getComponent().get(0).isIsTransactional());
+  }
+
+  @Test
+  public void abortsTheTransactionAfterAFailedSmokeStep() {
+    List<String> calls = new ArrayList<>();
+    List<Long> abortedTxnIds = new ArrayList<>();
+    ThriftHiveMetastore.Iface thriftClient = thriftClient((method, args) -> {
+      calls.add(method.getName());
+      abortedTxnIds.add(((AbortTxnRequest) args[0]).getTxnid());
+      return null;
+    });
+    IllegalStateException failure = new IllegalStateException("Unexpected lock state: NOT_ACQUIRED");
+
+    HmsMetastoreSmokeCli.abortTxnAfterFailure(thriftClient, 4242L, failure);
+
+    Assert.assertEquals(List.of("abort_txn"), calls);
+    Assert.assertEquals(List.of(4242L), abortedTxnIds);
+    Assert.assertEquals(0, failure.getSuppressed().length);
+  }
+
+  @Test
+  public void keepsTheOriginalFailureWhenTheAbortItselfFails() {
+    TException abortFailure = new TException("abort rejected");
+    ThriftHiveMetastore.Iface thriftClient = thriftClient((method, args) -> {
+      throw abortFailure;
+    });
+    IllegalStateException failure = new IllegalStateException("Unexpected lock state: NOT_ACQUIRED");
+
+    HmsMetastoreSmokeCli.abortTxnAfterFailure(thriftClient, 7L, failure);
+
+    Assert.assertArrayEquals(new Throwable[]{abortFailure}, failure.getSuppressed());
+  }
+
+  @Test
+  public void closeFailureIsSuppressedIntoTheSmokeFailure() {
+    TException smokeFailure = new TException("add_write_notification_log failed");
+    IllegalStateException closeFailure = new IllegalStateException("close failed");
+
+    Throwable reported = HmsMetastoreSmokeCli.runQuietly(smokeFailure, () -> {
+      throw closeFailure;
+    });
+
+    Assert.assertSame(smokeFailure, reported);
+    Assert.assertArrayEquals(new Throwable[]{closeFailure}, smokeFailure.getSuppressed());
+    try {
+      HmsMetastoreSmokeCli.rethrow(reported);
+      Assert.fail("Expected the smoke failure to be rethrown");
+    } catch (Exception e) {
+      Assert.assertSame(smokeFailure, e);
+    }
+  }
+
+  @Test
+  public void closeFailureIsReportedWhenTheSmokeRunSucceeded() {
+    IllegalStateException closeFailure = new IllegalStateException("close failed");
+
+    Assert.assertSame(closeFailure, HmsMetastoreSmokeCli.runQuietly(null, () -> {
+      throw closeFailure;
+    }));
+    Assert.assertNull(HmsMetastoreSmokeCli.runQuietly(null, () -> {
+    }));
+  }
+
+  private static ThriftHiveMetastore.Iface thriftClient(ThriftCall call) {
+    return (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        HmsMetastoreSmokeCliTest.class.getClassLoader(),
+        new Class<?>[]{ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> call.invoke(method, args));
+  }
+
+  @FunctionalInterface
+  private interface ThriftCall {
+    Object invoke(Method method, Object[] args) throws Throwable;
   }
 
   private static Object parse(String... args) throws Exception {

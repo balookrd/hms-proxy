@@ -1287,6 +1287,10 @@ RPC:
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
 
+Если прогон `txn` или `lock` падает уже после `open_txns`, клиент делает best-effort `abort_txn`
+перед пробросом ошибки, в том числе при `--close-txn none`: упавший smoke не должен оставлять
+транзакцию, удерживающую watermark `ValidTxnList` до истечения heartbeat-timeout.
+
 Текущее smoke-покрытие сведено в test matrix в [SMOKE.ru.md](SMOKE.ru.md) по полям:
 
 - client version
