@@ -872,6 +872,11 @@ if no appenders are configured, so a plain `java -jar ...` launch still gets log
 
 Override any of it with your own `log4j.properties` on the classpath.
 
+The binding is `slf4j-reload4j`. reload4j is a drop-in fork of the EOL log4j 1.2.17 with the known
+CVEs removed, so the configuration format stays log4j 1.x and existing `log4j.properties` files keep
+working unchanged. The pieces reload4j dropped — `org.apache.log4j.jmx.*`, the `lf5` viewer and
+`NTEventLogAppender` — are the only things a hand-written configuration can no longer reference.
+
 ### Debug tracing
 
 Per-request debug tracing is **off by default**: it renders every request argument and every backend
