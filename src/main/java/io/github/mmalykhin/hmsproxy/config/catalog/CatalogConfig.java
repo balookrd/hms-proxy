@@ -26,17 +26,33 @@ public record CatalogConfig(
     int impersonationPoolMaxSize,
     long impersonationSessionIdleTtlMs
 ) {
+  public static final CatalogAccessMode DEFAULT_ACCESS_MODE = CatalogAccessMode.READ_WRITE;
+  public static final CatalogExposureMode DEFAULT_EXPOSE_MODE = CatalogExposureMode.ALLOW_ALL;
+  public static final long DEFAULT_LATENCY_BUDGET_MS = 0L;
+  public static final int DEFAULT_MAX_IMPERSONATION_CLIENTS = 128;
+  public static final long DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS = 0L;
+  public static final int DEFAULT_SHARED_SESSION_POOL_SIZE = 1;
+  public static final int DEFAULT_IMPERSONATION_POOL_MAX_SIZE = 4;
+  public static final long DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS = 0L;
+
+  // The property loader validates sizing keys strictly and fails startup on a non-positive value;
+  // these substitutions only cover the in-process builder path, where an unset field reads as 0.
   public CatalogConfig {
-    accessMode = accessMode == null ? CatalogAccessMode.READ_WRITE : accessMode;
-    exposeMode = exposeMode == null ? CatalogExposureMode.ALLOW_ALL : exposeMode;
+    accessMode = accessMode == null ? DEFAULT_ACCESS_MODE : accessMode;
+    exposeMode = exposeMode == null ? DEFAULT_EXPOSE_MODE : exposeMode;
     writeDbWhitelist = writeDbWhitelist == null ? List.of() : List.copyOf(writeDbWhitelist);
     exposeDbPatterns = exposeDbPatterns == null ? List.of() : List.copyOf(exposeDbPatterns);
-    latencyBudgetMs = Math.max(latencyBudgetMs, 0L);
-    maxImpersonationClients = maxImpersonationClients <= 0 ? 128 : maxImpersonationClients;
-    impersonationClientIdleTtlMs = Math.max(impersonationClientIdleTtlMs, 0L);
-    sharedSessionPoolSize = sharedSessionPoolSize <= 0 ? 1 : sharedSessionPoolSize;
-    impersonationPoolMaxSize = impersonationPoolMaxSize <= 0 ? 4 : impersonationPoolMaxSize;
-    impersonationSessionIdleTtlMs = Math.max(impersonationSessionIdleTtlMs, 0L);
+    latencyBudgetMs = Math.max(latencyBudgetMs, DEFAULT_LATENCY_BUDGET_MS);
+    maxImpersonationClients =
+        maxImpersonationClients <= 0 ? DEFAULT_MAX_IMPERSONATION_CLIENTS : maxImpersonationClients;
+    impersonationClientIdleTtlMs =
+        Math.max(impersonationClientIdleTtlMs, DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS);
+    sharedSessionPoolSize =
+        sharedSessionPoolSize <= 0 ? DEFAULT_SHARED_SESSION_POOL_SIZE : sharedSessionPoolSize;
+    impersonationPoolMaxSize =
+        impersonationPoolMaxSize <= 0 ? DEFAULT_IMPERSONATION_POOL_MAX_SIZE : impersonationPoolMaxSize;
+    impersonationSessionIdleTtlMs =
+        Math.max(impersonationSessionIdleTtlMs, DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
     Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
     for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
       copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -63,18 +79,18 @@ public record CatalogConfig(
         impersonationEnabled,
         accessMode,
         writeDbWhitelist,
-        CatalogExposureMode.ALLOW_ALL,
+        DEFAULT_EXPOSE_MODE,
         List.of(),
         Map.of(),
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
-        0L,
-        128,
-        0L,
-        1,
-        4,
-        0L);
+        DEFAULT_LATENCY_BUDGET_MS,
+        DEFAULT_MAX_IMPERSONATION_CLIENTS,
+        DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS,
+        DEFAULT_SHARED_SESSION_POOL_SIZE,
+        DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
+        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
   }
 
   public CatalogConfig(
@@ -104,11 +120,11 @@ public record CatalogConfig(
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
-        0L,
-        128,
-        0L,
-        1,
-        4,
-        0L);
+        DEFAULT_LATENCY_BUDGET_MS,
+        DEFAULT_MAX_IMPERSONATION_CLIENTS,
+        DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS,
+        DEFAULT_SHARED_SESSION_POOL_SIZE,
+        DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
+        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
   }
 }
