@@ -11,6 +11,8 @@ import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
@@ -33,6 +35,9 @@ public final class HmsProxyApplication {
     HiveConf.setLoadMetastoreConfig(false);
     HiveConf.setLoadHiveServer2Config(false);
 
+    // Opened before the first resource so the shutdown hook can wait for the ordered teardown
+    // that unwinds on this thread, no matter where startup fails.
+    CountDownLatch teardownComplete = new CountDownLatch(1);
     try {
       ProxyConfig config = ProxyConfigLoader.load(Path.of(args[0]));
       ProxyObservability observability = new ProxyObservability(config);
@@ -51,7 +56,7 @@ public final class HmsProxyApplication {
         try (AdditionalFrontendThriftServers extras =
             AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity)) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
-        installShutdownHook(server);
+        installShutdownHook(server, teardownComplete, config.server().shutdownTimeoutSeconds());
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
             config.server().bindHost(), config.server().port());
         for (AdditionalFrontendConfig extra : extras.running()) {
@@ -88,14 +93,22 @@ public final class HmsProxyApplication {
     } catch (Exception e) {
       emitKerberosJvmHint(e);
       throw e;
+    } finally {
+      // Releases the shutdown hook: everything above this point (additional frontends,
+      // management listener, router backends, front-door security) has been closed in order.
+      teardownComplete.countDown();
     }
   }
 
-  private static void installShutdownHook(MetastoreThriftServer server) {
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-      LOG.info("Shutdown requested, stopping HMS proxy");
-      server.stop();
-    }, "hms-proxy-shutdown"));
+  private static void installShutdownHook(
+      MetastoreThriftServer server,
+      CountDownLatch teardownComplete,
+      int shutdownTimeoutSeconds
+  ) {
+    Runtime.getRuntime().addShutdownHook(new Thread(
+        new ProxyShutdownHook(server::stop, teardownComplete,
+            TimeUnit.SECONDS.toMillis(shutdownTimeoutSeconds)),
+        "hms-proxy-shutdown"));
   }
 
   private static void emitKerberosJvmHint(Throwable error) {

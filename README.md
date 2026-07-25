@@ -254,6 +254,43 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+### Front-door socket lifetime and shutdown
+
+libthrift accepts client sockets with an infinite read timeout, so a client that disappears
+without FIN/RST — a network failure, a process killed behind NAT — leaves its worker thread
+blocked in read forever. The worker pool is bounded by `server.max-worker-threads`, so the
+listener slowly drains until it stops accepting new connections. Every listener therefore
+applies a bounded socket lifetime:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `server.client-socket-timeout-ms` | `600000` | Read timeout on an accepted connection; `0` restores the unbounded libthrift behavior |
+| `server.tcp-keepalive` | `true` | SO_KEEPALIVE on accepted connections |
+| `server.tcp-keepalive-idle-seconds` | `120` | Idle time before the first keepalive probe |
+| `server.tcp-keepalive-interval-seconds` | `30` | Interval between keepalive probes |
+| `server.tcp-keepalive-count` | `4` | Failed probes before the connection is dropped |
+| `server.shutdown-timeout-seconds` | `30` | Bound on the ordered teardown after SIGTERM |
+
+`client-socket-timeout-ms` is a **read** timeout: it bounds how long a worker waits for the next
+request on an established connection and does not abort long server-side calls such as
+`drop_table` with purge, because no read is in flight while a request is being processed. The
+default is the order of magnitude of Hive's own `hive.metastore.client.socket.timeout` (600s);
+clients wrapped in `RetryingMetaStoreClient` (HiveServer2, Spark) reconnect transparently when an
+idle connection is recycled.
+
+The keepalive timers bound dead-peer detection at `idle + interval * count` seconds — 4 minutes
+with the defaults, instead of the roughly two hours the OS-wide `tcp_keepalive_*` defaults give.
+Tuning the timers needs per-socket keepalive options (Linux and macOS); on a platform without
+them the proxy logs once per listener and falls back to the OS-wide timers, keeping plain
+SO_KEEPALIVE.
+
+On SIGTERM the shutdown hook stops the primary listener and then waits for the main thread to
+close, in order, the additional frontend listeners, the management listener, the router backends
+and the front-door security. The JVM halts as soon as the last shutdown hook returns, so this
+wait is what keeps in-flight requests on the additional frontends from being cut off and backend
+resources from being left open. It is bounded by `server.shutdown-timeout-seconds`; when the
+teardown does not finish in time the proxy logs a warning and lets the JVM halt anyway.
+
 ## Observability
 
 ### Management listener
@@ -676,10 +713,19 @@ Each `additional-frontends.<name>.*` block defines an independent listener:
 | `additional-frontends.<name>.bind-host` | no | `server.bind-host` |
 | `additional-frontends.<name>.min-worker-threads` | no | `server.min-worker-threads` |
 | `additional-frontends.<name>.max-worker-threads` | no | `server.max-worker-threads` |
+| `additional-frontends.<name>.client-socket-timeout-ms` | no | `server.client-socket-timeout-ms` |
+| `additional-frontends.<name>.tcp-keepalive` | no | `server.tcp-keepalive` |
+| `additional-frontends.<name>.tcp-keepalive-idle-seconds` | no | `server.tcp-keepalive-idle-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-interval-seconds` | no | `server.tcp-keepalive-interval-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-count` | no | `server.tcp-keepalive-count` |
 
 All listeners share the same `RoutingMetaStoreProxy`, federation, security (`FrontDoorSecurity`
 including SASL/Kerberos), audit and Prometheus metrics. Only the wire-level Thrift API
 differs per port.
+
+Additional listeners run on daemon threads and are stopped before the router and the front-door
+security are closed, so a failure while starting one listener cannot leave the JVM alive with a
+port still held. See [Front-door socket lifetime and shutdown](#front-door-socket-lifetime-and-shutdown).
 
 For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
 

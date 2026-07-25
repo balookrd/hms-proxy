@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.listener;
 
+import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 
 /**
@@ -16,6 +17,24 @@ public record AdditionalFrontendConfig(
     int minWorkerThreads,
     int maxWorkerThreads,
     FrontendProfile frontendProfile,
-    String standaloneMetastoreJar
+    String standaloneMetastoreJar,
+    ClientSocketConfig clientSocket
 ) {
+  public AdditionalFrontendConfig {
+    clientSocket = clientSocket == null ? ClientSocketConfig.defaults() : clientSocket;
+  }
+
+  /** Convenience form for callers that do not tune front-door socket lifetime. */
+  public AdditionalFrontendConfig(
+      String name,
+      String bindHost,
+      int port,
+      int minWorkerThreads,
+      int maxWorkerThreads,
+      FrontendProfile frontendProfile,
+      String standaloneMetastoreJar
+  ) {
+    this(name, bindHost, port, minWorkerThreads, maxWorkerThreads, frontendProfile,
+        standaloneMetastoreJar, ClientSocketConfig.defaults());
+  }
 }

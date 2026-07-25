@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.config.listener;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
+import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -194,6 +195,37 @@ public class AdditionalFrontendConfigParserTest {
     Assert.assertEquals(1, extras.size());
     Assert.assertEquals(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, extras.get(0).frontendProfile());
     Assert.assertEquals(jar.toString(), extras.get(0).standaloneMetastoreJar());
+  }
+
+  @Test
+  public void inheritsFrontDoorSocketSettingsFromPrimary() throws Exception {
+    List<AdditionalFrontendConfig> extras = load(BASE_PROPS
+        + "server.client-socket-timeout-ms=120000\n"
+        + "server.tcp-keepalive-idle-seconds=45\n"
+        + "additional-frontends=apache2\n"
+        + "additional-frontends.apache2.port=9084\n"
+        + "additional-frontends.apache2.frontend-profile=APACHE_3_1_3\n");
+    ClientSocketConfig clientSocket = extras.get(0).clientSocket();
+    Assert.assertEquals(120_000, clientSocket.clientTimeoutMs());
+    Assert.assertEquals(45, clientSocket.keepAliveIdleSeconds());
+    Assert.assertTrue(clientSocket.tcpKeepAlive());
+  }
+
+  @Test
+  public void overridesFrontDoorSocketSettingsPerListener() throws Exception {
+    List<AdditionalFrontendConfig> extras = load(BASE_PROPS
+        + "server.client-socket-timeout-ms=120000\n"
+        + "additional-frontends=apache2\n"
+        + "additional-frontends.apache2.port=9084\n"
+        + "additional-frontends.apache2.frontend-profile=APACHE_3_1_3\n"
+        + "additional-frontends.apache2.client-socket-timeout-ms=0\n"
+        + "additional-frontends.apache2.tcp-keepalive=false\n"
+        + "additional-frontends.apache2.tcp-keepalive-count=7\n");
+    ClientSocketConfig clientSocket = extras.get(0).clientSocket();
+    Assert.assertEquals(0, clientSocket.clientTimeoutMs());
+    Assert.assertFalse(clientSocket.clientTimeoutEnabled());
+    Assert.assertFalse(clientSocket.tcpKeepAlive());
+    Assert.assertEquals(7, clientSocket.keepAliveCount());
   }
 
   private static List<AdditionalFrontendConfig> load(String body) throws Exception {

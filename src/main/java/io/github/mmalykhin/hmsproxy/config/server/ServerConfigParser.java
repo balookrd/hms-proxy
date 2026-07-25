@@ -26,6 +26,26 @@ public final class ServerConfigParser {
         reader.get("server.bind-host", "0.0.0.0"),
         port,
         minWorkerThreads,
-        maxWorkerThreads);
+        maxWorkerThreads,
+        parseClientSocket(reader, "server.", ClientSocketConfig.defaults()),
+        reader.getPositiveInt("server.shutdown-timeout-seconds",
+            ServerConfig.DEFAULT_SHUTDOWN_TIMEOUT_SECONDS));
+  }
+
+  /**
+   * Parses the front-door socket keys under {@code scope}, falling back to {@code fallback} so
+   * additional listeners inherit the primary {@code server.*} values unless they override them.
+   */
+  public static ClientSocketConfig parseClientSocket(
+      PropertyReader reader,
+      String scope,
+      ClientSocketConfig fallback
+  ) {
+    return new ClientSocketConfig(
+        reader.getNonNegativeInt(scope + "client-socket-timeout-ms", fallback.clientTimeoutMs()),
+        reader.getBoolean(scope + "tcp-keepalive", fallback.tcpKeepAlive()),
+        reader.getPositiveInt(scope + "tcp-keepalive-idle-seconds", fallback.keepAliveIdleSeconds()),
+        reader.getPositiveInt(scope + "tcp-keepalive-interval-seconds", fallback.keepAliveIntervalSeconds()),
+        reader.getPositiveInt(scope + "tcp-keepalive-count", fallback.keepAliveCount()));
   }
 }

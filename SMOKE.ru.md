@@ -410,10 +410,29 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 - runtime одного каталога не “залипает” на другой
 - namespace rewrite остаётся корректным после notification/ACID вызова
 
-**13. Что смотреть в логах proxy**
+**13. Проверка graceful shutdown**
+
+Настроить хотя бы один listener `additional-frontends.*`, запустить proxy, открыть клиентскую
+сессию на каждый listener, затем послать процессу `SIGTERM` (`kill <pid>`, не `kill -9`).
+
+Ожидание:
+- в логе видно `Shutdown requested, stopping HMS proxy`, затем `HMS proxy stopped`
+- процесс завершается с заметным запасом до `server.shutdown-timeout-seconds` (по умолчанию 30s)
+- после выхода освобождены все слушающие порты — primary, дополнительные фронтенды, management
+  (`ss -ltnp | grep <port>` ничего не находит)
+- нет предупреждений `did not finish within` / `did not leave the Thrift accept loop`
+- не остаётся живого JVM-процесса, удерживающего порты (`ps` + `ss` после выхода)
+
+Отдельно проверить аварийный путь: настроить дополнительный frontend на уже занятый порт,
+запустить proxy и убедиться, что он завершается, а не остаётся живой JVM с занятым портом
+второго listener'а.
+
+**14. Что смотреть в логах proxy**
 
 Ищи:
 - `Starting HMS proxy`
+- `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
+- `runs on a platform without per-socket TCP keepalive tuning` (ожидаемо только на экзотических платформах)
 - `Routing config: defaultCatalog=...`
 - `Compatibility config: frontendProfile=..., frontendVersion=...`
 - `Backend catalog '...' selected runtimeProfile=... compatibilityProfile=...`

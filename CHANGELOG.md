@@ -8,6 +8,36 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ## 2026-07-25
 
+### Added
+
+- Bounded front-door client socket lifetime. Accepted connections now get a read
+  timeout (`server.client-socket-timeout-ms`, default `600000`, `0` disables) and
+  tunable TCP keepalive (`server.tcp-keepalive`, `server.tcp-keepalive-idle-seconds`,
+  `server.tcp-keepalive-interval-seconds`, `server.tcp-keepalive-count`). Previously
+  libthrift accepted sockets with an infinite read timeout and OS-default keepalive
+  timers, so a client that died without FIN/RST pinned a worker thread until the
+  OS gave up, slowly draining `server.max-worker-threads`. Additional frontend
+  listeners inherit the primary values and can override each key per listener.
+- `server.shutdown-timeout-seconds` (default `30`) bounds the ordered teardown on
+  SIGTERM.
+
+### Changed
+
+- `federation.view-text-rewrite.preserve-original-text` now defaults to `true`. With
+  `mode=REWRITE`, only `viewExpandedText` is rewritten unless the property is explicitly set to
+  `false`, so the client-facing `viewOriginalText` is no longer mutated by default.
+- Removed the `logs/hms-proxy-daily.log` `DailyRollingFileAppender` from the default logging
+  config. It had no backup limit and grew without bound, and with three root appenders every
+  third-party log line was written three times. The default is now stderr plus the size-bounded
+  `logs/hms-proxy.log`.
+- `/readyz` caches backend and Kerberos probe results for `management.readiness-cache-ms` (default
+  2000) and refreshes them single-flight, so frequent scrapes no longer fan out one round of
+  network probes per request. The response carries a new `probeAgeMs` field; set the property to
+  `0` to probe on every request. Per-backend state fields are still rendered from current runtime
+  state on every call.
+- Documented that management endpoints are unauthenticated and that `/readyz` exposes Kerberos
+  principals and backend error details, so the port belongs on an isolated monitoring network.
+
 ### Fixed
 
 - Front-door bridge responses no longer break the client connection or fail
@@ -67,12 +97,18 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   references keep their catalog prefix: outbound rewrite collapses only
   `<backend catalog>.<db>.<table>` into the external database name. Anything that cannot be
   resolved unambiguously is left untouched and logged at `DEBUG`.
-
-### Changed
-
-- `federation.view-text-rewrite.preserve-original-text` now defaults to `true`. With
-  `mode=REWRITE`, only `viewExpandedText` is rewritten unless the property is explicitly set to
-  `false`, so the client-facing `viewOriginalText` is no longer mutated by default.
+- Shutdown hook now waits for the full ordered teardown. It previously stopped only
+  the primary listener and returned immediately, letting the JVM halt before the main
+  thread could close the additional frontend listeners, the management listener, the
+  router backends and the front-door security.
+- `MetastoreThriftServer.stop()` is now race-free against `serve()`. A stop that landed
+  before libthrift cleared its internal `stopped_` flag used to be either skipped
+  entirely (the `isServing()` guard) or erased, leaving the accept loop spinning on a
+  closed socket. Additional listener threads are daemon threads, so a failure while
+  starting one listener can no longer leave a zombie JVM holding ports.
+- `MetastoreThriftServer.stop()` no longer closes the shared `FrontDoorSecurity`.
+  Stopping one listener used to stop the delegation-token secret manager threads for
+  every other listener; the component that opens it now owns closing it.
 
 ### Performance
 
@@ -96,20 +132,6 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 - `DebugLogUtil` renders into a single budget-bounded buffer, so a collection of large Thrift
   objects stops being materialized once the ~4000-character budget is spent instead of building and
   clipping each element in full.
-
-### Changed
-
-- Removed the `logs/hms-proxy-daily.log` `DailyRollingFileAppender` from the default logging
-  config. It had no backup limit and grew without bound, and with three root appenders every
-  third-party log line was written three times. The default is now stderr plus the size-bounded
-  `logs/hms-proxy.log`.
-- `/readyz` caches backend and Kerberos probe results for `management.readiness-cache-ms` (default
-  2000) and refreshes them single-flight, so frequent scrapes no longer fan out one round of
-  network probes per request. The response carries a new `probeAgeMs` field; set the property to
-  `0` to probe on every request. Per-backend state fields are still rendered from current runtime
-  state on every call.
-- Documented that management endpoints are unauthenticated and that `/readyz` exposes Kerberos
-  principals and backend error details, so the port belongs on an isolated monitoring network.
 
 ## 2026-05-26
 

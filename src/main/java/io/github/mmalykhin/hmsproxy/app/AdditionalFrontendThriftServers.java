@@ -45,7 +45,10 @@ public final class AdditionalFrontendThriftServers implements AutoCloseable {
         ProxyConfig shadow = shadowConfig(config, extra);
         MetastoreThriftServer server = new MetastoreThriftServer(shadow, handler, frontDoorSecurity);
         Thread thread = new Thread(server::serve, "hms-proxy-fe-" + extra.name());
-        thread.setDaemon(false);
+        // Daemon on purpose: the primary listener runs on the main thread, so an additional
+        // listener must never be the reason a JVM whose startup failed keeps running with its
+        // ports held.
+        thread.setDaemon(true);
         thread.start();
         LOG.info("Additional frontend listener '{}' started on {}:{} (profile={}, threads={}..{})",
             extra.name(), extra.bindHost(), extra.port(), extra.frontendProfile(),
@@ -108,7 +111,9 @@ public final class AdditionalFrontendThriftServers implements AutoCloseable {
         extra.bindHost(),
         extra.port(),
         extra.minWorkerThreads(),
-        extra.maxWorkerThreads());
+        extra.maxWorkerThreads(),
+        extra.clientSocket(),
+        base.server().shutdownTimeoutSeconds());
     CompatibilityConfig shadowCompat = new CompatibilityConfig(
         extra.frontendProfile(),
         extra.standaloneMetastoreJar(),
