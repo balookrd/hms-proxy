@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.observability;
 
+import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -16,7 +17,9 @@ public final class AuditLogUtil {
         builder.append(',');
       }
       first = false;
-      builder.append('"').append(escape(entry.getKey())).append('"').append(':');
+      builder.append('"');
+      JsonEscapeUtil.appendEscaped(builder, entry.getKey());
+      builder.append('"').append(':');
       appendValue(builder, entry.getValue());
     }
     builder.append('}');
@@ -36,15 +39,8 @@ public final class AuditLogUtil {
       builder.append(value);
       return;
     }
-    builder.append('"').append(escape(String.valueOf(value))).append('"');
-  }
-
-  private static String escape(String value) {
-    return value
-        .replace("\\", "\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t");
+    builder.append('"');
+    JsonEscapeUtil.appendEscaped(builder, String.valueOf(value));
+    builder.append('"');
   }
 }

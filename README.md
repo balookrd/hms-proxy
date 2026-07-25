@@ -374,6 +374,10 @@ The proxy emits one structured audit log record per request through the logger
 `remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback`, and
 `defaultCatalogRouted`.
 
+Client-controlled values (`authenticatedUser`, `remoteAddress`) are JSON-escaped, including every
+control character below `0x20`, so a hostile principal or address cannot break the record for log
+collectors. Non-ASCII characters are emitted verbatim as UTF-8.
+
 Example:
 
 ```json

@@ -9,8 +9,12 @@ import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosTicket;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class KerberosHealthProbe {
+  private static final Logger LOG = LoggerFactory.getLogger(KerberosHealthProbe.class);
+
   private KerberosHealthProbe() {
   }
 
@@ -69,6 +73,8 @@ public final class KerberosHealthProbe {
             .map(date -> date.getTime() / 1000L);
       });
     } catch (Exception error) {
+      // Without this the endpoint reports freshness "unknown" with no trace of the actual cause.
+      LOG.warn("Kerberos TGT expiry lookup failed; readiness will report unknown TGT freshness", error);
       return Optional.empty();
     }
   }

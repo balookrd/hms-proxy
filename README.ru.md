@@ -376,6 +376,10 @@ Proxy также пишет один structured audit log на каждый за
 `remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback` и
 `defaultCatalogRouted`.
 
+Значения, которые приходят от клиента (`authenticatedUser`, `remoteAddress`), экранируются по
+правилам JSON, включая все управляющие символы ниже `0x20`, поэтому враждебный principal или адрес
+не сломает разбор записи в log collector. Не-ASCII символы выводятся как есть, в UTF-8.
+
 Пример:
 
 ```json

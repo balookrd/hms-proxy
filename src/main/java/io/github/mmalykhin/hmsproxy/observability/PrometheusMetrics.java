@@ -10,9 +10,11 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Supplier;
 
 public final class PrometheusMetrics {
   private static final double[] REQUEST_DURATION_BUCKETS =
@@ -266,28 +268,39 @@ public final class PrometheusMetrics {
     syntheticReadLockStoreInfo.set(labels("store_mode", storeMode), 1.0);
   }
 
+  // Declared last so every metric field above is already initialized; render order is the
+  // exposition order of /metrics.
+  private final List<Metric> exposedMetrics = List.of(
+      requestsTotal,
+      requestDurationSeconds,
+      backendFailuresTotal,
+      backendFallbackTotal,
+      routingAmbiguousTotal,
+      defaultCatalogRoutedTotal,
+      rateLimitedTotal,
+      backendSessionAcquireTimeoutsTotal,
+      impersonationPoolUsers,
+      impersonationPoolSessions,
+      impersonationSessionAcquireTimeoutsTotal,
+      impersonationSessionEvictionsTotal,
+      adaptiveTimeoutReconnectTotal,
+      adaptiveTimeoutReconnectSkippedTotal,
+      filteredObjectsTotal,
+      syntheticReadLockEventsTotal,
+      syntheticReadLockStoreFailuresTotal,
+      syntheticReadLockHandoffsTotal,
+      syntheticReadLocksActive,
+      syntheticReadLockStoreInfo);
+
   public String render() {
-    StringBuilder builder = new StringBuilder(4096);
-    requestsTotal.renderInto(builder);
-    requestDurationSeconds.renderInto(builder);
-    backendFailuresTotal.renderInto(builder);
-    backendFallbackTotal.renderInto(builder);
-    routingAmbiguousTotal.renderInto(builder);
-    defaultCatalogRoutedTotal.renderInto(builder);
-    rateLimitedTotal.renderInto(builder);
-    backendSessionAcquireTimeoutsTotal.renderInto(builder);
-    impersonationPoolUsers.renderInto(builder);
-    impersonationPoolSessions.renderInto(builder);
-    impersonationSessionAcquireTimeoutsTotal.renderInto(builder);
-    impersonationSessionEvictionsTotal.renderInto(builder);
-    adaptiveTimeoutReconnectTotal.renderInto(builder);
-    adaptiveTimeoutReconnectSkippedTotal.renderInto(builder);
-    filteredObjectsTotal.renderInto(builder);
-    syntheticReadLockEventsTotal.renderInto(builder);
-    syntheticReadLockStoreFailuresTotal.renderInto(builder);
-    syntheticReadLockHandoffsTotal.renderInto(builder);
-    syntheticReadLocksActive.renderInto(builder);
-    syntheticReadLockStoreInfo.renderInto(builder);
+    int estimatedSize = 0;
+    for (Metric metric : exposedMetrics) {
+      estimatedSize += metric.estimatedRenderSize();
+    }
+    StringBuilder builder = new StringBuilder(estimatedSize);
+    for (Metric metric : exposedMetrics) {
+      metric.renderInto(builder);
+    }
     return builder.toString();
   }
 
@@ -315,6 +328,7 @@ public final class PrometheusMetrics {
     private final List<String> labelNames;
     private final int maxSeries;
     private final LabelValues overflowKey;
+    private final AtomicInteger admittedSeries = new AtomicInteger();
 
     private Metric(String name, String help, List<String> labelNames) {
       this(name, help, labelNames, DEFAULT_MAX_SERIES_PER_METRIC);
@@ -341,17 +355,42 @@ public final class PrometheusMetrics {
       return labelNames;
     }
 
-    protected LabelValues admit(ConcurrentMap<LabelValues, ?> series, LabelValues requested) {
+    /**
+     * Returns the sample for {@code requested}, creating it only while the metric still has room
+     * for a fresh series. Admission reserves a slot with a CAS before the map insert, so racing
+     * threads at the cardinality boundary cannot push the metric past {@code maxSeries} distinct
+     * label combinations; everything beyond the cap collapses into the single overflow series.
+     */
+    protected <V> V resolveSeries(
+        ConcurrentMap<LabelValues, V> series,
+        LabelValues requested,
+        Supplier<V> factory
+    ) {
+      V existing = series.get(requested);
+      if (existing != null) {
+        return existing;
+      }
       if (overflowKey == null) {
-        return requested;
+        return series.computeIfAbsent(requested, ignored -> factory.get());
       }
-      if (series.containsKey(requested)) {
-        return requested;
+      while (true) {
+        int admitted = admittedSeries.get();
+        if (admitted >= maxSeries) {
+          return series.computeIfAbsent(overflowKey, ignored -> factory.get());
+        }
+        if (admittedSeries.compareAndSet(admitted, admitted + 1)) {
+          break;
+        }
       }
-      if (series.size() >= maxSeries) {
-        return overflowKey;
+      boolean[] created = new boolean[1];
+      V value = series.computeIfAbsent(requested, ignored -> {
+        created[0] = true;
+        return factory.get();
+      });
+      if (!created[0]) {
+        admittedSeries.decrementAndGet();
       }
-      return requested;
+      return value;
     }
 
     protected void appendHeader(StringBuilder builder, String type) {
@@ -359,26 +398,67 @@ public final class PrometheusMetrics {
       builder.append("# TYPE ").append(name).append(' ').append(type).append('\n');
     }
 
-    protected static String formatLabels(List<String> labelNames, LabelValues values) {
-      if (labelNames.isEmpty()) {
-        return "";
+    /** Rough exposition size used to size the render buffer up front. */
+    abstract int estimatedRenderSize();
+
+    abstract void renderInto(StringBuilder builder);
+
+    protected int estimatedHeaderSize() {
+      return 2 * name.length() + help.length() + 24;
+    }
+
+    protected int estimatedSampleLineSize() {
+      int size = name.length() + 24;
+      for (String labelName : labelNames) {
+        size += labelName.length() + 24;
       }
-      StringBuilder builder = new StringBuilder("{");
+      return size;
+    }
+
+    protected static void appendLabels(StringBuilder builder, List<String> labelNames, LabelValues values) {
+      appendLabels(builder, labelNames, values, null, null);
+    }
+
+    protected static void appendLabels(
+        StringBuilder builder,
+        List<String> labelNames,
+        LabelValues values,
+        String extraName,
+        String extraValue
+    ) {
+      if (labelNames.isEmpty() && extraName == null) {
+        return;
+      }
+      builder.append('{');
       for (int index = 0; index < labelNames.size(); index++) {
         if (index > 0) {
           builder.append(',');
         }
-        builder.append(labelNames.get(index))
-            .append("=\"")
-            .append(escapeLabelValue(values.values().get(index)))
-            .append('"');
+        builder.append(labelNames.get(index)).append("=\"");
+        appendEscapedLabelValue(builder, values.values().get(index));
+        builder.append('"');
+      }
+      if (extraName != null) {
+        if (!labelNames.isEmpty()) {
+          builder.append(',');
+        }
+        builder.append(extraName).append("=\"");
+        appendEscapedLabelValue(builder, extraValue);
+        builder.append('"');
       }
       builder.append('}');
-      return builder.toString();
     }
 
-    private static String escapeLabelValue(String value) {
-      return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+    private static void appendEscapedLabelValue(StringBuilder builder, String value) {
+      for (int index = 0; index < value.length(); index++) {
+        char current = value.charAt(index);
+        switch (current) {
+          case '\\' -> builder.append("\\\\");
+          case '"' -> builder.append("\\\"");
+          case '\n' -> builder.append("\\n");
+          default -> builder.append(current);
+        }
+      }
     }
   }
 
@@ -397,11 +477,16 @@ public final class PrometheusMetrics {
       if (value <= 0) {
         return;
       }
-      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
-      values.computeIfAbsent(key, ignored -> new LongAdder()).add(value);
+      resolveSeries(values, LabelValues.from(labelNames(), labels), LongAdder::new).add(value);
     }
 
-    private void renderInto(StringBuilder builder) {
+    @Override
+    int estimatedRenderSize() {
+      return estimatedHeaderSize() + Math.max(values.size(), 1) * estimatedSampleLineSize();
+    }
+
+    @Override
+    void renderInto(StringBuilder builder) {
       appendHeader(builder, "counter");
       List<Map.Entry<LabelValues, LongAdder>> entries = new ArrayList<>(values.entrySet());
       entries.sort(Map.Entry.comparingByKey());
@@ -410,11 +495,9 @@ public final class PrometheusMetrics {
         return;
       }
       for (Map.Entry<LabelValues, LongAdder> entry : entries) {
-        builder.append(name())
-            .append(formatLabels(labelNames(), entry.getKey()))
-            .append(' ')
-            .append(entry.getValue().sum())
-            .append('\n');
+        builder.append(name());
+        appendLabels(builder, labelNames(), entry.getKey());
+        builder.append(' ').append(entry.getValue().sum()).append('\n');
       }
     }
   }
@@ -427,12 +510,17 @@ public final class PrometheusMetrics {
     }
 
     private void set(Map<String, String> labels, double value) {
-      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
-      values.computeIfAbsent(key, ignored -> new AtomicLong())
+      resolveSeries(values, LabelValues.from(labelNames(), labels), AtomicLong::new)
           .set(Double.doubleToRawLongBits(value));
     }
 
-    private void renderInto(StringBuilder builder) {
+    @Override
+    int estimatedRenderSize() {
+      return estimatedHeaderSize() + Math.max(values.size(), 1) * estimatedSampleLineSize();
+    }
+
+    @Override
+    void renderInto(StringBuilder builder) {
       appendHeader(builder, "gauge");
       List<Map.Entry<LabelValues, AtomicLong>> entries = new ArrayList<>(values.entrySet());
       entries.sort(Map.Entry.comparingByKey());
@@ -441,31 +529,47 @@ public final class PrometheusMetrics {
         return;
       }
       for (Map.Entry<LabelValues, AtomicLong> entry : entries) {
-        builder.append(name())
-            .append(formatLabels(labelNames(), entry.getKey()))
-            .append(' ')
-            .append(Double.longBitsToDouble(entry.getValue().get()))
-            .append('\n');
+        builder.append(name());
+        appendLabels(builder, labelNames(), entry.getKey());
+        builder.append(' ').append(Double.longBitsToDouble(entry.getValue().get())).append('\n');
       }
     }
   }
 
   private static final class Histogram extends Metric {
+    private static final String POSITIVE_INFINITY_LABEL = "+Inf";
+
     private final ConcurrentMap<LabelValues, HistogramSample> values = new ConcurrentHashMap<>();
     private final double[] buckets;
+    private final String[] bucketLabels;
 
     private Histogram(String name, String help, List<String> labelNames, double[] buckets) {
       super(name, help, labelNames);
       this.buckets = Arrays.copyOf(buckets, buckets.length);
+      this.bucketLabels = new String[this.buckets.length];
+      for (int index = 0; index < this.buckets.length; index++) {
+        bucketLabels[index] = Double.isInfinite(this.buckets[index])
+            ? POSITIVE_INFINITY_LABEL
+            : Double.toString(this.buckets[index]);
+      }
     }
 
     private void observe(Map<String, String> labels, double value) {
-      LabelValues key = admit(values, LabelValues.from(labelNames(), labels));
-      values.computeIfAbsent(key, ignored -> new HistogramSample(buckets.length))
-          .observe(value, buckets);
+      resolveSeries(
+          values,
+          LabelValues.from(labelNames(), labels),
+          () -> new HistogramSample(buckets.length)).observe(value, buckets);
     }
 
-    private void renderInto(StringBuilder builder) {
+    @Override
+    int estimatedRenderSize() {
+      int linesPerSeries = buckets.length + 3;
+      return estimatedHeaderSize()
+          + Math.max(values.size(), 1) * linesPerSeries * (estimatedSampleLineSize() + 16);
+    }
+
+    @Override
+    void renderInto(StringBuilder builder) {
       appendHeader(builder, "histogram");
       List<Map.Entry<LabelValues, HistogramSample>> entries = new ArrayList<>(values.entrySet());
       entries.sort(Map.Entry.comparingByKey());
@@ -480,40 +584,20 @@ public final class PrometheusMetrics {
         long cumulativeCount = 0L;
         for (int index = 0; index < buckets.length; index++) {
           cumulativeCount += sample.bucket(index);
-          builder.append(name())
-              .append("_bucket")
-              .append(formatHistogramLabels(labelNames(), entry.getKey(), buckets[index]))
-              .append(' ')
-              .append(cumulativeCount)
-              .append('\n');
+          builder.append(name()).append("_bucket");
+          appendLabels(builder, labelNames(), entry.getKey(), "le", bucketLabels[index]);
+          builder.append(' ').append(cumulativeCount).append('\n');
         }
-        builder.append(name())
-            .append("_bucket")
-            .append(formatHistogramLabels(labelNames(), entry.getKey(), Double.POSITIVE_INFINITY))
-            .append(' ')
-            .append(sample.count())
-            .append('\n');
-        builder.append(name())
-            .append("_sum")
-            .append(formatLabels(labelNames(), entry.getKey()))
-            .append(' ')
-            .append(sample.sum())
-            .append('\n');
-        builder.append(name())
-            .append("_count")
-            .append(formatLabels(labelNames(), entry.getKey()))
-            .append(' ')
-            .append(sample.count())
-            .append('\n');
+        builder.append(name()).append("_bucket");
+        appendLabels(builder, labelNames(), entry.getKey(), "le", POSITIVE_INFINITY_LABEL);
+        builder.append(' ').append(sample.count()).append('\n');
+        builder.append(name()).append("_sum");
+        appendLabels(builder, labelNames(), entry.getKey());
+        builder.append(' ').append(sample.sum()).append('\n');
+        builder.append(name()).append("_count");
+        appendLabels(builder, labelNames(), entry.getKey());
+        builder.append(' ').append(sample.count()).append('\n');
       }
-    }
-
-    private String formatHistogramLabels(List<String> labelNames, LabelValues values, double bucket) {
-      List<String> extendedNames = new ArrayList<>(labelNames);
-      extendedNames.add("le");
-      List<String> extendedValues = new ArrayList<>(values.values());
-      extendedValues.add(Double.isInfinite(bucket) ? "+Inf" : Double.toString(bucket));
-      return formatLabels(extendedNames, new LabelValues(extendedValues));
     }
   }
 
