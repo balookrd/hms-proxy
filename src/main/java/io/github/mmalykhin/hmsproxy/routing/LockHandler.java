@@ -24,7 +24,7 @@ final class LockHandler implements InvocationHandler {
   private static final Logger LOG = LoggerFactory.getLogger(LockHandler.class);
 
   private final SyntheticReadLockManager syntheticReadLockManager;
-  private final RequestRateLimiter requestRateLimiter;
+  private final AdmissionGate admissionGate;
   private final CatalogRouter router;
   private final FederationOperations federationLayer;
   private final ProxyObservability observability;
@@ -32,14 +32,14 @@ final class LockHandler implements InvocationHandler {
 
   LockHandler(
       SyntheticReadLockManager syntheticReadLockManager,
-      RequestRateLimiter requestRateLimiter,
+      AdmissionGate admissionGate,
       CatalogRouter router,
       FederationOperations federationLayer,
       ProxyObservability observability,
       InvocationHandler next
   ) {
     this.syntheticReadLockManager = syntheticReadLockManager;
-    this.requestRateLimiter = requestRateLimiter;
+    this.admissionGate = admissionGate;
     this.router = router;
     this.federationLayer = federationLayer;
     this.observability = observability;
@@ -63,22 +63,27 @@ final class LockHandler implements InvocationHandler {
   private Object handleLock(Object proxy, Method method, Object[] args) throws Throwable {
     CatalogRouter.ResolvedNamespace namespace = args == null ? null : findNamespaceInArgs(args);
     if (namespace != null) {
-      SyntheticReadLockManager.SyntheticLockState syntheticState =
-          syntheticReadLockManager.tryAcquire((LockRequest) args[0], namespace);
-      if (syntheticState != null) {
+      LockRequest request = (LockRequest) args[0];
+      // Admission must run before the lock state is persisted: a throttled client never learns the
+      // lockId and could not release the lock, so it would linger until the txn timeout expires.
+      if (syntheticReadLockManager.isSyntheticReadLockCandidate(request, namespace)) {
         RequestContext.currentObservation().recordNamespace(namespace);
-        enforceCatalogRateLimit(method.getName(), namespace.catalogName());
-        RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
-        LockResponse response = syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
-        if (LOG.isInfoEnabled()) {
-          LOG.info("requestId={} synthetic read lock acquired catalog={} db={} txnId={} lockId={}",
-              RequestContext.currentRequestId(),
-              namespace.catalogName(),
-              syntheticState.externalDbName(),
-              syntheticState.txnId(),
-              syntheticState.lockId());
+        admissionGate.enforceRateLimit(method.getName(), namespace.catalogName());
+        SyntheticReadLockManager.SyntheticLockState syntheticState =
+            syntheticReadLockManager.tryAcquire(request, namespace);
+        if (syntheticState != null) {
+          RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
+          LockResponse response = syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
+          if (LOG.isInfoEnabled()) {
+            LOG.info("requestId={} synthetic read lock acquired catalog={} db={} txnId={} lockId={}",
+                RequestContext.currentRequestId(),
+                namespace.catalogName(),
+                syntheticState.externalDbName(),
+                syntheticState.txnId(),
+                syntheticState.lockId());
+          }
+          return response;
         }
-        return response;
       }
     }
     return next.invoke(proxy, method, args);
@@ -91,7 +96,7 @@ final class LockHandler implements InvocationHandler {
       return next.invoke(proxy, method, args);
     }
     RequestContext.currentObservation().recordNamespace(syntheticState.namespace(router));
-    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
+    admissionGate.enforceRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     return syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
   }
@@ -103,7 +108,7 @@ final class LockHandler implements InvocationHandler {
       return next.invoke(proxy, method, args);
     }
     RequestContext.currentObservation().recordNamespace(syntheticState.namespace(router));
-    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
+    admissionGate.enforceRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     syntheticReadLockManager.releaseLock(syntheticState);
     return null;
@@ -116,7 +121,7 @@ final class LockHandler implements InvocationHandler {
       return next.invoke(proxy, method, args);
     }
     RequestContext.currentObservation().recordNamespace(syntheticState.namespace(router));
-    enforceCatalogRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
+    admissionGate.enforceRateLimit(method.getName(), syntheticState.namespace(router).catalogName());
     RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
     syntheticReadLockManager.touch(syntheticState);
 
@@ -170,10 +175,4 @@ final class LockHandler implements InvocationHandler {
     }
   }
 
-  private void enforceCatalogRateLimit(String methodName, String catalogName) throws RateLimitExceededException {
-    if (!RequestContext.currentObservation().shouldRateLimitCatalog(catalogName)) {
-      return;
-    }
-    requestRateLimiter.enforceCatalog(methodName, catalogName);
-  }
 }

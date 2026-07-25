@@ -652,4 +652,63 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
     }
   }
 
+  @Test
+  public void throttledSyntheticReadLockDoesNotLeakLockState() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .rateLimit(new RateLimitConfig(
+            RateLimitPolicyConfig.disabled(),
+            RateLimitPolicyConfig.disabled(),
+            Map.of(),
+            Map.of(),
+            Map.of("catalog2", new RateLimitPolicyConfig(1, 1)),
+            Map.of()))
+        .build();
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession()));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, observability);
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 41L)});
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+
+    Assert.assertThrows(
+        RateLimitExceededException.class,
+        () -> handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 42L)}));
+
+    String rendered = observability.metrics().render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_lock_events_total{operation=\"acquire\",catalog=\"catalog2\",store_mode=\"in_memory\",result=\"acquired\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_synthetic_read_locks_active{store_mode=\"in_memory\"} 1.0"));
+  }
+
 }

@@ -29,6 +29,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.test.TestingServer;
@@ -351,6 +353,96 @@ public class RoutingMetaStoreProxyFanoutDegradedTest {
 
     Assert.assertTrue(probeCalls.get() >= 2);
     Assert.assertTrue(observability.runtimeState().backendStatus("catalog1").lastProbeEpochSecond() > 0L);
+  }
+
+  @Test
+  public void concurrentFanoutRequestsKeepTheirOwnObservationWhenTasksRunOnTheCallerThread() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 3, 200L),
+            // One worker thread plus a queue of backends.size() entries: two concurrent fanout
+            // requests exhaust the shared pool and force CallerRunsPolicy on the request thread.
+            new HedgedReadConfig(true, 1, 30_000L),
+            DegradedRoutingPolicy.SAFE_FANOUT_READS));
+
+    CountDownLatch firstCallStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstCall = new CountDownLatch(1);
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                firstCallStarted.countDown();
+                releaseFirstCall.await(10L, TimeUnit.SECONDS);
+                return List.of("sales");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                throw new TTransportException("catalog2 unavailable");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    try (RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, observability)) {
+      AtomicReference<Throwable> firstError = new AtomicReference<>();
+      Thread firstRequest = new Thread(() -> {
+        try {
+          handler.invoke(null, method, new Object[0]);
+        } catch (Throwable t) {
+          firstError.set(t);
+        }
+      }, "fanout-request-1");
+      firstRequest.setDaemon(true);
+      firstRequest.start();
+
+      Assert.assertTrue(firstCallStarted.await(10L, TimeUnit.SECONDS));
+      Thread.sleep(100L);
+
+      Thread releaser = new Thread(() -> {
+        try {
+          Thread.sleep(300L);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        releaseFirstCall.countDown();
+      }, "fanout-release");
+      releaser.setDaemon(true);
+      releaser.start();
+
+      @SuppressWarnings("unchecked")
+      List<String> result = (List<String>) handler.invoke(null, method, new Object[0]);
+
+      firstRequest.join(10_000L);
+      Assert.assertNull(firstError.get());
+      Assert.assertEquals(List.of("sales"), result);
+      Assert.assertTrue(observability.metrics().render().contains(
+          "hms_proxy_requests_total{method=\"get_all_databases\",catalog=\"all\",backend=\"fanout\",status=\"degraded\"} 2"));
+    }
   }
 
 }
