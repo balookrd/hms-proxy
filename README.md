@@ -372,7 +372,7 @@ Metric semantics:
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
-- `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend
+- `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend; it is adjusted in place on every acquire/release and re-synchronized with the store by the background expiry sweep (every 30s), so lock operations never pay for a store-wide listing
 - `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 - `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
@@ -969,6 +969,33 @@ synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 When `security.mode=KERBEROS`, the synthetic read-lock store uses the same
 `security.server-principal` and `security.keytab` credentials for ZooKeeper SASL/Kerberos
 as the front door by default, similar to the delegation-token store setup above.
+
+The store keeps two subtrees under the configured znode:
+
+```
+/hms-proxy-synthetic-read-locks/locks/lock-<sequence>   serialized lock state, keyed by lock id
+/hms-proxy-synthetic-read-locks/txns/<txnId>/<lockId>   empty pointer node, keyed by transaction
+```
+
+`check_lock`, `unlock`, and `heartbeat` only carry a lock id, so lock state has to stay keyed by
+lock id; the `txns` subtree is the secondary index that lets `commit_txn` and `abort_txn` release a
+transaction's locks with a single `getChildren` instead of scanning every live lock. A commit for a
+transaction that never took a synthetic lock costs one `getChildren` that returns `NoNode`.
+
+Expired locks are collected by a background sweep every 30s (never on a client request thread), and
+that sweep also removes index entries whose lock node is gone and empty per-transaction parents.
+Locks are always written before their index entry, so a half-finished create can never hide a lock
+from `commit_txn`.
+
+Rolling upgrade: locks written by a proxy older than this layout have no index entry, so a newer
+instance will not release them on `commit_txn`/`abort_txn` — they expire through the sweep within
+`metastore.txn.timeout` instead. Synthetic locks do not block anything on the backend, so the only
+cost is a znode that lives slightly longer. No manual migration or downtime is required, and mixed
+old/new instances can run against the same znode.
+
+The lock timeout is derived from `metastore.txn.timeout` of the default catalog and accepts Hive's
+canonical suffixed form (`600s`, `10m`); a bare number is still read as seconds. An unparsable value
+falls back to 300s and is logged as a `WARN` at startup.
 
 ### Kerberos impersonation
 

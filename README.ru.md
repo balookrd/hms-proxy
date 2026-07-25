@@ -373,7 +373,7 @@ scrape_configs:
 - `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
 - `hms_proxy_synthetic_read_lock_store_failures_total` считает ошибки in-memory или ZooKeeper store с группировкой по операции и exception type
 - `hms_proxy_synthetic_read_lock_handoffs_total` считает случаи, когда synthetic lock, открытый через один proxy instance, продолжает обслуживаться через другой instance
-- `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend
+- `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend; значение правится инкрементально на каждом acquire/release и ресинхронизируется со store фоновым expiry sweep (раз в 30s), поэтому lock-операции не платят за листинг всего store
 - `hms_proxy_synthetic_read_lock_store_info` это constant-info gauge, который помечает, работает ли proxy с `in_memory` или `zookeeper` storage для synthetic lock
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
 - `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
@@ -921,6 +921,33 @@ synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 Если включён `security.mode=KERBEROS`, synthetic read-lock store по умолчанию использует те же
 `security.server-principal` и `security.keytab` для ZooKeeper SASL/Kerberos, что и front door,
 по той же модели, что и delegation-token store выше.
+
+Store держит под настроенным znode два поддерева:
+
+```
+/hms-proxy-synthetic-read-locks/locks/lock-<sequence>   сериализованное состояние lock, ключ - lock id
+/hms-proxy-synthetic-read-locks/txns/<txnId>/<lockId>   пустая нода-указатель, ключ - транзакция
+```
+
+`check_lock`, `unlock` и `heartbeat` приходят только с lock id, поэтому состояние lock обязано
+храниться с ключом по lock id; поддерево `txns` - вторичный индекс, который позволяет `commit_txn`
+и `abort_txn` освободить локи транзакции одним `getChildren` вместо скана всех живых lock. Коммит
+транзакции, которая не брала synthetic lock, стоит один `getChildren` с ответом `NoNode`.
+
+Истёкшие lock убирает фоновый sweep раз в 30s (никогда не в потоке клиентского запроса); он же
+удаляет индексные записи, у которых пропала lock-нода, и пустые per-transaction каталоги. Lock
+всегда пишется раньше своей индексной записи, поэтому недоделанный create не может спрятать lock
+от `commit_txn`.
+
+Rolling upgrade: у lock, записанных proxy старее этого layout, индексной записи нет, поэтому новый
+инстанс не освободит их по `commit_txn`/`abort_txn` - вместо этого они истекут через sweep за
+`metastore.txn.timeout`. Synthetic lock ничего не блокирует на backend, так что вся цена - znode,
+живущий чуть дольше. Ручная миграция и downtime не нужны, старые и новые инстансы могут работать
+против одного znode одновременно.
+
+Таймаут lock берётся из `metastore.txn.timeout` default-каталога и понимает каноническую форму Hive
+с суффиксом (`600s`, `10m`); голое число по-прежнему читается как секунды. Нераспознанное значение
+откатывается к 300s и логируется как `WARN` на старте.
 
 ### Kerberos impersonation
 
