@@ -23,14 +23,8 @@ final class GetAllDatabasesHandler implements SpecialCaseHandler {
               backend, method, null, impersonation, requestId, false, false);
           return result;
         })) {
-      List<String> backendDatabases = fanoutResult.value();
-      for (String database : backendDatabases) {
-        if (!support.federationLayer.isDatabaseExposed(fanoutResult.backend().name(), database)) {
-          support.recordFilteredObject(method.getName(), fanoutResult.backend().name(), "database");
-          continue;
-        }
-        databases.add(support.federationLayer.externalDatabaseName(fanoutResult.backend().name(), database));
-      }
+      databases.addAll(support.exposedDatabaseNames(
+          method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
     }
     return databases;
   }

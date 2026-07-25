@@ -11,6 +11,12 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
       "org.apache.hadoop.",
   };
 
+  // Without this the child-first path below would serialize every isolated-runtime class load on
+  // this loader's monitor; warmup pulls hundreds of thrift classes from concurrent requests.
+  static {
+    registerAsParallelCapable();
+  }
+
   public MetastoreApiClassLoader(URL[] urls, ClassLoader parent) {
     super(urls, parent);
   }
@@ -27,23 +33,25 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
   }
 
   @Override
-  protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+  protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
     if (!isChildFirst(name)) {
       return super.loadClass(name, resolve);
     }
 
-    Class<?> loaded = findLoadedClass(name);
-    if (loaded == null) {
-      try {
-        loaded = findClass(name);
-      } catch (ClassNotFoundException e) {
-        loaded = super.loadClass(name, false);
+    synchronized (getClassLoadingLock(name)) {
+      Class<?> loaded = findLoadedClass(name);
+      if (loaded == null) {
+        try {
+          loaded = findClass(name);
+        } catch (ClassNotFoundException e) {
+          loaded = super.loadClass(name, false);
+        }
       }
+      if (resolve) {
+        resolveClass(loaded);
+      }
+      return loaded;
     }
-    if (resolve) {
-      resolveClass(loaded);
-    }
-    return loaded;
   }
 
   private static boolean isChildFirst(String name) {

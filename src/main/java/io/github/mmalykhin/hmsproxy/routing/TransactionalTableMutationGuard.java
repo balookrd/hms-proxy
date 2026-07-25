@@ -73,7 +73,8 @@ final class TransactionalTableMutationGuard {
     if (clientAddressMatchers.isEmpty()) {
       return true;
     }
-    String remoteAddress = ClientRequestContext.remoteAddress().orElse(null);
+    byte[] remoteAddress = ClientAddressMatcher.decodeAddress(
+        ClientRequestContext.remoteAddress().orElse(null));
     if (remoteAddress == null) {
       return false;
     }

@@ -55,20 +55,32 @@ public final class ClientAddressMatcher {
     return new ClientAddressMatcher(applyMask(address, prefixLength), prefixLength, trimmed);
   }
 
-  public boolean matches(String remoteAddress) {
+  /**
+   * Decodes a remote address into raw bytes, or null when it is blank or unparseable. Callers that
+   * check one address against several rules should decode once and use {@link #matches(byte[])}:
+   * the address is an IP literal, so this never hits DNS, but K rules would otherwise re-parse the
+   * same string K times per request.
+   */
+  public static byte[] decodeAddress(String remoteAddress) {
     if (remoteAddress == null || remoteAddress.isBlank()) {
-      return false;
+      return null;
     }
-    byte[] candidate;
     try {
-      candidate = InetAddress.getByName(remoteAddress.trim()).getAddress();
+      return InetAddress.getByName(remoteAddress.trim()).getAddress();
     } catch (UnknownHostException e) {
+      return null;
+    }
+  }
+
+  public boolean matches(String remoteAddress) {
+    return matches(decodeAddress(remoteAddress));
+  }
+
+  public boolean matches(byte[] remoteAddress) {
+    if (remoteAddress == null || remoteAddress.length != network.length) {
       return false;
     }
-    if (candidate.length != network.length) {
-      return false;
-    }
-    return matchesMasked(candidate);
+    return matchesMasked(remoteAddress);
   }
 
   @Override

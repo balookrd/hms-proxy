@@ -59,14 +59,14 @@ public final class CatalogConfigParser {
         CatalogAccessMode.class,
         reader.getOrNull(prefix + "access-mode"),
         prefix + "access-mode",
-        CatalogAccessMode.READ_WRITE);
+        CatalogConfig.DEFAULT_ACCESS_MODE);
     String[] writeDbWhitelist = PropertyReader.splitCsv(reader.get(prefix + "write-db-whitelist", ""));
     validateWriteDbWhitelist(prefix, accessMode, writeDbWhitelist);
     CatalogExposureMode exposureMode = ConfigParsing.parseEnum(
         CatalogExposureMode.class,
         reader.getOrNull(prefix + "expose-mode"),
         prefix + "expose-mode",
-        CatalogExposureMode.ALLOW_ALL);
+        CatalogConfig.DEFAULT_EXPOSE_MODE);
     String[] exposeDbPatterns = PropertyReader.splitCsv(reader.get(prefix + "expose-db-patterns", ""));
     ConfigParsing.validateRegexList(prefix + "expose-db-patterns", exposeDbPatterns);
     Map<String, List<String>> exposeTablePatterns = parseExposeTablePatterns(reader, prefix);
@@ -76,13 +76,18 @@ public final class CatalogConfigParser {
         prefix + "runtime-profile",
         null);
     String catalogBackendStandaloneMetastoreJar = reader.getOrNull(prefix + "backend-standalone-metastore-jar");
-    long latencyBudgetMs = reader.getNonNegativeLong(prefix + "latency-budget-ms", 0L);
-    int maxImpersonationClients = reader.getPositiveInt(prefix + "impersonation-max-clients", 128);
-    long impersonationClientIdleTtlMs = reader.getNonNegativeLong(prefix + "impersonation-client-idle-ttl-ms", 0L);
-    int sharedSessionPoolSize = reader.getPositiveInt(prefix + "shared-session-pool-size", 1);
-    int impersonationPoolMaxSize = reader.getPositiveInt(prefix + "impersonation-pool-max-size", 4);
+    long latencyBudgetMs = reader.getNonNegativeLong(
+        prefix + "latency-budget-ms", CatalogConfig.DEFAULT_LATENCY_BUDGET_MS);
+    int maxImpersonationClients = reader.getPositiveInt(
+        prefix + "impersonation-max-clients", CatalogConfig.DEFAULT_MAX_IMPERSONATION_CLIENTS);
+    long impersonationClientIdleTtlMs = reader.getNonNegativeLong(
+        prefix + "impersonation-client-idle-ttl-ms", CatalogConfig.DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS);
+    int sharedSessionPoolSize = reader.getPositiveInt(
+        prefix + "shared-session-pool-size", CatalogConfig.DEFAULT_SHARED_SESSION_POOL_SIZE);
+    int impersonationPoolMaxSize = reader.getPositiveInt(
+        prefix + "impersonation-pool-max-size", CatalogConfig.DEFAULT_IMPERSONATION_POOL_MAX_SIZE);
     long impersonationSessionIdleTtlMs = reader.getNonNegativeLong(
-        prefix + "impersonation-session-idle-ttl-ms", 0L);
+        prefix + "impersonation-session-idle-ttl-ms", CatalogConfig.DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
 
     Map<String, String> hiveConfOverrides = reader.collectPrefixed(prefix + "conf.");
     Map<String, String> hiveConf = new LinkedHashMap<>(backendConf);

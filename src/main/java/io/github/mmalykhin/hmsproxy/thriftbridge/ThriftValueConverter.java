@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TSerializer;
@@ -16,7 +15,20 @@ public final class ThriftValueConverter {
       ThreadLocal.withInitial(() -> new TSerializer(new TBinaryProtocol.Factory()));
   private static final ThreadLocal<TDeserializer> DESERIALIZER =
       ThreadLocal.withInitial(() -> new TDeserializer(new TBinaryProtocol.Factory()));
-  private static final ConcurrentHashMap<Class<?>, Constructor<?>> CONSTRUCTOR_CACHE = new ConcurrentHashMap<>();
+  // ClassValue, not a map keyed by Class: the cached constructors belong to the isolated metastore
+  // runtime, and a strong-referenced map would pin every retired catalog class loader (and its
+  // metaspace) for the lifetime of the JVM. The lookup outcome is cached either way, failure
+  // included, because it is a pure function of the class.
+  private static final ClassValue<Object> CONSTRUCTOR_CACHE = new ClassValue<>() {
+    @Override
+    protected Object computeValue(Class<?> type) {
+      try {
+        return type.getConstructor();
+      } catch (NoSuchMethodException e) {
+        return e;
+      }
+    }
+  };
 
   private ThriftValueConverter() {
   }
@@ -135,11 +147,10 @@ public final class ThriftValueConverter {
   }
 
   private static Object newTargetInstance(Class<?> targetType) throws Exception {
-    Constructor<?> constructor = CONSTRUCTOR_CACHE.get(targetType);
-    if (constructor == null) {
-      constructor = targetType.getConstructor();
-      CONSTRUCTOR_CACHE.putIfAbsent(targetType, constructor);
+    Object cached = CONSTRUCTOR_CACHE.get(targetType);
+    if (cached instanceof NoSuchMethodException missingConstructor) {
+      throw missingConstructor;
     }
-    return constructor.newInstance();
+    return ((Constructor<?>) cached).newInstance();
   }
 }

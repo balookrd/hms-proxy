@@ -88,36 +88,41 @@ public final class HmsMetastoreSmokeCli {
       long txnId = openResp.getTxn_ids().get(0);
       System.out.println("open_txns txnId=" + txnId);
 
-      AllocateTableWriteIdsRequest allocReq = new AllocateTableWriteIdsRequest(db, table);
-      allocReq.setTxnIds(List.of(txnId));
-      AllocateTableWriteIdsResponse allocResp = thriftClient.allocate_table_write_ids(allocReq);
-      long writeId = allocResp.getTxnToWriteIds().get(0).getWriteId();
-      System.out.println("allocate_table_write_ids writeId=" + writeId);
+      try {
+        AllocateTableWriteIdsRequest allocReq = new AllocateTableWriteIdsRequest(db, table);
+        allocReq.setTxnIds(List.of(txnId));
+        AllocateTableWriteIdsResponse allocResp = thriftClient.allocate_table_write_ids(allocReq);
+        long writeId = allocResp.getTxnToWriteIds().get(0).getWriteId();
+        System.out.println("allocate_table_write_ids writeId=" + writeId);
 
-      if (doLock) {
-        LockResponse lockResp = thriftClient.lock(buildTxnLockRequest(db, table, user, host, agentInfo, txnId));
-        System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
+        if (doLock) {
+          LockResponse lockResp = thriftClient.lock(buildTxnLockRequest(db, table, user, host, agentInfo, txnId));
+          System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
 
-        CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
-        checkReq.setTxnid(txnId);
-        LockResponse checkResp = thriftClient.check_lock(checkReq);
-        System.out.println("check_lock lockId=" + checkResp.getLockid() + " state=" + checkResp.getState());
-        if (checkResp.getState() != LockState.ACQUIRED && checkResp.getState() != LockState.WAITING) {
-          throw new IllegalStateException("Unexpected lock state: " + checkResp.getState());
+          CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
+          checkReq.setTxnid(txnId);
+          LockResponse checkResp = thriftClient.check_lock(checkReq);
+          System.out.println("check_lock lockId=" + checkResp.getLockid() + " state=" + checkResp.getState());
+          if (checkResp.getState() != LockState.ACQUIRED && checkResp.getState() != LockState.WAITING) {
+            throw new IllegalStateException("Unexpected lock state: " + checkResp.getState());
+          }
         }
-      }
 
-      String validTxnList = cli.getOrDefault("valid-txn-list", "");
-      GetValidWriteIdsRequest validReq =
-          new GetValidWriteIdsRequest(List.of(db + "." + table), validTxnList);
-      var validResp = thriftClient.get_valid_write_ids(validReq);
-      System.out.println("get_valid_write_ids entries=" + validResp.getTblValidWriteIdsSize());
-      if (validResp.getTblValidWriteIdsSize() > 0) {
-        System.out.println("get_valid_write_ids first=" + validResp.getTblValidWriteIds().get(0));
-      }
+        String validTxnList = cli.getOrDefault("valid-txn-list", "");
+        GetValidWriteIdsRequest validReq =
+            new GetValidWriteIdsRequest(List.of(db + "." + table), validTxnList);
+        var validResp = thriftClient.get_valid_write_ids(validReq);
+        System.out.println("get_valid_write_ids entries=" + validResp.getTblValidWriteIdsSize());
+        if (validResp.getTblValidWriteIdsSize() > 0) {
+          System.out.println("get_valid_write_ids first=" + validResp.getTblValidWriteIds().get(0));
+        }
 
-      thriftClient.commit_txn(new CommitTxnRequest(txnId));
-      System.out.println("commit_txn txnId=" + txnId);
+        thriftClient.commit_txn(new CommitTxnRequest(txnId));
+        System.out.println("commit_txn txnId=" + txnId);
+      } catch (Throwable failure) {
+        abortTxnAfterFailure(thriftClient, txnId, failure);
+        throw failure;
+      }
     }
   }
 
@@ -158,43 +163,63 @@ public final class HmsMetastoreSmokeCli {
       long txnId = openResp.getTxn_ids().get(0);
       System.out.println("open_txns txnId=" + txnId);
 
-      LockRequest request = buildLockRequest(
-          db, table, partition, user, host, agentInfo, txnId, lockType, lockLevel, operationType, transactional);
-      LockResponse lockResp = thriftClient.lock(request);
-      System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
+      try {
+        LockRequest request = buildLockRequest(
+            db, table, partition, user, host, agentInfo, txnId, lockType, lockLevel, operationType, transactional);
+        LockResponse lockResp = thriftClient.lock(request);
+        System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
 
-      CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
-      checkReq.setTxnid(txnId);
-      LockResponse checkResp = thriftClient.check_lock(checkReq);
-      System.out.println("check_lock lockId=" + checkResp.getLockid() + " state=" + checkResp.getState());
-      if (checkResp.getState() != LockState.ACQUIRED && checkResp.getState() != LockState.WAITING) {
-        throw new IllegalStateException("Unexpected lock state: " + checkResp.getState());
-      }
-
-      if (doHeartbeat) {
-        HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
-        heartbeatRequest.setTxnid(txnId);
-        heartbeatRequest.setLockid(lockResp.getLockid());
-        thriftClient.heartbeat(heartbeatRequest);
-        System.out.println("heartbeat txnId=" + txnId + " lockId=" + lockResp.getLockid());
-      }
-
-      if (doUnlock) {
-        thriftClient.unlock(new UnlockRequest(lockResp.getLockid()));
-        System.out.println("unlock lockId=" + lockResp.getLockid());
-      }
-
-      switch (closeTxn) {
-        case TXN_CLOSE_ABORT -> {
-          thriftClient.abort_txn(new AbortTxnRequest(txnId));
-          System.out.println("abort_txn txnId=" + txnId);
+        CheckLockRequest checkReq = new CheckLockRequest(lockResp.getLockid());
+        checkReq.setTxnid(txnId);
+        LockResponse checkResp = thriftClient.check_lock(checkReq);
+        System.out.println("check_lock lockId=" + checkResp.getLockid() + " state=" + checkResp.getState());
+        if (checkResp.getState() != LockState.ACQUIRED && checkResp.getState() != LockState.WAITING) {
+          throw new IllegalStateException("Unexpected lock state: " + checkResp.getState());
         }
-        case TXN_CLOSE_COMMIT -> {
-          thriftClient.commit_txn(new CommitTxnRequest(txnId));
-          System.out.println("commit_txn txnId=" + txnId);
+
+        if (doHeartbeat) {
+          HeartbeatRequest heartbeatRequest = new HeartbeatRequest();
+          heartbeatRequest.setTxnid(txnId);
+          heartbeatRequest.setLockid(lockResp.getLockid());
+          thriftClient.heartbeat(heartbeatRequest);
+          System.out.println("heartbeat txnId=" + txnId + " lockId=" + lockResp.getLockid());
         }
-        default -> System.out.println("txn left open txnId=" + txnId);
+
+        if (doUnlock) {
+          thriftClient.unlock(new UnlockRequest(lockResp.getLockid()));
+          System.out.println("unlock lockId=" + lockResp.getLockid());
+        }
+
+        switch (closeTxn) {
+          case TXN_CLOSE_ABORT -> {
+            thriftClient.abort_txn(new AbortTxnRequest(txnId));
+            System.out.println("abort_txn txnId=" + txnId);
+          }
+          case TXN_CLOSE_COMMIT -> {
+            thriftClient.commit_txn(new CommitTxnRequest(txnId));
+            System.out.println("commit_txn txnId=" + txnId);
+          }
+          default -> System.out.println("txn left open txnId=" + txnId);
+        }
+      } catch (Throwable failure) {
+        // --close-txn=none deliberately leaves a healthy txn open for inspection; a failed run is
+        // not that case, so the transaction is aborted here regardless of the requested mode.
+        abortTxnAfterFailure(thriftClient, txnId, failure);
+        throw failure;
       }
+    }
+  }
+
+  // An abandoned open transaction holds back the ValidTxnList watermark of a real cluster until the
+  // heartbeat timeout expires, and keeps the locks it owns. Best effort: a failing abort is
+  // attached to the original failure instead of replacing it.
+  static void abortTxnAfterFailure(ThriftHiveMetastore.Iface thriftClient, long txnId, Throwable failure) {
+    try {
+      thriftClient.abort_txn(new AbortTxnRequest(txnId));
+      System.out.println("abort_txn (cleanup after failure) txnId=" + txnId);
+    } catch (Throwable abortFailure) {
+      failure.addSuppressed(abortFailure);
+      System.out.println("abort_txn (cleanup after failure) failed txnId=" + txnId);
     }
   }
 
@@ -285,6 +310,7 @@ public final class HmsMetastoreSmokeCli {
     applyBaseConf(conf, uri, cli);
 
     Object client = openIsolatedClient(cli, classLoader, hiveConfClass, conf);
+    Throwable failure = null;
     try {
       Field clientField = client.getClass().getDeclaredField("client");
       clientField.setAccessible(true);
@@ -310,13 +336,45 @@ public final class HmsMetastoreSmokeCli {
       Method method = thriftClient.getClass().getMethod("add_write_notification_log", requestClass);
       Object response = withContextClassLoader(classLoader, () -> method.invoke(thriftClient, request));
       System.out.println("add_write_notification_log response=" + response);
-    } finally {
-      withContextClassLoader(classLoader, () -> {
-        client.getClass().getMethod("close").invoke(client);
-        return null;
-      });
-      classLoader.close();
+    } catch (Throwable smokeFailure) {
+      failure = smokeFailure;
     }
+    // A failing close must not hide why the smoke run itself failed.
+    failure = runQuietly(failure, () -> withContextClassLoader(classLoader, () -> {
+      client.getClass().getMethod("close").invoke(client);
+      return null;
+    }));
+    failure = runQuietly(failure, classLoader::close);
+    if (failure != null) {
+      rethrow(failure);
+    }
+  }
+
+  /**
+   * Runs a cleanup action, keeping the first failure as the reported one and attaching any later
+   * failure to it as suppressed. Returns the failure to report, or null when nothing failed.
+   */
+  static Throwable runQuietly(Throwable failure, ThrowingRunnable action) {
+    try {
+      action.run();
+      return failure;
+    } catch (Throwable actionFailure) {
+      if (failure == null) {
+        return actionFailure;
+      }
+      failure.addSuppressed(actionFailure);
+      return failure;
+    }
+  }
+
+  static void rethrow(Throwable failure) throws Exception {
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    if (failure instanceof Exception exception) {
+      throw exception;
+    }
+    throw new IllegalStateException(failure);
   }
 
   private static HiveMetaStoreClient openApacheClient(CliArgs cli, HiveConf conf) throws Exception {
@@ -485,6 +543,11 @@ public final class HmsMetastoreSmokeCli {
   @FunctionalInterface
   private interface ThrowingSupplier<T> {
     T get() throws Exception;
+  }
+
+  @FunctionalInterface
+  interface ThrowingRunnable {
+    void run() throws Exception;
   }
 
   private static final class CliArgs {

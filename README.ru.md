@@ -880,6 +880,12 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 
 Любую часть можно переопределить своим `log4j.properties` на classpath.
 
+Binding — `slf4j-reload4j`. reload4j это drop-in форк EOL-версии log4j 1.2.17 с вырезанными
+известными CVE, поэтому формат конфигурации остаётся log4j 1.x и существующие `log4j.properties`
+продолжают работать без изменений. Единственное ограничение: то, что из reload4j убрали —
+`org.apache.log4j.jmx.*`, viewer `lf5` и `NTEventLogAppender`, — в своей конфигурации больше
+использовать нельзя.
+
 ### Debug tracing
 
 Per-request debug tracing **по умолчанию выключен**: он рендерит через `DebugLogUtil` все аргументы
@@ -1286,6 +1292,10 @@ RPC:
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
+
+Если прогон `txn` или `lock` падает уже после `open_txns`, клиент делает best-effort `abort_txn`
+перед пробросом ошибки, в том числе при `--close-txn none`: упавший smoke не должен оставлять
+транзакцию, удерживающую watermark `ValidTxnList` до истечения heartbeat-timeout.
 
 Текущее smoke-покрытие сведено в test matrix в [SMOKE.ru.md](SMOKE.ru.md) по полям:
 

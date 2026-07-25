@@ -25,15 +25,13 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults = (List<TableMeta>) support.invokeDirect(
           resolved.backend(), method, new Object[]{resolved.backendDbName(), tablePattern, tableTypes});
-      List<TableMeta> results = new ArrayList<>();
-      for (TableMeta result : backendResults) {
-        if (!support.federationLayer.isTableExposed(resolved, result.getTableName())) {
-          support.recordFilteredObject(method.getName(), resolved.catalogName(), "table");
-          continue;
-        }
-        results.add(support.federationLayer.externalizeTableMeta(result, resolved));
-      }
-      return results;
+      return support.filterExposed(
+          method.getName(),
+          resolved.catalogName(),
+          "table",
+          backendResults,
+          result -> support.federationLayer.isTableExposed(resolved, result.getTableName()),
+          result -> support.federationLayer.externalizeTableMeta(result, resolved));
     }
 
     RequestContext.currentObservation().recordFanout();
@@ -47,20 +45,17 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
               impersonation, requestId, false, false);
           return result;
         })) {
-      List<TableMeta> backendResults = fanoutResult.value();
-      for (TableMeta result : backendResults) {
-        if (!support.federationLayer.isTableExposed(
-            fanoutResult.backend().name(),
-            result.getDbName(),
-            result.getTableName())) {
-          support.recordFilteredObject(method.getName(), fanoutResult.backend().name(), "table");
-          continue;
-        }
-        results.add(NamespaceTranslator.externalizeTableMeta(
-            result,
-            support.router.resolveCatalog(fanoutResult.backend().name(), result.getDbName()),
-            support.federationLayer.preserveBackendCatalogName()));
-      }
+      String catalogName = fanoutResult.backend().name();
+      results.addAll(support.filterExposed(
+          method.getName(),
+          catalogName,
+          "table",
+          fanoutResult.value(),
+          result -> support.federationLayer.isTableExposed(catalogName, result.getDbName(), result.getTableName()),
+          result -> NamespaceTranslator.externalizeTableMeta(
+              result,
+              support.router.resolveCatalog(catalogName, result.getDbName()),
+              support.federationLayer.preserveBackendCatalogName())));
     }
     return results;
   }

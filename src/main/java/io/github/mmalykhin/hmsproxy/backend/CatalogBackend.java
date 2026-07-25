@@ -404,7 +404,6 @@ public final class CatalogBackend implements AutoCloseable {
     private final Semaphore permits;
     private final Object lock = new Object();
     private final Deque<PooledSession> idle = new ArrayDeque<>();
-    private int totalSessions;
     private volatile boolean evicted;
     volatile long lastUsedMs = System.currentTimeMillis();
 
@@ -543,9 +542,6 @@ public final class CatalogBackend implements AutoCloseable {
       }
       try {
         BackendInvocationSession fresh = openSession();
-        synchronized (lock) {
-          totalSessions++;
-        }
         impersonationActiveSessions.incrementAndGet();
         publishImpersonationGauges();
         return fresh;
@@ -567,7 +563,6 @@ public final class CatalogBackend implements AutoCloseable {
       synchronized (lock) {
         if (evicted) {
           drop = true;
-          totalSessions--;
         } else {
           idle.addFirst(new PooledSession(session, System.currentTimeMillis()));
         }
@@ -583,9 +578,6 @@ public final class CatalogBackend implements AutoCloseable {
     }
 
     private void discard(BackendInvocationSession session, String reason) {
-      synchronized (lock) {
-        totalSessions--;
-      }
       impersonationActiveSessions.decrementAndGet();
       CatalogBackend.closeQuietly(session, "impersonation session (" + reason + ") for user '" + userName + "'");
       if (metrics != null) {
@@ -600,7 +592,6 @@ public final class CatalogBackend implements AutoCloseable {
         PooledSession candidate = idle.pollFirst();
         if (sessionIdleTtlMs > 0
             && System.currentTimeMillis() - candidate.releasedAtMs > sessionIdleTtlMs) {
-          totalSessions--;
           CatalogBackend.closeQuietly(
               candidate.session, "expired idle impersonation session for user '" + userName + "'");
           impersonationIdleSessions.decrementAndGet();
@@ -622,7 +613,6 @@ public final class CatalogBackend implements AutoCloseable {
         PooledSession s = it.next();
         if (now - s.releasedAtMs > sessionIdleTtlMs) {
           it.remove();
-          totalSessions--;
           expired.add(s.session);
         }
       }
@@ -635,7 +625,6 @@ public final class CatalogBackend implements AutoCloseable {
         evicted = true;
         drained = new ArrayList<>(idle);
         idle.clear();
-        totalSessions -= drained.size();
       }
       for (PooledSession s : drained) {
         CatalogBackend.closeQuietly(

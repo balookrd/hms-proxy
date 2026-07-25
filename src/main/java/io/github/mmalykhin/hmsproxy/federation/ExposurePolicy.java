@@ -21,47 +21,49 @@ final class ExposurePolicy {
   }
 
   boolean isDatabaseExposed(String catalogName, String backendDbName) {
-    return databaseExposure(catalogName, backendDbName) != DatabaseExposure.HIDDEN;
+    String normalizedDbName = normalize(backendDbName);
+    CatalogExposurePolicy catalogPolicy = catalogs.get(catalogName);
+    if (normalizedDbName == null || catalogPolicy == null) {
+      return true;
+    }
+    return databaseExposure(
+        catalogPolicy, normalizedDbName, catalogPolicy.hasTableRulesForDatabase(normalizedDbName))
+        != DatabaseExposure.HIDDEN;
   }
 
   boolean isTableExposed(String catalogName, String backendDbName, String tableName) {
-    DatabaseExposure databaseExposure = databaseExposure(catalogName, backendDbName);
-    if (databaseExposure == DatabaseExposure.HIDDEN) {
-      return false;
+    String normalizedDbName = normalize(backendDbName);
+    CatalogExposurePolicy catalogPolicy = catalogs.get(catalogName);
+    // A blank database name carries no namespace to match rules against, so it falls back to allow
+    // the same way the database-only check does. Returning here also keeps the table rules from
+    // ever running their database pattern against null.
+    if (normalizedDbName == null || catalogPolicy == null) {
+      return true;
     }
     String normalizedTableName = normalize(tableName);
     if (normalizedTableName == null) {
-      return true;
+      return isDatabaseExposed(catalogName, backendDbName);
     }
-    CatalogExposurePolicy catalogPolicy = catalogs.get(catalogName);
-    if (catalogPolicy == null) {
-      return true;
-    }
-    List<TableExposureRule> matchingTableRules = catalogPolicy.matchingTableRules(normalize(backendDbName));
-    if (!matchingTableRules.isEmpty()) {
-      for (TableExposureRule rule : matchingTableRules) {
-        if (rule.matchesTable(normalizedTableName)) {
-          return true;
-        }
-      }
+    // get_tables/get_table_meta run this per listed object, so the table rules are walked once:
+    // the same pass answers whether the database is exposed through a table rule and whether this
+    // table matches one.
+    TableRuleMatch tableRuleMatch = catalogPolicy.matchTableRules(normalizedDbName, normalizedTableName);
+    if (databaseExposure(catalogPolicy, normalizedDbName, tableRuleMatch != TableRuleMatch.NO_RULES)
+        == DatabaseExposure.HIDDEN) {
       return false;
     }
-    return true;
+    return tableRuleMatch != TableRuleMatch.NO_MATCH;
   }
 
-  private DatabaseExposure databaseExposure(String catalogName, String backendDbName) {
-    String normalizedDbName = normalize(backendDbName);
-    if (normalizedDbName == null) {
-      return DatabaseExposure.FALLBACK_ALLOW;
-    }
-    CatalogExposurePolicy catalogPolicy = catalogs.get(catalogName);
-    if (catalogPolicy == null) {
-      return DatabaseExposure.FALLBACK_ALLOW;
-    }
+  private static DatabaseExposure databaseExposure(
+      CatalogExposurePolicy catalogPolicy,
+      String normalizedDbName,
+      boolean hasTableRulesForDatabase
+  ) {
     if (catalogPolicy.matchesDatabase(normalizedDbName)) {
       return DatabaseExposure.EXPLICIT_DB_RULE;
     }
-    if (catalogPolicy.hasTableRulesForDatabase(normalizedDbName)) {
+    if (hasTableRulesForDatabase) {
       return DatabaseExposure.TABLE_RULE;
     }
     if (catalogPolicy.hasDatabaseRules()) {
@@ -87,6 +89,12 @@ final class ExposurePolicy {
     HIDDEN
   }
 
+  private enum TableRuleMatch {
+    NO_RULES,
+    MATCHED,
+    NO_MATCH
+  }
+
   private record CatalogExposurePolicy(
       CatalogExposureMode exposeMode,
       List<Pattern> databasePatterns,
@@ -108,17 +116,26 @@ final class ExposurePolicy {
     }
 
     private boolean hasTableRulesForDatabase(String backendDbName) {
-      return !matchingTableRules(backendDbName).isEmpty();
-    }
-
-    private List<TableExposureRule> matchingTableRules(String backendDbName) {
-      List<TableExposureRule> matches = new ArrayList<>();
       for (TableExposureRule rule : tableRules) {
         if (rule.matchesDatabase(backendDbName)) {
-          matches.add(rule);
+          return true;
         }
       }
-      return matches;
+      return false;
+    }
+
+    private TableRuleMatch matchTableRules(String backendDbName, String tableName) {
+      TableRuleMatch result = TableRuleMatch.NO_RULES;
+      for (TableExposureRule rule : tableRules) {
+        if (!rule.matchesDatabase(backendDbName)) {
+          continue;
+        }
+        if (rule.matchesTable(tableName)) {
+          return TableRuleMatch.MATCHED;
+        }
+        result = TableRuleMatch.NO_MATCH;
+      }
+      return result;
     }
   }
 
