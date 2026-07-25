@@ -49,8 +49,18 @@ final class SyntheticReadLockManager implements AutoCloseable {
     syncActiveLockGauge();
   }
 
-  SyntheticLockState tryAcquire(LockRequest request, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+  /**
+   * Tells whether the request would be served by the synthetic shim, without touching the state
+   * store. Callers use it to run request admission (rate limiting) before {@link #tryAcquire}
+   * persists lock state that a rejected client could never release.
+   */
+  boolean isSyntheticReadLockCandidate(LockRequest request, CatalogRouter.ResolvedNamespace namespace)
+      throws MetaException {
     cleanupExpiredLocks();
+    return isEligibleSyntheticReadLock(request, namespace);
+  }
+
+  SyntheticLockState tryAcquire(LockRequest request, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
     if (!isEligibleSyntheticReadLock(request, namespace)) {
       return null;
     }

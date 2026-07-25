@@ -61,8 +61,10 @@ public final class BackendRoutingController implements AutoCloseable {
     }
     if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
       int poolSize = Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size());
-      // Bound the queue to the number of backends: each request submits at most backends.size() tasks.
-      // CallerRunsPolicy provides back-pressure when all worker slots are occupied.
+      // Bound the queue to the number of backends: a single request submits at most backends.size()
+      // tasks. The pool is shared, so concurrent fanout requests can still exhaust it; CallerRunsPolicy
+      // then applies back-pressure by running a task on the request thread, and FanoutExecutor counts
+      // that time against the fanout deadline.
       this.fanoutExecutor = new ThreadPoolExecutor(
           poolSize,
           poolSize,
@@ -81,9 +83,20 @@ public final class BackendRoutingController implements AutoCloseable {
     ProxyRuntimeState.BackendCallAdmission admission =
         observability.runtimeState().admitBackendCall(backend.name(), config.latencyRouting());
     if (admission.allowed() && config.latencyRouting().adaptiveTimeout().enabled()) {
-      CatalogBackend.AdaptiveTimeoutResult result = backend.ensureClientSocketTimeout(
-          admission.timeoutMs(),
-          config.latencyRouting().adaptiveTimeout().reconnectCooldownMs());
+      // An admitted call may already have claimed the half-open circuit probe. The adaptive
+      // reconnect below talks to a backend that is likely still down, so any failure here must be
+      // recorded as a backend failure - otherwise the probe stays in flight and the circuit never
+      // leaves HALF_OPEN, permanently rejecting the catalog.
+      CatalogBackend.AdaptiveTimeoutResult result;
+      try {
+        result = backend.ensureClientSocketTimeout(
+            admission.timeoutMs(),
+            config.latencyRouting().adaptiveTimeout().reconnectCooldownMs());
+      } catch (Throwable cause) {
+        observability.metrics().recordBackendFailure(backend.name(), cause);
+        recordFailure(backend, cause, 0L);
+        throw cause;
+      }
       switch (result) {
         case APPLIED -> observability.metrics().recordAdaptiveTimeoutReconnect(backend.name());
         case SKIPPED_HYSTERESIS ->
