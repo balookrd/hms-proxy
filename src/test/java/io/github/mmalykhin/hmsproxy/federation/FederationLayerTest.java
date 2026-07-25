@@ -10,6 +10,7 @@ import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsData;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
+import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -93,6 +94,149 @@ public class FederationLayerTest {
   }
 
   @Test
+  public void externalizeResultKeepsTableAliasThatCollidesWithDatabaseName() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select sales.id from sales.orders sales where sales.id > 0",
+        "select sales.id from sales.orders sales where sales.id > 0");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "select sales.id from catalog2__sales.orders sales where sales.id > 0",
+        routed.getViewExpandedText());
+    Assert.assertEquals(
+        "select sales.id from catalog2__sales.orders sales where sales.id > 0",
+        routed.getViewOriginalText());
+  }
+
+  @Test
+  public void externalizeResultKeepsStringLiteralsAndCommentsUntouched() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    String sql = "-- sales.orders is the source\n"
+        + "select * from sales.orders /* sales.orders */ where tag = 'sales.orders'";
+    Table table = viewTable(sql, sql);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "-- sales.orders is the source\n"
+            + "select * from catalog2__sales.orders /* sales.orders */ where tag = 'sales.orders'",
+        routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultKeepsForeignCatalogQualifiedReferences() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select * from other_cat.sales.t",
+        "select * from other_cat.sales.t");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals("select * from other_cat.sales.t", routed.getViewExpandedText());
+    Assert.assertEquals("select * from other_cat.sales.t", routed.getViewOriginalText());
+  }
+
+  @Test
+  public void internalizeArgumentKeepsBackendCatalogPrefixOnThreePartReferences() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog1", "catalog1__sales", "sales");
+    Table table = viewTable(
+        "select * from hive.catalog1__sales.orders",
+        "select * from hive.catalog1__sales.orders");
+
+    Table routed = (Table) layer.internalizeArgument(table, namespace);
+
+    Assert.assertEquals("select * from hive.sales.orders", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultLeavesViewWithoutRenamedDatabasesByteForByte() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    String sql = "select o.id  ,  extract(year from o.dt) as sales\n"
+        + "from   `other_db`.`orders`  o\n"
+        + "  left join other_db.customers c on o.cid = c.id -- keep this\n"
+        + "where c.name like '%sales.orders%'";
+    Table table = viewTable(sql, sql);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(sql, routed.getViewExpandedText());
+    Assert.assertEquals(sql, routed.getViewOriginalText());
+  }
+
+  @Test
+  public void externalizeResultKeepsValueFunctionArgumentsUntouched() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select extract(year from sales.dt) from other_db.t",
+        "select extract(year from sales.dt) from other_db.t");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "select extract(year from sales.dt) from other_db.t", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultRewritesReferencesInsideSubqueries() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select * from (select id from sales.orders) x, sales.dim d",
+        "select * from (select id from sales.orders) x, sales.dim d");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "select * from (select id from catalog2__sales.orders) x, catalog2__sales.dim d",
+        routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultToleratesUnterminatedQuotes() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select * from `sales`.`orders` where x = 'unterminated",
+        "select * from `sales`.`orders` where x = 'unterminated");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "select * from `catalog2__sales`.`orders` where x = 'unterminated",
+        routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultRewritesViewTextNestedInThriftResults() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    GetTableResult result = new GetTableResult(
+        viewTable("select * from sales.orders", "select * from sales.orders"));
+
+    GetTableResult routed = (GetTableResult) layer.externalizeResult(result, namespace);
+
+    Assert.assertEquals(
+        "select * from catalog2__sales.orders", routed.getTable().getViewExpandedText());
+  }
+
+  @Test
   public void internalizeArgumentHandlesUnionBackedStatsRequests() throws Exception {
     FederationLayer layer = federationLayer(viewRewriteConfig(false));
     CatalogRouter.ResolvedNamespace namespace =
@@ -159,6 +303,16 @@ public class FederationLayerTest {
     Assert.assertFalse(layer.isDatabaseExposed("catalog1", "finance"));
     Assert.assertTrue(layer.isTableExposed(salesNamespace, "orders"));
     Assert.assertFalse(layer.isTableExposed(salesNamespace, "events"));
+  }
+
+  private static Table viewTable(String viewOriginalText, String viewExpandedText) {
+    Table table = new Table();
+    table.setTableType("VIRTUAL_VIEW");
+    table.setDbName("sales");
+    table.setTableName("v_orders");
+    table.setViewOriginalText(viewOriginalText);
+    table.setViewExpandedText(viewExpandedText);
+    return table;
   }
 
   @SuppressWarnings("unchecked")

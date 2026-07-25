@@ -39,6 +39,7 @@ capabilities:
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultRewritesMaterializedViewTextForClientNamespace
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultKeepsStringLiteralsAndCommentsUntouched
   - id: apache_frontdoor_to_hdp_backend_downgrade
     status: degraded
     client:
@@ -340,6 +341,7 @@ capabilities:
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultKeepsForeignCatalogQualifiedReferences
   - id: txn_lock_without_namespace_degraded
     status: degraded
     client:

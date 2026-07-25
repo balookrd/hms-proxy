@@ -240,9 +240,10 @@ select count(*) from some_table;
 
 **8. Views, materialized views и UDF**
 
-Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Если важно, чтобы
-оригинальный клиентский SQL оставался видимым в HMS без изменений, дополнительно включи
-`federation.view-text-rewrite.preserve-original-text=true`.
+Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Оригинальный клиентский
+SQL по умолчанию остаётся видимым в HMS без изменений
+(`federation.view-text-rewrite.preserve-original-text=true`); поставь `false`, если сохранённый
+`viewOriginalText` тоже нужно переписывать.
 
 В automated runner view-блок включён по умолчанию через `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`.
 Проверка permanent UDF тоже включена по умолчанию через `HMS_SMOKE_SQL_RUN_UDF=true` и использует

@@ -284,6 +284,25 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void viewTextRewritePreservesOriginalTextByDefault() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          federation.view-text-rewrite.mode=REWRITE
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.federation().preserveOriginalViewText());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void loadsExternalTableLocationRewriteConfiguration() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

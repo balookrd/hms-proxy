@@ -232,9 +232,10 @@ Expected:
 
 **8. Views, Materialized Views, and UDFs**
 
-Run this block with `federation.view-text-rewrite.mode=REWRITE`. If you need the original client SQL
-to stay byte-for-byte visible through HMS, also set
-`federation.view-text-rewrite.preserve-original-text=true`.
+Run this block with `federation.view-text-rewrite.mode=REWRITE`. The original client SQL stays
+byte-for-byte visible through HMS by default
+(`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` if the stored
+`viewOriginalText` must be rewritten too.
 
 The automated runner keeps the view block enabled by default with
 `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
