@@ -721,6 +721,26 @@ final class RoutingMetaStoreProxyTestSupport {
     return request;
   }
 
+  static LockComponent noTxnLockComponent(LockType lockType, String dbName, String tableName) {
+    LockComponent component = new LockComponent();
+    component.setType(lockType);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+    component.setOperationType(DataOperationType.NO_TXN);
+    component.setIsTransactional(false);
+    return component;
+  }
+
+  static LockRequest multiComponentLockRequest(long txnId, LockComponent... components) {
+    LockRequest request = new LockRequest();
+    request.setComponent(List.of(components));
+    request.setTxnid(txnId);
+    request.setUser("alice");
+    request.setHostname("host");
+    return request;
+  }
+
   static SyntheticReadLockStoreConfig syntheticReadLockStoreConfig(String connectString) {
     return new SyntheticReadLockStoreConfig(
         SyntheticReadLockStoreMode.ZOOKEEPER,

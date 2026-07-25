@@ -137,6 +137,64 @@ public class RoutingMetaStoreProxyBackendLocksTest {
   }
 
   @Test
+  public void defaultCatalogExclusiveNoTxnLockIsNotSubstitutedBySyntheticLock() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                LockResponse response = new LockResponse();
+                response.setLockid(11L);
+                response.setState(LockState.ACQUIRED);
+                return response;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {multiComponentLockRequest(
+            81L,
+            noTxnLockComponent(LockType.EXCLUSIVE, "finance", "ledger"))});
+
+    Assert.assertEquals(11L, lock.getLockid());
+    Assert.assertTrue(lock.getLockid() < Long.MAX_VALUE / 2);
+    Assert.assertNotNull(capturedRequest.get());
+    Assert.assertEquals(1, capturedRequest.get().getComponentSize());
+    Assert.assertEquals(LockType.EXCLUSIVE, capturedRequest.get().getComponent().get(0).getType());
+    Assert.assertEquals("finance", capturedRequest.get().getComponent().get(0).getDbname());
+  }
+
+  @Test
   public void backendLockTransportFailuresAreSurfacedAsMetaExceptions() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))

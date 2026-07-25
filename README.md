@@ -942,6 +942,12 @@ such as `CREATE TABLE` and partition rename/drop flows that Hive still runs thro
 txn/lock APIs. The proxy serves those locks locally when backend txn ids do not line up
 across catalogs. This does not turn the proxy into a distributed ACID coordinator.
 
+Eligibility is decided over every `LockComponent` of the request, not just the first one. A
+`lock` call is acquired, routed, and acknowledged as a single unit, so a request whose
+components span more than one namespace is rejected with an explicit `MetaException` instead of
+letting the proxy swallow or rewrite the components of the other databases. Split such a call
+into one lock request per namespace.
+
 `synthetic-read-lock.store.mode` must be set explicitly — there is no default. Use `IN_MEMORY`
 for single-instance deployments (non-default catalog SELECT locks are lost on proxy restart or
 load-balancer failover, and the proxy logs a `WARN` on startup to surface that), or `ZOOKEEPER`

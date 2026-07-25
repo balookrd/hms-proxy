@@ -272,6 +272,11 @@ final class SyntheticReadLockManager implements AutoCloseable {
       // Hive can issue non-transactional DDL locks (for example CREATE TABLE or partition
       // rename/drop flows) before the actual catalog-scoped write request. These locks still
       // carry the default-backend txn id even though the namespace resolves to another catalog.
+      // The lock type is deliberately not restricted here: check_lock/unlock/heartbeat are pinned
+      // to the default backend, so a non-default-catalog EXCLUSIVE or SHARED_WRITE lock cannot be
+      // forwarded to its owning metastore without stranding the returned lock id. Components of
+      // the default catalog never reach this path - LockHandler resolves the namespace over all
+      // components and rejects requests that mix namespaces.
       return !component.isSetIsTransactional() || !component.isIsTransactional();
     }
     return false;

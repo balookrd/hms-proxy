@@ -894,6 +894,12 @@ security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keyta
 Такие lock proxy обслуживает локально, когда backend txn id рассинхронизированы между
 каталогами. Это не превращает proxy в distributed ACID coordinator.
 
+Пригодность определяется по всем `LockComponent` запроса, а не только по первому. Вызов `lock`
+берётся, маршрутизируется и подтверждается целиком, поэтому запрос, компоненты которого
+принадлежат разным namespace, отклоняется явным `MetaException` — вместо того чтобы proxy
+поглотил или переписал компоненты остальных баз. Такой вызов нужно разбить на отдельные lock
+request по namespace.
+
 `synthetic-read-lock.store.mode` обязан быть задан явно — default'а нет. Используйте `IN_MEMORY`
 для одиночного инстанса proxy (SELECT-локи на non-default каталогах теряются при рестарте или
 failover через load balancer, и proxy пишет `WARN` в лог на старте, чтобы это было видно), либо
