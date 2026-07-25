@@ -1215,7 +1215,8 @@ public class ProxyConfigLoaderTest {
         ProxyConfigLoader.load(file);
         Assert.fail("Expected IllegalArgumentException for invalid catalog access mode");
       } catch (IllegalArgumentException e) {
-        Assert.assertTrue(e.getMessage().contains("catalog.<name>.access-mode"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("catalog.catalog1.access-mode"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("READ_WRITE_DB_WHITELIST"));
       }
     } finally {
       Files.deleteIfExists(file);
