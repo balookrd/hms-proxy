@@ -16,6 +16,11 @@ public final class ManagementConfigParser {
           "management.port must be between 1 and 65535, got: " + managementPort);
     }
     String managementBindHost = reader.get("management.bind-host", server.bindHost());
-    return new ManagementConfig(managementEnabled, managementBindHost, managementPort);
+    int managementThreads = reader.getPositiveInt(
+        "management.threads", ManagementConfig.DEFAULT_THREADS);
+    long readinessCacheMs = reader.getNonNegativeLong(
+        "management.readiness-cache-ms", ManagementConfig.DEFAULT_READINESS_CACHE_MS);
+    return new ManagementConfig(
+        managementEnabled, managementBindHost, managementPort, managementThreads, readinessCacheMs);
   }
 }

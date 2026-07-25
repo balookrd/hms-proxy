@@ -21,6 +21,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -32,10 +33,15 @@ public final class ManagementHttpServer implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(ManagementHttpServer.class);
 
   private final HttpServer server;
+  private final ExecutorService httpExecutor;
   private final ExecutorService readinessProbeExecutor;
 
-  private ManagementHttpServer(HttpServer server, ExecutorService readinessProbeExecutor) {
+  private ManagementHttpServer(
+      HttpServer server,
+      ExecutorService httpExecutor,
+      ExecutorService readinessProbeExecutor) {
     this.server = server;
+    this.httpExecutor = httpExecutor;
     this.readinessProbeExecutor = readinessProbeExecutor;
   }
 
@@ -83,25 +89,49 @@ public final class ManagementHttpServer implements AutoCloseable {
         200,
         "text/plain; version=0.0.4; charset=utf-8",
         observability.metrics().render()));
-    server.setExecutor(null);
+    // Without an explicit executor the built-in HttpServer serves every context from its single
+    // dispatcher thread, so one /readyz call blocked on an unreachable backend would also stall
+    // liveness checks and metric scrapes. Readiness probing is single-flight (see ReadinessHandler),
+    // so at most one of these threads can be parked on backend I/O at a time.
+    int managementThreads = config.management().threads();
+    ExecutorService httpExecutor = new ThreadPoolExecutor(
+        managementThreads,
+        managementThreads,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(),
+        namedThreadFactory("hms-proxy-management"));
+    server.setExecutor(httpExecutor);
     server.start();
-    LOG.info("Management HTTP listener started on {}:{}",
-        config.management().bindHost(), config.management().port());
-    return new ManagementHttpServer(server, readinessProbeExecutor);
+    LOG.info("Management HTTP listener started on {}:{} with {} handler thread(s), "
+            + "readiness probe cache {}ms",
+        config.management().bindHost(), config.management().port(), managementThreads,
+        config.management().readinessCacheMs());
+    return new ManagementHttpServer(server, httpExecutor, readinessProbeExecutor);
+  }
+
+  ExecutorService httpExecutor() {
+    return httpExecutor;
   }
 
   @Override
   public void close() {
     server.stop(0);
-    if (readinessProbeExecutor != null) {
-      readinessProbeExecutor.shutdownNow();
-      try {
-        if (!readinessProbeExecutor.awaitTermination(5L, TimeUnit.SECONDS)) {
-          LOG.warn("Readiness probe executor did not terminate within 5s after shutdown");
-        }
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
+    shutdown(httpExecutor, "Management HTTP executor");
+    shutdown(readinessProbeExecutor, "Readiness probe executor");
+  }
+
+  private static void shutdown(ExecutorService executor, String description) {
+    if (executor == null) {
+      return;
+    }
+    executor.shutdownNow();
+    try {
+      if (!executor.awaitTermination(5L, TimeUnit.SECONDS)) {
+        LOG.warn("{} did not terminate within 5s after shutdown", description);
       }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -128,6 +158,7 @@ public final class ManagementHttpServer implements AutoCloseable {
     private final CatalogRouter router;
     private final ProxyObservability observability;
     private final ExecutorService probeExecutor;
+    private final SingleFlightCache<ProbeSnapshot> probeCache;
 
     private ReadinessHandler(
         ProxyConfig config,
@@ -138,16 +169,18 @@ public final class ManagementHttpServer implements AutoCloseable {
       this.router = router;
       this.observability = observability;
       this.probeExecutor = probeExecutor;
+      this.probeCache = new SingleFlightCache<>(config.management().readinessCacheMs());
     }
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-      if (!config.latencyRouting().backendStatePolling().enabled() && probeExecutor != null) {
-        runReadinessProbes();
-      }
-
-      KerberosHealthProbe.KerberosStatus frontDoorKerberos = configKerberosStatus();
-      KerberosHealthProbe.KerberosStatus backendKerberos = backendKerberosStatus();
+      // Backend and Kerberos probes are the expensive part of readiness; they are refreshed at most
+      // once per readiness-cache-ms so that frequent scrapes do not fan out network checks. The
+      // backend status fields below are read fresh from in-memory runtime state on every request.
+      ProbeSnapshot probes = probeCache.get(this::refreshProbes);
+      long probeAgeMs = Math.max(0L, System.currentTimeMillis() - probes.probedAtEpochMs());
+      KerberosHealthProbe.KerberosStatus frontDoorKerberos = probes.frontDoor();
+      KerberosHealthProbe.KerberosStatus backendKerberos = probes.backend();
       List<ProxyRuntimeState.BackendRuntimeStatus> statuses = observability.runtimeState().backendStatuses();
       boolean backendConnectivity = statuses.stream().allMatch(ProxyRuntimeState.BackendRuntimeStatus::connected);
       boolean ready = statuses.stream().allMatch(status ->
@@ -159,6 +192,7 @@ public final class ManagementHttpServer implements AutoCloseable {
       StringBuilder body = new StringBuilder(512);
       body.append("{\"status\":\"").append(ready ? "ready" : "degraded").append("\",")
           .append("\"alive\":true,")
+          .append("\"probeAgeMs\":").append(probeAgeMs).append(',')
           .append("\"backendConnectivity\":").append(backendConnectivity).append(',')
           .append("\"kerberos\":{")
           .append("\"frontDoor\":").append(renderKerberos(frontDoorKerberos)).append(',')
@@ -194,6 +228,22 @@ public final class ManagementHttpServer implements AutoCloseable {
       }
       body.append("]}\n");
       respond(exchange, ready ? 200 : 503, "application/json; charset=utf-8", body.toString());
+    }
+
+    private ProbeSnapshot refreshProbes() {
+      // probeExecutor is only created when background backend-state polling is disabled; with
+      // polling on, readiness reuses the poller's results and only refreshes Kerberos status.
+      if (probeExecutor != null) {
+        runReadinessProbes();
+      }
+      return new ProbeSnapshot(
+          configKerberosStatus(), backendKerberosStatus(), System.currentTimeMillis());
+    }
+
+    private record ProbeSnapshot(
+        KerberosHealthProbe.KerberosStatus frontDoor,
+        KerberosHealthProbe.KerberosStatus backend,
+        long probedAtEpochMs) {
     }
 
     private void runReadinessProbes() {

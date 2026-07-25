@@ -276,6 +276,11 @@ management.enabled=true
 management.bind-host=0.0.0.0
 # Необязательно; по умолчанию server.port + 1000
 management.port=19083
+# Необязательно; число handler-потоков management listener, по умолчанию 4
+management.threads=4
+# Необязательно; сколько мс переиспользуются результаты readiness probe;
+# по умолчанию 2000, значение 0 отключает кэш
+management.readiness-cache-ms=2000
 ```
 
 Быстрые проверки:
@@ -285,6 +290,15 @@ curl -s http://127.0.0.1:19083/healthz
 curl -s http://127.0.0.1:19083/readyz
 curl -s http://127.0.0.1:19083/metrics
 ```
+
+Listener обслуживает запросы из небольшого выделенного пула потоков (`management.threads`), поэтому
+медленный `/readyz` не блокирует `/healthz` и `/metrics`. Держи как минимум два потока.
+
+**У management endpoints нет ни аутентификации, ни авторизации.** `/readyz` отдаёт
+Kerberos-принципалы и per-backend `lastError`, в котором обычно видны внутренние hostname. Привязывай
+`management.bind-host` к интерфейсу, доступному только из сети мониторинга и оркестрации, либо
+ограничивай порт firewall-правилами или network policy. Не публикуй его рядом с клиентским
+Thrift-портом.
 
 ### Health и readiness endpoints
 
@@ -301,6 +315,7 @@ curl -s http://127.0.0.1:19083/metrics
 `/readyz` предназначен для load balancer, orchestration probes и operational diagnostics. В ответе есть:
 
 - общий статус readiness
+- `probeAgeMs` — возраст данных probe, по которым построен ответ
 - summary по backend connectivity
 - по каждому backend поля `connected`, `degraded`, `lastSuccessEpochSecond`,
   `lastFailureEpochSecond`, `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`,
@@ -311,6 +326,13 @@ curl -s http://127.0.0.1:19083/metrics
 
 Если включён `routing.backend-state-polling.enabled=true`, readiness отражает результат последних
 фоновых probe. Иначе `/readyz` сам делает on-demand probe backend'ов и возвращает те же поля.
+
+Дорогая часть `/readyz` — это backend- и Kerberos-probe, поэтому их результаты переиспользуются в
+течение `management.readiness-cache-ms` (по умолчанию 2s) и обновляются не более чем одним запросом
+одновременно: параллельные вызовы получают предыдущий результат, а не порождают новый fanout
+сетевых проверок. Per-backend поля состояния всегда рендерятся из актуального in-memory runtime
+state, а `probeAgeMs` показывает, насколько устарели данные probe. Чтобы делать probe на каждый
+запрос, поставь `management.readiness-cache-ms=0`.
 
 ### Prometheus метрики
 
@@ -381,6 +403,13 @@ Proxy также пишет один structured audit log на каждый за
 ```json
 {"event":"hms_proxy_audit","requestId":42,"method":"get_table","operationClass":"metadata_read","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
 ```
+
+В комплектном `log4j.properties` этот logger направлен в собственный appender
+`logs/hms-proxy-audit.log` (rolling по 100MB, 10 backup), без префикса layout — чтобы файл оставался
+валидным JSON lines, и с выключенной additivity — чтобы audit-записи не смешивались с общим логом.
+Чтобы писать в другое место или отправлять записи в свой log pipeline, переопредели appender
+`auditFile` в собственном `log4j.properties`. Если приглушить logger ниже `INFO`, запись вообще не
+строится — ничего не вычисляется ради вывода, который никто не читает.
 
 ### Grafana dashboard
 
@@ -714,8 +743,28 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 
 ## Логирование
 
-Для пакета proxy по умолчанию включён подробный debug tracing через bundled `log4j.properties`.
-Каждый клиентский вызов получает `requestId`, а в логах есть:
+Комплектный `log4j.properties` — это конфигурация по умолчанию; proxy подхватывает её в runtime,
+если appender'ы не сконфигурированы, так что обычный запуск `java -jar ...` тоже пишет логи.
+Дефолты:
+
+- root logger на `INFO`, вывод в stderr и в `logs/hms-proxy.log` (rolling по 50MB, 10 backup)
+- пакет proxy `io.github.mmalykhin.hmsproxy` на `INFO`
+- audit logger `io.github.mmalykhin.hmsproxy.audit` на `INFO` в отдельный
+  `logs/hms-proxy-audit.log`
+
+Любую часть можно переопределить своим `log4j.properties` на classpath.
+
+### Debug tracing
+
+Per-request debug tracing **по умолчанию выключен**: он рендерит через `DebugLogUtil` все аргументы
+запроса и все backend-ответы, а это реальные CPU и аллокации на каждый RPC. Включай его осознанно —
+для конкретного окружения или на время инцидента:
+
+```properties
+log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG
+```
+
+Когда он включён, каждый клиентский вызов получает `requestId`, а в логах есть:
 
 - входящий HMS method и аргументы
 - выбранный backend catalog
@@ -723,7 +772,12 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 - backend response или backend error
 - итоговый client response или client-visible error
 
-Если логов слишком много, переопредели уровень через свой `log4j.properties`.
+Рендер значений ограничен (10 элементов на коллекцию, глубина 3, ~4000 символов на запись), но на
+нагруженном proxy объём всё равно заметный. По окончании возвращай уровень на `INFO`.
+
+Учти, что на `INFO` для пакета proxy остаются trace-строки write-пути
+`trace stage=client-request` / `backend-request`, поэтому для большинства операционных разборов
+`DEBUG` не нужен.
 
 ## HiveServer2
 

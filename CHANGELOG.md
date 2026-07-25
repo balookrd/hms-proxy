@@ -1,10 +1,44 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-07-25
+
+### Fixed
+
+- The bundled default `log4j.properties` no longer silently discards proxy output. The proxy
+  package logger was set to `DEBUG` with `additivity=false` and no appenders of its own, so every
+  proxy line — including the structured audit record — was rendered and then thrown away. The
+  audit logger now has its own appender, `logs/hms-proxy-audit.log` (rolling at 100MB with 10
+  backups, no layout prefix so the file stays valid JSON lines).
+- Per-request debug tracing is off by default. The proxy package now logs at `INFO`, so
+  `DebugLogUtil` no longer renders every request argument and backend response on every RPC. Set
+  `log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG` to opt back in.
+- The management HTTP listener now serves requests from a dedicated thread pool
+  (`management.threads`, default 4) instead of the single built-in dispatcher thread. A `/readyz`
+  call blocked on an unreachable backend or KDC no longer stalls `/healthz` liveness checks or
+  `/metrics` scrapes.
+- `DebugLogUtil` renders into a single budget-bounded buffer, so a collection of large Thrift
+  objects stops being materialized once the ~4000-character budget is spent instead of building and
+  clipping each element in full.
+
+### Changed
+
+- Removed the `logs/hms-proxy-daily.log` `DailyRollingFileAppender` from the default logging
+  config. It had no backup limit and grew without bound, and with three root appenders every
+  third-party log line was written three times. The default is now stderr plus the size-bounded
+  `logs/hms-proxy.log`.
+- `/readyz` caches backend and Kerberos probe results for `management.readiness-cache-ms` (default
+  2000) and refreshes them single-flight, so frequent scrapes no longer fan out one round of
+  network probes per request. The response carries a new `probeAgeMs` field; set the property to
+  `0` to probe on every request. Per-backend state fields are still rendered from current runtime
+  state on every call.
+- Documented that management endpoints are unauthenticated and that `/readyz` exposes Kerberos
+  principals and backend error details, so the port belongs on an isolated monitoring network.
 
 ## 2026-05-26
 
