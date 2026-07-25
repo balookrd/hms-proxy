@@ -9,6 +9,7 @@ import org.apache.hadoop.hive.metastore.api.AbortTxnsRequest;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -61,7 +62,7 @@ final class LockHandler implements InvocationHandler {
   }
 
   private Object handleLock(Object proxy, Method method, Object[] args) throws Throwable {
-    CatalogRouter.ResolvedNamespace namespace = args == null ? null : findNamespaceInArgs(args);
+    CatalogRouter.ResolvedNamespace namespace = args == null ? null : findLockNamespace(args);
     if (namespace != null) {
       SyntheticReadLockManager.SyntheticLockState syntheticState =
           syntheticReadLockManager.tryAcquire((LockRequest) args[0], namespace);
@@ -168,6 +169,56 @@ final class LockHandler implements InvocationHandler {
       observability.metrics().recordRoutingAmbiguous();
       throw e;
     }
+  }
+
+  private CatalogRouter.ResolvedNamespace findLockNamespace(Object[] args) throws MetaException {
+    if (args.length == 0 || !(args[0] instanceof LockRequest request)) {
+      return findNamespaceInArgs(args);
+    }
+    return lockRequestNamespace(request);
+  }
+
+  /**
+   * A lock request is acquired, routed and acknowledged as a single unit: either the synthetic
+   * shim answers for all of its components or the whole request goes to one backend, where
+   * namespace internalization rewrites every component to the resolved database. Resolving the
+   * namespace from the first component alone would therefore silently drop or rewrite components
+   * of the other databases - including default-catalog DDL locks that must reach a real metastore.
+   * Mixed requests are rejected instead, so the caller can split them per namespace.
+   */
+  private CatalogRouter.ResolvedNamespace lockRequestNamespace(LockRequest request) throws MetaException {
+    List<LockComponent> components = request.getComponent();
+    if (components == null || components.isEmpty()) {
+      return null;
+    }
+    CatalogRouter.ResolvedNamespace resolved = null;
+    for (LockComponent component : components) {
+      String dbName = NamespaceTranslator.extractDbName(component);
+      if (dbName == null) {
+        continue;
+      }
+      CatalogRouter.ResolvedNamespace candidate = router.resolveDatabase(dbName);
+      if (resolved == null) {
+        resolved = candidate;
+        continue;
+      }
+      if (!sameNamespace(resolved, candidate)) {
+        observability.metrics().recordRoutingAmbiguous();
+        throw new MetaException("Lock request spans multiple namespaces: '"
+            + resolved.externalDbName() + "' and '" + candidate.externalDbName()
+            + "'. The proxy acquires and acknowledges a lock request as a whole, so it cannot"
+            + " split components across catalogs; issue one lock request per namespace");
+      }
+    }
+    return resolved;
+  }
+
+  private static boolean sameNamespace(
+      CatalogRouter.ResolvedNamespace left,
+      CatalogRouter.ResolvedNamespace right
+  ) {
+    return left.catalogName().equals(right.catalogName())
+        && left.backendDbName().equals(right.backendDbName());
   }
 
   private void enforceCatalogRateLimit(String methodName, String catalogName) throws RateLimitExceededException {
