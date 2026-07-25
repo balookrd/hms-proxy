@@ -108,6 +108,56 @@ public class RequestRateLimiterTest {
     limiter.enforceCatalog("get_table", "catalog2");
   }
 
+  @Test
+  public void prunesIdleBucketsOnceTheCleanupIntervalElapses() throws Exception {
+    AtomicLong nowNanos = new AtomicLong(1L);
+    RequestRateLimiter limiter = new RequestRateLimiter(
+        new RateLimitConfig(
+            new RateLimitPolicyConfig(1000, 1000),
+            RateLimitPolicyConfig.disabled(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of()),
+        new PrometheusMetrics(),
+        nowNanos::get);
+
+    for (int i = 0; i < 64; i++) {
+      withClientContext(null, "user" + i + "@EXAMPLE.COM", () -> limiter.enforceRequest("get_table"));
+    }
+    Assert.assertEquals(64, limiter.trackedBucketCount());
+
+    // Far below the 1024-call cleanup tick the old implementation waited for, but past both the
+    // cleanup interval and the idle TTL, so the burst's buckets must be gone after the next call.
+    nowNanos.addAndGet(16L * 60L * 1_000_000_000L);
+    withClientContext(null, "user0@EXAMPLE.COM", () -> limiter.enforceRequest("get_table"));
+
+    Assert.assertEquals(1, limiter.trackedBucketCount());
+  }
+
+  @Test
+  public void keepsBucketsThatAreStillWithinTheIdleTtl() throws Exception {
+    AtomicLong nowNanos = new AtomicLong(1L);
+    RequestRateLimiter limiter = new RequestRateLimiter(
+        new RateLimitConfig(
+            new RateLimitPolicyConfig(1000, 1000),
+            RateLimitPolicyConfig.disabled(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of()),
+        new PrometheusMetrics(),
+        nowNanos::get);
+
+    withClientContext(null, "alice@EXAMPLE.COM", () -> limiter.enforceRequest("get_table"));
+    withClientContext(null, "bob@EXAMPLE.COM", () -> limiter.enforceRequest("get_table"));
+
+    nowNanos.addAndGet(2L * 60L * 1_000_000_000L);
+    withClientContext(null, "alice@EXAMPLE.COM", () -> limiter.enforceRequest("get_table"));
+
+    Assert.assertEquals(2, limiter.trackedBucketCount());
+  }
+
   private static void withClientContext(String remoteAddress, String remoteUser, CheckedRunnable runnable) throws Exception {
     String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddress);
     String previousRemoteUser = ClientRequestContext.setRemoteUser(remoteUser);

@@ -23,6 +23,7 @@ import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
 
 final class RequestRateLimiter {
   private static final long BUCKET_IDLE_TTL_NANOS = 15L * 60L * 1_000_000_000L;
+  private static final long BUCKET_CLEANUP_INTERVAL_NANOS = 60L * 1_000_000_000L;
   private static final Set<String> DDL_METHOD_OVERRIDES = Set.of(
       "add_partition",
       "add_partitions",
@@ -68,12 +69,13 @@ final class RequestRateLimiter {
     this.enabled = this.config.enabled();
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.clockNanos = Objects.requireNonNull(clockNanos, "clockNanos");
-    this.principalLimits = new TokenBucketGroup("principal", "default", config.principal());
-    this.sourceLimits = new TokenBucketGroup("source", "default", config.source());
-    this.sourceCidrLimits = buildSourceCidrLimits(config.sourceCidrs());
-    this.methodFamilyLimits = buildGroups("method_family", config.methodFamilies());
-    this.catalogLimits = buildGroups("catalog", config.catalogs());
-    this.rpcClassLimits = buildGroups("rpc_class", config.rpcClasses());
+    long startNanos = this.clockNanos.getAsLong();
+    this.principalLimits = new TokenBucketGroup("principal", "default", config.principal(), startNanos);
+    this.sourceLimits = new TokenBucketGroup("source", "default", config.source(), startNanos);
+    this.sourceCidrLimits = buildSourceCidrLimits(config.sourceCidrs(), startNanos);
+    this.methodFamilyLimits = buildGroups("method_family", config.methodFamilies(), startNanos);
+    this.catalogLimits = buildGroups("catalog", config.catalogs(), startNanos);
+    this.rpcClassLimits = buildGroups("rpc_class", config.rpcClasses(), startNanos);
   }
 
   boolean enabled() {
@@ -82,6 +84,21 @@ final class RequestRateLimiter {
 
   RequestClassification classify(String methodName) {
     return classifyRequest(methodName);
+  }
+
+  // Visible for tests: idle-bucket pruning is only observable through the bucket population.
+  int trackedBucketCount() {
+    int total = principalLimits.bucketCount() + sourceLimits.bucketCount();
+    for (SourceCidrLimit sourceCidrLimit : sourceCidrLimits) {
+      total += sourceCidrLimit.group().bucketCount();
+    }
+    for (Map<String, TokenBucketGroup> groups
+        : List.of(methodFamilyLimits, catalogLimits, rpcClassLimits)) {
+      for (TokenBucketGroup group : groups.values()) {
+        total += group.bucketCount();
+      }
+    }
+    return total;
   }
 
   void enforceRequest(String methodName) throws RateLimitExceededException {
@@ -183,18 +200,21 @@ final class RequestRateLimiter {
 
   private static Map<String, TokenBucketGroup> buildGroups(
       String dimension,
-      Map<String, RateLimitPolicyConfig> policies
+      Map<String, RateLimitPolicyConfig> policies,
+      long startNanos
   ) {
     if (policies.isEmpty()) {
       return Map.of();
     }
     ConcurrentHashMap<String, TokenBucketGroup> groups = new ConcurrentHashMap<>();
-    policies.forEach((scope, policy) -> groups.put(scope, new TokenBucketGroup(dimension, scope, policy)));
+    policies.forEach(
+        (scope, policy) -> groups.put(scope, new TokenBucketGroup(dimension, scope, policy, startNanos)));
     return Map.copyOf(groups);
   }
 
   private static List<SourceCidrLimit> buildSourceCidrLimits(
-      Map<String, SourceCidrRateLimitConfig> sourceCidrs
+      Map<String, SourceCidrRateLimitConfig> sourceCidrs,
+      long startNanos
   ) {
     if (sourceCidrs.isEmpty()) {
       return List.of();
@@ -206,7 +226,7 @@ final class RequestRateLimiter {
             name,
             config.cidrRules(),
             ClientAddressMatcher.parseAll(config.cidrRules()),
-            new TokenBucketGroup("source_cidr", name, config.policy())));
+            new TokenBucketGroup("source_cidr", name, config.policy(), startNanos)));
       }
     });
     return List.copyOf(limits);
@@ -295,11 +315,12 @@ final class RequestRateLimiter {
     private final long intervalNanos;
     private final long burstWindowNanos;
     private final ConcurrentMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
-    private final AtomicLong cleanupTicker = new AtomicLong();
+    private final AtomicLong nextCleanupNanos;
 
-    private TokenBucketGroup(String dimension, String scope, RateLimitPolicyConfig policy) {
+    private TokenBucketGroup(String dimension, String scope, RateLimitPolicyConfig policy, long startNanos) {
       this.dimension = dimension;
       this.scope = scope;
+      this.nextCleanupNanos = new AtomicLong(startNanos + BUCKET_CLEANUP_INTERVAL_NANOS);
       this.policy = policy == null ? RateLimitPolicyConfig.disabled() : policy;
       if (this.policy.enabled()) {
         this.intervalNanos = 1_000_000_000L / this.policy.requestsPerSecond();
@@ -335,8 +356,19 @@ final class RequestRateLimiter {
           .tryAcquire(nowNanos);
     }
 
+    private int bucketCount() {
+      return buckets.size();
+    }
+
+    // Bucket keys are unbounded (one per principal, one per source IP), so a burst of one-off
+    // clients must not leave its buckets behind. The sweep runs on elapsed time, not on a call
+    // counter: a counter stalls exactly when the burst is over and the keys are dead weight.
     private void cleanupIfNeeded(long nowNanos) {
-      if ((cleanupTicker.incrementAndGet() & 1023L) != 0L) {
+      long due = nextCleanupNanos.get();
+      if (nowNanos - due < 0L) {
+        return;
+      }
+      if (!nextCleanupNanos.compareAndSet(due, nowNanos + BUCKET_CLEANUP_INTERVAL_NANOS)) {
         return;
       }
       for (Map.Entry<String, TokenBucket> entry : buckets.entrySet()) {
