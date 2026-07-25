@@ -222,7 +222,6 @@ public final class KerberosHealthProbe {
       return Optional.empty();
     }
     try {
-<<<<<<< HEAD
       Set<KerberosTicket> tickets = subject.getPrivateCredentials(KerberosTicket.class);
       // Cross-realm TGTs (krbtgt/OTHER@LOCAL) can outlive the local TGT the login actually depends
       // on, so they are only considered when no local TGT is present.
