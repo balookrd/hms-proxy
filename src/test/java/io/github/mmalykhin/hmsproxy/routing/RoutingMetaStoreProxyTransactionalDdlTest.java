@@ -131,6 +131,96 @@ public class RoutingMetaStoreProxyTransactionalDdlTest {
   }
 
   @Test
+  public void transactionalDdlGuardBlocksCreateTableWithEnvironmentContext() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "create_table_with_environment_context", Table.class, EnvironmentContext.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      MetaException error = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(null, method, new Object[] {table, new EnvironmentContext()}));
+
+      Assert.assertTrue(error.getMessage().contains("create_table_with_environment_context"));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlGuardBlocksCreateTableWithConstraints() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "create_table_with_constraints",
+        Table.class, List.class, List.class, List.class, List.class, List.class, List.class);
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      MetaException error = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(null, method, new Object[] {
+              table, List.of(), List.of(), List.of(), List.of(), List.of(), List.of()}));
+
+      Assert.assertTrue(error.getMessage().contains("create_table_with_constraints"));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  @Test
+  public void transactionalDdlRewriteAppliesToCreateTableWithEnvironmentContext() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_TRANSACTIONAL_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      if (args != null) {
+        for (Object argument : args) {
+          if (argument instanceof Table table) {
+            capturedTable.set(table);
+          }
+        }
+      }
+      return null;
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "create_table_with_environment_context", Table.class, EnvironmentContext.class);
+
+    handler.invoke(null, method, new Object[] {table, new EnvironmentContext()});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTable.get().getTableType());
+    Assert.assertEquals("TRUE", capturedTable.get().getParameters().get("EXTERNAL"));
+    Assert.assertFalse(capturedTable.get().getParameters().containsKey("transactional"));
+  }
+
+  @Test
   public void transactionalDdlGuardBlocksAlterTableWhenTransactionalPropertiesArePresent() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.10.10.10");

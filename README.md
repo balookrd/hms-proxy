@@ -476,8 +476,12 @@ metadata marks a managed table as transactional:
 - `transactional=true`
 - any non-empty `transactional_properties`
 
-The rule applies to `create_table`, `alter_table`, and `alter_table_with_environment_context`.
-It is evaluated only for `MANAGED_TABLE`. External tables are left unchanged.
+The rule applies to every `create_table*` and `alter_table*` RPC, including
+`create_table_with_environment_context` (the call `HiveMetaStoreClient` actually sends for
+`createTable`), `create_table_with_constraints`, and `alter_table_with_cascade`. The `*_req`
+wrappers from Hive 4 and Hortonworks front doors are unwrapped into these RPCs before the guard
+runs, so they are covered too. It is evaluated only for `MANAGED_TABLE`. External tables are left
+unchanged.
 
 Reject mode:
 

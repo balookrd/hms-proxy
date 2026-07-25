@@ -30,7 +30,14 @@ final class HmsMethodNameHeuristics {
       "unlock",
       "heartbeat",
       "compact_",
-      "mark_");
+      "mark_",
+      // put/clear/cache_file_metadata, cm_recycle and map_schema_version_to_serde
+      // are the only Iface methods with these prefixes; all of them mutate state.
+      "put_",
+      "clear_",
+      "cache_",
+      "cm_",
+      "map_");
 
   private HmsMethodNameHeuristics() {
   }

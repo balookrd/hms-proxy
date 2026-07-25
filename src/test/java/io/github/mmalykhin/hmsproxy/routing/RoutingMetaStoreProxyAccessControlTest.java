@@ -112,6 +112,31 @@ public class RoutingMetaStoreProxyAccessControlTest {
   }
 
   @Test
+  public void readOnlyCatalogBlocksRefreshPrivileges() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = accessModeHandler(
+        CatalogAccessMode.READ_ONLY,
+        List.of(),
+        backendCalls,
+        new AtomicReference<>());
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "refresh_privileges",
+        org.apache.hadoop.hive.metastore.api.HiveObjectRef.class,
+        String.class,
+        org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {
+            new org.apache.hadoop.hive.metastore.api.HiveObjectRef(),
+            "admin",
+            new org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeRequest()}));
+
+    Assert.assertTrue(error.getMessage().contains("READ_ONLY"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
   public void whitelistCatalogAllowsWritesForWhitelistedDatabases() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     AtomicReference<Table> capturedTable = new AtomicReference<>();

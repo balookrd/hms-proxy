@@ -61,4 +61,43 @@ public class HmsOperationPolicyTest {
     Assert.assertEquals(NamespaceStrategy.NONE, operation.namespaceStrategy());
     Assert.assertFalse(operation.mutating());
   }
+
+  @Test
+  public void refreshPrivilegesIsAServiceGlobalWrite() {
+    OperationMetadata operation = HmsOperationPolicy.describe("refresh_privileges");
+
+    Assert.assertEquals(HmsOperationClass.SERVICE_GLOBAL_WRITE, operation.operationClass());
+    Assert.assertTrue(operation.mutating());
+  }
+
+  @Test
+  public void materializationRebuildLockLifecycleIsMutating() {
+    Assert.assertTrue(HmsOperationPolicy.describe("get_lock_materialization_rebuild").mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("heartbeat_lock_materialization_rebuild").mutating());
+  }
+
+  @Test
+  public void checkLockIsMutatingLikeItsLifecycleSiblings() {
+    OperationMetadata operation = HmsOperationPolicy.describe("check_lock");
+
+    Assert.assertEquals(HmsOperationClass.ACID_ID_BOUND_LIFECYCLE, operation.operationClass());
+    Assert.assertTrue(operation.mutating());
+  }
+
+  @Test
+  public void replicationSchemaAndFileMetadataWritesAreMutating() {
+    Assert.assertTrue(HmsOperationPolicy.describe("cm_recycle").mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("map_schema_version_to_serde").mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("put_file_metadata").mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("clear_file_metadata").mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("cache_file_metadata").mutating());
+  }
+
+  @Test
+  public void fileMetadataAndPrivilegeReadsStayNonMutating() {
+    Assert.assertFalse(HmsOperationPolicy.describe("get_file_metadata").mutating());
+    Assert.assertFalse(HmsOperationPolicy.describe("get_file_metadata_by_expr").mutating());
+    Assert.assertFalse(HmsOperationPolicy.describe("list_privileges").mutating());
+    Assert.assertFalse(HmsOperationPolicy.describe("get_privilege_set").mutating());
+  }
 }
