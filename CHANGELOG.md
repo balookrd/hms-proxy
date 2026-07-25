@@ -1,10 +1,35 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-07-25
+
+### Fixed
+
+- Front-door bridge responses no longer break the client connection or fail
+  serialization. `Hive4FrontendBridge` built a response wrapper for
+  `get_partitions_by_filter_req`, `get_partition_names_req` and
+  `drop_partition_req`, which Hive 4 types as `List<Partition>`, `List<String>`
+  and `boolean` — every call threw and reached the client as a dropped
+  connection. These now return the value directly. `get_partitions_req`,
+  `get_partitions_by_names_req` and `get_fields_req` (plus
+  `get_partitions_by_names_req` in `HortonworksFrontendBridge`) stored
+  parent-classloader Apache values in isolated response structs, which failed
+  the generated write scheme with a `ClassCastException`; list elements are now
+  converted into the frontend classloader first.
+- `get_databases_req` returns `Database` structs instead of the plain name list
+  it used to put into the `List<Database>` field. Names are still resolved via
+  `get_all_databases`/`get_databases`, then each database is fetched with
+  `get_database`.
+- `get_partition_names_req` applies the request `expr` instead of ignoring it.
+  With a non-empty expression the bridge now calls `get_partitions_by_expr`
+  (carrying `expr`, `defaultPartitionName` and `maxParts`) and rebuilds the
+  partition names from the table partition keys; an empty expression keeps the
+  previous `get_partition_names` path.
 
 ## 2026-05-26
 

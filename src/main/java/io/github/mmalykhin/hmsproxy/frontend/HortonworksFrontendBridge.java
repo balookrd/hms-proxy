@@ -265,7 +265,7 @@ public final class HortonworksFrontendBridge {
           (String) invokeNoArgs(request, "getTbl_name"),
           stringList(invokeNoArgs(request, "getNames")));
       Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setPartitions", List.class).invoke(response, partitions);
+      response.getClass().getMethod("setPartitions", List.class).invoke(response, convertList(partitions));
       return response;
     }
 
@@ -295,6 +295,15 @@ public final class HortonworksFrontendBridge {
         return null;
       }
       return ThriftValueConverter.convertValue(result, returnType, hdpClassLoader);
+    }
+
+    /**
+     * Apache values must be re-created in the HDP classloader before they are stored in an
+     * isolated response struct: the generated write scheme casts every element to its own
+     * api.* class, so a parent-loaded element fails serialization with a ClassCastException.
+     */
+    private List<?> convertList(List<?> values) throws Exception {
+      return (List<?>) ThriftValueConverter.convertDynamicValue(values, hdpClassLoader);
     }
 
     private Object convertIfPresent(Object value, Class<?> targetType) throws Exception {

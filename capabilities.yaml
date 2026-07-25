@@ -129,6 +129,7 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeMapsHive4OnlyGetDatabaseReqToLegacyApacheMethod
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeRejectsHive4OnlyDataConnectorMethod
+      - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4GetPartitionsReqSerializesPartitionsResponse
   - id: apache_frontdoor_to_hive4_backend_upgrade
     status: degraded
     client:
@@ -880,6 +881,7 @@ method_matrix:
       ru: Низкий для тех request shapes, у которых есть safe Apache mapping.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
+      - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hortonworksGetPartitionsByNamesReqSerializesPartitions
 
   - id: hdp_frontdoor_create_table_req
     method:
