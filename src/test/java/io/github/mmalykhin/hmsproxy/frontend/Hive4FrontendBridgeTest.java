@@ -103,10 +103,16 @@ public class Hive4FrontendBridgeTest {
     AtomicReference<String> capturedPattern = new AtomicReference<>();
 
     ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
-      invokedMethod.set(method.getName());
       if ("get_databases".equals(method.getName())) {
+        invokedMethod.set(method.getName());
         capturedPattern.set((String) args[0]);
         return List.of("sales", "marketing");
+      }
+      if ("get_database".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Database database =
+            new org.apache.hadoop.hive.metastore.api.Database();
+        database.setName((String) args[0]);
+        return database;
       }
       throw new UnsupportedOperationException(method.getName());
     });
@@ -123,9 +129,8 @@ public class Hive4FrontendBridgeTest {
 
     Assert.assertEquals("get_databases", invokedMethod.get());
     Assert.assertEquals("s*", capturedPattern.get());
-    @SuppressWarnings("unchecked")
-    List<String> dbs = (List<String>) response.getClass().getMethod("getDatabases").invoke(response);
-    Assert.assertEquals(List.of("sales", "marketing"), dbs);
+    List<?> dbs = (List<?>) response.getClass().getMethod("getDatabases").invoke(response);
+    Assert.assertEquals(List.of("sales", "marketing"), databaseNames(dbs));
   }
 
   @Test
@@ -134,9 +139,15 @@ public class Hive4FrontendBridgeTest {
     AtomicReference<String> invokedMethod = new AtomicReference<>();
 
     ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
-      invokedMethod.set(method.getName());
       if ("get_all_databases".equals(method.getName())) {
+        invokedMethod.set(method.getName());
         return List.of("sales", "marketing", "warehouse");
+      }
+      if ("get_database".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Database database =
+            new org.apache.hadoop.hive.metastore.api.Database();
+        database.setName((String) args[0]);
+        return database;
       }
       throw new UnsupportedOperationException(method.getName());
     });
@@ -151,9 +162,8 @@ public class Hive4FrontendBridgeTest {
     Object response = method.invoke(bridge.handlerProxy(), request);
 
     Assert.assertEquals("get_all_databases", invokedMethod.get());
-    @SuppressWarnings("unchecked")
-    List<String> dbs = (List<String>) response.getClass().getMethod("getDatabases").invoke(response);
-    Assert.assertEquals(3, dbs.size());
+    List<?> dbs = (List<?>) response.getClass().getMethod("getDatabases").invoke(response);
+    Assert.assertEquals(List.of("sales", "marketing", "warehouse"), databaseNames(dbs));
   }
 
   @Test
@@ -273,6 +283,14 @@ public class Hive4FrontendBridgeTest {
     Assert.assertEquals("missing db", cause.getMessage());
     Assert.assertSame("exception must come from Hive 4 classloader",
         bridge.classLoader(), cause.getClass().getClassLoader());
+  }
+
+  private static List<String> databaseNames(List<?> databases) throws Exception {
+    List<String> names = new ArrayList<>(databases.size());
+    for (Object database : databases) {
+      names.add((String) database.getClass().getMethod("getName").invoke(database));
+    }
+    return names;
   }
 
   private static ProxyConfig config() {

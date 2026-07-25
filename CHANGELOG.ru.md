@@ -1,10 +1,35 @@
 # Changelog
 
-Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-05-26`.
+Этот changelog суммирует всю историю коммитов репозитория от первого коммита до `2026-07-25`.
 Записи сгруппированы по датам коммитов и сфокусированы на заметных для пользователей изменениях.
 Первый тегированный релиз — `v1.0.0`, выпущен 2026-04-29.
 
 English version: [CHANGELOG.md](CHANGELOG.md).
+
+## 2026-07-25
+
+### Исправлено
+
+- Ответы front-door мостов больше не рвут клиентское соединение и не падают на
+  сериализации. `Hive4FrontendBridge` собирал response wrapper для
+  `get_partitions_by_filter_req`, `get_partition_names_req` и
+  `drop_partition_req`, которые в Hive 4 типизированы как `List<Partition>`,
+  `List<String>` и `boolean` — каждый вызов бросал исключение, доходившее до
+  клиента как обрыв соединения. Теперь значение возвращается напрямую.
+  `get_partitions_req`, `get_partitions_by_names_req` и `get_fields_req` (а
+  также `get_partitions_by_names_req` в `HortonworksFrontendBridge`) клали
+  Apache-объекты из parent classloader в изолированные response-структуры, что
+  роняло сгенерированную write-схему с `ClassCastException`; элементы списков
+  теперь сначала конвертируются в classloader фронтенда.
+- `get_databases_req` возвращает структуры `Database` вместо простого списка
+  имён, который раньше попадал в поле `List<Database>`. Имена по-прежнему
+  берутся через `get_all_databases`/`get_databases`, после чего каждая база
+  запрашивается через `get_database`.
+- `get_partition_names_req` учитывает `expr` из запроса, а не игнорирует его.
+  При непустом выражении мост вызывает `get_partitions_by_expr` (передавая
+  `expr`, `defaultPartitionName` и `maxParts`) и восстанавливает имена
+  партиций по partition keys таблицы; при пустом выражении сохраняется прежний
+  путь через `get_partition_names`.
 
 ## 2026-05-26
 

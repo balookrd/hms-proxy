@@ -10,10 +10,15 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
+import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest;
+import org.apache.hadoop.hive.metastore.api.PartitionsByExprResult;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
@@ -179,11 +184,17 @@ public final class Hive4FrontendBridge {
 
     private Object handleGetDatabasesReq(Method method, Object request) throws Throwable {
       String pattern = (String) invokeNoArgs(request, "getPattern");
-      List<String> databases = pattern == null || pattern.isEmpty()
+      List<String> names = pattern == null || pattern.isEmpty()
           ? apacheHandler.get_all_databases()
           : apacheHandler.get_databases(pattern);
+      // Hive 4 expects Database structs here; Apache 3.1.3 only lists names, so each one
+      // has to be fetched separately.
+      List<Object> databases = new ArrayList<>(names.size());
+      for (String name : names) {
+        databases.add(apacheHandler.get_database(name));
+      }
       Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setDatabases", List.class).invoke(response, databases);
+      response.getClass().getMethod("setDatabases", List.class).invoke(response, convertList(databases));
       return response;
     }
 
@@ -327,7 +338,7 @@ public final class Hive4FrontendBridge {
           (String) invokeNoArgs(request, "getTblName"),
           maxParts);
       Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setPartitions", List.class).invoke(response, partitions);
+      response.getClass().getMethod("setPartitions", List.class).invoke(response, convertList(partitions));
       return response;
     }
 
@@ -337,7 +348,7 @@ public final class Hive4FrontendBridge {
           (String) invokeNoArgs(request, "getTbl_name"),
           stringList(invokeNoArgs(request, "getNames")));
       Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setPartitions", List.class).invoke(response, partitions);
+      response.getClass().getMethod("setPartitions", List.class).invoke(response, convertList(partitions));
       return response;
     }
 
@@ -350,22 +361,32 @@ public final class Hive4FrontendBridge {
           (String) invokeNoArgs(request, "getTblName"),
           (String) invokeNoArgs(request, "getFilter"),
           maxParts);
-      Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setPartitions", List.class).invoke(response, partitions);
-      return response;
+      // Hive 4 types this method as List<Partition>, not as a response wrapper.
+      return convertResult(partitions, method.getReturnType());
     }
 
     private Object handleGetPartitionNamesReq(Method method, Object request) throws Throwable {
       short maxParts = invokeNoArgs(request, "getMaxParts") == null
           ? (short) -1
           : ((Number) invokeNoArgs(request, "getMaxParts")).shortValue();
-      List<String> names = apacheHandler.get_partition_names(
-          (String) invokeNoArgs(request, "getDbName"),
-          (String) invokeNoArgs(request, "getTblName"),
-          maxParts);
-      Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setNames", List.class).invoke(response, names);
-      return response;
+      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String tableName = (String) invokeNoArgs(request, "getTblName");
+      byte[] expr = (byte[]) invokeNoArgs(request, "getExpr");
+      // Hive 4 types this method as List<String>, not as a response wrapper.
+      if (expr == null || expr.length == 0) {
+        return apacheHandler.get_partition_names(dbName, tableName, maxParts);
+      }
+      // Apache 3.1.3 has no name-only expression filter, so resolve the partitions by
+      // expression (carrying expr, defaultPartitionName and maxParts) and rebuild the
+      // names from the table partition keys.
+      PartitionsByExprResult filtered = apacheHandler.get_partitions_by_expr(
+          (PartitionsByExprRequest) ThriftValueConverter.convertTBase(request, PartitionsByExprRequest.class));
+      List<FieldSchema> partitionKeys = apacheHandler.get_table(dbName, tableName).getPartitionKeys();
+      List<String> names = new ArrayList<>(filtered.getPartitionsSize());
+      for (Partition partition : filtered.getPartitions()) {
+        names.add(Warehouse.makePartName(partitionKeys, partition.getValues()));
+      }
+      return names;
     }
 
     private Object handleGetFieldsReq(Method method, Object request) throws Throwable {
@@ -377,7 +398,7 @@ public final class Hive4FrontendBridge {
           ? apacheHandler.get_fields_with_environment_context(dbName, tableName, environmentContext)
           : apacheHandler.get_fields(dbName, tableName);
       Object response = emptyResponse(method.getReturnType());
-      response.getClass().getMethod("setFields", List.class).invoke(response, fields);
+      response.getClass().getMethod("setFields", List.class).invoke(response, convertList(fields));
       return response;
     }
 
@@ -445,6 +466,15 @@ public final class Hive4FrontendBridge {
       return ThriftValueConverter.convertValue(result, returnType, hive4ClassLoader);
     }
 
+    /**
+     * Apache values must be re-created in the Hive 4 classloader before they are stored in
+     * an isolated response struct: the generated write scheme casts every element to its own
+     * api.* class, so a parent-loaded element fails serialization with a ClassCastException.
+     */
+    private List<?> convertList(List<?> values) throws Exception {
+      return (List<?>) ThriftValueConverter.convertDynamicValue(values, hive4ClassLoader);
+    }
+
     private Object convertIfPresent(Object value, Class<?> targetType) throws Exception {
       return value == null ? null : ThriftValueConverter.convertValue(value, targetType,
           Hive4FrontendBridge.class.getClassLoader());
@@ -484,6 +514,10 @@ public final class Hive4FrontendBridge {
     }
 
     private Object booleanResponse(Class<?> responseType, boolean value) throws ReflectiveOperationException {
+      if (responseType == boolean.class || responseType == Boolean.class) {
+        // drop_partition_req returns a bare boolean in Hive 4, not a response struct.
+        return value;
+      }
       try {
         return responseType.getConstructor(boolean.class).newInstance(value);
       } catch (NoSuchMethodException ignored) {

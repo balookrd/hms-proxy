@@ -88,6 +88,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - Для routing behavior сначала смотри `src/test/java/io/github/mmalykhin/hmsproxy/routing`.
 - Для config parsing используй существующие parser tests в `src/test/java/io/github/mmalykhin/hmsproxy/config`.
 - Для compatibility/runtime loading проверь тесты в `compatibility`, `backend` и `frontend`, прежде чем добавлять новые fixtures.
+- Меняя frontend bridge, добавляй проверку в `FrontendBridgeThriftSerializationTest`: прямой вызов handler proxy не прогоняет ответ через generated write scheme, поэтому неверная форма ответа и смешение классов двух загрузчиков видны только через реальный Thrift round-trip.
 - Если изменение влияет на public compatibility behavior, при необходимости обнови `capabilities.yaml`, generated README tables и smoke documentation.
 - Если изменение влияет на Kerberos, impersonation, synthetic locks, ACID/txn или Hortonworks-only methods, в финальном сообщении отдельно укажи, какие real-cluster smoke checks не запускались.
 
