@@ -23,9 +23,15 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
 
   private static final Logger LOG = LoggerFactory.getLogger(FileSystemExternalTableDropPurger.class);
   private final ProxyConfig config;
+  private final KeytabUgiProvider ugiProvider;
 
   FileSystemExternalTableDropPurger(ProxyConfig config) {
+    this(config, new KeytabUgiProvider());
+  }
+
+  FileSystemExternalTableDropPurger(ProxyConfig config, KeytabUgiProvider ugiProvider) {
     this.config = config;
+    this.ugiProvider = ugiProvider;
   }
 
   @Override
@@ -61,9 +67,11 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
   public void purge(CatalogBackend backend, PurgeRequest request) throws Exception {
     Path location = new Path(request.location());
     if (usesKerberos(backend)) {
-      UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(
+      UserGroupInformation ugi = ugiProvider.get(
           config.security().outboundPrincipal(),
           config.security().outboundKeytab());
+      // The FileSystem cached under this shared UGI is deliberately left open: it is bounded (one
+      // entry per scheme/authority) and closing it would break concurrent purges using the same UGI.
       ugi.doAs((PrivilegedExceptionAction<Void>) () -> {
         deleteRecursively(backend, location);
         return null;

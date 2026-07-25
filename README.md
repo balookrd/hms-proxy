@@ -799,6 +799,12 @@ allowlist. The proxy deletes data only after the backend metastore drop succeeds
 are logged and do not roll back the metadata delete. Keep the allowlist narrow because matching
 locations are deleted recursively through Hadoop `FileSystem`.
 
+The recursive delete runs on a small background worker pool (threads named
+`hms-proxy-drop-purge-*`), so `drop_table` returns as soon as the metadata delete succeeds and does
+not hold a Thrift worker for the whole delete. A successful `DROP TABLE` therefore does not
+guarantee that the data is already gone — watch the proxy log for the purge outcome. Pending purges
+are awaited during proxy shutdown; purges still queued after that are logged and skipped.
+
 Then a non-default catalog is used through the external database name:
 
 ```sql

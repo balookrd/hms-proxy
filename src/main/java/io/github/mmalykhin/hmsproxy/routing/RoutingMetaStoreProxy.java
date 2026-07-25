@@ -170,6 +170,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
 
   @Override
   public void close() throws MetaException {
+    routingHandler.close();
     syntheticReadLockManager.close();
     backendRoutingController.close();
   }
