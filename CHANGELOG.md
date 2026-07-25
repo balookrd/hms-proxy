@@ -45,6 +45,18 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   `READ_ONLY` and `READ_WRITE_DB_WHITELIST` catalog access modes reject them.
   The dead `rollback_txn` registry entry (no such RPC in any supported Iface;
   rollback is `abort_txn`) was removed.
+- Client identity (`ClientRequestContext.remoteAddress`/`remoteUser`) is now captured from
+  inside the SASL processor instead of around it. Hive's `TUGIAssumingProcessor` publishes the
+  per-request remote address and remote user into static ThreadLocals within its own
+  `process()` call and never clears them, so the previous outer wrapper read whatever the
+  connection previously served by that `TThreadPoolServer` worker thread had left behind. The
+  first RPC of every new connection therefore ran with the identity of the previous client on
+  that thread. This affected the `guard.transactional-ddl.client-addresses` decision (a stale
+  allowed address bypassed the guard, a stale foreign address blocked a legitimate client),
+  rate-limit token accounting (`rate-limit.principal.*`, `rate-limit.source.*`,
+  `rate-limit.source-cidrs.*` charged the wrong bucket) and the `remoteAddress`/
+  `authenticatedUser` fields of the audit log. Backend impersonation was not affected: it
+  resolves the user from the UGI `doAs` context, which the SASL processor sets correctly.
 
 ## 2026-05-26
 

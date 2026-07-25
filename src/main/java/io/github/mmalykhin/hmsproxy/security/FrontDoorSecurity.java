@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -220,17 +222,34 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   TProcessor wrapProcessor(TProcessor processor) {
-    TProcessor wrapped = saslServer.wrapProcessor(processor);
-    return (in, out) -> {
-      String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddress());
-      String previousRemoteUser = ClientRequestContext.setRemoteUser(remoteUser());
+    return wrapWithClientRequestContext(
+        processor, saslServer::wrapProcessor, this::remoteAddress, this::remoteUser);
+  }
+
+  /**
+   * Captures the client identity into {@link ClientRequestContext} from *inside* the SASL
+   * processor. Hive's {@code TUGIAssumingProcessor} publishes the per-request remote address and
+   * remote user into static ThreadLocals within its own {@code process()} call and never clears
+   * them, so reading them before that call returns the identity left behind by whichever
+   * connection previously used this pooled worker thread.
+   */
+  static TProcessor wrapWithClientRequestContext(
+      TProcessor processor,
+      UnaryOperator<TProcessor> saslWrapper,
+      Supplier<String> remoteAddressSupplier,
+      Supplier<String> remoteUserSupplier
+  ) {
+    TProcessor contextAware = (in, out) -> {
+      String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddressSupplier.get());
+      String previousRemoteUser = ClientRequestContext.setRemoteUser(remoteUserSupplier.get());
       try {
-        return wrapped.process(in, out);
+        return processor.process(in, out);
       } finally {
         ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
         ClientRequestContext.restoreRemoteUser(previousRemoteUser);
       }
     };
+    return saslWrapper.apply(contextAware);
   }
 
   public String issueDelegationToken(String owner, String renewer)

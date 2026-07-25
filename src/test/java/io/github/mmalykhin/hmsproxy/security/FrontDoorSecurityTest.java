@@ -1,8 +1,13 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.thrift.TException;
+import org.apache.thrift.TProcessor;
 import org.junit.Assert;
 import org.junit.Test;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
@@ -61,6 +66,122 @@ public class FrontDoorSecurityTest {
     Assert.assertEquals(
         "/etc/security/keytabs/custom.keytab",
         conf.get("hive.metastore.kerberos.keytab.file"));
+  }
+
+  @Test
+  public void firstRpcOfNewConnectionOnReusedThreadSeesCurrentClientIdentity() throws Exception {
+    HiveIdentityFixture hive = new HiveIdentityFixture();
+    List<String> observedAddresses = new ArrayList<>();
+    List<String> observedUsers = new ArrayList<>();
+    TProcessor businessProcessor = (in, out) -> {
+      observedAddresses.add(ClientRequestContext.remoteAddress().orElse(null));
+      observedUsers.add(ClientRequestContext.remoteUser().orElse(null));
+      return true;
+    };
+
+    TProcessor wrapped = FrontDoorSecurity.wrapWithClientRequestContext(
+        businessProcessor, hive::wrapProcessor, hive::remoteAddress, hive::remoteUser);
+
+    // Connection 1 on this pooled worker thread.
+    hive.connect("10.20.1.15", "clientA@EXAMPLE.COM");
+    wrapped.process(null, null);
+    wrapped.process(null, null);
+
+    // Connection 2 lands on the same worker thread; its very first RPC must not see client A.
+    hive.connect("192.168.10.5", "clientB@EXAMPLE.COM");
+    wrapped.process(null, null);
+
+    Assert.assertEquals(
+        List.of("10.20.1.15", "10.20.1.15", "192.168.10.5"), observedAddresses);
+    Assert.assertEquals(
+        List.of("clientA@EXAMPLE.COM", "clientA@EXAMPLE.COM", "clientB@EXAMPLE.COM"), observedUsers);
+  }
+
+  @Test
+  public void clientRequestContextIsClearedAfterEachRequest() throws Exception {
+    HiveIdentityFixture hive = new HiveIdentityFixture();
+    TProcessor wrapped = FrontDoorSecurity.wrapWithClientRequestContext(
+        (in, out) -> true, hive::wrapProcessor, hive::remoteAddress, hive::remoteUser);
+    hive.connect("10.20.1.15", "clientA@EXAMPLE.COM");
+
+    wrapped.process(null, null);
+
+    Assert.assertEquals(Optional.empty(), ClientRequestContext.remoteAddress());
+    Assert.assertEquals(Optional.empty(), ClientRequestContext.remoteUser());
+  }
+
+  @Test
+  public void clientRequestContextIsClearedWhenRequestFails() {
+    HiveIdentityFixture hive = new HiveIdentityFixture();
+    TProcessor wrapped = FrontDoorSecurity.wrapWithClientRequestContext(
+        (in, out) -> {
+          throw new TException("boom");
+        },
+        hive::wrapProcessor,
+        hive::remoteAddress,
+        hive::remoteUser);
+    hive.connect("10.20.1.15", "clientA@EXAMPLE.COM");
+
+    Assert.assertThrows(TException.class, () -> wrapped.process(null, null));
+
+    Assert.assertEquals(Optional.empty(), ClientRequestContext.remoteAddress());
+    Assert.assertEquals(Optional.empty(), ClientRequestContext.remoteUser());
+  }
+
+  @Test
+  public void unauthenticatedRequestLeavesClientRequestContextEmpty() throws Exception {
+    HiveIdentityFixture hive = new HiveIdentityFixture();
+    List<String> observedAddresses = new ArrayList<>();
+    List<String> observedUsers = new ArrayList<>();
+    TProcessor wrapped = FrontDoorSecurity.wrapWithClientRequestContext(
+        (in, out) -> {
+          observedAddresses.add(ClientRequestContext.remoteAddress().orElse(null));
+          observedUsers.add(ClientRequestContext.remoteUser().orElse(null));
+          return true;
+        },
+        hive::wrapProcessor,
+        hive::remoteAddress,
+        hive::remoteUser);
+    hive.connect(null, null);
+
+    wrapped.process(null, null);
+
+    Assert.assertEquals(java.util.Collections.singletonList(null), observedAddresses);
+    Assert.assertEquals(java.util.Collections.singletonList(null), observedUsers);
+  }
+
+  /**
+   * Mimics Hive's {@code HadoopThriftAuthBridge.Server.TUGIAssumingProcessor}: the per-request
+   * identity is published into static ThreadLocals from inside {@code process()}, just before the
+   * wrapped processor runs, and is never cleared afterwards. Reading it before the SASL processor
+   * runs therefore yields whatever the previous connection on this thread left behind.
+   */
+  private static final class HiveIdentityFixture {
+    private final ThreadLocal<String> hiveRemoteAddress = new ThreadLocal<>();
+    private final ThreadLocal<String> hiveRemoteUser = new ThreadLocal<>();
+    private String connectionAddress;
+    private String connectionUser;
+
+    void connect(String address, String user) {
+      this.connectionAddress = address;
+      this.connectionUser = user;
+    }
+
+    TProcessor wrapProcessor(TProcessor processor) {
+      return (in, out) -> {
+        hiveRemoteAddress.set(connectionAddress);
+        hiveRemoteUser.set(connectionUser);
+        return processor.process(in, out);
+      };
+    }
+
+    String remoteAddress() {
+      return hiveRemoteAddress.get();
+    }
+
+    String remoteUser() {
+      return hiveRemoteUser.get();
+    }
   }
 
   private static final class TestConfigFactory {

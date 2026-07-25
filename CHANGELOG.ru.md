@@ -45,6 +45,18 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   режимы доступа `READ_ONLY` и `READ_WRITE_DB_WHITELIST` их отклоняют. Удалена
   мёртвая запись реестра `rollback_txn` (такого RPC нет ни в одном
   поддерживаемом Iface; откат — это `abort_txn`).
+- Identity клиента (`ClientRequestContext.remoteAddress`/`remoteUser`) теперь считывается
+  внутри SASL-процессора, а не вокруг него. Hive'овский `TUGIAssumingProcessor` кладёт
+  remote address и remote user текущего запроса в статические ThreadLocal уже внутри своего
+  `process()` и никогда их не чистит, поэтому прежняя внешняя обёртка читала то, что оставило
+  предыдущее соединение, обслуженное этим worker-потоком `TThreadPoolServer`. В результате
+  первый RPC каждого нового соединения выполнялся с identity предыдущего клиента этого потока.
+  Это влияло на решение `guard.transactional-ddl.client-addresses` (залипший разрешённый адрес
+  обходил guard, залипший чужой адрес блокировал легитимного клиента), на учёт токенов
+  rate-limit (`rate-limit.principal.*`, `rate-limit.source.*`, `rate-limit.source-cidrs.*`
+  списывались из чужого bucket) и на поля `remoteAddress`/`authenticatedUser` в audit-логе.
+  Impersonation на бэкенд затронута не была: пользователь берётся из UGI-контекста `doAs`,
+  который SASL-процессор выставляет корректно.
 
 ## 2026-05-26
 
