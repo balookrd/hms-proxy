@@ -57,6 +57,30 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   `rate-limit.source-cidrs.*` charged the wrong bucket) and the `remoteAddress`/
   `authenticatedUser` fields of the audit log. Backend impersonation was not affected: it
   resolves the user from the UGI `doAs` context, which the SASL processor sets correctly.
+- View text rewrite (`federation.view-text-rewrite.mode=REWRITE`) is now context-aware. The
+  previous regex matched any `x.y` pair anywhere in the SQL text, so a table alias colliding with a
+  database name, a dotted value inside a string literal or comment, and cross-catalog references
+  such as `other_cat.sales.t` (whose catalog prefix was silently dropped) could all corrupt the
+  view definition. A lexical scanner now skips string literals, `--` and `/* */` comments, numbers
+  and backquoted identifiers, and rewrites only the database qualifier of a reference standing in a
+  table position (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`). Three-part `catalog.db.table`
+  references keep their catalog prefix: outbound rewrite collapses only
+  `<backend catalog>.<db>.<table>` into the external database name. Anything that cannot be
+  resolved unambiguously is left untouched and logged at `DEBUG`.
+
+### Changed
+
+- `federation.view-text-rewrite.preserve-original-text` now defaults to `true`. With
+  `mode=REWRITE`, only `viewExpandedText` is rewritten unless the property is explicitly set to
+  `false`, so the client-facing `viewOriginalText` is no longer mutated by default.
+
+### Performance
+
+- View text rewrite no longer walks the whole result graph through reflection. The thrift fields
+  that can transitively reach a `Table` are now cached per class, so subtrees without view text
+  (partitions, storage descriptors, column statistics) are skipped entirely: a `get_partitions`
+  response with thousands of partitions no longer costs thousands of reflective calls per request.
+  Rewriting a matched reference no longer compiles a fresh `Pattern` per match either.
 
 ## 2026-05-26
 

@@ -722,12 +722,26 @@ explicitly rather than returning a misleading success response.
 
 View/materialized-view notes:
 - the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=REWRITE`
-- rewrite is intentionally parser-less and conservative: it targets `db.table` references, not full
-  Hive SQL grammar
+- rewrite is intentionally parser-less and conservative: a lexical scanner tracks table positions
+  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) and rewrites only the database qualifier of a
+  reference standing in one of them; it does not parse the full Hive SQL grammar
+- string literals, `--` and `/* */` comments, numbers and backquoted identifiers are skipped, so
+  their content is never rewritten; column qualifiers and table aliases (`t.col` in
+  `select t.col from sales.orders t`) are left alone even when they collide with a database name
+- `catalog.db.table` references keep their catalog qualifier: outbound rewrite collapses
+  `<backend catalog>.<db>.<table>` into the external database name, and any other catalog prefix is
+  left untouched instead of being silently retargeted
 - cross-catalog references in inbound SQL like `catalog2__dim.table_x` are internalized for the
   backend, but outbound rewrite is only guaranteed for the current table namespace
-- comments, string literals, and unusual quoted identifiers may still need manual validation in
-  your environment
+- whatever cannot be resolved unambiguously stays untouched and is logged at `DEBUG` by
+  `ViewDefinitionCompatibility`; an unrewritten reference surfaces as an explicit backend error
+  rather than as a silently corrupted view definition
+- by default only `viewExpandedText` is rewritten
+  (`federation.view-text-rewrite.preserve-original-text=true`), so the client-facing
+  `viewOriginalText` is never mutated; set it to `false` if you also want the stored original SQL
+  translated
+- dialect-specific text (variable substitution such as `${hiveconf:db}`, macros, engine-specific
+  hints) is out of scope and still needs validation in your environment
 
 ## Debug logging
 
@@ -778,11 +792,12 @@ with:
 
 ```properties
 federation.view-text-rewrite.mode=REWRITE
-federation.view-text-rewrite.preserve-original-text=true
 ```
 
-That combination rewrites view SQL between external and internal names while preserving the
-user-facing `viewOriginalText`. It does not change backend selection for the RPC itself.
+That rewrites view SQL between external and internal names. `viewOriginalText` is preserved by
+default (`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` only if the
+stored original SQL must be translated as well. Neither switch changes backend selection for the
+RPC itself.
 
 If you need the proxy to physically delete external-table data on Apache `3.1.3` backends after
 `DROP TABLE`, enable:

@@ -715,12 +715,26 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 
 Замечания по view / materialized view:
 - переписывание SQL работает только при `federation.view-text-rewrite.mode=REWRITE`
-- rewrite сделан intentionally parser-less: proxy переписывает ссылки вида `db.table`, а не
-  пытается разобрать весь Hive SQL grammar
+- rewrite сделан intentionally parser-less: лексический сканер отслеживает table-позиции
+  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) и переписывает только database-квалификатор ссылки,
+  стоящей в такой позиции; полный Hive SQL grammar не разбирается
+- string literals, комментарии `--` и `/* */`, числа и идентификаторы в backquote пропускаются,
+  поэтому их содержимое никогда не переписывается; квалификаторы колонок и алиасы таблиц
+  (`t.col` в `select t.col from sales.orders t`) не трогаются, даже если совпадают с именем БД
+- ссылки вида `catalog.db.table` сохраняют catalog-префикс: на выходе схлопывается только
+  `<backend catalog>.<db>.<table>` в имя внешней БД, а любой другой catalog-префикс остаётся
+  нетронутым, а не переписывается молча на другой namespace
 - входящие cross-catalog ссылки вроде `catalog2__dim.table_x` internalize'ятся для backend, но на
   выходе гарантированно переписывается только namespace текущей таблицы
-- comments, string literals и экзотические quoted identifiers лучше проверить отдельным smoke
-  тестом в вашей среде
+- всё, что нельзя разрешить однозначно, остаётся нетронутым и логируется на уровне `DEBUG` в
+  `ViewDefinitionCompatibility`; непереписанная ссылка проявится как явная ошибка backend, а не
+  как молча испорченное определение вью
+- по умолчанию переписывается только `viewExpandedText`
+  (`federation.view-text-rewrite.preserve-original-text=true`), то есть клиентский
+  `viewOriginalText` не мутируется; поставь `false`, если нужно переписывать и сохранённый
+  оригинальный SQL
+- диалектные конструкции (подстановки вроде `${hiveconf:db}`, макросы, engine-specific hints) вне
+  области rewrite — их по-прежнему стоит проверить отдельным smoke тестом в вашей среде
 
 ## ACID / txn / lock policy
 
@@ -775,11 +789,12 @@ federation.preserve-backend-catalog-name=true
 
 ```properties
 federation.view-text-rewrite.mode=REWRITE
-federation.view-text-rewrite.preserve-original-text=true
 ```
 
-Такой набор переписывает SQL между внешними и внутренними именами и при этом сохраняет
-пользовательский `viewOriginalText`. На выбор backend для самого RPC это не влияет.
+Это переписывает SQL внутри view между внешними и внутренними именами. `viewOriginalText` по
+умолчанию сохраняется (`federation.view-text-rewrite.preserve-original-text=true`); ставь `false`
+только если нужно переписывать и сохранённый оригинальный SQL. На выбор backend для самого RPC ни
+одна из настроек не влияет.
 
 Если нужно, чтобы proxy физически удалял данные external table на backend Apache `3.1.3`
 после `DROP TABLE`, включи:
