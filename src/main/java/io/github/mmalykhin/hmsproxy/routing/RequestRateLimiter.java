@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.operation.HmsMethodNames;
 import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
@@ -8,7 +9,6 @@ import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -219,7 +219,7 @@ final class RequestRateLimiter {
 
   private static RequestClassification deriveClassification(String methodName) {
     OperationMetadata operation = HmsOperationPolicy.describe(methodName);
-    String canonicalMethod = canonicalize(methodName);
+    String canonicalMethod = HmsMethodNames.canonicalize(methodName);
     LinkedHashSet<String> rpcClasses = new LinkedHashSet<>();
     if (operation.mutating()) {
       rpcClasses.add("write");
@@ -258,19 +258,6 @@ final class RequestRateLimiter {
 
   private static boolean isLock(String canonicalMethod) {
     return canonicalMethod.contains("lock");
-  }
-
-  private static String canonicalize(String methodName) {
-    String normalized = methodName == null ? "" : methodName.trim();
-    StringBuilder builder = new StringBuilder(normalized.length() + 8);
-    for (int i = 0; i < normalized.length(); i++) {
-      char current = normalized.charAt(i);
-      if (Character.isUpperCase(current) && i > 0 && builder.charAt(builder.length() - 1) != '_') {
-        builder.append('_');
-      }
-      builder.append(Character.toLowerCase(current));
-    }
-    return builder.toString();
   }
 
   record RequestClassification(

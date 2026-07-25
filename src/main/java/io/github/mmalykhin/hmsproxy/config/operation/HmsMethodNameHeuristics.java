@@ -46,7 +46,7 @@ final class HmsMethodNameHeuristics {
     if (methodName == null || methodName.isBlank()) {
       return HmsOperationClass.ADMIN_INTROSPECTION;
     }
-    String normalized = canonicalizeForPrefixMatch(methodName);
+    String normalized = HmsMethodNames.canonicalize(methodName);
     for (String prefix : READ_PREFIXES) {
       if (normalized.startsWith(prefix)) {
         return HmsOperationClass.METADATA_READ;
@@ -64,7 +64,7 @@ final class HmsMethodNameHeuristics {
     if (methodName == null || methodName.isBlank()) {
       return false;
     }
-    String normalized = canonicalizeForPrefixMatch(methodName);
+    String normalized = HmsMethodNames.canonicalize(methodName);
     for (String prefix : READ_PREFIXES) {
       if (normalized.startsWith(prefix)) {
         return false;
@@ -98,19 +98,6 @@ final class HmsMethodNameHeuristics {
   }
 
   static String normalizeMethod(String methodName) {
-    return methodName == null ? "" : methodName.trim();
-  }
-
-  private static String canonicalizeForPrefixMatch(String methodName) {
-    String normalized = normalizeMethod(methodName);
-    StringBuilder builder = new StringBuilder(normalized.length() + 8);
-    for (int i = 0; i < normalized.length(); i++) {
-      char current = normalized.charAt(i);
-      if (Character.isUpperCase(current) && i > 0 && builder.charAt(builder.length() - 1) != '_') {
-        builder.append('_');
-      }
-      builder.append(Character.toLowerCase(current));
-    }
-    return builder.toString();
+    return HmsMethodNames.normalize(methodName);
   }
 }
