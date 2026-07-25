@@ -16,7 +16,11 @@
     <hive.version>3.1.3</hive.version>
     <hadoop.mapreduce.version>2.6.5</hadoop.mapreduce.version>
     <junit.version>4.13.2</junit.version>
-    <slf4j.version>1.7.36</slf4j.version>
+    <!-- API and binding must stay on one version. 1.7.32 is the last release where
+         slf4j-log4j12 is a real artifact: from 1.7.33 on it is only a relocation to
+         slf4j-reload4j, which would put reload4j next to the log4j 1.2.17 that Hadoop
+         pulls in and leave two copies of org.apache.log4j on the classpath. -->
+    <slf4j.version>1.7.32</slf4j.version>
     <surefire.argLine>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED</surefire.argLine>
   </properties>
 
@@ -158,7 +162,7 @@
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-log4j12</artifactId>
-      <version>1.7.26</version>
+      <version>${slf4j.version}</version>
     </dependency>
     <dependency>
       <groupId>junit</groupId>

@@ -87,6 +87,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - Предпочитай deterministic routing и явные safe failures вместо догадок, когда catalog ownership или namespace context неоднозначны.
 - Сохраняй совместимость с Java 17. Не добавляй требования к более новым версиям языка или runtime.
 - Не добавляй новые зависимости без реальной необходимости; Hive/Hadoop dependency convergence хрупкий.
+- slf4j-api и binding держи на одной версии `${slf4j.version}` и не поднимай выше 1.7.32: начиная с 1.7.33 `slf4j-log4j12` - только relocation на `slf4j-reload4j`, и reload4j встанет рядом с log4j 1.2.17 из Hadoop, дав две копии `org.apache.log4j` в fat jar.
 - Комментарии оставляй короткими и только там, где они объясняют неочевидное compatibility, security, routing или class-loading поведение.
 - Не форматируй несвязанные файлы и не меняй generated docs, если твоя задача не требует их обновления.
 
