@@ -305,6 +305,42 @@ public class FederationLayerTest {
     Assert.assertFalse(layer.isTableExposed(salesNamespace, "events"));
   }
 
+  @Test
+  public void blankBackendDatabaseIsExposedWithoutRunningTableRules() throws Exception {
+    FederationLayer layer = federationLayer(exposureConfig(
+        CatalogExposureMode.DENY_BY_DEFAULT,
+        List.of(),
+        Map.of("sales", List.of("orders"))));
+
+    Assert.assertTrue(layer.isDatabaseExposed("catalog1", null));
+    Assert.assertTrue(layer.isDatabaseExposed("catalog1", "   "));
+    Assert.assertTrue(layer.isTableExposed("catalog1", null, "orders"));
+    Assert.assertTrue(layer.isTableExposed("catalog1", "   ", "secret"));
+  }
+
+  @Test
+  public void blankTableNameFallsBackToDatabaseExposure() throws Exception {
+    FederationLayer layer = federationLayer(exposureConfig(
+        CatalogExposureMode.DENY_BY_DEFAULT,
+        List.of(),
+        Map.of("sales", List.of("orders"))));
+
+    Assert.assertTrue(layer.isTableExposed("catalog1", "sales", "  "));
+    Assert.assertFalse(layer.isTableExposed("catalog1", "finance", null));
+  }
+
+  @Test
+  public void tableRulesOnlyConstrainTheDatabasesTheyMatch() throws Exception {
+    FederationLayer layer = federationLayer(exposureConfig(
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of("sales", List.of("orders"))));
+
+    Assert.assertTrue(layer.isTableExposed("catalog1", "sales", "orders"));
+    Assert.assertFalse(layer.isTableExposed("catalog1", "sales", "secret"));
+    Assert.assertTrue(layer.isTableExposed("catalog1", "finance", "secret"));
+  }
+
   private static Table viewTable(String viewOriginalText, String viewExpandedText) {
     Table table = new Table();
     table.setTableType("VIRTUAL_VIEW");
