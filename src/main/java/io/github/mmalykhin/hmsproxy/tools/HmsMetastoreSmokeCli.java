@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.tools;
 
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URLClassLoader;
@@ -403,10 +404,8 @@ public final class HmsMetastoreSmokeCli {
     }
   }
 
-  private static synchronized void configureKerberosAuthentication() {
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(securityConf);
+  private static void configureKerberosAuthentication() {
+    ProcessKerberosConfiguration.processWide().ensureConfigured("kerberos");
   }
 
   private static String resolvePrincipal(String principal) {

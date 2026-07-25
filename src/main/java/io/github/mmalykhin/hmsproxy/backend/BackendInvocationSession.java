@@ -2,14 +2,15 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.observability.BackendKerberosLoginTracker;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import io.github.mmalykhin.hmsproxy.security.LoginSubjects;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.PrivilegedExceptionAction;
 import java.util.List;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -216,10 +217,11 @@ public final class BackendInvocationSession implements AutoCloseable {
     LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
         catalogConfig.name(), principal, keytab);
 
-    configureKerberosAuthentication();
-
+    // The process-wide UGI configuration is installed once at startup (FrontDoorSecurity.open or
+    // CatalogBackend.open); replacing it here would race with in-flight SASL handshakes.
     try {
       UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
+      BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(ugi));
       return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
     } catch (Exception e) {
       MetaException metaException = new MetaException(
@@ -230,12 +232,6 @@ public final class BackendInvocationSession implements AutoCloseable {
       metaException.initCause(e);
       throw metaException;
     }
-  }
-
-  private static synchronized void configureKerberosAuthentication() {
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(securityConf);
   }
 
   private static ThriftHiveMetastore.Iface extractThriftClient(HiveMetaStoreClient client)

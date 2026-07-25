@@ -306,8 +306,25 @@ curl -s http://127.0.0.1:19083/metrics
   `lastFailureEpochSecond`, `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`,
   `baselineTimeoutMs`, `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`,
   `consecutiveFailures`, `circuitRetryAtEpochMs` и `lastError`
-- Kerberos status для front door и outbound backend credentials
+- Kerberos status для front door и outbound backend credentials, включая `state`
+  (`DISABLED`, `PENDING`, `ACTIVE`, `STALE`, `FAILED`), `loggedIn` и `healthy`
 - TGT freshness через `tgtExpiresAtEpochSecond` и `secondsUntilExpiry`, когда эти данные доступны
+
+Kerberos status читается по уже используемым proxy login'ам. Kerberos probe не переустанавливает
+process-wide security configuration и не делает собственный keytab login, поэтому не конкурирует с
+живыми SASL handshake и не добавляет трафика к KDC. При этом on-demand connectivity probes выше
+по-прежнему открывают backend-сессию на каждый scrape, а она при backend SASL делает keytab login;
+чтобы убрать это с пути запроса, включите `routing.backend-state-polling.enabled=true`.
+
+Readiness падает только тогда, когда front-door login user отсутствует или вообще не имеет
+Kerberos credentials. Истёкший TGT отдаётся как `state=STALE` с `secondsUntilExpiry<=0` и не роняет
+readiness: Hadoop не обновляет TGT keytab-логина сам по себе, а SASL acceptor продолжает
+аутентифицировать клиентов по service keys из keytab. Backend Kerberos - только диагностика:
+`PENDING` до открытия первой backend-сессии, `STALE` когда последний зафиксированный backend login
+непригоден; каждая backend-сессия делает собственный keytab login, поэтому реальное здоровье
+backend'ов показывают connectivity probes. Так как probe больше не логинится, ротацию или отзыв
+keytab сам `/readyz` не обнаруживает - это проявится через отказы клиентской аутентификации или
+backend connectivity.
 
 Если включён `routing.backend-state-polling.enabled=true`, readiness отражает результат последних
 фоновых probe. Иначе `/readyz` сам делает on-demand probe backend'ов и возвращает те же поля.

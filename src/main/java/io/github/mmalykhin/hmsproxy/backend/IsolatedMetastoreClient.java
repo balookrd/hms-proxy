@@ -2,6 +2,8 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.observability.BackendKerberosLoginTracker;
+import io.github.mmalykhin.hmsproxy.security.LoginSubjects;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
@@ -153,6 +155,9 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     Method loginUserFromKeytabAndReturnUgi =
         childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
     Object childUgi = loginUserFromKeytabAndReturnUgi.invoke(null, principal, keytab);
+    // The isolated runtime has its own UserGroupInformation class, so health probes track the
+    // login subject, which stays a shared JDK type.
+    BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(childUgi));
     Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
     return doAs.invoke(childUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
         withContextClassLoader(classLoader, () ->
