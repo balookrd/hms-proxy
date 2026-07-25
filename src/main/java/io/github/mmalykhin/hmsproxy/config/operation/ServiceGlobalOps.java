@@ -27,9 +27,12 @@ final class ServiceGlobalOps {
     // Role/privilege queries are classed but do not need a backend override.
     r.all(o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_READ),
         "get_role_names", "list_privileges", "get_principals_in_role",
-        "get_role_grants_for_principal", "get_privilege_set", "refresh_privileges");
+        "get_role_grants_for_principal", "get_privilege_set");
 
     r.all(o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_WRITE),
         "setMetaConf", "create_role", "drop_role", "grant_role", "revoke_role");
+    // Despite the read-looking name, refresh_privileges is a bulk grant/revoke
+    // (PrivilegeSynchronizer), so it must be classified as a mutating write.
+    r.op("refresh_privileges", o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_WRITE).mutating());
   }
 }

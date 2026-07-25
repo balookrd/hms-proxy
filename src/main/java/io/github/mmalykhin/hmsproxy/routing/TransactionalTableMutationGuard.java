@@ -6,16 +6,11 @@ import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
 
 final class TransactionalTableMutationGuard {
-  private static final Set<String> GUARDED_METHODS = Set.of(
-      "create_table",
-      "alter_table",
-      "alter_table_with_environment_context");
 
   private final TransactionalDdlGuardConfig config;
   private final List<ClientAddressMatcher> clientAddressMatchers;
@@ -27,7 +22,7 @@ final class TransactionalTableMutationGuard {
 
   void validate(String methodName, Object[] args) throws MetaException {
     if (!config.enabled()
-        || !GUARDED_METHODS.contains(methodName)
+        || !isGuardedMethod(methodName)
         || !matchesClientAddress()) {
       return;
     }
@@ -62,6 +57,16 @@ final class TransactionalTableMutationGuard {
             + qualifiedName(table)
             + " from client " + remoteAddress
             + " by guard.transactional-ddl.* policy");
+  }
+
+  // Prefix match covers every positional create/alter variant of the supported Ifaces
+  // (create_table_with_environment_context is the RPC HiveMetaStoreClient 3.1.x actually sends
+  // for createTable, plus create_table_with_constraints and alter_table_with_cascade). The
+  // *_req wrappers are unwrapped into these positional RPCs by the frontend bridges before
+  // this guard runs, so findTable(args) always sees the Table argument.
+  private static boolean isGuardedMethod(String methodName) {
+    return methodName != null
+        && (methodName.startsWith("create_table") || methodName.startsWith("alter_table"));
   }
 
   private boolean matchesClientAddress() {

@@ -460,8 +460,12 @@ metadata таблица помечена как transactional:
 - `transactional=true`
 - любое непустое значение `transactional_properties`
 
-Правило применяется к `create_table`, `alter_table` и `alter_table_with_environment_context`.
-Оно срабатывает только для `MANAGED_TABLE`. External-таблицы остаются без изменений.
+Правило применяется ко всем RPC `create_table*` и `alter_table*`, включая
+`create_table_with_environment_context` (именно этот вызов `HiveMetaStoreClient` реально
+отправляет для `createTable`), `create_table_with_constraints` и `alter_table_with_cascade`.
+Обёртки `*_req` из front door Hive 4 и Hortonworks разворачиваются в эти RPC до срабатывания
+guard, поэтому они тоже покрыты. Оно срабатывает только для `MANAGED_TABLE`. External-таблицы
+остаются без изменений.
 
 Режим reject:
 

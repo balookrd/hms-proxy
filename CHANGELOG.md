@@ -1,12 +1,30 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
-## 2026-05-26
+## 2026-07-25
+
+### Fixed
+
+- Transactional DDL guard (`guard.transactional-ddl.*`) now covers every
+  `create_table*` / `alter_table*` RPC instead of a fixed three-method list. In
+  particular `create_table_with_environment_context` — the RPC
+  `HiveMetaStoreClient` 3.1.x actually sends for `createTable` and the target
+  both frontend bridges unwrap their `create_table_req` into — plus
+  `create_table_with_constraints` and `alter_table_with_cascade` are now
+  guarded, so REJECT/REWRITE policies apply to the main table-creation path.
+- Operation registry write classification: `refresh_privileges` (bulk
+  grant/revoke), `get_lock_materialization_rebuild` (acquires a rebuild lock),
+  `check_lock` (heartbeats the txn/lock in `TxnHandler`), `cm_recycle`,
+  `map_schema_version_to_serde`, `put_file_metadata`, `clear_file_metadata`,
+  and `cache_file_metadata` are now classified as mutating writes, so
+  `READ_ONLY` and `READ_WRITE_DB_WHITELIST` catalog access modes reject them.
+  The dead `rollback_txn` registry entry (no such RPC in any supported Iface;
+  rollback is `abort_txn`) was removed.
 
 ### Added
 
