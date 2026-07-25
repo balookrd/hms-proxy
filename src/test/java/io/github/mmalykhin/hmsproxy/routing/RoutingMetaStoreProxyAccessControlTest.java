@@ -149,6 +149,40 @@ public class RoutingMetaStoreProxyAccessControlTest {
   }
 
   @Test
+  public void transactionalDdlGuardDecidesPerRequestWhenAThreadServesSeveralClients() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    // Same worker thread, guarded client first.
+    String previousRemoteAddress = ClientRequestContext.setRemoteAddress("10.20.1.15");
+    try {
+      Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(null, method, new Object[] {transactionalTable()}));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+
+    // The next client on that thread is outside the guarded CIDR and must not inherit the verdict.
+    previousRemoteAddress = ClientRequestContext.setRemoteAddress("192.168.10.5");
+    try {
+      handler.invoke(null, method, new Object[] {transactionalTable()});
+
+      Assert.assertEquals(1, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
+    }
+  }
+
+  private static Table transactionalTable() {
+    Table table = table("catalog1__sales", "events", Map.of("transactional", "true"));
+    table.setTableType("MANAGED_TABLE");
+    return table;
+  }
+
+  @Test
   public void getAllDatabasesFiltersHiddenDatabasesByExposurePolicy() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))

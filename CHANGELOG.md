@@ -1,10 +1,27 @@
 # Changelog
 
 This changelog summarizes the full commit history of the repository from the first commit through
-`2026-05-26`. Entries are grouped by commit date and focused on user-visible changes. The first
+`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
 tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
+
+## 2026-07-25
+
+### Fixed
+
+- Client identity (`ClientRequestContext.remoteAddress`/`remoteUser`) is now captured from
+  inside the SASL processor instead of around it. Hive's `TUGIAssumingProcessor` publishes the
+  per-request remote address and remote user into static ThreadLocals within its own
+  `process()` call and never clears them, so the previous outer wrapper read whatever the
+  connection previously served by that `TThreadPoolServer` worker thread had left behind. The
+  first RPC of every new connection therefore ran with the identity of the previous client on
+  that thread. This affected the `guard.transactional-ddl.client-addresses` decision (a stale
+  allowed address bypassed the guard, a stale foreign address blocked a legitimate client),
+  rate-limit token accounting (`rate-limit.principal.*`, `rate-limit.source.*`,
+  `rate-limit.source-cidrs.*` charged the wrong bucket) and the `remoteAddress`/
+  `authenticatedUser` fields of the audit log. Backend impersonation was not affected: it
+  resolves the user from the UGI `doAs` context, which the SASL processor sets correctly.
 
 ## 2026-05-26
 
