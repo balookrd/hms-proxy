@@ -95,6 +95,8 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 
 - Runnable artifact - `target/hms-proxy-<version>-fat.jar`; версия вычисляется через Maven и может включать git-derived metadata.
 - Java 17 вместе со старыми Hadoop Kerberos libraries может требовать документированные JVM flags `--add-opens` и `--add-exports`.
+- Process-wide Kerberos state (`UserGroupInformation.setConfiguration`, `UserGroupInformation.loginUserFromKeytab`) меняется только через `security/ProcessKerberosConfiguration`: front door ставит полную конфигурацию при старте, остальные пути лишь дополняют её один раз и никогда не перезаписывают. Инвариант закреплён тестом `ProcessWideUgiStateTest`.
+- Kerberos health probe (`/readyz`) читает уже существующие login'ы и не делает kinit: endpoint не аутентифицирован и опрашивается каждые несколько секунд. Истёкший TGT отдаётся как `STALE` и не роняет readiness - Hadoop не обновляет TGT keytab-логина сам, а SASL acceptor работает по service keys из keytab.
 - `logs/`, `target/`, IDE metadata и локальные smoke env files - локальные артефакты. Не включай их в обычные code changes без явной просьбы.
 - Игнорируй директории и файлы `.claude/`, `.idea/` и `*.iml`: не читай их, не анализируй и не упоминай в ответах. Это персональные/IDE-артефакты, не относящиеся к проекту.
 - Smoke scripts могут требовать реальные HMS/HS2/Kerberos credentials; не запускай их бездумно против production-like окружений.

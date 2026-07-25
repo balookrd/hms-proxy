@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -88,6 +89,12 @@ public final class CatalogBackend implements AutoCloseable {
     conf.set("hadoop.security.authentication", backendKerberosEnabled ? "kerberos" : "simple");
     for (Map.Entry<String, String> entry : catalogConfig.hiveConf().entrySet()) {
       conf.set(entry.getKey(), entry.getValue());
+    }
+    if (backendKerberosEnabled) {
+      // Backend sessions open lazily and reconnect on the hot path, so the process-wide UGI
+      // configuration is installed here at startup. It is a no-op when the front door already
+      // installed its own, richer configuration.
+      ProcessKerberosConfiguration.processWide().ensureConfigured("kerberos");
     }
 
     MetastoreRuntimeProfile runtimeProfile = catalogConfig.runtimeProfile() != null

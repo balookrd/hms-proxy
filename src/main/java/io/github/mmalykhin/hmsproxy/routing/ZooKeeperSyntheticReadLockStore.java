@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -13,9 +14,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.ExponentialBackoffRetry;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.utils.SecurityUtils;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.data.Stat;
@@ -190,12 +189,13 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
     if (!config.security().kerberosEnabled()) {
       return;
     }
-    Configuration securityConf = new Configuration(false);
-    securityConf.set("hadoop.security.authentication", config.security().mode().hadoopAuthValue());
-    UserGroupInformation.setConfiguration(securityConf);
+    ProcessKerberosConfiguration kerberos = ProcessKerberosConfiguration.processWide();
+    // FrontDoorSecurity.open already installed the full front-door configuration by this point;
+    // this only covers startup orders where nothing installed one yet.
+    kerberos.ensureConfigured(config.security().mode().hadoopAuthValue());
     String principal = KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal());
     SecurityUtils.setZookeeperClientKerberosJaasConfig(principal, config.security().keytab());
-    UserGroupInformation.loginUserFromKeytab(principal, config.security().keytab());
+    kerberos.ensureLoginUserFromKeytab(principal, config.security().keytab());
     LOG.info("Configured ZooKeeper SASL client JAAS entry '{}' for synthetic read-lock store principal {}",
         System.getProperty("zookeeper.sasl.clientconfig", "<unset>"),
         principal);

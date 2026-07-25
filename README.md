@@ -304,8 +304,26 @@ response includes:
   `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`, `baselineTimeoutMs`,
   `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`, `consecutiveFailures`,
   `circuitRetryAtEpochMs`, and `lastError`
-- Kerberos status for the front door and outbound backend credentials
+- Kerberos status for the front door and outbound backend credentials, including `state`
+  (`DISABLED`, `PENDING`, `ACTIVE`, `STALE`, `FAILED`), `loggedIn`, and `healthy`
 - Kerberos TGT freshness via `tgtExpiresAtEpochSecond` and `secondsUntilExpiry` when available
+
+Kerberos status is read from the logins the proxy already uses. The Kerberos probe never reinstalls
+the process-wide security configuration and never performs a keytab login of its own, so it does not
+race with live SASL handshakes and adds no KDC traffic. Note that the on-demand backend connectivity
+probes above still open a backend session per scrape, which does perform a keytab login when the
+backend uses SASL; enable `routing.backend-state-polling.enabled=true` to move that off the request
+path.
+
+Readiness fails only when the front-door login user is missing or has no Kerberos credentials at
+all. An aged-out TGT is reported as `state=STALE` with `secondsUntilExpiry<=0` instead of failing
+readiness, because Hadoop does not renew the TGT of a keytab login on its own while the SASL
+acceptor keeps authenticating clients with the keytab service keys. Backend Kerberos is diagnostic
+only: `PENDING` until the first backend session opens, `STALE` when the last recorded backend login
+is unusable - every backend session performs its own keytab login, so real backend health comes from
+the connectivity probes. Because the probe no longer logs in, a rotated or revoked keytab is not
+detected by `/readyz` itself; it surfaces through failing client authentication or backend
+connectivity.
 
 If `routing.backend-state-polling.enabled=true`, readiness reflects the most recent background probe
 results. Otherwise `/readyz` measures backend probe latency on demand and returns the same fields.

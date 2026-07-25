@@ -253,10 +253,7 @@ public final class ManagementHttpServer implements AutoCloseable {
       if (!config.security().kerberosEnabled()) {
         return KerberosHealthProbe.disabled("frontDoor");
       }
-      return KerberosHealthProbe.probe(
-          "frontDoor",
-          config.security().serverPrincipal(),
-          config.security().keytab());
+      return KerberosHealthProbe.probeLoginUser("frontDoor", config.security().serverPrincipal());
     }
 
     private KerberosHealthProbe.KerberosStatus backendKerberosStatus() {
@@ -265,59 +262,58 @@ public final class ManagementHttpServer implements AutoCloseable {
       if (!backendKerberosEnabled) {
         return KerberosHealthProbe.disabled("backend");
       }
-      return KerberosHealthProbe.probe(
-          "backend",
-          config.security().outboundPrincipal(),
-          config.security().outboundKeytab());
+      return KerberosHealthProbe.probeBackendLogin("backend", config.security().outboundPrincipal());
     }
 
-    private static String escape(String value) {
-      StringBuilder sb = new StringBuilder(value.length());
-      for (int i = 0; i < value.length(); i++) {
-        char c = value.charAt(i);
-        switch (c) {
-          case '"':  sb.append("\\\""); break;
-          case '\\': sb.append("\\\\"); break;
-          case '\n': sb.append("\\n");  break;
-          case '\r': sb.append("\\r");  break;
-          case '\t': sb.append("\\t");  break;
-          case '\b': sb.append("\\b");  break;
-          case '\f': sb.append("\\f");  break;
-          default:
-            if (c < 0x20) {
-              sb.append(String.format("\\u%04x", (int) c));
-            } else {
-              sb.append(c);
-            }
-        }
-      }
-      return sb.toString();
-    }
+  }
 
-    private static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {
-      StringBuilder builder = new StringBuilder(160);
-      builder.append('{')
-          .append("\"component\":\"").append(escape(status.component())).append("\",")
-          .append("\"enabled\":").append(status.enabled()).append(',')
-          .append("\"loggedIn\":").append(status.loggedIn()).append(',')
-          .append("\"healthy\":").append(status.healthy()).append(',')
-          .append("\"principal\":");
-      if (status.principal() == null) {
-        builder.append("null");
-      } else {
-        builder.append('"').append(escape(status.principal())).append('"');
+  static String escape(String value) {
+    StringBuilder sb = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      switch (c) {
+        case '"':  sb.append("\\\""); break;
+        case '\\': sb.append("\\\\"); break;
+        case '\n': sb.append("\\n");  break;
+        case '\r': sb.append("\\r");  break;
+        case '\t': sb.append("\\t");  break;
+        case '\b': sb.append("\\b");  break;
+        case '\f': sb.append("\\f");  break;
+        default:
+          if (c < 0x20) {
+            sb.append(String.format("\\u%04x", (int) c));
+          } else {
+            sb.append(c);
+          }
       }
-      builder.append(",\"checkedAtEpochSecond\":").append(status.checkedAtEpochSecond() == null ? "null" : status.checkedAtEpochSecond())
-          .append(",\"tgtExpiresAtEpochSecond\":").append(status.tgtExpiresAtEpochSecond() == null ? "null" : status.tgtExpiresAtEpochSecond())
-          .append(",\"secondsUntilExpiry\":").append(status.secondsUntilExpiry() == null ? "null" : status.secondsUntilExpiry())
-          .append(",\"detail\":");
-      if (status.detail() == null) {
-        builder.append("null");
-      } else {
-        builder.append('"').append(escape(status.detail())).append('"');
-      }
-      builder.append('}');
-      return builder.toString();
     }
+    return sb.toString();
+  }
+
+  static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {
+    StringBuilder builder = new StringBuilder(160);
+    builder.append('{')
+        .append("\"component\":\"").append(escape(status.component())).append("\",")
+        .append("\"enabled\":").append(status.enabled()).append(',')
+        .append("\"state\":\"").append(status.state()).append("\",")
+        .append("\"loggedIn\":").append(status.loggedIn()).append(',')
+        .append("\"healthy\":").append(status.healthy()).append(',')
+        .append("\"principal\":");
+    if (status.principal() == null) {
+      builder.append("null");
+    } else {
+      builder.append('"').append(escape(status.principal())).append('"');
+    }
+    builder.append(",\"checkedAtEpochSecond\":").append(status.checkedAtEpochSecond() == null ? "null" : status.checkedAtEpochSecond())
+        .append(",\"tgtExpiresAtEpochSecond\":").append(status.tgtExpiresAtEpochSecond() == null ? "null" : status.tgtExpiresAtEpochSecond())
+        .append(",\"secondsUntilExpiry\":").append(status.secondsUntilExpiry() == null ? "null" : status.secondsUntilExpiry())
+        .append(",\"detail\":");
+    if (status.detail() == null) {
+      builder.append("null");
+    } else {
+      builder.append('"').append(escape(status.detail())).append('"');
+    }
+    builder.append('}');
+    return builder.toString();
   }
 }

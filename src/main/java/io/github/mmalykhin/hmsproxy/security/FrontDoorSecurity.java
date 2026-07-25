@@ -13,7 +13,6 @@ import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
 import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
 import org.apache.hadoop.hive.metastore.utils.SecurityUtils;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.thrift.TProcessor;
@@ -68,15 +67,19 @@ public final class FrontDoorSecurity implements AutoCloseable {
     applyZooKeeperKerberosDefaults(config, securityConf);
     configureZooKeeperClientJaas(securityConf);
     emitConfigurationDiagnostics(config, securityConf);
-    UserGroupInformation.setConfiguration(securityConf);
-    ensureKeytabLoginUser(config, securityConf);
+    ProcessKerberosConfiguration.processWide().installFrontDoorConfiguration(securityConf);
+    ensureKeytabLoginUser(config, securityConf, ProcessKerberosConfiguration.processWide());
     ProxyUsers.refreshSuperUserGroupsConfiguration(securityConf);
 
     HadoopThriftAuthBridge bridge = HadoopThriftAuthBridge.getBridge();
+    String serverPrincipal = KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal());
     HadoopThriftAuthBridge.Server saslServer = bridge.createServer(
         config.security().keytab(),
-        KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal()),
+        serverPrincipal,
         KerberosPrincipalUtil.resolveForLocalHost(MetastoreThriftServer.frontDoorClientPrincipal(config.security())));
+    // The bridge logs the server principal in itself, so later startup steps must not replace the
+    // process login user underneath this SASL server.
+    ProcessKerberosConfiguration.processWide().recordLoginUser(serverPrincipal);
 
     MetastoreDelegationTokenManager delegationTokenManager = new MetastoreDelegationTokenManager();
     delegationTokenManager.startDelegationTokenSecretManager(securityConf, null);
@@ -147,7 +150,11 @@ public final class FrontDoorSecurity implements AutoCloseable {
     }
   }
 
-  static void ensureKeytabLoginUser(ProxyConfig config, Configuration conf) throws IOException {
+  static void ensureKeytabLoginUser(
+      ProxyConfig config,
+      Configuration conf,
+      ProcessKerberosConfiguration kerberos
+  ) throws IOException {
     if (!config.security().kerberosEnabled()) {
       return;
     }
@@ -157,7 +164,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     String principal = KerberosPrincipalUtil.resolveForLocalHost(config.security().serverPrincipal());
     LOG.info("Refreshing Hadoop login user from keytab before starting ZooKeeperTokenStore using principal {}",
         principal);
-    UserGroupInformation.loginUserFromKeytab(principal, config.security().keytab());
+    kerberos.ensureLoginUserFromKeytab(principal, config.security().keytab());
   }
 
   static void configureZooKeeperClientJaas(Configuration conf) throws IOException {
