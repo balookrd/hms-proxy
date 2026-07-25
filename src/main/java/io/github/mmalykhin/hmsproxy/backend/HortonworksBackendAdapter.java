@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.util.Collections;
 import java.util.Map;
 import java.util.List;
@@ -11,7 +12,6 @@ import org.apache.hadoop.hive.metastore.api.GetTableRequest;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
 import org.apache.hadoop.hive.metastore.api.GetTablesResult;
-import org.apache.thrift.TApplicationException;
 
 public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
   private static final Map<String, RequestCompatibilityHandler> REQUEST_COMPATIBILITY_HANDLERS = Map.of(
@@ -85,7 +85,9 @@ public final class HortonworksBackendAdapter extends AbstractBackendAdapter {
   }
 
   private boolean shouldFallbackToLegacy(Throwable cause) {
-    return cause instanceof TApplicationException || cause instanceof NoSuchMethodException;
+    // The negative result is cached for the lifetime of the adapter, so only a genuine
+    // "backend has no such method" may switch this method to the reduced legacy path.
+    return ThriftFailureClassifier.isUnsupportedMethod(cause);
   }
 
   @FunctionalInterface

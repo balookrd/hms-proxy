@@ -71,6 +71,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - `security` отвечает за Thrift server auth, Kerberos/front-door request context и local delegation tokens.
 - `observability` отвечает за metrics, audit logging, runtime state и health probes.
 - `tools` содержит entry points для direct HMS smoke CLI.
+- Классификация backend Thrift-ошибок живёт только в `thriftbridge/ThriftFailureClassifier`: «метода нет» - это `TApplicationException` с типом `UNKNOWN_METHOD` (или отсутствие метода в загруженном runtime), transport failure и protocol desync - отдельные категории. Не пиши локальные `instanceof TApplicationException` для решений про fallback, downgrade или переоткрытие соединения.
 
 ## Стиль кода
 

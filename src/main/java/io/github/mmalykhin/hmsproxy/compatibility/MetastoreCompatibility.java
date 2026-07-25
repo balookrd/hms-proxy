@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,7 +38,7 @@ public final class MetastoreCompatibility {
   private static final Pattern BACKEND_VISIBLE_CONFIG_PATTERN =
       Pattern.compile("(hive|hdfs|mapred|metastore).*");
   private static final Map<String, LocalMethodHandler> LOCAL_HANDLERS = buildLocalHandlers();
-  private static final Map<String, Supplier<Object>> FALLBACKS = buildFallbacks();
+  private static final Map<String, CompatibilityFallback> FALLBACKS = buildFallbacks();
   private static final Map<String, CompatibleConfigKey> CONFIG_KEY_EXACT_INDEX;
   private static final Map<String, List<CompatibleConfigKey>> CONFIG_KEY_SUFFIX_INDEX;
 
@@ -97,7 +98,16 @@ public final class MetastoreCompatibility {
   }
 
   public static boolean shouldUseFallback(String methodName, Throwable cause) {
-    if (!hasFallback(methodName)) {
+    CompatibilityFallback fallback = FALLBACKS.get(methodName);
+    if (fallback == null) {
+      return false;
+    }
+    if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
+      return true;
+    }
+    if (fallback.trigger() == FallbackTrigger.MISSING_METHOD_ONLY) {
+      // An empty ACID/lock/privilege/notification answer is indistinguishable from real state,
+      // so a transient backend failure must surface as an error instead of a synthetic success.
       return false;
     }
     return cause instanceof TApplicationException
@@ -109,7 +119,7 @@ public final class MetastoreCompatibility {
     if (!shouldUseFallback(methodName, cause)) {
       return Optional.empty();
     }
-    return Optional.of(FALLBACKS.get(methodName).get());
+    return Optional.of(FALLBACKS.get(methodName).response().get());
   }
 
   public static Optional<String> compatibleConfigValue(
@@ -177,35 +187,61 @@ public final class MetastoreCompatibility {
     return Map.copyOf(handlers);
   }
 
-  private static Map<String, Supplier<Object>> buildFallbacks() {
-    Map<String, Supplier<Object>> fallbacks = new LinkedHashMap<>();
-    fallbacks.put("get_current_notificationEventId", () -> new CurrentNotificationEventId(0L));
-    fallbacks.put("get_next_notification", () -> new NotificationEventResponse(Collections.emptyList()));
-    fallbacks.put("get_notification_events_count", () -> new NotificationEventsCountResponse(0L));
-    fallbacks.put("refresh_privileges", () -> {
+  private static Map<String, CompatibilityFallback> buildFallbacks() {
+    Map<String, CompatibilityFallback> fallbacks = new LinkedHashMap<>();
+    // Notification state: an empty answer makes a replication client believe it is caught up.
+    putMissingMethodOnly(fallbacks, "get_current_notificationEventId", () -> new CurrentNotificationEventId(0L));
+    putMissingMethodOnly(fallbacks, "get_next_notification",
+        () -> new NotificationEventResponse(Collections.emptyList()));
+    putMissingMethodOnly(fallbacks, "get_notification_events_count", () -> new NotificationEventsCountResponse(0L));
+    // Privilege/role state: an empty or successful answer is an authorization statement.
+    putMissingMethodOnly(fallbacks, "refresh_privileges", () -> {
       GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
       response.setSuccess(true);
       return response;
     });
-    fallbacks.put("get_role_names", Collections::emptyList);
-    fallbacks.put("list_privileges", Collections::emptyList);
-    fallbacks.put("get_all_token_identifiers", Collections::emptyList);
-    fallbacks.put("get_master_keys", Collections::emptyList);
-    fallbacks.put("get_runtime_stats", Collections::emptyList);
-    fallbacks.put("get_principals_in_role", () -> new GetPrincipalsInRoleResponse(Collections.emptyList()));
-    fallbacks.put("get_role_grants_for_principal", () -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList()));
-    fallbacks.put("get_privilege_set", () -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of()));
-    fallbacks.put("get_open_txns", () -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0)));
-    fallbacks.put("get_open_txns_info", () -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList()));
-    fallbacks.put("show_locks", () -> new ShowLocksResponse(Collections.emptyList()));
-    fallbacks.put("show_compact", () -> new ShowCompactResponse(Collections.emptyList()));
-    fallbacks.put("get_active_resource_plan", WMGetActiveResourcePlanResponse::new);
-    fallbacks.put("get_all_resource_plans", () -> {
+    putMissingMethodOnly(fallbacks, "get_role_names", Collections::emptyList);
+    putMissingMethodOnly(fallbacks, "list_privileges", Collections::emptyList);
+    putMissingMethodOnly(fallbacks, "get_all_token_identifiers", Collections::emptyList);
+    putMissingMethodOnly(fallbacks, "get_master_keys", Collections::emptyList);
+    putMissingMethodOnly(fallbacks, "get_principals_in_role",
+        () -> new GetPrincipalsInRoleResponse(Collections.emptyList()));
+    putMissingMethodOnly(fallbacks, "get_role_grants_for_principal",
+        () -> new GetRoleGrantsForPrincipalResponse(Collections.emptyList()));
+    putMissingMethodOnly(fallbacks, "get_privilege_set",
+        () -> new PrincipalPrivilegeSet(Map.of(), Map.of(), Map.of()));
+    // ACID/lock state: "no open transactions" turns uncommitted or aborted deltas into valid data.
+    putMissingMethodOnly(fallbacks, "get_open_txns",
+        () -> new GetOpenTxnsResponse(0L, Collections.emptyList(), ByteBuffer.allocate(0)));
+    putMissingMethodOnly(fallbacks, "get_open_txns_info",
+        () -> new GetOpenTxnsInfoResponse(0L, Collections.emptyList()));
+    putMissingMethodOnly(fallbacks, "show_locks", () -> new ShowLocksResponse(Collections.emptyList()));
+    putMissingMethodOnly(fallbacks, "show_compact", () -> new ShowCompactResponse(Collections.emptyList()));
+    // Optional service features: an empty answer only hides diagnostics, never data semantics.
+    putBackendFailure(fallbacks, "get_runtime_stats", Collections::emptyList);
+    putBackendFailure(fallbacks, "get_active_resource_plan", WMGetActiveResourcePlanResponse::new);
+    putBackendFailure(fallbacks, "get_all_resource_plans", () -> {
       WMGetAllResourcePlanResponse response = new WMGetAllResourcePlanResponse();
       response.setResourcePlans(Collections.emptyList());
       return response;
     });
     return Map.copyOf(fallbacks);
+  }
+
+  private static void putMissingMethodOnly(
+      Map<String, CompatibilityFallback> fallbacks,
+      String methodName,
+      Supplier<Object> response
+  ) {
+    fallbacks.put(methodName, new CompatibilityFallback(FallbackTrigger.MISSING_METHOD_ONLY, response));
+  }
+
+  private static void putBackendFailure(
+      Map<String, CompatibilityFallback> fallbacks,
+      String methodName,
+      Supplier<Object> response
+  ) {
+    fallbacks.put(methodName, new CompatibilityFallback(FallbackTrigger.BACKEND_FAILURE, response));
   }
 
   private static FrontDoorSecurity requireFrontDoorSecurity(FrontDoorSecurity frontDoorSecurity) throws MetaException {
@@ -234,6 +270,16 @@ public final class MetastoreCompatibility {
   @FunctionalInterface
   private interface LocalMethodHandler {
     Object handle(Object[] args, FrontDoorSecurity frontDoorSecurity) throws Exception;
+  }
+
+  private enum FallbackTrigger {
+    /** Synthetic response only when the backend does not implement the method at all. */
+    MISSING_METHOD_ONLY,
+    /** Synthetic response is also safe when the backend call fails or the backend is unavailable. */
+    BACKEND_FAILURE
+  }
+
+  private record CompatibilityFallback(FallbackTrigger trigger, Supplier<Object> response) {
   }
 
   public enum BackendProfile {

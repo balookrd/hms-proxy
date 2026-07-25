@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -334,11 +335,6 @@ public final class CatalogBackend implements AutoCloseable {
         impersonationIdleSessions.get());
   }
 
-  private static boolean isTransportFailure(Throwable cause) {
-    return cause instanceof org.apache.thrift.TApplicationException
-        || cause instanceof org.apache.thrift.transport.TTransportException;
-  }
-
   private final class ImpersonationClient {
     private static final long DEFAULT_BORROW_TIMEOUT_MS = 30_000L;
 
@@ -396,9 +392,14 @@ public final class CatalogBackend implements AutoCloseable {
         session = null;
         return result;
       } catch (Throwable cause) {
-        if (!isTransportFailure(cause) || evicted) {
+        if (!ThriftFailureClassifier.isTransportFailure(cause) || evicted) {
           if (session != null) {
-            release(session);
+            // A protocol desync poisons the connection, but the call must not be replayed.
+            if (ThriftFailureClassifier.isProtocolDesync(cause)) {
+              discard(session, "protocol_desync");
+            } else {
+              release(session);
+            }
             session = null;
           }
           throw cause;
@@ -415,8 +416,10 @@ public final class CatalogBackend implements AutoCloseable {
           return result;
         } catch (Throwable retryError) {
           if (retry != null) {
-            if (isTransportFailure(retryError)) {
+            if (ThriftFailureClassifier.isTransportFailure(retryError)) {
               discard(retry, "transport_failure");
+            } else if (ThriftFailureClassifier.isProtocolDesync(retryError)) {
+              discard(retry, "protocol_desync");
             } else {
               release(retry);
             }

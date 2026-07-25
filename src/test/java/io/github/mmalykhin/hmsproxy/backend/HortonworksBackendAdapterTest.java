@@ -129,6 +129,75 @@ public class HortonworksBackendAdapterTest {
     }
   }
 
+  @Test
+  public void invokeRequestPropagatesApplicationErrorsInsteadOfDowngradingToLegacy() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicInteger wrapperCalls = new AtomicInteger();
+    AtomicInteger legacyCalls = new AtomicInteger();
+
+    CatalogBackend backend = newIsolatedBackend((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        wrapperCalls.incrementAndGet();
+        throw new TApplicationException(TApplicationException.INTERNAL_ERROR, "backend blew up");
+      }
+      if ("get_table".equals(method.getName())) {
+        legacyCalls.incrementAndGet();
+        return childTable(proxy.getClass().getClassLoader(), (String) args[0], (String) args[1]);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    try {
+      try {
+        backend.invokeRequest("get_table_req", new GetTableRequest("sales", "events"), null);
+        Assert.fail("Expected the application error to propagate");
+      } catch (TApplicationException e) {
+        Assert.assertEquals(TApplicationException.INTERNAL_ERROR, e.getType());
+      }
+
+      // The failure must not be cached as "wrapper unsupported": the next call probes the wrapper again.
+      try {
+        backend.invokeRequest("get_table_req", new GetTableRequest("sales", "events"), null);
+        Assert.fail("Expected the application error to propagate");
+      } catch (TApplicationException e) {
+        Assert.assertEquals(TApplicationException.INTERNAL_ERROR, e.getType());
+      }
+
+      Assert.assertEquals(2, wrapperCalls.get());
+      Assert.assertEquals(0, legacyCalls.get());
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
+  public void invokeRequestPropagatesTransportFailuresInsteadOfDowngradingToLegacy() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicInteger legacyCalls = new AtomicInteger();
+
+    CatalogBackend backend = newIsolatedBackend((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        throw new org.apache.thrift.transport.TTransportException("connection reset");
+      }
+      if ("get_table".equals(method.getName())) {
+        legacyCalls.incrementAndGet();
+        return childTable(proxy.getClass().getClassLoader(), (String) args[0], (String) args[1]);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    try {
+      try {
+        backend.invokeRequest("get_table_req", new GetTableRequest("sales", "events"), null);
+        Assert.fail("Expected the transport failure to propagate");
+      } catch (org.apache.thrift.transport.TTransportException expected) {
+        Assert.assertEquals(0, legacyCalls.get());
+      }
+    } finally {
+      backend.close();
+    }
+  }
+
   private static CatalogBackend newIsolatedBackend(InvocationHandler invocationHandler) throws Exception {
     ProxyConfig proxyConfig = config();
     CatalogConfig catalogConfig = proxyConfig.catalogs().get("catalog1");
