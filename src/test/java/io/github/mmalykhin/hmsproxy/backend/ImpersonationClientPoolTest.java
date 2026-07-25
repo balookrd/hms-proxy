@@ -29,6 +29,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 public class ImpersonationClientPoolTest {
+  private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
 
   @Test
   public void poolServesConcurrentCallsForSameUserOnDistinctSessions() throws Exception {
@@ -172,6 +173,74 @@ public class ImpersonationClientPoolTest {
         rendered.contains("hms_proxy_impersonation_session_evictions_total"));
   }
 
+  @Test
+  public void failedAdaptiveTimeoutReconnectRollsBackConfAndArmsCooldown() throws Exception {
+    AtomicInteger sessionsOpened = new AtomicInteger();
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        if (sessionsOpened.incrementAndGet() > 1) {
+          throw new MetaException("backend reconnect failed");
+        }
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
+      }
+    };
+
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    CatalogConfig catalogConfig = catalogConfig(4);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig),
+        catalogConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        metrics);
+    HiveConf conf = new HiveConf();
+    conf.set(SOCKET_TIMEOUT_KEY, "10s");
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics, conf);
+
+    try {
+      try {
+        backend.ensureClientSocketTimeout(60_000L, 60_000L);
+        Assert.fail("expected the failed reconnect to surface to the caller");
+      } catch (MetaException expected) {
+        // reconnect could not open a fresh shared session
+      }
+
+      Assert.assertEquals(
+          "hiveConf must not keep the timeout of a reconnect that never happened",
+          "10s",
+          conf.get(SOCKET_TIMEOUT_KEY));
+      Assert.assertEquals(
+          CatalogBackend.AdaptiveTimeoutResult.SKIPPED_COOLDOWN,
+          backend.ensureClientSocketTimeout(60_000L, 60_000L));
+      Assert.assertEquals(
+          "failed reconnect must not be retried while cooling down", 2, sessionsOpened.get());
+    } finally {
+      backend.close();
+    }
+  }
+
   private static ProxyConfig config(CatalogConfig catalogConfig) {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
@@ -210,6 +279,15 @@ public class ImpersonationClientPoolTest {
       BackendRuntime runtime,
       PrometheusMetrics metrics
   ) throws Exception {
+    return newBackend(catalogConfig, runtime, metrics, new HiveConf());
+  }
+
+  private static CatalogBackend newBackend(
+      CatalogConfig catalogConfig,
+      BackendRuntime runtime,
+      PrometheusMetrics metrics,
+      HiveConf hiveConf
+  ) throws Exception {
     Catalog catalog = new Catalog();
     catalog.setName(catalogConfig.name());
     catalog.setDescription(catalogConfig.description());
@@ -224,7 +302,7 @@ public class ImpersonationClientPoolTest {
         Catalog.class,
         PrometheusMetrics.class);
     ctor.setAccessible(true);
-    return ctor.newInstance(config(catalogConfig), catalogConfig, new HiveConf(), adapter, runtime, catalog, metrics);
+    return ctor.newInstance(config(catalogConfig), catalogConfig, hiveConf, adapter, runtime, catalog, metrics);
   }
 
   private static BackendInvocationSession makeSession(CyclicBarrier barrier) throws MetaException {

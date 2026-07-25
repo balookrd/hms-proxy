@@ -8,9 +8,12 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class IsolatedMetastoreClient implements AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(IsolatedMetastoreClient.class);
   private static final String THRIFT_HMS_CLASS = "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore";
   private static final String HIVE_METASTORE_CLIENT_CLASS = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
   private static final String HIVE_METASTORE_URI_SELECTION_KEY = "hive.metastore.uri.selection";
@@ -74,12 +77,29 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
         ? withContextClassLoader(effectiveClassLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf))
         : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab);
-    Field clientField = clientClass.getDeclaredField("client");
-    clientField.setAccessible(true);
-    Object thriftClient = clientField.get(client);
-    Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, effectiveClassLoader);
-    return new IsolatedMetastoreClient(
-        client, new IsolatedInvocationBridge(effectiveClassLoader, thriftClient, ifaceClass));
+    return attachBridge(client, clientClass, effectiveClassLoader);
+  }
+
+  /**
+   * Bridges onto the already connected client, closing it when the reflective wiring fails:
+   * the caller has no other handle on it yet.
+   */
+  static IsolatedMetastoreClient attachBridge(
+      Object client,
+      Class<?> clientClass,
+      ClassLoader effectiveClassLoader
+  ) throws Exception {
+    try {
+      Field clientField = clientClass.getDeclaredField("client");
+      clientField.setAccessible(true);
+      Object thriftClient = clientField.get(client);
+      Class<?> ifaceClass = Class.forName(THRIFT_HMS_CLASS + "$Iface", true, effectiveClassLoader);
+      return new IsolatedMetastoreClient(
+          client, new IsolatedInvocationBridge(effectiveClassLoader, thriftClient, ifaceClass));
+    } catch (Throwable t) {
+      closeQuietly(client);
+      throw t;
+    }
   }
 
   void setUgi(String userName, List<String> groupNames) throws Throwable {
@@ -96,10 +116,25 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
 
   @Override
   public void close() throws Exception {
+    closeRawClient(client);
+  }
+
+  private static void closeRawClient(Object client) throws Exception {
     withContextClassLoader(client.getClass().getClassLoader(), () -> {
       client.getClass().getMethod("close").invoke(client);
       return null;
     });
+  }
+
+  private static void closeQuietly(Object client) {
+    if (client == null) {
+      return;
+    }
+    try {
+      closeRawClient(client);
+    } catch (Exception e) {
+      LOG.warn("Ignoring failure while closing isolated backend metastore client", e);
+    }
   }
 
   private static <T> T withContextClassLoader(ClassLoader classLoader, ThrowingSupplier<T> supplier) throws Exception {

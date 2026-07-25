@@ -147,7 +147,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       boolean backendKerberosEnabled
   ) throws MetaException {
     HiveMetaStoreClient client = openApacheClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
-    ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+    ThriftHiveMetastore.Iface thriftClient = extractThriftClientOrClose(client);
     return new BackendInvocationSession(client, thriftClient, null);
   }
 
@@ -238,7 +238,20 @@ public final class BackendInvocationSession implements AutoCloseable {
     UserGroupInformation.setConfiguration(securityConf);
   }
 
-  private static ThriftHiveMetastore.Iface extractThriftClient(HiveMetaStoreClient client)
+  /**
+   * Extracts the thrift client, closing the freshly opened backend connection when extraction fails:
+   * the caller has no other handle on it yet.
+   */
+  static ThriftHiveMetastore.Iface extractThriftClientOrClose(AutoCloseable client) throws MetaException {
+    try {
+      return extractThriftClient(client);
+    } catch (Throwable t) {
+      CatalogBackend.closeQuietly(client, "backend metastore client (thrift client extraction failed)");
+      throw t;
+    }
+  }
+
+  private static ThriftHiveMetastore.Iface extractThriftClient(AutoCloseable client)
       throws MetaException {
     try {
       Field field = HiveMetaStoreClient.class.getDeclaredField("client");

@@ -993,7 +993,10 @@ shared backend client и сбросу кэша impersonation-клиентов (K
 (`routing.adaptive-timeout.reconnect-cooldown-ms`, по умолчанию 30 s) перед повторным
 реконнектом. Счётчики `hms_proxy_adaptive_timeout_reconnect_total` и
 `hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` показывают,
-сколько реконнектов сработало и сколько было подавлено троттлингом. Transport failure и превышение latency budget
+сколько реконнектов сработало и сколько было подавлено троттлингом. Если reconnect не успел
+квиесцировать shared pool, client socket timeout откатывается к значению, с которым работают живые
+сессии, и cooldown всё равно запускается — перегруженный backend не квиесцируется заново на каждом
+следующем запросе. Transport failure и превышение latency budget
 учитываются в circuit breaker. Когда backend достигает
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова

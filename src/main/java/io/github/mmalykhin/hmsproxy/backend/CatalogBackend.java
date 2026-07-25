@@ -52,6 +52,7 @@ public final class CatalogBackend implements AutoCloseable {
   private final Object reconnectLock = new Object();
   private volatile long appliedClientTimeoutMs;
   private volatile long lastReconnectAtNanos;
+  private volatile boolean closed;
 
   private CatalogBackend(
       ProxyConfig proxyConfig,
@@ -151,6 +152,9 @@ public final class CatalogBackend implements AutoCloseable {
 
   public AdaptiveTimeoutResult ensureClientSocketTimeout(long timeoutMs, long cooldownMs)
       throws MetaException {
+    if (closed) {
+      throw closedException();
+    }
     if (timeoutMs <= 0) {
       return AdaptiveTimeoutResult.UNCHANGED;
     }
@@ -171,8 +175,21 @@ public final class CatalogBackend implements AutoCloseable {
           return AdaptiveTimeoutResult.SKIPPED_COOLDOWN;
         }
       }
+      String previousTimeout = hiveConf.get(SOCKET_TIMEOUT_KEY);
       hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
-      runtime.reconnectShared(adapter);
+      try {
+        runtime.reconnectShared(adapter);
+      } catch (Throwable t) {
+        // Keep hiveConf in sync with the sessions that are actually live, and arm the cooldown so a
+        // failing reconnect cannot quiesce the pool again on every subsequent call.
+        if (previousTimeout == null) {
+          hiveConf.unset(SOCKET_TIMEOUT_KEY);
+        } else {
+          hiveConf.set(SOCKET_TIMEOUT_KEY, previousTimeout);
+        }
+        lastReconnectAtNanos = System.nanoTime();
+        throw t;
+      }
       synchronized (this) {
         for (ImpersonationClient client : impersonationClients.values()) {
           client.evict();
@@ -243,11 +260,13 @@ public final class CatalogBackend implements AutoCloseable {
 
   @Override
   public synchronized void close() {
-    closeQuietly(runtime, "backend runtime");
+    closed = true;
+    // Impersonation sessions first: closing them may still need classes from the runtime classloader.
     for (ImpersonationClient impersonationClient : impersonationClients.values()) {
       impersonationClient.closeQuietly();
     }
     impersonationClients.clear();
+    closeQuietly(runtime, "backend runtime");
     publishImpersonationGauges();
   }
 
@@ -277,9 +296,16 @@ public final class CatalogBackend implements AutoCloseable {
     }
   }
 
+  private MetaException closedException() {
+    return new MetaException("Backend catalog '" + config.name() + "' is closed");
+  }
+
   private synchronized ImpersonationClient impersonationClient(
       ImpersonationContext impersonation
   ) throws MetaException {
+    if (closed) {
+      throw closedException();
+    }
     ImpersonationClient client = impersonationClients.get(impersonation.userName());
     if (client != null) {
       long ttlMs = config.impersonationClientIdleTtlMs();

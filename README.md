@@ -1070,7 +1070,10 @@ applies hysteresis (`max(2s, 25 % of the current value)`) and a cooldown
 (`routing.adaptive-timeout.reconnect-cooldown-ms`, default 30 s) before reconnecting again. The
 counters `hms_proxy_adaptive_timeout_reconnect_total` and
 `hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` expose how
-often reconnects fire vs. are suppressed. Transport failures and latency-budget breaches
+often reconnects fire vs. are suppressed. A reconnect that cannot quiesce the shared pool in time
+rolls the client socket timeout back to the value the live sessions use and still starts the
+cooldown, so an overloaded backend is not re-quiesced on every following request. Transport
+failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.

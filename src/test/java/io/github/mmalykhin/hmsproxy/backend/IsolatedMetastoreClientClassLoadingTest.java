@@ -42,6 +42,23 @@ public class IsolatedMetastoreClientClassLoadingTest {
   }
 
   @Test
+  public void failedBridgeAttachmentClosesIsolatedClient() {
+    CloseRecordingClient client = new CloseRecordingClient();
+
+    try {
+      IsolatedMetastoreClient.attachBridge(
+          client,
+          CloseRecordingClient.class,
+          IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
+      Assert.fail("expected reflective bridge attachment to fail for a foreign client type");
+    } catch (Exception expected) {
+      // the stand-in client has no private 'client' field to bridge onto
+    }
+
+    Assert.assertEquals("client must be closed when bridge attachment fails", 1, client.closes());
+  }
+
+  @Test
   public void isolatedLoaderUsesChildHadoopClasses() throws Exception {
     java.nio.file.Path jarFile = java.nio.file.Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
         .toAbsolutePath();
@@ -105,5 +122,18 @@ public class IsolatedMetastoreClientClassLoadingTest {
         interfaceClass.asSubclass(Object.class));
 
     Assert.assertEquals(implClass, resolved);
+  }
+
+  /** Stand-in for a metastore client loaded by the isolated classloader: closed reflectively. */
+  public static final class CloseRecordingClient {
+    private int closes;
+
+    public void close() {
+      closes++;
+    }
+
+    int closes() {
+      return closes;
+    }
   }
 }

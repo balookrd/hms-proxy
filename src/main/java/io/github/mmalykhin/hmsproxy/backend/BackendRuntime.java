@@ -33,7 +33,11 @@ public final class BackendRuntime implements AutoCloseable {
   private final Semaphore permits;
   private final LinkedBlockingQueue<BackendInvocationSession> pool;
   private final PrometheusMetrics metrics;
+  private final Object lifecycleLock = new Object();
   private volatile MetastoreRuntimeProfile activeProfile;
+  private volatile boolean closed;
+  private int leasedSessions;
+  private boolean classLoaderClosed;
 
   private BackendRuntime(
       ProxyConfig proxyConfig,
@@ -167,6 +171,7 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   public String reconnectShared(BackendAdapter adapter) throws MetaException {
+    ensureOpen();
     long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
         ? catalogConfig.latencyBudgetMs()
         : DEFAULT_BORROW_TIMEOUT_MS;
@@ -191,6 +196,7 @@ public final class BackendRuntime implements AutoCloseable {
               + " after " + timeoutMs + " ms");
     }
     try {
+      ensureOpen();
       activeProfile = adapter.runtimeProfile();
       drainAndCloseLocked();
       BackendInvocationSession fresh = sessionFactory.open(
@@ -207,6 +213,7 @@ public final class BackendRuntime implements AutoCloseable {
       String userName,
       List<String> groupNames
   ) throws MetaException {
+    ensureOpen();
     return sessionFactory.openImpersonating(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
         isolatedClassLoader);
@@ -214,12 +221,19 @@ public final class BackendRuntime implements AutoCloseable {
 
   public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
       throws MetaException {
+    ensureOpen();
     return sessionFactory.open(
         proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
   }
 
   @Override
   public void close() {
+    synchronized (lifecycleLock) {
+      if (closed) {
+        return;
+      }
+      closed = true;
+    }
     long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
         ? catalogConfig.latencyBudgetMs()
         : DEFAULT_BORROW_TIMEOUT_MS;
@@ -231,16 +245,18 @@ public final class BackendRuntime implements AutoCloseable {
       LOG.warn("Backend catalog '{}' close interrupted while quiescing pool; draining without full permit acquisition",
           catalogConfig.name());
       drainAndCloseLocked();
-      closeClassLoaderQuietly(isolatedClassLoader, catalogConfig.name());
+      closeClassLoaderIfQuiesced();
       return;
     }
     try {
       if (!acquired) {
-        LOG.warn("Backend catalog '{}' close timed out waiting to drain {} permits within {} ms; draining anyway",
+        LOG.warn("Backend catalog '{}' close timed out waiting to drain {} permits within {} ms; draining pooled"
+                + " sessions now, in-flight sessions are closed on return",
             catalogConfig.name(), poolSize, timeoutMs);
       }
       drainAndCloseLocked();
-      closeClassLoaderQuietly(isolatedClassLoader, catalogConfig.name());
+      // Deferred while requests are still in flight: they may still need classes from this classloader.
+      closeClassLoaderIfQuiesced();
     } finally {
       if (acquired) {
         permits.release(poolSize);
@@ -287,6 +303,7 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private BackendInvocationSession borrow() throws MetaException {
+    ensureOpen();
     long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
         ? catalogConfig.latencyBudgetMs()
         : DEFAULT_BORROW_TIMEOUT_MS;
@@ -310,12 +327,17 @@ public final class BackendRuntime implements AutoCloseable {
           "Timed out waiting for backend metastore session for catalog " + catalogConfig.name()
               + " after " + timeoutMs + " ms");
     }
-    BackendInvocationSession s = pool.poll();
-    if (s != null) {
-      return s;
+    BackendInvocationSession pooled = pool.poll();
+    if (pooled != null) {
+      return leaseOrReject(pooled);
     }
+    if (closed) {
+      permits.release();
+      throw closedException();
+    }
+    BackendInvocationSession fresh;
     try {
-      return sessionFactory.open(
+      fresh = sessionFactory.open(
           proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, activeProfile, isolatedClassLoader);
     } catch (Throwable t) {
       permits.release();
@@ -327,16 +349,72 @@ public final class BackendRuntime implements AutoCloseable {
       me.initCause(t);
       throw me;
     }
+    return leaseOrReject(fresh);
+  }
+
+  /** Registers an in-flight session, or closes it when the runtime was closed concurrently. */
+  private BackendInvocationSession leaseOrReject(BackendInvocationSession session) throws MetaException {
+    synchronized (lifecycleLock) {
+      if (!closed) {
+        leasedSessions++;
+        return session;
+      }
+    }
+    CatalogBackend.closeQuietly(session, "shared backend metastore session (runtime closed)");
+    permits.release();
+    closeClassLoaderIfQuiesced();
+    throw closedException();
   }
 
   private void release(BackendInvocationSession session) {
-    pool.offer(session);
+    boolean drop;
+    synchronized (lifecycleLock) {
+      leasedSessions--;
+      drop = closed;
+    }
+    if (drop) {
+      CatalogBackend.closeQuietly(session, "shared backend metastore session (runtime closed)");
+    } else {
+      pool.offer(session);
+    }
     permits.release();
+    if (drop) {
+      closeClassLoaderIfQuiesced();
+    }
   }
 
   private void discard(BackendInvocationSession session) {
+    synchronized (lifecycleLock) {
+      leasedSessions--;
+    }
     CatalogBackend.closeQuietly(session, "shared backend metastore session (transport failure)");
     permits.release();
+    closeClassLoaderIfQuiesced();
+  }
+
+  private void ensureOpen() throws MetaException {
+    if (closed) {
+      throw closedException();
+    }
+  }
+
+  private MetaException closedException() {
+    return new MetaException(
+        "Backend metastore runtime for catalog " + catalogConfig.name() + " is closed");
+  }
+
+  /** Closes the isolated classloader once the runtime is closed and no session is in flight. */
+  private void closeClassLoaderIfQuiesced() {
+    boolean close;
+    synchronized (lifecycleLock) {
+      close = closed && leasedSessions == 0 && !classLoaderClosed;
+      if (close) {
+        classLoaderClosed = true;
+      }
+    }
+    if (close) {
+      closeClassLoaderQuietly(isolatedClassLoader, catalogConfig.name());
+    }
   }
 
   private void drainAndCloseLocked() {
