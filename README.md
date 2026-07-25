@@ -275,6 +275,10 @@ management.enabled=true
 management.bind-host=0.0.0.0
 # Optional; defaults to server.port + 1000
 management.port=19083
+# Optional; handler threads for the management listener, defaults to 4
+management.threads=4
+# Optional; how long readiness probe results are reused, in ms; defaults to 2000, 0 disables caching
+management.readiness-cache-ms=2000
 ```
 
 Quick checks:
@@ -284,6 +288,15 @@ curl -s http://127.0.0.1:19083/healthz
 curl -s http://127.0.0.1:19083/readyz
 curl -s http://127.0.0.1:19083/metrics
 ```
+
+The listener serves requests from a small dedicated thread pool (`management.threads`), so a slow
+`/readyz` never blocks `/healthz` or `/metrics`. Keep at least two threads.
+
+**The management endpoints have no authentication or authorization.** `/readyz` exposes Kerberos
+principals and per-backend `lastError` strings that usually contain internal hostnames. Bind
+`management.bind-host` to an interface reachable only from your monitoring and orchestration
+network, or otherwise restrict the port with firewall rules or a network policy. Do not publish it
+alongside the client-facing Thrift port.
 
 ### Health and readiness endpoints
 
@@ -300,6 +313,7 @@ Available endpoints:
 response includes:
 
 - overall readiness status
+- `probeAgeMs`, the age of the probe results the response was built from
 - backend connectivity summary
 - per-backend `connected`, `degraded`, `lastSuccessEpochSecond`, `lastFailureEpochSecond`,
   `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`, `baselineTimeoutMs`,
@@ -328,6 +342,13 @@ connectivity.
 
 If `routing.backend-state-polling.enabled=true`, readiness reflects the most recent background probe
 results. Otherwise `/readyz` measures backend probe latency on demand and returns the same fields.
+
+Backend and Kerberos probes are the expensive part of `/readyz`, so their results are reused for
+`management.readiness-cache-ms` (2s by default) and refreshed by at most one request at a time:
+concurrent callers are served the previous result rather than fanning out more network checks. The
+per-backend state fields are always rendered from current in-memory runtime state, and `probeAgeMs`
+tells you how stale the underlying probe data is. Set `management.readiness-cache-ms=0` to probe on
+every request.
 
 ### Prometheus metrics
 
@@ -398,6 +419,13 @@ Example:
 ```json
 {"event":"hms_proxy_audit","requestId":42,"method":"get_table","operationClass":"metadata_read","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
 ```
+
+The bundled `log4j.properties` routes this logger to its own appender, `logs/hms-proxy-audit.log`
+(rolling at 100MB with 10 backups), with no layout prefix so the file stays valid JSON lines, and
+with additivity off so audit records do not mix into the general log. Point it somewhere else, or
+ship it to your log pipeline, by overriding the `auditFile` appender in your own
+`log4j.properties`. Silencing the logger below `INFO` also skips building the record, so nothing is
+computed for output nobody reads.
 
 ### Grafana dashboard
 
@@ -743,11 +771,29 @@ View/materialized-view notes:
 - dialect-specific text (variable substitution such as `${hiveconf:db}`, macros, engine-specific
   hints) is out of scope and still needs validation in your environment
 
-## Debug logging
+## Logging
 
-Detailed debug tracing for the proxy package is enabled by default through the bundled
-`log4j.properties` config.
-Each client call gets a `requestId`, and the logs include:
+The bundled `log4j.properties` is the default configuration, and the proxy bootstraps it at runtime
+if no appenders are configured, so a plain `java -jar ...` launch still gets logs. Defaults:
+
+- root logger at `INFO`, writing to stderr and to `logs/hms-proxy.log` (rolling at 50MB, 10 backups)
+- the proxy package `io.github.mmalykhin.hmsproxy` at `INFO`
+- the audit logger `io.github.mmalykhin.hmsproxy.audit` at `INFO` into its own
+  `logs/hms-proxy-audit.log`
+
+Override any of it with your own `log4j.properties` on the classpath.
+
+### Debug tracing
+
+Per-request debug tracing is **off by default**: it renders every request argument and every backend
+response through `DebugLogUtil`, which costs real CPU and allocation on each RPC. Turn it on
+deliberately, per environment or per incident:
+
+```properties
+log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG
+```
+
+With it enabled, each client call gets a `requestId`, and the logs include:
 
 - incoming HMS request method and arguments
 - selected backend catalog
@@ -755,11 +801,11 @@ Each client call gets a `requestId`, and the logs include:
 - backend response or backend error
 - final client response or client-visible error
 
-If the logs are too noisy, override the level at startup, for example:
+Rendered values are bounded (10 elements per collection, 3 levels deep, ~4000 characters per
+record), but the volume is still substantial on a busy proxy. Turn it back to `INFO` when done.
 
-Override it with a custom `log4j.properties` if needed.
-The proxy also bootstraps the bundled `log4j.properties` at runtime if no appenders are configured,
-so a plain `java -jar ...` launch still gets console logs.
+Note that `INFO` on the proxy package already keeps the `trace stage=client-request` /
+`backend-request` write-path trace lines, so most operational debugging does not need `DEBUG`.
 
 ## HiveServer2
 

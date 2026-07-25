@@ -12,6 +12,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableDropPurgeMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableLocationRewriteMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardMode;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
@@ -139,6 +140,54 @@ public class ProxyConfigLoaderTest {
       Assert.assertTrue(config.management().enabled());
       Assert.assertEquals("127.0.0.2", config.management().bindHost());
       Assert.assertEquals(19083, config.management().port());
+      Assert.assertEquals(ManagementConfig.DEFAULT_THREADS, config.management().threads());
+      Assert.assertEquals(
+          ManagementConfig.DEFAULT_READINESS_CACHE_MS, config.management().readinessCacheMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsManagementExecutionTuning() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          management.port=19083
+          management.threads=8
+          management.readiness-cache-ms=0
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(8, config.management().threads());
+      Assert.assertEquals(0L, config.management().readinessCacheMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsNonPositiveManagementThreads() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          management.port=19083
+          management.threads=0
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for management.threads=0");
+      } catch (IllegalArgumentException expected) {
+        Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("management.threads"));
+      }
     } finally {
       Files.deleteIfExists(file);
     }

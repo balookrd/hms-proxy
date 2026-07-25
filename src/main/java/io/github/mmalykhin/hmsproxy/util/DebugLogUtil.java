@@ -9,6 +9,7 @@ public final class DebugLogUtil {
   private static final int MAX_ELEMENTS = 10;
   private static final int MAX_CHARS = 4_000;
   private static final int MAX_DEPTH = 3;
+  private static final String TRUNCATED = "...<truncated>";
 
   private DebugLogUtil() {
   }
@@ -26,94 +27,128 @@ public final class DebugLogUtil {
 
   public static String formatValue(Object value) {
     try {
-      return truncate(render(value, 0));
+      StringBuilder builder = new StringBuilder(64);
+      render(builder, value, 0);
+      return builder.toString();
     } catch (Throwable error) {
       return "<debug-format-error value " + error.getClass().getSimpleName() + ": " + error.getMessage() + ">";
     }
   }
 
-  private static String render(Object value, int depth) {
+  // Renders into a single budget-bounded builder: once MAX_CHARS is reached nothing else is
+  // materialized, so a wide collection of large Thrift objects costs one element, not all of them.
+  private static void render(StringBuilder out, Object value, int depth) {
+    if (isFull(out)) {
+      return;
+    }
     if (value == null) {
-      return "null";
+      out.append("null");
+      return;
     }
     if (depth >= MAX_DEPTH) {
-      return "<max-depth>";
+      out.append("<max-depth>");
+      return;
     }
     if (value instanceof CharSequence || value instanceof Number || value instanceof Boolean
         || value instanceof Enum<?>) {
-      return String.valueOf(value);
+      appendBounded(out, String.valueOf(value));
+      return;
     }
     if (value instanceof Throwable throwable) {
-      return throwable.getClass().getName() + "(" + throwable.getMessage() + ")";
+      appendBounded(out, throwable.getClass().getName() + "(" + throwable.getMessage() + ")");
+      return;
     }
     if (value.getClass().isArray()) {
-      return renderArray(value, depth + 1);
+      renderArray(out, value, depth + 1);
+      return;
     }
     if (value instanceof Collection<?> collection) {
-      return renderCollection(collection, depth + 1);
+      renderCollection(out, collection, depth + 1);
+      return;
     }
     if (value instanceof Map<?, ?> map) {
-      return renderMap(map, depth + 1);
+      renderMap(out, map, depth + 1);
+      return;
     }
-    return truncate(String.valueOf(value));
+    // Unknown object: toString() is the only rendering available, so this one value is still
+    // materialized in full before it is clipped to the remaining budget.
+    appendBounded(out, String.valueOf(value));
   }
 
-  private static String renderArray(Object array, int depth) {
+  private static void renderArray(StringBuilder out, Object array, int depth) {
     int length = Array.getLength(array);
-    StringBuilder builder = new StringBuilder("[");
+    out.append('[');
     int limit = Math.min(length, MAX_ELEMENTS);
-    for (int index = 0; index < limit; index++) {
+    int index = 0;
+    while (index < limit && !isFull(out)) {
       if (index > 0) {
-        builder.append(", ");
+        out.append(", ");
       }
-      builder.append(render(Array.get(array, index), depth));
+      render(out, Array.get(array, index), depth);
+      index++;
     }
-    if (length > limit) {
-      builder.append(", ... size=").append(length);
+    if (length > index) {
+      appendOverflow(out, index, length);
     }
-    return builder.append(']').toString();
+    out.append(']');
   }
 
-  private static String renderCollection(Collection<?> collection, int depth) {
-    StringBuilder builder = new StringBuilder("[");
+  private static void renderCollection(StringBuilder out, Collection<?> collection, int depth) {
+    out.append('[');
     Iterator<?> iterator = collection.iterator();
     int index = 0;
-    while (iterator.hasNext() && index < MAX_ELEMENTS) {
+    while (iterator.hasNext() && index < MAX_ELEMENTS && !isFull(out)) {
       if (index > 0) {
-        builder.append(", ");
+        out.append(", ");
       }
-      builder.append(render(iterator.next(), depth));
+      render(out, iterator.next(), depth);
       index++;
     }
     if (collection.size() > index) {
-      builder.append(", ... size=").append(collection.size());
+      appendOverflow(out, index, collection.size());
     }
-    return builder.append(']').toString();
+    out.append(']');
   }
 
-  private static String renderMap(Map<?, ?> map, int depth) {
-    StringBuilder builder = new StringBuilder("{");
+  private static void renderMap(StringBuilder out, Map<?, ?> map, int depth) {
+    out.append('{');
     int index = 0;
     for (Map.Entry<?, ?> entry : map.entrySet()) {
-      if (index >= MAX_ELEMENTS) {
-        builder.append(", ... size=").append(map.size());
+      if (index >= MAX_ELEMENTS || isFull(out)) {
+        appendOverflow(out, index, map.size());
         break;
       }
       if (index > 0) {
-        builder.append(", ");
+        out.append(", ");
       }
-      builder.append(render(entry.getKey(), depth))
-          .append('=')
-          .append(render(entry.getValue(), depth));
+      render(out, entry.getKey(), depth);
+      out.append('=');
+      render(out, entry.getValue(), depth);
       index++;
     }
-    return builder.append('}').toString();
+    out.append('}');
   }
 
-  private static String truncate(String value) {
-    if (value.length() <= MAX_CHARS) {
-      return value;
+  private static void appendOverflow(StringBuilder out, int rendered, int size) {
+    if (rendered > 0) {
+      out.append(", ");
     }
-    return value.substring(0, MAX_CHARS) + "...<truncated>";
+    out.append("... size=").append(size);
+  }
+
+  private static boolean isFull(StringBuilder out) {
+    return out.length() >= MAX_CHARS;
+  }
+
+  private static void appendBounded(StringBuilder out, String value) {
+    int remaining = MAX_CHARS - out.length();
+    if (remaining <= 0) {
+      return;
+    }
+    if (value.length() <= remaining) {
+      out.append(value);
+      return;
+    }
+    out.append(value, 0, remaining).append(TRUNCATED);
   }
 }

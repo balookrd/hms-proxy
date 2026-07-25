@@ -81,6 +81,36 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   (партиции, storage descriptors, column statistics) пропускаются целиком: ответ `get_partitions` с
   тысячами партиций больше не стоит тысяч reflective-вызовов на запрос. Переписывание найденной
   ссылки тоже больше не компилирует новый `Pattern` на каждый матч.
+- Комплектный дефолтный `log4j.properties` больше не выбрасывает вывод proxy молча. Logger пакета
+  proxy стоял на `DEBUG` с `additivity=false` и без собственных appender'ов, поэтому каждая строка
+  proxy — включая structured audit record — рендерилась и отправлялась в никуда. У audit logger
+  теперь свой appender `logs/hms-proxy-audit.log` (rolling по 100MB, 10 backup, без префикса
+  layout, чтобы файл оставался валидным JSON lines).
+- Per-request debug tracing выключен по умолчанию. Пакет proxy теперь логируется на `INFO`, так что
+  `DebugLogUtil` больше не рендерит все аргументы запроса и backend-ответы на каждый RPC. Чтобы
+  вернуть прежнее поведение, поставь `log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG`.
+- Management HTTP listener обслуживает запросы из выделенного пула потоков (`management.threads`,
+  по умолчанию 4) вместо единственного встроенного dispatcher-потока. Вызов `/readyz`, залипший на
+  недоступном backend или KDC, больше не блокирует liveness-проверки `/healthz` и scrape
+  `/metrics`.
+- `DebugLogUtil` рендерит в единый буфер с общим лимитом, поэтому коллекция больших Thrift-объектов
+  перестаёт материализоваться, как только исчерпан бюджет ~4000 символов, вместо того чтобы строить
+  и обрезать каждый элемент целиком.
+
+### Изменено
+
+- Из дефолтной конфигурации логирования убран `DailyRollingFileAppender`
+  `logs/hms-proxy-daily.log`. У него не было лимита на число файлов и он рос неограниченно, а с
+  тремя root appender'ами каждая строка сторонних библиотек писалась трижды. Теперь по умолчанию это
+  stderr плюс ограниченный по размеру `logs/hms-proxy.log`.
+- `/readyz` кэширует результаты backend- и Kerberos-probe на `management.readiness-cache-ms`
+  (по умолчанию 2000) и обновляет их в режиме single-flight, поэтому частые scrape больше не
+  порождают по раунду сетевых проверок на каждый запрос. В ответе появилось поле `probeAgeMs`;
+  значение `0` возвращает probe на каждый запрос. Per-backend поля состояния по-прежнему рендерятся
+  из актуального runtime state при каждом вызове.
+- Задокументировано, что management endpoints не имеют аутентификации, а `/readyz` отдаёт
+  Kerberos-принципалы и детали backend-ошибок, поэтому порт нужно выносить в изолированную сеть
+  мониторинга.
 
 ## 2026-05-26
 
