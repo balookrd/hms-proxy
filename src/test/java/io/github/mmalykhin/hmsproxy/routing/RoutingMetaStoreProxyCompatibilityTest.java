@@ -124,13 +124,27 @@ public class RoutingMetaStoreProxyCompatibilityTest {
   }
 
   @Test
-  public void compatibilityFallbackAppliesToBackendMetaAndTransportFailures() {
+  public void compatibilityFallbackAppliesOnlyWhenTheBackendHasNoSuchMethod() {
     Assert.assertTrue(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
+        "get_next_notification",
+        new TApplicationException(TApplicationException.UNKNOWN_METHOD, "unsupported")));
+    Assert.assertTrue(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
+        "show_compact", new TApplicationException(TApplicationException.UNKNOWN_METHOD, "unsupported")));
+
+    Assert.assertFalse(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
         "get_next_notification", new MetaException("not allowed")));
-    Assert.assertTrue(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
+    Assert.assertFalse(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
         "refresh_privileges", new TTransportException()));
+    Assert.assertFalse(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
+        "show_compact", new TApplicationException(TApplicationException.INTERNAL_ERROR, "boom")));
+  }
+
+  @Test
+  public void optionalServiceReadsKeepFallingBackOnBackendFailures() {
     Assert.assertTrue(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
-        "show_compact", new TApplicationException("unsupported")));
+        "get_runtime_stats", new MetaException("backend catalog1 is unavailable")));
+    Assert.assertTrue(RoutingMetaStoreProxy.shouldUseCompatibilityFallback(
+        "get_all_resource_plans", new TTransportException()));
   }
 
   @Test

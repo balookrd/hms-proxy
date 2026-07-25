@@ -631,17 +631,22 @@ method_matrix:
       ru: Та же namespace-маршрутизация, что и у эквивалентных direct object RPC.
     fallback_strategy:
       en: >-
-        Backend adapter caches unsupported wrappers and downgrades to the legacy
-        method on subsequent calls
+        Backend adapter downgrades to the legacy method only on
+        `TApplicationException UNKNOWN_METHOD` (or a missing method in the
+        loaded runtime) and caches that wrapper as unsupported; other backend
+        errors are propagated and never cached
       ru: >-
-        Backend adapter кеширует unsupported wrapper и затем сразу
-        деградирует к legacy методу на следующих вызовах
+        Backend adapter деградирует к legacy методу только при
+        `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
+        загруженном runtime) и кеширует такой wrapper как unsupported; прочие
+        ошибки backend пробрасываются и не кешируются
     semantic_risk:
       en: Low; metadata semantics stay aligned, but the call path becomes legacy.
       ru: >-
         Низкий; metadata semantics сохраняются, но call path становится legacy.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
+      - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestPropagatesApplicationErrorsInsteadOfDowngradingToLegacy
 
   - id: default_catalog_service_reads
     method:
@@ -679,15 +684,131 @@ method_matrix:
       en: >-
         `get_current_notificationEventId`, `get_next_notification`,
         `get_notification_events_count`, `get_open_txns`,
-        `get_open_txns_info`, `show_locks`, `show_compact`,
-        `get_active_resource_plan`, `get_all_resource_plans`,
-        `get_runtime_stats`
+        `get_open_txns_info`, `show_locks`, `show_compact`
       ru: >-
         `get_current_notificationEventId`, `get_next_notification`,
         `get_notification_events_count`, `get_open_txns`,
-        `get_open_txns_info`, `show_locks`, `show_compact`,
-        `get_active_resource_plan`, `get_all_resource_plans`,
-        `get_runtime_stats`
+        `get_open_txns_info`, `show_locks`, `show_compact`
+    apache_backend:
+      status: degraded
+      en: >-
+        Default-catalog scoped; an empty compatibility response is emitted only
+        when the backend does not implement the method.
+      ru: >-
+        Scoped через default-catalog; empty compatibility response возвращается
+        только когда backend не реализует метод.
+    hdp_backend:
+      status: degraded
+      en: >-
+        Default-catalog scoped; an empty compatibility response is emitted only
+        when the backend does not implement the method.
+      ru: >-
+        Scoped через default-catalog; empty compatibility response возвращается
+        только когда backend не реализует метод.
+    hive4_backend:
+      status: degraded
+      en: >-
+        Default-catalog scoped; an empty compatibility response is emitted only
+        when the backend does not implement the method.
+      ru: >-
+        Scoped через default-catalog; empty compatibility response возвращается
+        только когда backend не реализует метод.
+    front_door_support:
+      en: Any front-door profile that exposes the overlapping RPCs.
+      ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
+    routing_mode:
+      en: Default-catalog pin because the RPC has no catalog namespace.
+      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+    fallback_strategy:
+      en: >-
+        Return an empty or synthetic compatibility response only on
+        `TApplicationException UNKNOWN_METHOD` (or a missing method in the
+        loaded runtime); transport failures, `MetaException`, and other
+        `TApplicationException` types are propagated to the caller
+      ru: >-
+        Возвращает empty или synthetic compatibility response только при
+        `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
+        загруженном runtime); transport failure, `MetaException` и другие типы
+        `TApplicationException` пробрасываются клиенту
+    semantic_risk:
+      en: >-
+        Medium; an empty answer is a statement about ACID, lock, and
+        notification state, so it is limited to backends that genuinely lack the
+        RPC, while transient failures stay visible as errors
+      ru: >-
+        Средний; пустой ответ - это утверждение об ACID, lock и notification
+        state, поэтому он допускается только для backend, где RPC действительно
+        отсутствует, а транзиентные сбои остаются видимыми как ошибки
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#notificationMethodsHaveCompatibilityFallbacks
+      - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#dataSemanticFallbacksOnlyApplyWhenTheBackendHasNoSuchMethod
+
+  - id: privilege_and_token_compatibility_reads
+    method:
+      en: >-
+        `get_privilege_set`, `list_privileges`, `get_role_names`,
+        `get_principals_in_role`, `get_role_grants_for_principal`,
+        `refresh_privileges`, `get_all_token_identifiers`, `get_master_keys`
+      ru: >-
+        `get_privilege_set`, `list_privileges`, `get_role_names`,
+        `get_principals_in_role`, `get_role_grants_for_principal`,
+        `refresh_privileges`, `get_all_token_identifiers`, `get_master_keys`
+    apache_backend:
+      status: degraded
+      en: >-
+        Empty or success-shaped compatibility response only when the backend
+        does not implement the method.
+      ru: >-
+        Empty или success-shaped compatibility response только когда backend не
+        реализует метод.
+    hdp_backend:
+      status: degraded
+      en: >-
+        Empty or success-shaped compatibility response only when the backend
+        does not implement the method.
+      ru: >-
+        Empty или success-shaped compatibility response только когда backend не
+        реализует метод.
+    hive4_backend:
+      status: degraded
+      en: >-
+        Empty or success-shaped compatibility response only when the backend
+        does not implement the method.
+      ru: >-
+        Empty или success-shaped compatibility response только когда backend не
+        реализует метод.
+    front_door_support:
+      en: Any front-door profile that exposes the overlapping RPCs.
+      ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
+    routing_mode:
+      en: Normal namespace routing, or default-catalog pin when the RPC has no namespace.
+      ru: Обычный namespace routing либо пин в default-catalog, если у RPC нет namespace.
+    fallback_strategy:
+      en: >-
+        Return an empty or success-shaped compatibility response only on
+        `TApplicationException UNKNOWN_METHOD` (or a missing method in the
+        loaded runtime); a failed authorization call is never reported as an
+        empty privilege set or a successful refresh
+      ru: >-
+        Возвращает empty или success-shaped compatibility response только при
+        `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
+        загруженном runtime); проваленный authorization call никогда не
+        выдаётся за пустой privilege set или успешный refresh
+    semantic_risk:
+      en: >-
+        Medium; an empty privilege answer can be read as an authorization
+        decision, so it is limited to backends that genuinely lack the RPC
+      ru: >-
+        Средний; пустой privilege-ответ может быть прочитан как authorization
+        decision, поэтому он допускается только для backend, где RPC
+        действительно отсутствует
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#dataSemanticFallbacksOnlyApplyWhenTheBackendHasNoSuchMethod
+
+  - id: optional_service_reads
+    method:
+      en: "`get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`"
+      ru: "`get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`"
     apache_backend:
       status: degraded
       en: Default-catalog scoped and may emit compatibility empty responses.
@@ -708,20 +829,24 @@ method_matrix:
       ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
     fallback_strategy:
       en: >-
-        Return an empty or synthetic compatibility response on
-        `TApplicationException`, transport failure, or `MetaException`
+        Return an empty compatibility response on any backend failure
+        (`TApplicationException`, transport failure, or `MetaException`),
+        because these RPCs only expose optional workload-management and
+        diagnostic state
       ru: >-
-        Возвращает empty или synthetic compatibility response при
-        `TApplicationException`, transport failure или `MetaException`
+        Возвращает empty compatibility response при любом сбое backend
+        (`TApplicationException`, transport failure или `MetaException`),
+        потому что эти RPC отдают только опциональные workload-management и
+        diagnostic данные
     semantic_risk:
       en: >-
-        Medium; callers can observe lossy control-plane state instead of a hard
-        failure, so monitoring and automation should be validated explicitly
+        Low; an empty answer hides diagnostics, but it does not change data,
+        lock, or authorization semantics
       ru: >-
-        Средний; вместо hard failure клиент может увидеть lossy control-plane
-        state, поэтому monitoring и automation нужно отдельно валидировать
+        Низкий; пустой ответ скрывает диагностику, но не меняет семантику
+        данных, локов и авторизации
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#notificationMethodsHaveCompatibilityFallbacks
+      - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#optionalServiceReadsStillFallBackOnAnyBackendFailure
 
   - id: txn_lock_lifecycle_without_namespace
     method:

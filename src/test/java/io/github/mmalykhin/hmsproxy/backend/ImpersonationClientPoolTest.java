@@ -21,10 +21,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.thrift.TApplicationException;
+import org.apache.thrift.TException;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -170,6 +174,127 @@ public class ImpersonationClientPoolTest {
     Assert.assertTrue(
         "expected eviction counter to appear after close:\n" + rendered,
         rendered.contains("hms_proxy_impersonation_session_evictions_total"));
+  }
+
+  @Test
+  public void applicationErrorsKeepTheImpersonationSessionAndDoNotRetry() throws Exception {
+    FailureRun run = runFailingCall(
+        () -> new TApplicationException(TApplicationException.INTERNAL_ERROR, "backend blew up"));
+
+    Assert.assertTrue("expected the application error to propagate", run.error() instanceof TApplicationException);
+    Assert.assertEquals(TApplicationException.INTERNAL_ERROR, ((TApplicationException) run.error()).getType());
+    Assert.assertEquals("call must not be replayed on a second connection", 1, run.calls());
+    Assert.assertEquals("live connection must not be dropped and reopened", 1, run.impersonationSessionsOpened());
+  }
+
+  @Test
+  public void transportFailuresStillDiscardTheSessionAndRetryOnce() throws Exception {
+    FailureRun run = runFailingCall(() -> new TTransportException("connection reset"));
+
+    Assert.assertTrue("expected the transport failure to propagate", run.error() instanceof TTransportException);
+    Assert.assertEquals("transport failure retries once", 2, run.calls());
+    Assert.assertEquals("discarded session is replaced by a fresh one", 2, run.impersonationSessionsOpened());
+  }
+
+  @Test
+  public void protocolDesyncDiscardsTheSessionWithoutReplayingTheCall() throws Exception {
+    FailureRun run = runFailingCall(
+        () -> new TApplicationException(TApplicationException.BAD_SEQUENCE_ID, "reply for another call"));
+
+    Assert.assertTrue("expected the desync error to propagate", run.error() instanceof TApplicationException);
+    Assert.assertEquals("call must not be replayed", 1, run.calls());
+    Assert.assertEquals("poisoned connection is dropped", 1, run.impersonationSessionsOpened());
+    Assert.assertTrue(
+        "expected a protocol_desync eviction:\n" + run.metrics(),
+        run.metrics().contains("reason=\"protocol_desync\""));
+  }
+
+  private static FailureRun runFailingCall(Supplier<TException> failure) throws Exception {
+    AtomicInteger sessionsOpened = new AtomicInteger();
+    AtomicInteger calls = new AtomicInteger();
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        sessionsOpened.incrementAndGet();
+        return makeFailingSession(calls, failure);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
+      }
+    };
+
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    CatalogConfig catalogConfig = catalogConfig(4);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig),
+        catalogConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        metrics);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics);
+    int baseline = sessionsOpened.get();
+
+    Throwable error = null;
+    try {
+      backend.invokeRawByName(
+          "getStatus", new Class<?>[0], new Object[0], new ImpersonationContext("alice", List.of("g1")));
+      Assert.fail("Expected the backend failure to propagate");
+    } catch (Throwable t) {
+      error = t;
+    } finally {
+      backend.close();
+    }
+    return new FailureRun(error, calls.get(), sessionsOpened.get() - baseline, metrics.render());
+  }
+
+  private static BackendInvocationSession makeFailingSession(AtomicInteger calls, Supplier<TException> failure)
+      throws MetaException {
+    ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[] {ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> {
+          if ("getStatus".equals(method.getName())) {
+            calls.incrementAndGet();
+            throw failure.get();
+          }
+          if ("set_ugi".equals(method.getName())) {
+            return List.of("g1");
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    try {
+      Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+          org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+          ThriftHiveMetastore.Iface.class,
+          IsolatedMetastoreClient.class);
+      ctor.setAccessible(true);
+      return ctor.newInstance(null, thriftClient, null);
+    } catch (Exception e) {
+      MetaException me = new MetaException("session ctor failed");
+      me.initCause(e);
+      throw me;
+    }
+  }
+
+  private record FailureRun(Throwable error, int calls, int impersonationSessionsOpened, String metrics) {
   }
 
   private static ProxyConfig config(CatalogConfig catalogConfig) {

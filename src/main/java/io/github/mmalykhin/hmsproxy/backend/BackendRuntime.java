@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.lang.reflect.Method;
@@ -13,7 +14,6 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
@@ -256,8 +256,13 @@ public final class BackendRuntime implements AutoCloseable {
       session = null;
       return result;
     } catch (Throwable cause) {
-      if (!isTransportFailure(cause)) {
-        release(session);
+      if (!ThriftFailureClassifier.isTransportFailure(cause)) {
+        // A protocol desync poisons the connection, but the call must not be replayed.
+        if (ThriftFailureClassifier.isProtocolDesync(cause)) {
+          discard(session);
+        } else {
+          release(session);
+        }
         session = null;
         throw cause;
       }
@@ -272,7 +277,8 @@ public final class BackendRuntime implements AutoCloseable {
         retry = null;
         return result;
       } catch (Throwable retryCause) {
-        if (isTransportFailure(retryCause)) {
+        if (ThriftFailureClassifier.isTransportFailure(retryCause)
+            || ThriftFailureClassifier.isProtocolDesync(retryCause)) {
           discard(retry);
         } else {
           release(retry);
@@ -345,10 +351,6 @@ public final class BackendRuntime implements AutoCloseable {
     for (BackendInvocationSession s : drained) {
       CatalogBackend.closeQuietly(s, "shared backend metastore session");
     }
-  }
-
-  private static boolean isTransportFailure(Throwable cause) {
-    return cause instanceof TTransportException;
   }
 
   private static MetastoreApiClassLoader openIsolatedClassLoader(
