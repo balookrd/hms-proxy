@@ -3,16 +3,13 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class IsolatedInvocationBridge {
   private final ClassLoader classLoader;
   private final Object delegate;
   private final Class<?> ifaceClass;
-  private final ConcurrentHashMap<MethodKey, Method> methodCache = new ConcurrentHashMap<>();
 
   public IsolatedInvocationBridge(ClassLoader classLoader, Object delegate, Class<?> ifaceClass) {
     this.classLoader = classLoader;
@@ -58,14 +55,8 @@ public final class IsolatedInvocationBridge {
   }
 
   private Method findMethod(String methodName, Class<?>[] parameterTypes) throws NoSuchMethodException {
-    MethodKey key = new MethodKey(methodName, parameterTypes);
-    Method cached = methodCache.get(key);
-    if (cached != null) {
-      return cached;
-    }
-    Method resolved = resolveMethod(methodName, parameterTypes);
-    methodCache.putIfAbsent(key, resolved);
-    return resolved;
+    return ThriftMethodCache.lookup(
+        ifaceClass, methodName, parameterTypes, () -> resolveMethod(methodName, parameterTypes));
   }
 
   private Method resolveMethod(String methodName, Class<?>[] parameterTypes) throws NoSuchMethodException {
@@ -84,24 +75,6 @@ public final class IsolatedInvocationBridge {
         }
       }
       throw new NoSuchMethodException(methodName);
-    }
-  }
-
-  private record MethodKey(String name, Class<?>[] parameterTypes) {
-    @Override
-    public boolean equals(Object other) {
-      if (this == other) {
-        return true;
-      }
-      if (!(other instanceof MethodKey that)) {
-        return false;
-      }
-      return name.equals(that.name) && Arrays.equals(parameterTypes, that.parameterTypes);
-    }
-
-    @Override
-    public int hashCode() {
-      return 31 * name.hashCode() + Arrays.hashCode(parameterTypes);
     }
   }
 

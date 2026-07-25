@@ -130,7 +130,11 @@ public final class BackendInvocationSession implements AutoCloseable {
     if (isolatedClient != null) {
       return isolatedClient.invokeByName(methodName, parameterTypes, args);
     }
-    Method method = ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes);
+    Method method = ThriftMethodCache.lookup(
+        ThriftHiveMetastore.Iface.class,
+        methodName,
+        parameterTypes,
+        () -> ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes));
     return invoke(method, args);
   }
 

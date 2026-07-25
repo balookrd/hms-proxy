@@ -39,7 +39,12 @@ final class RequestRateLimiter {
       "drop_partition_with_environment_context",
       "rename_partition");
 
+  // Classification is a pure function of the method name; it runs at least twice per request.
+  private static final ConcurrentMap<String, RequestClassification> CLASSIFICATION_CACHE =
+      new ConcurrentHashMap<>();
+
   private final RateLimitConfig config;
+  private final boolean enabled;
   private final PrometheusMetrics metrics;
   private final LongSupplier clockNanos;
   private final TokenBucketGroup principalLimits;
@@ -59,6 +64,8 @@ final class RequestRateLimiter {
       LongSupplier clockNanos
   ) {
     this.config = Objects.requireNonNull(config, "config");
+    // Rate limit configuration is immutable after startup, so resolve the aggregate switch once.
+    this.enabled = this.config.enabled();
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.clockNanos = Objects.requireNonNull(clockNanos, "clockNanos");
     this.principalLimits = new TokenBucketGroup("principal", "default", config.principal());
@@ -70,7 +77,7 @@ final class RequestRateLimiter {
   }
 
   boolean enabled() {
-    return config.enabled();
+    return enabled;
   }
 
   RequestClassification classify(String methodName) {
@@ -204,6 +211,13 @@ final class RequestRateLimiter {
   }
 
   private static RequestClassification classifyRequest(String methodName) {
+    if (methodName == null) {
+      return deriveClassification(null);
+    }
+    return CLASSIFICATION_CACHE.computeIfAbsent(methodName, RequestRateLimiter::deriveClassification);
+  }
+
+  private static RequestClassification deriveClassification(String methodName) {
     OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     String canonicalMethod = canonicalize(methodName);
     LinkedHashSet<String> rpcClasses = new LinkedHashSet<>();

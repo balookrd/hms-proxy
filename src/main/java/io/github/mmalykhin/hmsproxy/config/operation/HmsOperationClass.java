@@ -12,7 +12,9 @@ public enum HmsOperationClass {
   ADMIN_INTROSPECTION,
   COMPATIBILITY_ONLY_RPC;
 
+  private final String wireName = name().toLowerCase(Locale.ROOT);
+
   public String wireName() {
-    return name().toLowerCase(Locale.ROOT);
+    return wireName;
   }
 }

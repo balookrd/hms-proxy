@@ -37,9 +37,46 @@ final class NamespaceExternalizer {
       return transformed;
     }
     if (value instanceof TBase<?, ?> thriftValue) {
+      // One defensive copy per subtree root: the backend result must not be mutated in place,
+      // but everything below the copy is private to it and is rewritten in place.
       TBase<?, ?> copy = thriftValue.deepCopy();
-      rewriteFields(copy, namespace, preserveBackendCatalogName);
-      return applyNamespace(copy, namespace, preserveBackendCatalogName);
+      return rewriteInPlace(copy, namespace, preserveBackendCatalogName);
+    }
+    return value;
+  }
+
+  private static Object rewriteInPlace(
+      TBase<?, ?> thriftValue,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    rewriteFields(thriftValue, namespace, preserveBackendCatalogName);
+    return applyNamespace(thriftValue, namespace, preserveBackendCatalogName);
+  }
+
+  /** Rewrites an already-copied nested value in place and returns it unchanged (identity preserved). */
+  private static Object rewriteNested(
+      Object value,
+      CatalogRouter.ResolvedNamespace namespace,
+      boolean preserveBackendCatalogName
+  ) {
+    if (value == null || NamespaceTranslator.isScalar(value)) {
+      return value;
+    }
+    if (value instanceof List<?> list) {
+      for (Object element : list) {
+        rewriteNested(element, namespace, preserveBackendCatalogName);
+      }
+      return value;
+    }
+    if (value instanceof Map<?, ?> map) {
+      for (Object element : map.values()) {
+        rewriteNested(element, namespace, preserveBackendCatalogName);
+      }
+      return value;
+    }
+    if (value instanceof TBase<?, ?> thriftValue) {
+      rewriteInPlace(thriftValue, namespace, preserveBackendCatalogName);
     }
     return value;
   }
@@ -81,7 +118,7 @@ final class NamespaceExternalizer {
         && !normalizedFieldName.equals("fulltablenames")) {
       return transformFullTableNames((List<String>) listValue, namespace);
     }
-    return externalize(fieldValue, namespace, preserveBackendCatalogName);
+    return rewriteNested(fieldValue, namespace, preserveBackendCatalogName);
   }
 
   private static Object applyNamespace(

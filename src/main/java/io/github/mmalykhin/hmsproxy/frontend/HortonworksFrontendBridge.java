@@ -270,12 +270,7 @@ public final class HortonworksFrontendBridge {
     }
 
     private Method findApacheMethod(String methodName, int argumentCount) {
-      for (Method candidate : ThriftHiveMetastore.Iface.class.getMethods()) {
-        if (candidate.getName().equals(methodName) && candidate.getParameterCount() == argumentCount) {
-          return candidate;
-        }
-      }
-      return null;
+      return ApacheIfaceMethods.find(methodName, argumentCount);
     }
 
     private Object[] convertArguments(Object[] args, Class<?>[] parameterTypes) throws Exception {
