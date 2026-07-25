@@ -9,6 +9,7 @@ import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.BindException;
@@ -318,26 +319,7 @@ public final class ManagementHttpServer implements AutoCloseable {
   }
 
   static String escape(String value) {
-    StringBuilder sb = new StringBuilder(value.length());
-    for (int i = 0; i < value.length(); i++) {
-      char c = value.charAt(i);
-      switch (c) {
-        case '"':  sb.append("\\\""); break;
-        case '\\': sb.append("\\\\"); break;
-        case '\n': sb.append("\\n");  break;
-        case '\r': sb.append("\\r");  break;
-        case '\t': sb.append("\\t");  break;
-        case '\b': sb.append("\\b");  break;
-        case '\f': sb.append("\\f");  break;
-        default:
-          if (c < 0x20) {
-            sb.append(String.format("\\u%04x", (int) c));
-          } else {
-            sb.append(c);
-          }
-      }
-    }
-    return sb.toString();
+    return JsonEscapeUtil.escape(value);
   }
 
   static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {

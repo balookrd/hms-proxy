@@ -222,13 +222,17 @@ public final class KerberosHealthProbe {
       return Optional.empty();
     }
     try {
+<<<<<<< HEAD
       Set<KerberosTicket> tickets = subject.getPrivateCredentials(KerberosTicket.class);
       // Cross-realm TGTs (krbtgt/OTHER@LOCAL) can outlive the local TGT the login actually depends
       // on, so they are only considered when no local TGT is present.
       return latestExpiry(tickets, KerberosHealthProbe::isLocalTgt)
           .or(() -> latestExpiry(tickets, KerberosHealthProbe::isTgt));
     } catch (RuntimeException concurrentRelogin) {
-      // The subject can be mutated by a relogin while the probe iterates its credentials.
+      // The subject can be mutated by a relogin while the probe iterates its credentials. Log the
+      // cause, otherwise the endpoint reports freshness "unknown" with no trace of why.
+      LOG.warn("Kerberos TGT expiry lookup failed; readiness will report unknown TGT freshness",
+          concurrentRelogin);
       return Optional.empty();
     }
   }
