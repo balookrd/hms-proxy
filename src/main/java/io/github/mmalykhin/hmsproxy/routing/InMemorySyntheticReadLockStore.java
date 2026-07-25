@@ -46,11 +46,30 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
   }
 
   @Override
-  public void releaseLock(long lockId) {
-    SyntheticReadLockManager.SyntheticLockState removed = locks.remove(lockId);
+  public void releaseLock(SyntheticReadLockManager.SyntheticLockState state) {
+    if (state == null) {
+      return;
+    }
+    SyntheticReadLockManager.SyntheticLockState removed = locks.remove(state.lockId());
     if (removed != null) {
       removeTxnRef(removed);
     }
+  }
+
+  @Override
+  public SyntheticReadLockManager.SyntheticLockState releaseIfExpired(long lockId, long nowMs, long timeoutMs) {
+    SyntheticReadLockManager.SyntheticLockState observed = locks.get(lockId);
+    if (observed == null) {
+      return null;
+    }
+    if (!observed.isExpired(nowMs, timeoutMs)) {
+      return observed;
+    }
+    if (removeLock(observed) != null) {
+      return null;
+    }
+    // A concurrent heartbeat replaced the state; report whatever is current now.
+    return locks.get(lockId);
   }
 
   @Override
@@ -92,7 +111,7 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
         }
       }
     }
-    return new CleanupSummary(expiredCount, remoteOwnerCount);
+    return new CleanupSummary(expiredCount, remoteOwnerCount, locks.size());
   }
 
   @Override

@@ -14,7 +14,14 @@ interface SyntheticReadLockStore extends AutoCloseable {
 
   void touch(long lockId, long nowMs) throws Exception;
 
-  void releaseLock(long lockId) throws Exception;
+  void releaseLock(SyntheticReadLockManager.SyntheticLockState state) throws Exception;
+
+  /**
+   * Removes the lock only while it is still the expired state the caller observed. Returns the
+   * lock state that survived a concurrent heartbeat, or {@code null} when the lock is gone.
+   */
+  SyntheticReadLockManager.SyntheticLockState releaseIfExpired(long lockId, long nowMs, long timeoutMs)
+      throws Exception;
 
   ReleaseSummary releaseTxn(long txnId, String currentInstanceId) throws Exception;
 
@@ -32,9 +39,14 @@ interface SyntheticReadLockStore extends AutoCloseable {
   ) {
   }
 
+  /**
+   * @param activeCount locks still alive once the sweep finished; the manager republishes it as the
+   *                    active-lock gauge so hot paths never have to list the store.
+   */
   record CleanupSummary(
       long expiredCount,
-      long remoteOwnerCount
+      long remoteOwnerCount,
+      long activeCount
   ) {
   }
 }
