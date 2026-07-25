@@ -40,9 +40,24 @@ public final class PropertyReader {
     return properties.stringPropertyNames().stream().anyMatch(name -> name.startsWith(prefix));
   }
 
+  /**
+   * Accepts only {@code true} / {@code false} (case-insensitive). {@code Boolean.parseBoolean}
+   * would map typos and other spellings such as {@code yes}, {@code on} or {@code 1} to
+   * {@code false}, silently flipping security- and routing-relevant switches.
+   */
   public boolean getBoolean(String key, boolean defaultValue) {
     String value = trimToNull(properties.getProperty(key));
-    return value == null ? defaultValue : Boolean.parseBoolean(value);
+    if (value == null) {
+      return defaultValue;
+    }
+    if (value.equalsIgnoreCase("true")) {
+      return true;
+    }
+    if (value.equalsIgnoreCase("false")) {
+      return false;
+    }
+    throw new IllegalArgumentException(
+        "Invalid boolean value for property " + key + ": " + value + ". Expected one of: true, false");
   }
 
   public int getInt(String key, int defaultValue) {

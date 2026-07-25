@@ -1,7 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.federation;
 
-import java.util.Locale;
-
+import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableDropPurgeMode;
@@ -49,44 +48,26 @@ public final class FederationConfigParser {
   }
 
   private static ViewTextRewriteMode parseViewTextRewriteMode(String value) {
-    if (value == null) {
-      return ViewTextRewriteMode.DISABLED;
-    }
-    try {
-      return ViewTextRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for federation.view-text-rewrite.mode: " + value
-              + ". Expected one of: DISABLED, REWRITE",
-          e);
-    }
+    return ConfigParsing.parseEnum(
+        ViewTextRewriteMode.class,
+        value,
+        "federation.view-text-rewrite.mode",
+        ViewTextRewriteMode.DISABLED);
   }
 
   private static ExternalTableLocationRewriteMode parseExternalTableLocationRewriteMode(String value) {
-    if (value == null) {
-      return ExternalTableLocationRewriteMode.DISABLED;
-    }
-    try {
-      return ExternalTableLocationRewriteMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for federation.external-table-location-rewrite.mode: " + value
-              + ". Expected one of: DISABLED, QUALIFY_UNQUALIFIED, REWRITE_IF_SOURCE_DEFAULT_FS",
-          e);
-    }
+    return ConfigParsing.parseEnum(
+        ExternalTableLocationRewriteMode.class,
+        value,
+        "federation.external-table-location-rewrite.mode",
+        ExternalTableLocationRewriteMode.DISABLED);
   }
 
   private static ExternalTableDropPurgeMode parseExternalTableDropPurgeMode(String value) {
-    if (value == null) {
-      return ExternalTableDropPurgeMode.DISABLED;
-    }
-    try {
-      return ExternalTableDropPurgeMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for federation.external-table-drop-purge.mode: " + value
-              + ". Expected one of: DISABLED, BEST_EFFORT",
-          e);
-    }
+    return ConfigParsing.parseEnum(
+        ExternalTableDropPurgeMode.class,
+        value,
+        "federation.external-table-drop-purge.mode",
+        ExternalTableDropPurgeMode.DISABLED);
   }
 }

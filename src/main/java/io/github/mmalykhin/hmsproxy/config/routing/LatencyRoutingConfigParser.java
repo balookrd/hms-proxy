@@ -1,7 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.routing;
 
-import java.util.Locale;
-
+import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 public final class LatencyRoutingConfigParser {
   private LatencyRoutingConfigParser() {
@@ -61,16 +60,10 @@ public final class LatencyRoutingConfigParser {
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {
-    if (value == null) {
-      return DegradedRoutingPolicy.STRICT;
-    }
-    try {
-      return DegradedRoutingPolicy.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for routing.degraded-routing-policy: " + value
-              + ". Expected one of: STRICT, SAFE_FANOUT_READS",
-          e);
-    }
+    return ConfigParsing.parseEnum(
+        DegradedRoutingPolicy.class,
+        value,
+        "routing.degraded-routing-policy",
+        DegradedRoutingPolicy.STRICT);
   }
 }

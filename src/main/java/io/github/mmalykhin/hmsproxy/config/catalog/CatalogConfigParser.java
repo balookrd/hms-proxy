@@ -3,7 +3,6 @@ package io.github.mmalykhin.hmsproxy.config.catalog;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
@@ -56,13 +55,26 @@ public final class CatalogConfigParser {
   ) {
     String prefix = "catalog." + catalogName + ".";
     boolean impersonationEnabled = reader.getBoolean(prefix + "impersonation-enabled", globalImpersonation);
-    CatalogAccessMode accessMode = parseCatalogAccessMode(reader.getOrNull(prefix + "access-mode"));
+    CatalogAccessMode accessMode = ConfigParsing.parseEnum(
+        CatalogAccessMode.class,
+        reader.getOrNull(prefix + "access-mode"),
+        prefix + "access-mode",
+        CatalogAccessMode.READ_WRITE);
     String[] writeDbWhitelist = PropertyReader.splitCsv(reader.get(prefix + "write-db-whitelist", ""));
-    CatalogExposureMode exposureMode = parseCatalogExposureMode(reader.getOrNull(prefix + "expose-mode"));
+    validateWriteDbWhitelist(prefix, accessMode, writeDbWhitelist);
+    CatalogExposureMode exposureMode = ConfigParsing.parseEnum(
+        CatalogExposureMode.class,
+        reader.getOrNull(prefix + "expose-mode"),
+        prefix + "expose-mode",
+        CatalogExposureMode.ALLOW_ALL);
     String[] exposeDbPatterns = PropertyReader.splitCsv(reader.get(prefix + "expose-db-patterns", ""));
     ConfigParsing.validateRegexList(prefix + "expose-db-patterns", exposeDbPatterns);
     Map<String, List<String>> exposeTablePatterns = parseExposeTablePatterns(reader, prefix);
-    MetastoreRuntimeProfile runtimeProfile = parseRuntimeProfile(reader.getOrNull(prefix + "runtime-profile"));
+    MetastoreRuntimeProfile runtimeProfile = ConfigParsing.parseEnum(
+        MetastoreRuntimeProfile.class,
+        reader.getOrNull(prefix + "runtime-profile"),
+        prefix + "runtime-profile",
+        null);
     String catalogBackendStandaloneMetastoreJar = reader.getOrNull(prefix + "backend-standalone-metastore-jar");
     long latencyBudgetMs = reader.getNonNegativeLong(prefix + "latency-budget-ms", 0L);
     int maxImpersonationClients = reader.getPositiveInt(prefix + "impersonation-max-clients", 128);
@@ -122,38 +134,27 @@ public final class CatalogConfigParser {
     return patterns;
   }
 
-  private static MetastoreRuntimeProfile parseRuntimeProfile(String value) {
-    if (value == null) {
-      return null;
+  /**
+   * The whitelist is only consulted by {@code CatalogAccessModeGuard} in READ_WRITE_DB_WHITELIST
+   * mode, so either half without the other means the catalog behaves differently than configured.
+   */
+  private static void validateWriteDbWhitelist(
+      String prefix,
+      CatalogAccessMode accessMode,
+      String[] writeDbWhitelist
+  ) {
+    boolean whitelistConfigured = writeDbWhitelist.length > 0;
+    if (whitelistConfigured && accessMode != CatalogAccessMode.READ_WRITE_DB_WHITELIST) {
+      throw new IllegalArgumentException(
+          prefix + "write-db-whitelist is set but " + prefix + "access-mode is " + accessMode
+              + ", so the whitelist would be ignored and writes stay allowed for every database. "
+              + "Set " + prefix + "access-mode=READ_WRITE_DB_WHITELIST, or drop the whitelist.");
     }
-    return MetastoreRuntimeProfile.valueOf(value.trim().toUpperCase(Locale.ROOT));
+    if (!whitelistConfigured && accessMode == CatalogAccessMode.READ_WRITE_DB_WHITELIST) {
+      throw new IllegalArgumentException(
+          prefix + "access-mode=READ_WRITE_DB_WHITELIST requires a non-empty " + prefix
+              + "write-db-whitelist. Use " + prefix + "access-mode=READ_ONLY to forbid all writes.");
+    }
   }
 
-  private static CatalogAccessMode parseCatalogAccessMode(String value) {
-    if (value == null) {
-      return CatalogAccessMode.READ_WRITE;
-    }
-    try {
-      return CatalogAccessMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for catalog.<name>.access-mode: " + value
-              + ". Expected one of: READ_ONLY, READ_WRITE, READ_WRITE_DB_WHITELIST",
-          e);
-    }
-  }
-
-  private static CatalogExposureMode parseCatalogExposureMode(String value) {
-    if (value == null) {
-      return CatalogExposureMode.ALLOW_ALL;
-    }
-    try {
-      return CatalogExposureMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for catalog.<name>.expose-mode: " + value
-              + ". Expected one of: ALLOW_ALL, DENY_BY_DEFAULT",
-          e);
-    }
-  }
 }

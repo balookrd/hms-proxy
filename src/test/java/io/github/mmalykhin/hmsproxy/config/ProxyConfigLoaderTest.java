@@ -1356,4 +1356,324 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void acceptsBooleanFlagsInAnyCase() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          routing.hedged-read.enabled=TRUE
+          federation.preserve-backend-catalog-name=False
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.latencyRouting().hedgedRead().enabled());
+      Assert.assertFalse(config.federation().preserveBackendCatalogName());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void acceptsLowerCaseEnumValuesEverywhere() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=in_memory
+          security.mode=none
+          compatibility.frontend-profile=apache_3_1_3
+          additional-frontends=extra
+          additional-frontends.extra.port=9084
+          additional-frontends.extra.frontend-profile=apache_3_1_3
+          catalogs=catalog1
+          catalog.catalog1.runtime-profile=apache_3_1_3
+          catalog.catalog1.access-mode=read_only
+          catalog.catalog1.expose-mode=allow_all
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(SyntheticReadLockStoreMode.IN_MEMORY, config.syntheticReadLockStore().mode());
+      Assert.assertEquals(FrontendProfile.APACHE_3_1_3, config.compatibility().frontendProfile());
+      Assert.assertEquals(
+          FrontendProfile.APACHE_3_1_3, config.additionalFrontends().get(0).frontendProfile());
+      Assert.assertEquals(
+          MetastoreRuntimeProfile.APACHE_3_1_3, config.catalogs().get("catalog1").runtimeProfile());
+      Assert.assertEquals(CatalogAccessMode.READ_ONLY, config.catalogs().get("catalog1").accessMode());
+      Assert.assertEquals(
+          CatalogExposureMode.ALLOW_ALL, config.catalogs().get("catalog1").exposeMode());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void globalImpersonationFlagDefaultsPerCatalogFlag() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy", ".keytab");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          security.mode=KERBEROS
+          security.server-principal=hive/_HOST@EXAMPLE.COM
+          security.keytab=%s
+          security.impersonation-enabled=true
+          catalogs=catalog1,catalog2
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.impersonation-enabled=false
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          """.formatted(keytab));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertTrue(config.security().impersonationEnabled());
+      Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
+      Assert.assertFalse(config.catalogs().get("catalog2").impersonationEnabled());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
+    }
+  }
+  @Test
+  public void rejectsAdditionalFrontendBehindWildcardBindHost() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      // 0.0.0.0 covers 127.0.0.1, so this only failed at bind time before.
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          server.bind-host=0.0.0.0
+          server.port=9083
+          additional-frontends=extra
+          additional-frontends.extra.bind-host=127.0.0.1
+          additional-frontends.extra.port=9083
+          additional-frontends.extra.frontend-profile=APACHE_3_1_3
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a wildcard bind host collision");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("127.0.0.1:9083"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("primary listener"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsAdditionalFrontendOnDefaultManagementPort() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      // No management.port: the listener still occupies the default server.port + 1000.
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          server.port=9083
+          management.enabled=true
+          additional-frontends=extra
+          additional-frontends.extra.port=10083
+          additional-frontends.extra.frontend-profile=APACHE_3_1_3
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a management port collision");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("additional-frontends.extra"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("management listener"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsInMemoryLockStoreWithZooKeeperProperties() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          synthetic-read-lock.store.zookeeper.connect-string=zk1:2181,zk2:2181
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for IN_MEMORY mode with ZooKeeper properties");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("IN_MEMORY"));
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("synthetic-read-lock.store.zookeeper.connect-string"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsManagementListenerOnPrimaryPort() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          server.port=9083
+          management.port=9083
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a management port collision");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("management listener"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("primary listener"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsNonBooleanFlagValue() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          security.impersonation-enabled=yes
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a non-boolean flag value");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("security.impersonation-enabled"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("yes"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsNumericBooleanFlagValue() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          routing.hedged-read.enabled=1
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for routing.hedged-read.enabled=1");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("routing.hedged-read.enabled"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsUnknownFrontendProfileWithAcceptedValues() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          compatibility.frontend-profile=apache_9_9_9
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for an unknown frontend profile");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("compatibility.frontend-profile"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("Expected one of: APACHE_3_1_3"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsUnknownRuntimeProfileWithAcceptedValues() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.runtime-profile=hortonworks
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for an unknown runtime profile");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("catalog.catalog1.runtime-profile"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("Expected one of:"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsWhitelistAccessModeWithoutWriteDbWhitelist() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.access-mode=READ_WRITE_DB_WHITELIST
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for READ_WRITE_DB_WHITELIST without a whitelist");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("catalog.catalog1.write-db-whitelist"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("READ_ONLY"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsWriteDbWhitelistWithoutWhitelistAccessMode() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.write-db-whitelist=finance
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a whitelist without READ_WRITE_DB_WHITELIST");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("catalog.catalog1.write-db-whitelist"));
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("catalog.catalog1.access-mode=READ_WRITE_DB_WHITELIST"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

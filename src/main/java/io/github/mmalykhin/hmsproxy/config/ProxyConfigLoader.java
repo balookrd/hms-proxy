@@ -46,11 +46,12 @@ public final class ProxyConfigLoader {
     String catalogDbSeparator = loadCatalogDbSeparator(reader);
     CompatibilityConfig compatibility = CompatibilityConfigParser.parse(reader);
     Map<String, String> backendConf = CatalogConfigParser.parseBackendConf(reader);
+    // Read once: it is both the SecurityConfig flag and the default for per-catalog impersonation.
     boolean globalImpersonation = reader.getBoolean("security.impersonation-enabled", false);
     Map<String, CatalogConfig> catalogs =
         CatalogConfigParser.parse(reader, backendConf, globalImpersonation);
     String defaultCatalog = CatalogConfigParser.resolveDefaultCatalog(reader, catalogs);
-    SecurityConfig security = SecurityConfigParser.parse(reader, catalogs);
+    SecurityConfig security = SecurityConfigParser.parse(reader, catalogs, globalImpersonation);
     FederationConfig federation =
         FederationConfigParser.parse(reader, catalogs.get(defaultCatalog));
     TransactionalDdlGuardConfig transactionalDdlGuard =
@@ -62,7 +63,7 @@ public final class ProxyConfigLoader {
     LatencyRoutingConfig latencyRouting =
         LatencyRoutingConfigParser.parse(reader, catalogs.size());
     List<AdditionalFrontendConfig> additionalFrontends =
-        AdditionalFrontendConfigParser.parse(reader, server);
+        AdditionalFrontendConfigParser.parse(reader, server, management);
 
     return ProxyConfig.builder()
         .server(server)

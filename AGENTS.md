@@ -73,6 +73,13 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - `tools` содержит entry points для direct HMS smoke CLI.
 - Классификация backend Thrift-ошибок живёт только в `thriftbridge/ThriftFailureClassifier`: «метода нет» - это `TApplicationException` с типом `UNKNOWN_METHOD` (или отсутствие метода в загруженном runtime), transport failure и protocol desync - отдельные категории. Не пиши локальные `instanceof TApplicationException` для решений про fallback, downgrade или переоткрытие соединения.
 
+## Парсинг конфигурации
+
+- Конфигурация валидируется строго: неверное или противоречивое значение даёт ошибку старта, а не тихий fallback на default.
+- Boolean-ключи читай через `PropertyReader.getBoolean` (принимает только `true`/`false`); enum-ключи - через `ConfigParsing.parseEnum` (регистронезависимо, сообщение со списком допустимых констант). Не используй `Boolean.parseBoolean` и голый `Enum.valueOf` для новых ключей.
+- Длительности в HiveConf-ключах парсь через `TimeoutValueParser`: набор суффиксов повторяет `HiveConf.unitFor`, значение без суффикса - секунды, нераспознанное - WARN и default (без исключения, парсер работает и в рантайм-путях).
+- Комбинации ключей, которые отменяют друг друга (whitelist без нужного `access-mode`, `IN_MEMORY` вместе с zk-настройками, конфликт `host:port` между листенерами), должны падать на старте. Конфликты биндингов проверяй через `ConfigParsing.bindingsConflict`, он учитывает wildcard-хосты.
+
 ## Стиль кода
 
 - Следуй существующему Java-стилю: отступ 2 пробела, explicit imports, небольшие сфокусированные классы и понятные имена методов.
