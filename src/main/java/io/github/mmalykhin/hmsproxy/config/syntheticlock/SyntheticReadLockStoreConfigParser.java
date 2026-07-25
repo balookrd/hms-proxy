@@ -1,15 +1,15 @@
 package io.github.mmalykhin.hmsproxy.config.syntheticlock;
 
-import java.util.Locale;
-
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 public final class SyntheticReadLockStoreConfigParser {
+  private static final String ZOOKEEPER_PREFIX = "synthetic-read-lock.store.zookeeper.";
+
   private SyntheticReadLockStoreConfigParser() {
   }
 
   public static SyntheticReadLockStoreConfig parse(PropertyReader reader) {
-    boolean zkConfigured = reader.hasPrefix("synthetic-read-lock.store.zookeeper.");
+    boolean zkConfigured = reader.hasPrefix(ZOOKEEPER_PREFIX);
     String rawMode = reader.getOrNull("synthetic-read-lock.store.mode");
     if (rawMode == null && !zkConfigured) {
       throw new IllegalArgumentException(
@@ -19,6 +19,13 @@ public final class SyntheticReadLockStoreConfigParser {
               + "synthetic-read-lock.store.zookeeper.connect-string for HA / multi-instance setups.");
     }
     SyntheticReadLockStoreMode mode = parseMode(rawMode, zkConfigured);
+    if (mode == SyntheticReadLockStoreMode.IN_MEMORY && zkConfigured) {
+      throw new IllegalArgumentException(
+          "synthetic-read-lock.store.mode=IN_MEMORY ignores every configured " + ZOOKEEPER_PREFIX
+              + "* property, so locks would live in memory and be lost on restart or failover. "
+              + "Remove " + String.join(", ", reader.namesWithPrefix(ZOOKEEPER_PREFIX))
+              + ", or set synthetic-read-lock.store.mode=ZOOKEEPER.");
+    }
     String znode = reader.getOrNull("synthetic-read-lock.store.zookeeper.znode");
     if (reader.has("synthetic-read-lock.store.zookeeper.znode") && znode == null) {
       throw new IllegalArgumentException("synthetic-read-lock.store.zookeeper.znode must not be blank");
@@ -42,18 +49,10 @@ public final class SyntheticReadLockStoreConfigParser {
   }
 
   private static SyntheticReadLockStoreMode parseMode(String value, boolean zooKeeperConfigured) {
-    if (value == null) {
-      return zooKeeperConfigured
-          ? SyntheticReadLockStoreMode.ZOOKEEPER
-          : SyntheticReadLockStoreMode.IN_MEMORY;
-    }
-    try {
-      return SyntheticReadLockStoreMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "Invalid value for synthetic-read-lock.store.mode: " + value
-              + ". Expected one of: IN_MEMORY, ZOOKEEPER",
-          e);
-    }
+    SyntheticReadLockStoreMode inferredDefault = zooKeeperConfigured
+        ? SyntheticReadLockStoreMode.ZOOKEEPER
+        : SyntheticReadLockStoreMode.IN_MEMORY;
+    return ConfigParsing.parseEnum(
+        SyntheticReadLockStoreMode.class, value, "synthetic-read-lock.store.mode", inferredDefault);
   }
 }

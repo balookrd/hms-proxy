@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.config.security;
 
-import java.util.Locale;
 import java.util.Map;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
@@ -10,17 +9,22 @@ public final class SecurityConfigParser {
   private SecurityConfigParser() {
   }
 
+  /**
+   * {@code impersonationEnabled} is the already-parsed {@code security.impersonation-enabled} flag,
+   * passed in rather than re-read here so the global default for
+   * {@code catalog.<name>.impersonation-enabled} has a single source of truth.
+   */
   public static SecurityConfig parse(
       PropertyReader reader,
-      Map<String, CatalogConfig> catalogs
+      Map<String, CatalogConfig> catalogs,
+      boolean impersonationEnabled
   ) {
-    SecurityMode securityMode = SecurityMode.valueOf(
-        reader.get("security.mode", "NONE").trim().toUpperCase(Locale.ROOT));
+    SecurityMode securityMode = ConfigParsing.parseEnum(
+        SecurityMode.class, reader.getOrNull("security.mode"), "security.mode", SecurityMode.NONE);
     String serverPrincipal = reader.getOrNull("security.server-principal");
     String clientPrincipal = reader.getOrNull("security.client-principal");
     String keytab = reader.getOrNull("security.keytab");
     String clientKeytab = reader.getOrNull("security.client-keytab");
-    boolean impersonationEnabled = reader.getBoolean("security.impersonation-enabled", false);
     Map<String, String> frontDoorConf = reader.collectPrefixed("security.front-door-conf.");
 
     if (clientPrincipal == null && serverPrincipal != null) {
@@ -55,6 +59,7 @@ public final class SecurityConfigParser {
         frontDoorConf);
   }
 
+  /** Hive-owned key, so it keeps Hive's lenient {@code Boolean.parseBoolean} semantics. */
   private static boolean backendKerberosEnabled(Map<String, String> hiveConf) {
     return Boolean.parseBoolean(PropertyReader.trimToNull(hiveConf.get("hive.metastore.sasl.enabled")));
   }

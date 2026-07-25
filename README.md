@@ -253,6 +253,40 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+## Configuration validation
+
+The proxy validates its properties file at startup and refuses to start on a value it cannot
+interpret. A misconfigured proxy that runs and quietly does the opposite of what the file says is
+worse than one that does not start.
+
+**Booleans** accept only `true` and `false`, in any case. `yes`, `on`, `1` and typos such as `ture`
+are startup errors naming the key and the value. Previously they were read as `false`, which
+silently disabled impersonation, the management listener, or hedged reads.
+
+**Enum values** — every mode, profile and policy key — are case-insensitive, so
+`access-mode=read_only` and `frontend-profile=apache_3_1_3` are accepted everywhere. An unknown
+value reports the key and the accepted constants.
+
+**Durations** in HiveConf keys such as `hive.metastore.client.socket.timeout` follow Hive: an
+integer with an optional unit suffix `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`, `d`/`day`
+(long spellings such as `600sec`, `5min` work too). A bare number means seconds. A value Hive
+itself would reject, such as `1.5s`, is logged as a `WARN` naming the value and the applied
+default.
+
+**Contradictory combinations** are startup errors rather than silent behavior swaps:
+
+| Combination | Result |
+| --- | --- |
+| `catalog.<name>.write-db-whitelist` without `access-mode=READ_WRITE_DB_WHITELIST` | error: the whitelist would be ignored and writes would stay open to every database |
+| `access-mode=READ_WRITE_DB_WHITELIST` with an empty whitelist | error: use `READ_ONLY` to forbid all writes |
+| `synthetic-read-lock.store.mode=IN_MEMORY` with any `synthetic-read-lock.store.zookeeper.*` key | error: locks would silently stay in memory |
+| Two listeners on the same `host:port` | error, including a wildcard bind host: `0.0.0.0:9083` conflicts with `127.0.0.1:9083` |
+
+Listener conflict checks cover the primary listener, the management listener (including its
+default `server.port + 1000`) and every `additional-frontends.<name>` entry. Host names are
+compared as configured, without DNS resolution, so `localhost` versus `127.0.0.1` still surfaces
+at bind time rather than at validation time.
+
 ## Observability
 
 ### Management listener
@@ -626,6 +660,11 @@ All listeners share the same `RoutingMetaStoreProxy`, federation, security (`Fro
 including SASL/Kerberos), audit and Prometheus metrics. Only the wire-level Thrift API
 differs per port.
 
+Every listener must own its `host:port`. Startup fails when an additional frontend collides with
+the primary listener, with another additional frontend, or with the management listener — including
+the management default `server.port + 1000` — and a wildcard bind host such as `0.0.0.0` counts as a
+collision with any host on the same port.
+
 For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
 
 ```properties
@@ -925,6 +964,11 @@ load-balancer failover, and the proxy logs a `WARN` on startup to surface that),
 for HA / load-balanced deployments so `check_lock`, `unlock`, `heartbeat`, `commit_txn`, and
 `abort_txn` can continue through a different proxy instance after the first one dies.
 
+`mode=IN_MEMORY` together with any configured `synthetic-read-lock.store.zookeeper.*` property is a
+startup error: the ZooKeeper settings would be ignored and locks would silently stay in memory. The
+opposite direction is preserved — ZooKeeper properties without an explicit `mode` select
+`ZOOKEEPER`.
+
 Example:
 
 ```properties
@@ -966,7 +1010,8 @@ catalog.catalog2.impersonation-enabled=false
 ```
 
 This lets you enable caller impersonation only for selected backends while leaving the others on
-the proxy service principal.
+the proxy service principal. The global key acts purely as that default: at runtime impersonation
+is driven by the per-catalog flag, which inherits the global value when it is not set explicitly.
 
 This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
 calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
@@ -1030,6 +1075,10 @@ Supported modes:
 - `READ_ONLY`: only read RPCs are allowed for that catalog
 - `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
   `catalog.<name>.write-db-whitelist`
+
+`access-mode` and `write-db-whitelist` must be configured together. A whitelist under any other
+access mode, or `READ_WRITE_DB_WHITELIST` without a whitelist, is a startup error rather than a
+catalog that silently allows every write.
 
 Exposure modes:
 

@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.config.compatibility;
 
 
+import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 public final class CompatibilityConfigParser {
@@ -8,8 +9,11 @@ public final class CompatibilityConfigParser {
   }
 
   public static CompatibilityConfig parse(PropertyReader reader) {
-    FrontendProfile frontendProfile = FrontendProfile.valueOf(
-        reader.get("compatibility.frontend-profile", "APACHE_3_1_3").trim().toUpperCase());
+    FrontendProfile frontendProfile = ConfigParsing.parseEnum(
+        FrontendProfile.class,
+        reader.getOrNull("compatibility.frontend-profile"),
+        "compatibility.frontend-profile",
+        FrontendProfile.APACHE_3_1_3);
     String frontendStandaloneMetastoreJar = reader.getOrNull("compatibility.frontend-standalone-metastore-jar");
     if (frontendStandaloneMetastoreJar == null) {
       frontendStandaloneMetastoreJar = reader.getOrNull("compatibility.hortonworks-standalone-metastore-jar");

@@ -256,6 +256,40 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
+## Валидация конфигурации
+
+Proxy проверяет properties-файл на старте и отказывается стартовать на значении, которое не может
+интерпретировать. Proxy, который запустился и тихо делает противоположное написанному в файле,
+хуже, чем proxy, который не стартовал.
+
+**Boolean-значения** принимают только `true` и `false` в любом регистре. `yes`, `on`, `1` и
+опечатки вроде `ture` — ошибка старта с указанием ключа и значения. Раньше они читались как
+`false`, то есть молча выключали имперсонацию, management-листенер или hedged reads.
+
+**Enum-значения** — все ключи режимов, профилей и политик — регистронезависимы, поэтому
+`access-mode=read_only` и `frontend-profile=apache_3_1_3` принимаются везде. При неизвестном
+значении сообщение содержит ключ и список допустимых констант.
+
+**Длительности** в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` соответствуют
+Hive: целое число с необязательным суффиксом `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`,
+`d`/`day` (длинные написания вроде `600sec`, `5min` тоже работают). Число без суффикса означает
+секунды. Значение, которое отверг бы и сам Hive (например `1.5s`), логируется как `WARN` с
+указанием значения и применённого дефолта.
+
+**Противоречивые комбинации** дают ошибку старта, а не тихую подмену поведения:
+
+| Комбинация | Результат |
+| --- | --- |
+| `catalog.<name>.write-db-whitelist` без `access-mode=READ_WRITE_DB_WHITELIST` | ошибка: whitelist игнорировался бы, запись оставалась бы разрешена во все базы |
+| `access-mode=READ_WRITE_DB_WHITELIST` с пустым whitelist | ошибка: для полного запрета записи есть `READ_ONLY` |
+| `synthetic-read-lock.store.mode=IN_MEMORY` вместе с любым ключом `synthetic-read-lock.store.zookeeper.*` | ошибка: локи молча остались бы в памяти |
+| Два листенера на одном `host:port` | ошибка, в том числе через wildcard bind host: `0.0.0.0:9083` конфликтует с `127.0.0.1:9083` |
+
+Проверка конфликтов охватывает основной листенер, management-листенер (включая дефолтный
+`server.port + 1000`) и каждую запись `additional-frontends.<name>`. Хосты сравниваются как
+заданы, без DNS-резолва, поэтому `localhost` против `127.0.0.1` по-прежнему проявится при bind, а
+не на валидации.
+
 ## Observability
 
 ### Management listener
@@ -628,6 +662,11 @@ Primary listener живёт на `server.port` со своим `compatibility.fr
 (`FrontDoorSecurity` включая SASL/Kerberos), audit и Prometheus метрики. Отличается
 только wire-level Thrift API на конкретном порту.
 
+У каждого listener должен быть собственный `host:port`. Старт падает, если additional frontend
+конфликтует с основным listener, с другим additional frontend или с management-листенером —
+включая дефолтный `server.port + 1000`, — а wildcard bind host вроде `0.0.0.0` считается
+конфликтом с любым хостом на том же порту.
+
 Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
 
 ```properties
@@ -878,6 +917,10 @@ failover через load balancer, и proxy пишет `WARN` в лог на с�
 `ZOOKEEPER` для HA / load-balanced deployment, чтобы `check_lock`, `unlock`, `heartbeat`,
 `commit_txn` и `abort_txn` продолжали работать через соседний proxy после падения первого.
 
+`mode=IN_MEMORY` вместе с любым заданным `synthetic-read-lock.store.zookeeper.*` — ошибка старта:
+ZooKeeper-настройки были бы проигнорированы, а локи молча остались бы в памяти. Обратное
+направление сохранено: ZooKeeper-ключи без явного `mode` включают `ZOOKEEPER`.
+
 Пример:
 
 ```properties
@@ -906,11 +949,15 @@ security.impersonation-enabled=true
 Или только для конкретных backend:
 
 ```properties
+# Дефолт для каталогов, у которых нет собственной настройки.
 security.impersonation-enabled=false
 
 catalog.catalog1.impersonation-enabled=true
 catalog.catalog2.impersonation-enabled=false
 ```
+
+Глобальный ключ работает именно как дефолт `catalog.<name>.impersonation-enabled`: в рантайме
+имперсонацию включает per-catalog флаг, который наследует глобальное значение, если не задан явно.
 
 Это требует:
 
@@ -956,6 +1003,10 @@ catalog.catalog1.expose-table-patterns.sales=orders_.*,events
 - `READ_ONLY`: для каталога разрешены только read RPC
 - `READ_WRITE_DB_WHITELIST`: write RPC разрешены только для баз из
   `catalog.<name>.write-db-whitelist`
+
+`access-mode` и `write-db-whitelist` задаются только вместе. Whitelist при любом другом
+access-mode, как и `READ_WRITE_DB_WHITELIST` без whitelist, — ошибка старта, а не каталог, который
+молча разрешает любую запись.
 
 Режимы selective exposure:
 

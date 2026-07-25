@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.config.management;
 
 
+import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 public final class ManagementConfigParser {
@@ -16,6 +17,14 @@ public final class ManagementConfigParser {
           "management.port must be between 1 and 65535, got: " + managementPort);
     }
     String managementBindHost = reader.get("management.bind-host", server.bindHost());
+    if (managementEnabled
+        && ConfigParsing.bindingsConflict(
+            managementBindHost, managementPort, server.bindHost(), server.port())) {
+      throw new IllegalArgumentException(
+          "management listener binds " + ConfigParsing.describeBinding(managementBindHost, managementPort)
+              + ", which conflicts with the primary listener on "
+              + ConfigParsing.describeBinding(server.bindHost(), server.port()));
+    }
     return new ManagementConfig(managementEnabled, managementBindHost, managementPort);
   }
 }

@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.config.listener;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
+import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import java.util.ArrayList;
@@ -16,34 +17,51 @@ public final class AdditionalFrontendConfigParser {
   private AdditionalFrontendConfigParser() {
   }
 
-  public static List<AdditionalFrontendConfig> parse(PropertyReader reader, ServerConfig primary) {
+  public static List<AdditionalFrontendConfig> parse(
+      PropertyReader reader,
+      ServerConfig primary,
+      ManagementConfig management
+  ) {
     String raw = reader.getOrNull(LIST_KEY);
     if (raw == null) {
       return List.of();
     }
     String[] names = PropertyReader.splitCsv(raw);
     Set<String> seenNames = new LinkedHashSet<>();
-    Set<String> seenBindings = new LinkedHashSet<>();
     List<AdditionalFrontendConfig> result = new ArrayList<>();
     for (String name : names) {
       if (!seenNames.add(name)) {
         throw new IllegalArgumentException("Duplicate additional-frontends entry: " + name);
       }
       AdditionalFrontendConfig entry = parseOne(reader, primary, name);
-      if (entry.port() == primary.port() && entry.bindHost().equals(primary.bindHost())) {
-        throw new IllegalArgumentException(
-            "additional-frontends." + name + " uses the same bindHost:port as the primary listener ("
-                + primary.bindHost() + ":" + primary.port() + ")");
+      requireFreeBinding(name, entry, primary.bindHost(), primary.port(), "the primary listener");
+      if (management.enabled()) {
+        requireFreeBinding(
+            name, entry, management.bindHost(), management.port(), "the management listener");
       }
-      String binding = entry.bindHost() + ":" + entry.port();
-      if (!seenBindings.add(binding)) {
-        throw new IllegalArgumentException(
-            "additional-frontends." + name + " duplicates bindHost:port " + binding
-                + " of another listener");
+      for (AdditionalFrontendConfig other : result) {
+        requireFreeBinding(
+            name, entry, other.bindHost(), other.port(), "additional-frontends." + other.name());
       }
       result.add(entry);
     }
     return List.copyOf(result);
+  }
+
+  private static void requireFreeBinding(
+      String name,
+      AdditionalFrontendConfig entry,
+      String otherBindHost,
+      int otherPort,
+      String otherDescription
+  ) {
+    if (ConfigParsing.bindingsConflict(entry.bindHost(), entry.port(), otherBindHost, otherPort)) {
+      throw new IllegalArgumentException(
+          "additional-frontends." + name + " binds "
+              + ConfigParsing.describeBinding(entry.bindHost(), entry.port())
+              + ", which conflicts with " + otherDescription + " on "
+              + ConfigParsing.describeBinding(otherBindHost, otherPort));
+    }
   }
 
   private static AdditionalFrontendConfig parseOne(PropertyReader reader, ServerConfig primary, String name) {
@@ -61,15 +79,10 @@ public final class AdditionalFrontendConfigParser {
           "additional-frontends." + name + ".max-worker-threads (" + maxThreads
               + ") must be >= min-worker-threads (" + minThreads + ")");
     }
-    String profileName = reader.require(scope + "frontend-profile");
-    FrontendProfile profile;
-    try {
-      profile = FrontendProfile.valueOf(profileName);
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException(
-          "additional-frontends." + name + ".frontend-profile is not a known FrontendProfile: "
-              + profileName);
-    }
+    FrontendProfile profile = ConfigParsing.parseEnum(
+        FrontendProfile.class,
+        reader.require(scope + "frontend-profile"),
+        scope + "frontend-profile");
     String jar = reader.getOrNull(scope + "standalone-metastore-jar");
     if (profile != FrontendProfile.APACHE_3_1_3) {
       if (jar == null) {

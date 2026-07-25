@@ -92,7 +92,7 @@ public class AdditionalFrontendConfigParserTest {
       Assert.fail("expected IllegalArgumentException for primary port collision");
     } catch (IllegalArgumentException e) {
       Assert.assertTrue(e.getMessage(),
-          e.getMessage().contains("same bindHost:port as the primary listener"));
+          e.getMessage().contains("conflicts with the primary listener"));
     }
   }
 
@@ -107,7 +107,8 @@ public class AdditionalFrontendConfigParserTest {
           + "additional-frontends.b.frontend-profile=APACHE_3_1_3\n");
       Assert.fail("expected IllegalArgumentException for duplicate port");
     } catch (IllegalArgumentException e) {
-      Assert.assertTrue(e.getMessage(), e.getMessage().contains("duplicates bindHost:port"));
+      Assert.assertTrue(e.getMessage(),
+          e.getMessage().contains("conflicts with additional-frontends.a"));
     }
   }
 
