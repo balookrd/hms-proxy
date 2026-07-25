@@ -6,6 +6,8 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -165,6 +167,41 @@ final class RoutingSupport {
   }
 
   // --- Result filtering ---
+
+  /**
+   * Listing shape shared by the database and table listing handlers, on both the resolved-namespace
+   * and the fanout path: hidden objects are counted once against the catalog that returned them and
+   * dropped, survivors are translated into their client-visible form. Keeping the shape here stops
+   * an exposure-policy change from having to be repeated per handler.
+   */
+  <S, R> List<R> filterExposed(
+      String methodName,
+      String catalogName,
+      String objectType,
+      List<S> backendObjects,
+      Predicate<S> exposed,
+      Function<S, R> externalize
+  ) {
+    List<R> visible = new ArrayList<>(backendObjects.size());
+    for (S backendObject : backendObjects) {
+      if (!exposed.test(backendObject)) {
+        recordFilteredObject(methodName, catalogName, objectType);
+        continue;
+      }
+      visible.add(externalize.apply(backendObject));
+    }
+    return visible;
+  }
+
+  List<String> exposedDatabaseNames(String methodName, String catalogName, List<String> backendDatabases) {
+    return filterExposed(
+        methodName,
+        catalogName,
+        "database",
+        backendDatabases,
+        backendDatabase -> federationLayer.isDatabaseExposed(catalogName, backendDatabase),
+        backendDatabase -> federationLayer.externalDatabaseName(catalogName, backendDatabase));
+  }
 
   Object filterSingleTableResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
       throws TException {

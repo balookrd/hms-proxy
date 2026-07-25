@@ -20,15 +20,7 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
       @SuppressWarnings("unchecked")
       List<String> backendDatabases =
           (List<String>) support.invokeDirect(resolved.backend(), method, new Object[]{resolved.backendDbName()});
-      List<String> databases = new ArrayList<>();
-      for (String backendDatabase : backendDatabases) {
-        if (!support.federationLayer.isDatabaseExposed(resolved.catalogName(), backendDatabase)) {
-          support.recordFilteredObject(method.getName(), resolved.catalogName(), "database");
-          continue;
-        }
-        databases.add(support.federationLayer.externalDatabaseName(resolved.catalogName(), backendDatabase));
-      }
-      return databases;
+      return support.exposedDatabaseNames(method.getName(), resolved.catalogName(), backendDatabases);
     }
 
     RequestContext.currentObservation().recordFanout();
@@ -41,14 +33,8 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
               backend, method, new Object[]{pattern}, impersonation, requestId, false, false);
           return result;
         })) {
-      List<String> backendDatabases = fanoutResult.value();
-      for (String database : backendDatabases) {
-        if (!support.federationLayer.isDatabaseExposed(fanoutResult.backend().name(), database)) {
-          support.recordFilteredObject(method.getName(), fanoutResult.backend().name(), "database");
-          continue;
-        }
-        databases.add(support.federationLayer.externalDatabaseName(fanoutResult.backend().name(), database));
-      }
+      databases.addAll(support.exposedDatabaseNames(
+          method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
     }
     return databases;
   }
