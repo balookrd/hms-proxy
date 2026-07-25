@@ -298,8 +298,10 @@ final class RoutingMetaStoreProxyTestSupport {
     final List<String> events;
     final AtomicReference<Table> preparedTable = new AtomicReference<>();
     final AtomicInteger purgeCalls = new AtomicInteger();
+    final AtomicReference<String> purgeThreadName = new AtomicReference<>();
     Optional<PurgeRequest> preparedRequest = Optional.empty();
     Exception purgeFailure;
+    volatile Runnable purgeAction;
 
     RecordingExternalTableDropPurger(List<String> events) {
       this.events = events;
@@ -319,6 +321,11 @@ final class RoutingMetaStoreProxyTestSupport {
 
     @Override
     public void purge(CatalogBackend backend, PurgeRequest request) throws Exception {
+      purgeThreadName.set(Thread.currentThread().getName());
+      Runnable action = purgeAction;
+      if (action != null) {
+        action.run();
+      }
       events.add("purge");
       purgeCalls.incrementAndGet();
       if (purgeFailure != null) {

@@ -90,6 +90,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - Для compatibility/runtime loading проверь тесты в `compatibility`, `backend` и `frontend`, прежде чем добавлять новые fixtures.
 - Если изменение влияет на public compatibility behavior, при необходимости обнови `capabilities.yaml`, generated README tables и smoke documentation.
 - Если изменение влияет на Kerberos, impersonation, synthetic locks, ACID/txn или Hortonworks-only methods, в финальном сообщении отдельно укажи, какие real-cluster smoke checks не запускались.
+- Тесты, которые трогают Hadoop `UserGroupInformation` или `FileSystem`, работают только на Java 17: на JDK 24+ UGI падает с `UnsupportedOperationException: getSubject is not supported`, и такие тесты помечены `Assume`. Прогоняй их на Java 17, иначе они молча скипаются.
 
 ## Операционные предосторожности
 

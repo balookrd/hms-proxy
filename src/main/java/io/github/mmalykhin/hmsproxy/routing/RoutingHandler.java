@@ -36,6 +36,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   private final ProxyObservability observability;
   private final RoutingSupport support;
   private final ExternalTableLocationRewriter externalTableLocationRewriter;
+  private final DropTableHandler dropTableHandler;
   private final Map<String, SpecialCaseHandler> specialCaseHandlers;
 
   RoutingHandler(
@@ -75,12 +76,16 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     this.support = new RoutingSupport(
         config, router, federationLayer, observability, dispatcher, impersonationResolver);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
-    this.specialCaseHandlers = buildSpecialCaseHandlers(externalTableDropPurger);
+    this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);
+    this.specialCaseHandlers = buildSpecialCaseHandlers(dropTableHandler);
   }
 
-  private Map<String, SpecialCaseHandler> buildSpecialCaseHandlers(
-      ExternalTableDropPurger externalTableDropPurger
-  ) {
+  /** Stops the background external-table purge workers; pending purges are awaited. */
+  void close() {
+    dropTableHandler.close();
+  }
+
+  private Map<String, SpecialCaseHandler> buildSpecialCaseHandlers(SpecialCaseHandler dropTable) {
     SpecialCaseHandler setUgi = new SetUgiHandler(support, this);
     SpecialCaseHandler getAllDatabases = new GetAllDatabasesHandler(support);
     SpecialCaseHandler getDatabases = new GetDatabasesHandler(support);
@@ -90,7 +95,6 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler addWriteNotificationLog = new AddWriteNotificationLogHandler(support);
     SpecialCaseHandler getTablesExt = new GetTablesExtHandler(support);
     SpecialCaseHandler getAllMvForRewriting = new GetAllMaterializedViewObjectsForRewritingHandler(support);
-    SpecialCaseHandler dropTable = new DropTableHandler(support, this, externalTableDropPurger);
     return Map.ofEntries(
         Map.entry("set_ugi", setUgi),
         Map.entry("get_all_databases", getAllDatabases),
