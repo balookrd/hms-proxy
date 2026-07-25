@@ -52,6 +52,9 @@ public final class CatalogBackend implements AutoCloseable {
   private final AtomicLong impersonationActiveSessions = new AtomicLong();
   private final AtomicLong impersonationIdleSessions = new AtomicLong();
   private final Object reconnectLock = new Object();
+  // Mirrors impersonationClients.size(); written under the catalog monitor so gauges can be
+  // published without touching the non-thread-safe map outside it.
+  private volatile int impersonationUserCount;
   private volatile long appliedClientTimeoutMs;
   private volatile long lastReconnectAtNanos;
   private volatile boolean closed;
@@ -198,11 +201,9 @@ public final class CatalogBackend implements AutoCloseable {
         lastReconnectAtNanos = System.nanoTime();
         throw t;
       }
-      synchronized (this) {
-        for (ImpersonationClient client : impersonationClients.values()) {
-          client.evict();
-        }
-        impersonationClients.clear();
+      // Detach the clients under the monitor, close their sockets outside of it.
+      for (ImpersonationClient client : drainImpersonationClients()) {
+        client.evict();
       }
       appliedClientTimeoutMs = timeoutMs;
       lastReconnectAtNanos = System.nanoTime();
@@ -267,15 +268,27 @@ public final class CatalogBackend implements AutoCloseable {
   }
 
   @Override
-  public synchronized void close() {
+  public void close() {
     closed = true;
     // Impersonation sessions first: closing them may still need classes from the runtime classloader.
-    for (ImpersonationClient impersonationClient : impersonationClients.values()) {
+    // Draining detaches them under the monitor so the sockets close outside of it.
+    for (ImpersonationClient impersonationClient : drainImpersonationClients()) {
       impersonationClient.closeQuietly();
     }
-    impersonationClients.clear();
     closeQuietly(runtime, "backend runtime");
     publishImpersonationGauges();
+  }
+
+  private List<ImpersonationClient> drainImpersonationClients() {
+    synchronized (this) {
+      if (impersonationClients.isEmpty()) {
+        return List.of();
+      }
+      List<ImpersonationClient> drained = new ArrayList<>(impersonationClients.values());
+      impersonationClients.clear();
+      impersonationUserCount = 0;
+      return drained;
+    }
   }
 
   private static boolean backendKerberosEnabled(CatalogConfig catalogConfig) {
@@ -308,53 +321,73 @@ public final class CatalogBackend implements AutoCloseable {
     return new MetaException("Backend catalog '" + config.name() + "' is closed");
   }
 
-  private synchronized ImpersonationClient impersonationClient(
-      ImpersonationContext impersonation
-  ) throws MetaException {
-    if (closed) {
-      throw closedException();
-    }
-    ImpersonationClient client = impersonationClients.get(impersonation.userName());
-    if (client != null) {
-      long ttlMs = config.impersonationClientIdleTtlMs();
-      if (ttlMs > 0 && System.currentTimeMillis() - client.lastUsedMs > ttlMs) {
-        LOG.info("Evicting idle impersonation client for user '{}' in catalog '{}'",
-            impersonation.userName(), config.name());
-        impersonationClients.remove(impersonation.userName());
-        client.evict();
-        client = null;
-      } else {
-        return client;
+  /**
+   * Resolves (and, if needed, creates) the per-user impersonation client. The catalog monitor only
+   * guards the bookkeeping map: constructing a client opens no connection, and evicted clients are
+   * closed after the monitor is released, so no blocking network I/O ever runs under it.
+   */
+  private ImpersonationClient impersonationClient(ImpersonationContext impersonation) throws MetaException {
+    ImpersonationClient idleEvicted = null;
+    List<ImpersonationClient> overflowEvicted = List.of();
+    ImpersonationClient client;
+    synchronized (this) {
+      if (closed) {
+        throw closedException();
       }
+      client = impersonationClients.get(impersonation.userName());
+      if (client != null) {
+        long ttlMs = config.impersonationClientIdleTtlMs();
+        if (ttlMs > 0 && System.currentTimeMillis() - client.lastUsedMs > ttlMs) {
+          impersonationClients.remove(impersonation.userName());
+          idleEvicted = client;
+          client = null;
+        } else {
+          return client;
+        }
+      }
+      client = new ImpersonationClient(impersonation.userName(), impersonation.groupNames());
+      impersonationClients.put(impersonation.userName(), client);
+      overflowEvicted = drainOverflowImpersonationClientsLocked();
+      impersonationUserCount = impersonationClients.size();
     }
 
-    client = new ImpersonationClient(impersonation.userName(), impersonation.groupNames());
-    impersonationClients.put(impersonation.userName(), client);
-    evictOldImpersonationClientsIfNeeded();
+    if (idleEvicted != null) {
+      LOG.info("Evicting idle impersonation client for user '{}' in catalog '{}'",
+          impersonation.userName(), config.name());
+      idleEvicted.evict();
+    }
+    for (ImpersonationClient evicted : overflowEvicted) {
+      LOG.info("Evicting cached impersonation client for user '{}' in catalog '{}'",
+          evicted.userName, config.name());
+      evicted.closeQuietly();
+      if (metrics != null) {
+        metrics.recordImpersonationSessionEviction(config.name(), "user_capacity");
+      }
+    }
     publishImpersonationGauges();
     return client;
   }
 
-  private void evictOldImpersonationClientsIfNeeded() {
+  private List<ImpersonationClient> drainOverflowImpersonationClientsLocked() {
+    if (impersonationClients.size() <= config.maxImpersonationClients()) {
+      return List.of();
+    }
+    List<ImpersonationClient> evicted = new ArrayList<>();
     while (impersonationClients.size() > config.maxImpersonationClients()) {
       String eldestUser = impersonationClients.keySet().iterator().next();
-      ImpersonationClient evicted = impersonationClients.remove(eldestUser);
-      if (evicted != null) {
-        LOG.info("Evicting cached impersonation client for user '{}' in catalog '{}'",
-            eldestUser, config.name());
-        evicted.closeQuietly();
-        if (metrics != null) {
-          metrics.recordImpersonationSessionEviction(config.name(), "user_capacity");
-        }
+      ImpersonationClient removed = impersonationClients.remove(eldestUser);
+      if (removed != null) {
+        evicted.add(removed);
       }
     }
+    return evicted;
   }
 
   private void publishImpersonationGauges() {
     if (metrics == null) {
       return;
     }
-    metrics.setImpersonationPoolUsers(config.name(), impersonationClients.size());
+    metrics.setImpersonationPoolUsers(config.name(), impersonationUserCount);
     metrics.setImpersonationPoolSessions(
         config.name(),
         impersonationActiveSessions.get(),
@@ -375,18 +408,14 @@ public final class CatalogBackend implements AutoCloseable {
     private volatile boolean evicted;
     volatile long lastUsedMs = System.currentTimeMillis();
 
-    private ImpersonationClient(String userName, List<String> groupNames) throws MetaException {
+    // Opens no session: the first borrow() creates one under a held permit, the same way the shared
+    // pool does. Keeping connect/Kerberos/set_ugi out of the constructor keeps it off the catalog monitor.
+    private ImpersonationClient(String userName, List<String> groupNames) {
       this.userName = userName;
       this.groupNames = List.copyOf(groupNames);
       this.maxSize = config.impersonationPoolMaxSize();
       this.sessionIdleTtlMs = config.impersonationSessionIdleTtlMs();
       this.permits = new Semaphore(maxSize, true);
-      BackendInvocationSession initial = openSession();
-      synchronized (lock) {
-        idle.addFirst(new PooledSession(initial, System.currentTimeMillis()));
-        totalSessions = 1;
-      }
-      impersonationIdleSessions.incrementAndGet();
     }
 
     Object invoke(Method method, Object[] args) throws Throwable {
@@ -459,12 +488,11 @@ public final class CatalogBackend implements AutoCloseable {
       }
     }
 
+    // An eviction (TTL, capacity, adaptive-timeout reconnect) can retire this client after a caller
+    // already resolved it but before it borrows. Such a caller is served from a fresh single-use
+    // session instead of being failed: the drained idle deque cannot hand back a closed session,
+    // and release() closes whatever an evicted client borrowed.
     private BackendInvocationSession borrow() throws MetaException {
-      if (evicted) {
-        throw new MetaException(
-            "Impersonation client for user '" + userName + "' in catalog '" + config.name()
-                + "' has been evicted");
-      }
       long timeoutMs = config.latencyBudgetMs() > 0L
           ? config.latencyBudgetMs()
           : DEFAULT_BORROW_TIMEOUT_MS;

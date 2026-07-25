@@ -278,6 +278,156 @@ public class ImpersonationClientPoolTest {
     }
   }
 
+  @Test
+  public void impersonationSessionsForDistinctUsersOpenConcurrently() throws Exception {
+    int parallelism = 2;
+    CyclicBarrier openBarrier = new CyclicBarrier(parallelism);
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        // Fails unless both users can be inside session establishment at the same time, i.e. unless
+        // the blocking connect/set_ugi runs outside the catalog monitor.
+        try {
+          openBarrier.await(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+          MetaException me = new MetaException(
+              "impersonation session open for '" + userName + "' was serialized: " + e);
+          me.initCause(e);
+          throw me;
+        }
+        return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
+      }
+    };
+
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    CatalogConfig catalogConfig = catalogConfig(parallelism);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig),
+        catalogConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        metrics);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics);
+
+    ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+    try {
+      String[] users = {"alice", "bob"};
+      CountDownLatch start = new CountDownLatch(1);
+      Future<?>[] futures = new Future<?>[parallelism];
+      for (int i = 0; i < parallelism; i++) {
+        ImpersonationContext ctx = new ImpersonationContext(users[i], List.of("g1"));
+        futures[i] = executor.submit(() -> {
+          start.await();
+          try {
+            backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], ctx);
+          } catch (Throwable t) {
+            throw new RuntimeException(t);
+          }
+          return null;
+        });
+      }
+      start.countDown();
+      for (Future<?> f : futures) {
+        f.get(10, TimeUnit.SECONDS);
+      }
+    } finally {
+      executor.shutdownNow();
+      backend.close();
+    }
+  }
+
+  @Test
+  public void concurrentCapacityEvictionDoesNotSurfaceEvictedClientsToCallers() throws Exception {
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile);
+      }
+    };
+
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    // One cached client for two users: every alternating call evicts the other user's client while
+    // concurrent callers already hold a reference to it.
+    CatalogConfig catalogConfig = catalogConfig(2, 1);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig),
+        catalogConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        metrics);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics);
+
+    int parallelism = 4;
+    ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+    try {
+      CountDownLatch start = new CountDownLatch(1);
+      Future<?>[] futures = new Future<?>[parallelism];
+      for (int i = 0; i < parallelism; i++) {
+        ImpersonationContext ctx = new ImpersonationContext(i % 2 == 0 ? "alice" : "bob", List.of("g1"));
+        futures[i] = executor.submit(() -> {
+          start.await();
+          try {
+            for (int call = 0; call < 50; call++) {
+              backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], ctx);
+            }
+          } catch (Throwable t) {
+            throw new RuntimeException(t);
+          }
+          return null;
+        });
+      }
+      start.countDown();
+      for (Future<?> f : futures) {
+        f.get(30, TimeUnit.SECONDS);
+      }
+    } finally {
+      executor.shutdownNow();
+      backend.close();
+    }
+  }
+
   private static FailureRun runFailingCall(Supplier<TException> failure) throws Exception {
     AtomicInteger sessionsOpened = new AtomicInteger();
     AtomicInteger calls = new AtomicInteger();
@@ -393,6 +543,28 @@ public class ImpersonationClientPoolTest {
         Map.of("hive.metastore.uris", "thrift://one"),
         0L,
         128,
+        0L,
+        1,
+        impersonationPoolMaxSize,
+        0L);
+  }
+
+  private static CatalogConfig catalogConfig(int impersonationPoolMaxSize, int maxImpersonationClients) {
+    return new CatalogConfig(
+        "catalog1",
+        "c1",
+        "file:///c1",
+        true,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://one"),
+        0L,
+        maxImpersonationClients,
         0L,
         1,
         impersonationPoolMaxSize,
