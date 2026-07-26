@@ -195,6 +195,197 @@ public class RoutingMetaStoreProxyBackendLocksTest {
   }
 
   @Test
+  public void insertValuesLockWithDummyPlaceholderRoutesToDefaultCatalogTable() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                LockResponse response = new LockResponse();
+                response.setLockid(13L);
+                response.setState(LockState.ACQUIRED);
+                return response;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              nonDefaultBackendCalls.incrementAndGet();
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {multiComponentLockRequest(
+            91L,
+            dummyPlaceholderLockComponent(),
+            insertLockComponent("sales", "events"))});
+
+    Assert.assertEquals(13L, lock.getLockid());
+    Assert.assertEquals(0, nonDefaultBackendCalls.get());
+    Assert.assertEquals(2, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(1).getDbname());
+  }
+
+  @Test
+  public void insertValuesLockWithDummyPlaceholderRoutesToNonDefaultCatalogTable() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger defaultBackendCalls = new AtomicInteger();
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              defaultBackendCalls.incrementAndGet();
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                LockResponse response = new LockResponse();
+                response.setLockid(17L);
+                response.setState(LockState.ACQUIRED);
+                return response;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {multiComponentLockRequest(
+            92L,
+            dummyPlaceholderLockComponent(),
+            insertLockComponent("catalog2__sales", "events"))});
+
+    Assert.assertEquals(17L, lock.getLockid());
+    Assert.assertEquals(0, defaultBackendCalls.get());
+    Assert.assertEquals(2, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(1).getDbname());
+  }
+
+  @Test
+  public void lockRequestMadeOnlyOfDummyPlaceholderComponentsGoesToDefaultBackend() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                LockResponse response = new LockResponse();
+                response.setLockid(19L);
+                response.setState(LockState.ACQUIRED);
+                return response;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              nonDefaultBackendCalls.incrementAndGet();
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {multiComponentLockRequest(93L, dummyPlaceholderLockComponent())});
+
+    Assert.assertEquals(19L, lock.getLockid());
+    Assert.assertEquals(0, nonDefaultBackendCalls.get());
+    Assert.assertEquals(1, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
+  }
+
+  @Test
   public void backendLockTransportFailuresAreSurfacedAsMetaExceptions() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
