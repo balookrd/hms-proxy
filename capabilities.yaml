@@ -392,18 +392,21 @@ capabilities:
     expected_result:
       en: >-
         Degraded: pinned to `routing.default-catalog`; eligible non-ACID
-        `SELECT` and `NO_TXN` DDL locks can still be synthesized on
+        `SELECT`, `NO_TXN` DDL and non-transactional write
+        (`INSERT`/`UPDATE`/`DELETE`) locks can still be synthesized on
         non-default catalogs, but otherwise treat this as a single-catalog
         control plane unless you validated otherwise.
       ru: >-
         Degraded: идут в `routing.default-catalog`; допустимые non-ACID
-        `SELECT` и `NO_TXN` DDL lock всё же могут синтетически обслуживаться
-        на non-default catalog, но в остальном это стоит считать
+        `SELECT`, `NO_TXN` DDL и non-transactional write
+        (`INSERT`/`UPDATE`/`DELETE`) lock всё же могут синтетически
+        обслуживаться на non-default catalog, но в остальном это стоит считать
         single-catalog control plane, пока не проведена отдельная валидация.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticReadLockHeartbeatForwardsTxnHeartbeatToDefaultBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticSharedWriteInsertLockLifecycleStaysInsideProxyForNonDefaultCatalog
   - id: kerberos_frontdoor_with_impersonation
     status: supported
     client:
@@ -863,12 +866,12 @@ method_matrix:
       status: degraded
       en: >-
         Pinned to `routing.default-catalog`; synthetic lock shim only helps
-        non-ACID `SELECT` and eligible `NO_TXN` DDL locks on non-default
-        catalogs
+        non-ACID `SELECT`, eligible `NO_TXN` DDL and non-transactional write
+        locks on non-default catalogs
       ru: >-
         Пинятся к `routing.default-catalog`; synthetic lock shim помогает
-        только для non-ACID `SELECT` и допустимых `NO_TXN` DDL lock на
-        non-default catalog
+        только для non-ACID `SELECT`, допустимых `NO_TXN` DDL и
+        non-transactional write lock на non-default catalog
     hdp_backend:
       status: degraded
       en: Same default-catalog control-plane constraint on Hortonworks backends.
@@ -889,10 +892,10 @@ method_matrix:
       ru: Пин в default-catalog, как только в payload остаются только ids.
     fallback_strategy:
       en: >-
-        Synthetic read-lock shim for eligible non-default-catalog lock cases,
+        Synthetic lock shim for eligible non-default-catalog lock cases,
         otherwise the normal default-backend txn/lock lifecycle
       ru: >-
-        Synthetic read-lock shim для допустимых non-default-catalog lock cases,
+        Synthetic lock shim для допустимых non-default-catalog lock cases,
         в остальных случаях обычный default-backend txn/lock lifecycle
     semantic_risk:
       en: >-

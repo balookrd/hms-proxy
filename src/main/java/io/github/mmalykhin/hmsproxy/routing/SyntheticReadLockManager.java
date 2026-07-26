@@ -287,8 +287,9 @@ final class SyntheticReadLockManager implements AutoCloseable {
     }
     boolean sawRealComponent = false;
     for (LockComponent component : request.getComponent()) {
-      // Hive's INSERT ... VALUES placeholder has no metastore object behind it, so its lock type
-      // says nothing about what the statement does to the real tables of the request.
+      // Hive locks _dummy_database._dummy_table alongside the target table of an INSERT ... VALUES.
+      // It exists in no metastore, so it neither routes nor needs a lock, and its lock type says
+      // nothing about what the statement does to the real tables of the request.
       if (component != null && HivePlaceholderNamespace.isPlaceholderDbName(component.getDbname())) {
         continue;
       }
@@ -321,7 +322,24 @@ final class SyntheticReadLockManager implements AutoCloseable {
       // components and rejects requests that mix namespaces.
       return !component.isSetIsTransactional() || !component.isIsTransactional();
     }
+    if (isWriteOperation(component.getOperationType())) {
+      // Writes into a non-default catalog are always non-transactional: the proxy refuses to create
+      // transactional tables there and refuses allocate_table_write_ids/get_valid_write_ids for
+      // non-default catalogs, so an ACID table cannot exist behind this namespace. A component that
+      // still claims isTransactional=true is left to the backend, which fails it deterministically
+      // rather than being handed a lock whose write ids are unreachable. The lock type is not
+      // restricted for the same reason as NO_TXN above - and Hive takes EXCLUSIVE, not SHARED_WRITE,
+      // for an INSERT into a non-ACID table under the default hive.txn.strict.locking.mode.
+      return !component.isSetIsTransactional() || !component.isIsTransactional();
+    }
     return false;
+  }
+
+  /** Package-private for the lock handler: write components need the catalog access-mode check. */
+  static boolean isWriteOperation(DataOperationType operationType) {
+    return operationType == DataOperationType.INSERT
+        || operationType == DataOperationType.UPDATE
+        || operationType == DataOperationType.DELETE;
   }
 
   /** Package-private so tests can drive one sweep without waiting for the scheduler. */

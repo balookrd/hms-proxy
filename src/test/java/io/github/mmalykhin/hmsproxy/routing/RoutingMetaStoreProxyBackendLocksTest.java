@@ -260,7 +260,7 @@ public class RoutingMetaStoreProxyBackendLocksTest {
   }
 
   @Test
-  public void insertValuesLockWithDummyPlaceholderRoutesToNonDefaultCatalogTable() throws Throwable {
+  public void insertValuesLockWithDummyPlaceholderKeepsComponentsIntactOnTheBackend() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
@@ -272,7 +272,7 @@ public class RoutingMetaStoreProxyBackendLocksTest {
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
-    AtomicInteger defaultBackendCalls = new AtomicInteger();
+    AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
     AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
     CatalogBackend defaultBackend = newBackend(
         config,
@@ -282,7 +282,13 @@ public class RoutingMetaStoreProxyBackendLocksTest {
             config,
             config.catalogs().get("catalog1"),
             newSession((proxy, method, args) -> {
-              defaultBackendCalls.incrementAndGet();
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                LockResponse response = new LockResponse();
+                response.setLockid(17L);
+                response.setState(LockState.ACQUIRED);
+                return response;
+              }
               throw new UnsupportedOperationException(method.getName());
             })));
     CatalogBackend nonDefaultBackend = newBackend(
@@ -293,13 +299,7 @@ public class RoutingMetaStoreProxyBackendLocksTest {
             config,
             config.catalogs().get("catalog2"),
             newSession((proxy, method, args) -> {
-              if ("lock".equals(method.getName())) {
-                capturedRequest.set((LockRequest) args[0]);
-                LockResponse response = new LockResponse();
-                response.setLockid(17L);
-                response.setState(LockState.ACQUIRED);
-                return response;
-              }
+              nonDefaultBackendCalls.incrementAndGet();
               throw new UnsupportedOperationException(method.getName());
             })));
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
@@ -315,11 +315,14 @@ public class RoutingMetaStoreProxyBackendLocksTest {
         new Object[] {multiComponentLockRequest(
             92L,
             dummyPlaceholderLockComponent(),
-            insertLockComponent("catalog2__sales", "events"))});
+            insertLockComponent("catalog1__sales", "events"))});
 
     Assert.assertEquals(17L, lock.getLockid());
-    Assert.assertEquals(0, defaultBackendCalls.get());
+    Assert.assertEquals(0, nonDefaultBackendCalls.get());
     Assert.assertEquals(2, capturedRequest.get().getComponentSize());
+    // The placeholder must survive untouched, and only the real component may be internalized:
+    // rewriting the placeholder would lock a fictitious table of a real database, and rewriting
+    // the real component to the placeholder name would lock the wrong table entirely.
     Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
     Assert.assertEquals("sales", capturedRequest.get().getComponent().get(1).getDbname());
   }
@@ -454,6 +457,105 @@ public class RoutingMetaStoreProxyBackendLocksTest {
     Assert.assertTrue(error.getMessage().contains("lock"));
     Assert.assertTrue(error.getMessage().contains("TApplicationException"));
     Assert.assertTrue(error.getMessage().contains("backend lock failed"));
+  }
+
+  /**
+   * A transactional write component belongs to an ACID table, whose write ids can only be allocated
+   * by the default catalog's TxnHandler. The shim must not answer for it: the request goes to the
+   * backend and fails there instead of pretending the lock was taken.
+   */
+  @Test
+  public void transactionalInsertLockForNonDefaultCatalogIsNotSubstitutedBySyntheticLock() throws Throwable {
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    RoutingMetaStoreProxy handler = lockCapturingHandler("catalog2", capturedRequest);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {transactionalWriteLockRequest(
+            "catalog2__sales", "events", 71L, LockType.SHARED_WRITE, DataOperationType.INSERT)});
+
+    Assert.assertEquals(13L, lock.getLockid());
+    Assert.assertTrue(lock.getLockid() < Long.MAX_VALUE / 2);
+    Assert.assertNotNull(capturedRequest.get());
+    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(0).getDbname());
+  }
+
+  @Test
+  public void defaultCatalogInsertLockIsNotSubstitutedBySyntheticLock() throws Throwable {
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    RoutingMetaStoreProxy handler = lockCapturingHandler("catalog1", capturedRequest);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {syntheticWriteLockRequest(
+            "finance", "ledger", 72L, LockType.SHARED_WRITE, DataOperationType.INSERT)});
+
+    Assert.assertEquals(13L, lock.getLockid());
+    Assert.assertTrue(lock.getLockid() < Long.MAX_VALUE / 2);
+    Assert.assertNotNull(capturedRequest.get());
+    Assert.assertEquals("finance", capturedRequest.get().getComponent().get(0).getDbname());
+  }
+
+  /** A lock that names only Hive's pseudo source has no namespace, so it follows the default pin. */
+  @Test
+  public void lockWithOnlyHiveDummySourceComponentGoesToDefaultBackend() throws Throwable {
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    RoutingMetaStoreProxy handler = lockCapturingHandler("catalog1", capturedRequest);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        method,
+        new Object[] {multiComponentLockRequest(73L, hiveDummySourceLockComponent())});
+
+    Assert.assertEquals(13L, lock.getLockid());
+    Assert.assertNotNull(capturedRequest.get());
+    Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
+  }
+
+  private static RoutingMetaStoreProxy lockCapturingHandler(
+      String capturingCatalog,
+      AtomicReference<LockRequest> capturedRequest
+  ) throws Exception {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    for (String catalogName : List.of("catalog1", "catalog2")) {
+      BackendInvocationSession session = catalogName.equals(capturingCatalog)
+          ? newSession((proxy, method, args) -> {
+            if ("lock".equals(method.getName())) {
+              capturedRequest.set((LockRequest) args[0]);
+              LockResponse response = new LockResponse();
+              response.setLockid(13L);
+              response.setState(LockState.ACQUIRED);
+              return response;
+            }
+            throw new UnsupportedOperationException(method.getName());
+          })
+          : newSession();
+      backends.put(
+          catalogName,
+          newBackend(
+              config,
+              config.catalogs().get(catalogName),
+              new ApacheBackendAdapter(),
+              newBackendRuntime(config, config.catalogs().get(catalogName), session)));
+    }
+    CatalogRouter router = new CatalogRouter(config, backends);
+    return new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
   }
 
 }

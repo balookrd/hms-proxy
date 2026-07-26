@@ -10,6 +10,27 @@ English version: [CHANGELOG.md](CHANGELOG.md).
 
 ### Добавлено
 
+- Synthetic lock shim теперь обслуживает и non-transactional write lock
+  (`INSERT`, `UPDATE`, `DELETE`) для non-default каталогов, поэтому `INSERT` в
+  non-ACID таблицу non-default каталога больше не падает с
+  `Error in acquiring locks: No record of transaction txnid:NN could be found`.
+  Hive открывает транзакцию в TxnHandler default-каталога, а lock маршрутизируется
+  по namespace в другой metastore, где этой транзакции нет. Тип лока не
+  ограничивается: при дефолтном `hive.txn.strict.locking.mode=true` Hive берёт на
+  `INSERT` в non-ACID таблицу `EXCLUSIVE`. Компоненты с `isTransactional=true`
+  по-прежнему уходят в backend. Как и для существующих `SELECT` и `NO_TXN` DDL
+  случаев, эти локи выдаются без какой-либо проверки конфликтов: non-default
+  каталог не даёт изоляции писателей. Access mode каталога при этом соблюдается —
+  write lock для `READ_ONLY` каталога или для базы вне
+  `catalog.<name>.write-db-whitelist` отклоняется.
+- Lock request больше не маршрутизируются и не отклоняются по псевдоисточнику Hive
+  `_dummy_database._dummy_table`. `INSERT ... VALUES` берёт lock на нём вместе с
+  реальной целевой таблицей, поэтому такой запрос называл две базы и отклонялся как
+  спанящий несколько namespace. Этой псевдотаблицы нет ни в одном metastore и
+  блокировать на ней нечего, поэтому она пропускается при выборе namespace и при
+  проверке пригодности для shim; запрос только с псевдоисточником по-прежнему идёт
+  по пину в default catalog.
+
 - Ограниченный жизненный цикл front-door клиентских сокетов. Принятые соединения
   теперь получают read timeout (`server.client-socket-timeout-ms`, по умолчанию
   `600000`, `0` отключает) и настраиваемый TCP keepalive (`server.tcp-keepalive`,

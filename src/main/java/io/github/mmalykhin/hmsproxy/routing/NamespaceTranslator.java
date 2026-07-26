@@ -12,7 +12,9 @@ import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
 
 public final class NamespaceTranslator {
+
   private NamespaceTranslator() {}
+
 
   public static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeResult(value, namespace, false);

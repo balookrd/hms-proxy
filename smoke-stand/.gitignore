@@ -1,0 +1,9 @@
+# Build inputs staged by prepare.sh — large, and reproducible from the repo/Maven.
+hms/lib/
+hms/*.jar
+hs2/lib/
+proxy/hive-metastore/
+proxy/hms-proxy-fat.jar
+
+# Maven output of the classpath-resolving poms.
+*/target/

@@ -1000,4 +1000,251 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         "hms_proxy_synthetic_read_locks_active{store_mode=\"in_memory\"} 1.0"));
   }
 
+  @Test
+  public void syntheticSharedWriteInsertLockLifecycleStaysInsideProxyForNonDefaultCatalog() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticWriteLockRequest(
+            "catalog2__sales", "events", 61L, LockType.SHARED_WRITE, DataOperationType.INSERT)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+
+    Method checkLockMethod = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+    CheckLockRequest checkRequest = new CheckLockRequest(lock.getLockid());
+    checkRequest.setTxnid(61L);
+    LockResponse checked = (LockResponse) handler.invoke(null, checkLockMethod, new Object[] {checkRequest});
+    Assert.assertEquals(LockState.ACQUIRED, checked.getState());
+
+    Method unlockMethod = ThriftHiveMetastore.Iface.class.getMethod("unlock", UnlockRequest.class);
+    handler.invoke(null, unlockMethod, new Object[] {new UnlockRequest(lock.getLockid())});
+
+    Assert.assertThrows(
+        NoSuchLockException.class,
+        () -> handler.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /**
+   * Hive takes an EXCLUSIVE lock for an INSERT into a non-ACID table under the default
+   * hive.txn.strict.locking.mode=true, and always for INSERT OVERWRITE.
+   */
+  @Test
+  public void syntheticExclusiveInsertLockForNonDefaultCatalogUsesShim() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticWriteLockRequest(
+            "catalog2__sales", "events", 62L, LockType.EXCLUSIVE, DataOperationType.INSERT)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void syntheticNonTransactionalUpdateLockForNonDefaultCatalogUsesShim() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticWriteLockRequest(
+            "catalog2__sales", "events", 63L, LockType.SHARED_WRITE, DataOperationType.UPDATE)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void syntheticNonTransactionalDeleteLockForNonDefaultCatalogUsesShim() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticWriteLockRequest(
+            "catalog2__sales", "events", 64L, LockType.SHARED_WRITE, DataOperationType.DELETE)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void syntheticWriteLocksAreReleasedWhenTxnCommits() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticWriteLockRequest(
+            "catalog2__sales", "events", 65L, LockType.SHARED_WRITE, DataOperationType.INSERT)});
+
+    Method commitMethod = ThriftHiveMetastore.Iface.class.getMethod("commit_txn", CommitTxnRequest.class);
+    handler.invoke(null, commitMethod, new Object[] {new CommitTxnRequest(65L)});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Method checkLockMethod = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+    Assert.assertThrows(
+        NoSuchLockException.class,
+        () -> handler.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
+  }
+
+  @Test
+  public void syntheticWriteLockIsRejectedForReadOnlyNonDefaultCatalog() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_ONLY, List.of(), backendCalls);
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {syntheticWriteLockRequest(
+                "catalog2__sales", "events", 66L, LockType.SHARED_WRITE, DataOperationType.INSERT)}));
+
+    Assert.assertTrue(error.getMessage().contains("READ_ONLY"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void syntheticWriteLockIsRejectedForDatabaseOutsideWriteWhitelist() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler =
+        writeLockShimHandler(CatalogAccessMode.READ_WRITE_DB_WHITELIST, List.of("finance"), backendCalls);
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {syntheticWriteLockRequest(
+                "catalog2__sales", "events", 67L, LockType.SHARED_WRITE, DataOperationType.INSERT)}));
+
+    Assert.assertTrue(error.getMessage().contains("sales"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /** The access-mode check is scoped to write components: reads of a READ_ONLY catalog still work. */
+  @Test
+  public void syntheticReadLockStillUsesShimForReadOnlyNonDefaultCatalog() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_ONLY, List.of(), backendCalls);
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 68L)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /**
+   * {@code INSERT ... VALUES} locks Hive's pseudo source together with the target table, so the
+   * request names two databases that live in different catalogs. The pseudo source exists in no
+   * metastore, so it must not decide the namespace or the shim eligibility of the request.
+   */
+  @Test
+  public void insertValuesLockWithHiveDummySourceComponentUsesShim() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {multiComponentLockRequest(
+            69L,
+            hiveDummySourceLockComponent(),
+            writeLockComponent(LockType.EXCLUSIVE, DataOperationType.INSERT, "catalog2__sales", "events"))});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /**
+   * Two catalogs where the non-default one carries the given access mode; the backends only count
+   * calls, so any lock that escapes the shim shows up as a backend call.
+   */
+  private static RoutingMetaStoreProxy writeLockShimHandler(
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      AtomicInteger backendCalls
+  ) throws Exception {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2",
+            new CatalogConfig(
+                "catalog2",
+                "c2",
+                "file:///c2",
+                false,
+                accessMode,
+                writeDbWhitelist,
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              backendCalls.incrementAndGet();
+              if ("commit_txn".equals(method.getName())) {
+                return null;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              backendCalls.incrementAndGet();
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    return new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+  }
+
 }

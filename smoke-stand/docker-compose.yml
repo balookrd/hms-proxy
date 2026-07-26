@@ -1,0 +1,215 @@
+# Smoke stand for hms-proxy: two standalone metastores behind one proxy.
+#
+#   docker compose up -d --build          # plain SASL-less stand
+#   docker compose --profile kerberos up -d --build
+#
+# Ports on the host: 19083 apache HMS, 19084 hdp HMS, 19085 proxy thrift, 19090 proxy management.
+
+services:
+  # HDFS: gives the stand a real distributed filesystem, so external-table purge and the
+  # *_EXTERNAL_ROOT scenarios exercise more than the local disk.
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8
+    container_name: stand-namenode
+    hostname: namenode
+    env_file: ./hdfs/hadoop.env
+    environment:
+      CLUSTER_NAME: hms-smoke
+    ports:
+      - "19870:9870"
+      - "18020:8020"
+    volumes:
+      - namenode-data:/hadoop/dfs/name
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9870 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.1.3-java8
+    container_name: stand-datanode
+    hostname: datanode
+    env_file: ./hdfs/hadoop.env
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    depends_on:
+      namenode:
+        condition: service_healthy
+    volumes:
+      - datanode-data:/hadoop/dfs/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9864 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  hms-apache:
+    build:
+      context: ./hms
+      args:
+        METASTORE_JAR: hive-standalone-metastore-3.1.3.jar
+    image: hms-stand/metastore:apache-3.1.3
+    container_name: stand-hms-apache
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      METASTORE_PORT: 9083
+      WAREHOUSE_DIR: /opt/hms/warehouse
+      DERBY_DIR: /opt/hms/db/metastore_db
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/apache"
+      SERVICE_PRINCIPAL: "hive/hms-apache@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hms-apache.keytab
+    ports:
+      - "19083:9083"
+    volumes:
+      - apache-db:/opt/hms/db
+      - apache-warehouse:/opt/hms/warehouse
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  hms-hdp:
+    build:
+      context: ./hms
+      args:
+        METASTORE_JAR: hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+    image: hms-stand/metastore:hdp-3.1.0
+    container_name: stand-hms-hdp
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      METASTORE_PORT: 9083
+      WAREHOUSE_DIR: /opt/hms/warehouse
+      DERBY_DIR: /opt/hms/db/metastore_db
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hdp"
+      SERVICE_PRINCIPAL: "hive/hms-hdp@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hms-hdp.keytab
+    ports:
+      - "19084:9083"
+    volumes:
+      - hdp-db:/opt/hms/db
+      - hdp-warehouse:/opt/hms/warehouse
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  proxy:
+    build:
+      context: ./proxy
+    image: hms-stand/proxy:latest
+    container_name: stand-proxy
+    depends_on:
+      hms-apache:
+        condition: service_healthy
+      hms-hdp:
+        condition: service_healthy
+    environment:
+      PROXY_CONFIG: "${PROXY_CONFIG:-/opt/hms-proxy/hms-proxy.properties}"
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      KEYTAB: /keytabs/proxy.keytab
+    ports:
+      - "19085:9083"
+      - "19090:9090"
+    volumes:
+      - ./proxy/hms-proxy.properties:/opt/hms-proxy/hms-proxy.properties:ro
+      - ./proxy/hms-proxy-kerberos.properties:/opt/hms-proxy/hms-proxy-kerberos.properties:ro
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+
+  # SQL layer: HiveServer2 talks to the proxy as if it were a metastore, so Beeline scenarios
+  # exercise the real client path (including create_table_with_environment_context).
+  hs2:
+    build:
+      context: ./hs2
+    image: hms-stand/hiveserver2:3.1.3
+    container_name: stand-hs2
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      METASTORE_URI: "thrift://proxy:9083"
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hdp"
+      WAREHOUSE_DIR: /opt/hs2/warehouse
+      SCRATCH_DIR: /opt/hs2/scratch
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      SERVICE_PRINCIPAL: "hive/hs2@SMOKE.LOCAL"
+      METASTORE_PRINCIPAL: "hive/proxy@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hs2.keytab
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    volumes:
+      - hs2-warehouse:/opt/hs2/warehouse
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 90s
+
+  # Only started with --profile kerberos. Publishes keytabs on a shared volume that the
+  # metastores and the proxy wait for before advertising SASL.
+  kdc:
+    build:
+      context: ./kdc
+    image: hms-stand/kdc:latest
+    container_name: stand-kdc
+    profiles: ["kerberos"]
+    environment:
+      REALM: SMOKE.LOCAL
+    ports:
+      - "18848:88/udp"
+      - "18749:749"
+    volumes:
+      - keytabs:/keytabs
+    healthcheck:
+      test: ["CMD", "test", "-f", "/keytabs/.ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+networks:
+  default:
+    # Hive validates metastore URIs: the default compose network name contains an underscore,
+    # which is illegal in a hostname and makes HiveMetaStoreClient reject the URI.
+    name: hms-smoke-net
+
+volumes:
+  namenode-data:
+  datanode-data:
+  hs2-warehouse:
+  apache-db:
+  apache-warehouse:
+  hdp-db:
+  hdp-warehouse:
+  keytabs:

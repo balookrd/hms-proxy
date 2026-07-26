@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -9,6 +10,7 @@ import org.apache.hadoop.hive.metastore.api.AbortTxnsRequest;
 import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -23,6 +25,7 @@ import org.slf4j.LoggerFactory;
 final class LockHandler implements InvocationHandler {
   private static final Logger LOG = LoggerFactory.getLogger(LockHandler.class);
 
+  private final ProxyConfig config;
   private final SyntheticReadLockManager syntheticReadLockManager;
   private final AdmissionGate admissionGate;
   private final CatalogRouter router;
@@ -31,6 +34,7 @@ final class LockHandler implements InvocationHandler {
   private final InvocationHandler next;
 
   LockHandler(
+      ProxyConfig config,
       SyntheticReadLockManager syntheticReadLockManager,
       AdmissionGate admissionGate,
       CatalogRouter router,
@@ -38,6 +42,7 @@ final class LockHandler implements InvocationHandler {
       ProxyObservability observability,
       InvocationHandler next
   ) {
+    this.config = config;
     this.syntheticReadLockManager = syntheticReadLockManager;
     this.admissionGate = admissionGate;
     this.router = router;
@@ -68,6 +73,7 @@ final class LockHandler implements InvocationHandler {
       // lockId and could not release the lock, so it would linger until the txn timeout expires.
       if (syntheticReadLockManager.isSyntheticReadLockCandidate(request, namespace)) {
         RequestContext.currentObservation().recordNamespace(namespace);
+        validateSyntheticWriteAccess(request, namespace, method.getName());
         admissionGate.enforceRateLimit(method.getName(), namespace.catalogName());
         SyntheticReadLockManager.SyntheticLockState syntheticState =
             syntheticReadLockManager.tryAcquire(request, namespace);
@@ -75,12 +81,17 @@ final class LockHandler implements InvocationHandler {
           RequestContext.currentObservation().recordBackend(SyntheticReadLockManager.SYNTHETIC_BACKEND_NAME);
           LockResponse response = syntheticReadLockManager.acquiredResponse(syntheticState.lockId());
           if (LOG.isInfoEnabled()) {
-            LOG.info("requestId={} synthetic read lock acquired catalog={} db={} txnId={} lockId={}",
+            LockComponent routing = routingComponent(request);
+            LOG.info("requestId={} synthetic lock acquired catalog={} db={} txnId={} lockId={} "
+                    + "components={} operationType={} lockType={}",
                 RequestContext.currentRequestId(),
                 namespace.catalogName(),
                 syntheticState.externalDbName(),
                 syntheticState.txnId(),
-                syntheticState.lockId());
+                syntheticState.lockId(),
+                request.getComponentSize(),
+                routing == null ? null : routing.getOperationType(),
+                routing == null ? null : routing.getType());
           }
           return response;
         }
@@ -162,6 +173,39 @@ final class LockHandler implements InvocationHandler {
         for (Long txnId : txnIds) {
           syntheticReadLockManager.releaseTxn(txnId == null ? 0L : txnId);
         }
+      }
+    }
+  }
+
+  /** The component the request was routed by, so the log line does not describe the pseudo source. */
+  private static LockComponent routingComponent(LockRequest request) {
+    LockComponent first = null;
+    for (LockComponent component : request.getComponent()) {
+      if (first == null) {
+        first = component;
+      }
+      if (!HivePlaceholderNamespace.isPlaceholderDbName(component.getDbname())) {
+        return component;
+      }
+    }
+    return first;
+  }
+
+  /**
+   * The synthetic path never reaches the backend, so the catalog access mode has to be enforced
+   * here. Only write components are checked: {@code lock} counts as a mutating method by name, so
+   * validating every synthetic lock would reject plain {@code SELECT} reads of a READ_ONLY catalog.
+   */
+  private void validateSyntheticWriteAccess(
+      LockRequest request,
+      CatalogRouter.ResolvedNamespace namespace,
+      String methodName
+  ) throws MetaException {
+    for (LockComponent component : request.getComponent()) {
+      if (SyntheticReadLockManager.isWriteOperation(component.getOperationType())) {
+        CatalogAccessModeGuard.validate(
+            config.catalogs().get(namespace.catalogName()), methodName, namespace.backendDbName());
+        return;
       }
     }
   }
