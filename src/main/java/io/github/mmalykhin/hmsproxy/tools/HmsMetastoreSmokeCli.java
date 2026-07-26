@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.tools;
 import io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URLClassLoader;
@@ -305,7 +306,10 @@ public final class HmsMetastoreSmokeCli {
 
     Class<?> hiveConfClass = Class.forName("org.apache.hadoop.hive.conf.HiveConf", true, classLoader);
     Object conf = withContextClassLoader(classLoader, () -> hiveConfClass.getConstructor().newInstance());
-    Method setClassLoader = Configuration.class.getMethod("setClassLoader", ClassLoader.class);
+    // conf comes from the isolated loader, which is child-first for org.apache.hadoop: its
+    // Configuration is a different class than the one on this classpath, so the setter has to be
+    // looked up on the instance's own class.
+    Method setClassLoader = conf.getClass().getMethod("setClassLoader", ClassLoader.class);
     setClassLoader.invoke(conf, classLoader);
     applyBaseConf(conf, uri, cli);
 
@@ -399,6 +403,19 @@ public final class HmsMetastoreSmokeCli {
     }
   }
 
+  private static Constructor<?> clientConstructor(
+      Class<?> clientClass,
+      Class<?> hiveConfClass,
+      ClassLoader classLoader
+  ) throws Exception {
+    try {
+      return clientClass.getConstructor(hiveConfClass);
+    } catch (NoSuchMethodException hiveConfMissing) {
+      Class<?> childConfClass = Class.forName("org.apache.hadoop.conf.Configuration", true, classLoader);
+      return clientClass.getConstructor(childConfClass);
+    }
+  }
+
   private static Object openIsolatedClient(
       CliArgs cli,
       ClassLoader classLoader,
@@ -406,15 +423,21 @@ public final class HmsMetastoreSmokeCli {
       Object conf
   ) throws Exception {
     Class<?> clientClass = Class.forName("org.apache.hadoop.hive.metastore.HiveMetaStoreClient", true, classLoader);
+    // A standalone metastore declares HiveMetaStoreClient(Configuration); only a full Hive
+    // distribution offers the HiveConf overload. Take whichever the loaded jar actually has.
+    Constructor<?> clientCtor = clientConstructor(clientClass, hiveConfClass, classLoader);
     if (!AUTH_KERBEROS.equals(cli.getOrDefault("auth", AUTH_SIMPLE))) {
-      return withContextClassLoader(classLoader, () -> clientClass.getConstructor(hiveConfClass).newInstance(conf));
+      return withContextClassLoader(classLoader, () -> clientCtor.newInstance(conf));
     }
 
     Method set = hiveConfClass.getMethod("set", String.class, String.class);
     set.invoke(conf, "hadoop.security.authentication", "kerberos");
 
     Class<?> childUgiClass = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader);
-    Method setConfiguration = childUgiClass.getMethod("setConfiguration", Configuration.class);
+    // Same isolation caveat as above: the child UGI expects the child's Configuration type, so the
+    // parameter type has to be resolved through the isolated loader too.
+    Class<?> childConfClass = Class.forName("org.apache.hadoop.conf.Configuration", true, classLoader);
+    Method setConfiguration = childUgiClass.getMethod("setConfiguration", childConfClass);
     setConfiguration.invoke(null, conf);
     Method loginUserFromKeytabAndReturnUGI =
         childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
@@ -424,7 +447,7 @@ public final class HmsMetastoreSmokeCli {
         cli.required("keytab"));
     Method doAs = childUgiClass.getMethod("doAs", PrivilegedExceptionAction.class);
     return doAs.invoke(childUgi, (PrivilegedExceptionAction<Object>) () ->
-        withContextClassLoader(classLoader, () -> clientClass.getConstructor(hiveConfClass).newInstance(conf)));
+        withContextClassLoader(classLoader, () -> clientCtor.newInstance(conf)));
   }
 
   private static HiveConf baseConf(CliArgs cli, String uri) {

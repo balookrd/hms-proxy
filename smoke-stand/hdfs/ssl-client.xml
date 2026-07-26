@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>ssl.client.truststore.location</name><value>/ssl/truststore.jks</value></property>
+  <property><name>ssl.client.truststore.password</name><value>smokepass</value></property>
+  <property><name>ssl.client.truststore.type</name><value>jks</value></property>
+</configuration>

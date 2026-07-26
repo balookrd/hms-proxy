@@ -21,9 +21,20 @@ principals=(
   "hive/hms-hdp@${REALM}:hms-hdp.keytab"
   "hive/proxy@${REALM}:proxy.keytab"
   "hive/hs2@${REALM}:hs2.keytab"
+  "hdfs/namenode@${REALM}:namenode.keytab"
+  "HTTP/namenode@${REALM}:namenode.keytab"
+  "hdfs/datanode@${REALM}:datanode.keytab"
+  "HTTP/datanode@${REALM}:datanode.keytab"
   "HTTP/hs2@${REALM}:spnego.keytab"
   "smoke-user@${REALM}:smoke-user.keytab"
 )
+
+# A keytab may hold several principals - HDFS wants its service principal and the SPNEGO
+# HTTP/ principal in one file - so truncate each keytab once and then append every principal
+# that belongs to it.
+for keytab in $(printf '%s\n' "${principals[@]}" | cut -d: -f2 | sort -u); do
+  rm -f "${KEYTABS}/${keytab}"
+done
 
 for entry in "${principals[@]}"; do
   principal="${entry%%:*}"
@@ -32,10 +43,9 @@ for entry in "${principals[@]}"; do
   # unconditionally and let an "already exists" complaint pass.
   echo "[kdc] adding ${principal}"
   kadmin.local -q "addprinc -randkey ${principal}" 2>&1 | grep -v "already exists" || true
-  rm -f "${KEYTABS}/${keytab}"
   kadmin.local -q "ktadd -k ${KEYTABS}/${keytab} ${principal}" >/dev/null
   chmod 0644 "${KEYTABS}/${keytab}"
-  echo "[kdc] wrote ${KEYTABS}/${keytab} for ${principal}"
+  echo "[kdc] ${KEYTABS}/${keytab} <- ${principal}"
 done
 
 cp /etc/krb5.conf "${KEYTABS}/krb5.conf"

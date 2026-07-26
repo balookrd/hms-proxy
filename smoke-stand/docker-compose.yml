@@ -9,10 +9,16 @@ services:
   # HDFS: gives the stand a real distributed filesystem, so external-table purge and the
   # *_EXTERNAL_ROOT scenarios exercise more than the local disk.
   namenode:
-    image: bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8
+    build:
+      context: ./hdfs
+      args:
+        BASE_IMAGE: bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8
+    image: hms-stand/hadoop-namenode:3.1.3
     container_name: stand-namenode
     hostname: namenode
-    env_file: ./hdfs/hadoop.env
+    env_file:
+      - ./hdfs/hadoop.env
+      - ${HDFS_KERBEROS_ENV:-./hdfs/hadoop-plain.env}
     environment:
       CLUSTER_NAME: hms-smoke
     ports:
@@ -20,27 +26,45 @@ services:
       - "18020:8020"
     volumes:
       - namenode-data:/hadoop/dfs/name
+      - keytabs:/keytabs:ro
+      - ./hdfs/keystore.jks:/ssl/keystore.jks:ro
+      - ./hdfs/truststore.jks:/ssl/truststore.jks:ro
+      - ./hdfs/ssl-server.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-server.xml:ro
+      - ./hdfs/ssl-client.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-client.xml:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9870 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sfk http://localhost:9870 >/dev/null || curl -sfk https://localhost:9871 >/dev/null || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 30
       start_period: 40s
 
   datanode:
-    image: bde2020/hadoop-datanode:2.0.0-hadoop3.1.3-java8
+    build:
+      context: ./hdfs
+      args:
+        BASE_IMAGE: bde2020/hadoop-datanode:2.0.0-hadoop3.1.3-java8
+    image: hms-stand/hadoop-datanode:3.1.3
     container_name: stand-datanode
     hostname: datanode
-    env_file: ./hdfs/hadoop.env
+    env_file:
+      - ./hdfs/hadoop.env
+      - ${HDFS_KERBEROS_ENV:-./hdfs/hadoop-plain.env}
     environment:
-      SERVICE_PRECONDITION: "namenode:9870"
+      SERVICE_PRECONDITION: "namenode:8020"
     depends_on:
       namenode:
         condition: service_healthy
     volumes:
       - datanode-data:/hadoop/dfs/data
+      - keytabs:/keytabs:ro
+      - ./hdfs/keystore.jks:/ssl/keystore.jks:ro
+      - ./hdfs/truststore.jks:/ssl/truststore.jks:ro
+      - ./hdfs/ssl-server.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-server.xml:ro
+      - ./hdfs/ssl-client.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-client.xml:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9864 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "jps | grep -q DataNode || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30

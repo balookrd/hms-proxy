@@ -63,7 +63,10 @@ if [[ "${KERBEROS_ENABLED:-false}" == "true" ]]; then
 
   # Without these UGI stays in simple mode and the server tries to use the OS user ("root")
   # as a service principal.
-  CORE_SITE_PROPS+="  <property><name>ipc.client.fallback-to-simple-auth-allowed</name><value>true</value></property>
+  CORE_SITE_PROPS+="<property><name>dfs.namenode.kerberos.principal</name><value>hdfs/namenode@SMOKE.LOCAL</value></property>
+  <property><name>dfs.datanode.kerberos.principal</name><value>hdfs/datanode@SMOKE.LOCAL</value></property>
+  <property><name>dfs.data.transfer.protection</name><value>authentication</value></property>
+  <property><name>dfs.http.policy</name><value>HTTPS_ONLY</value></property>
   <property><name>hadoop.security.authentication</name><value>kerberos</value></property>
   <property><name>hadoop.security.authorization</name><value>true</value></property>
   <property><name>hadoop.proxyuser.hive.hosts</name><value>*</value></property>

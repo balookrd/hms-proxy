@@ -24,10 +24,10 @@ if [[ "${KERBEROS_ENABLED:-false}" == "true" ]]; then
 <configuration>
   <property><name>hadoop.security.authentication</name><value>kerberos</value></property>
   <property><name>hadoop.security.authorization</name><value>true</value></property>
-  <!-- HDFS in this stand runs unsecured. A Kerberos client refuses to talk to it unless the
-       fallback is explicit; securing HDFS itself (namenode/datanode keytabs, SASL data transfer)
-       is out of scope here. -->
-  <property><name>ipc.client.fallback-to-simple-auth-allowed</name><value>true</value></property>
+  <property><name>dfs.namenode.kerberos.principal</name><value>hdfs/namenode@SMOKE.LOCAL</value></property>
+  <property><name>dfs.datanode.kerberos.principal</name><value>hdfs/datanode@SMOKE.LOCAL</value></property>
+  <property><name>dfs.data.transfer.protection</name><value>authentication</value></property>
+  <property><name>dfs.http.policy</name><value>HTTPS_ONLY</value></property>
 </configuration>
 XML
   KERBEROS_PROPS=$(cat <<XML

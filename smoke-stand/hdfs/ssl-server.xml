@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>ssl.server.keystore.location</name><value>/ssl/keystore.jks</value></property>
+  <property><name>ssl.server.keystore.password</name><value>smokepass</value></property>
+  <property><name>ssl.server.keystore.keypassword</name><value>smokepass</value></property>
+  <property><name>ssl.server.keystore.type</name><value>jks</value></property>
+  <property><name>ssl.server.truststore.location</name><value>/ssl/truststore.jks</value></property>
+  <property><name>ssl.server.truststore.password</name><value>smokepass</value></property>
+  <property><name>ssl.server.truststore.type</name><value>jks</value></property>
+</configuration>
