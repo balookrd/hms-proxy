@@ -394,7 +394,7 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
   }
 
   @Test
-  public void lockRequestSpanningTwoCatalogsIsRejectedInsteadOfLosingComponents() throws Throwable {
+  public void lockRequestSpanningTwoCatalogsRoutesToTheDefaultCatalog() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
@@ -406,7 +406,7 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
-    AtomicInteger defaultBackendCalls = new AtomicInteger();
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
     AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
     CatalogBackend defaultBackend = newBackend(
         config,
@@ -416,7 +416,10 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
             config,
             config.catalogs().get("catalog1"),
             newSession((proxy, method, args) -> {
-              defaultBackendCalls.incrementAndGet();
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                return new LockResponse(64L, LockState.ACQUIRED);
+              }
               throw new UnsupportedOperationException(method.getName());
             })));
     CatalogBackend nonDefaultBackend = newBackend(
@@ -444,19 +447,24 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         noTxnLockComponent(LockType.SHARED_READ, "catalog2__sales", "events"),
         noTxnLockComponent(LockType.EXCLUSIVE, "finance", "ledger"));
 
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, lockMethod, new Object[] {request}));
+    LockResponse lock = (LockResponse) handler.invoke(null, lockMethod, new Object[] {request});
 
-    Assert.assertTrue(error.getMessage().contains("catalog2__sales"));
-    Assert.assertTrue(error.getMessage().contains("finance"));
-    Assert.assertEquals(0, defaultBackendCalls.get());
+    // The default catalog owns the TxnHandler, so it is the one that keeps its real lock; the
+    // component of the other catalog is dropped rather than rewritten onto this backend.
+    Assert.assertEquals(64L, lock.getLockid());
+    Assert.assertEquals(1, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("finance", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("ledger", capturedRequest.get().getComponent().get(0).getTablename());
     Assert.assertEquals(0, nonDefaultBackendCalls.get());
-    Assert.assertTrue(observability.metrics().render().contains("hms_proxy_routing_ambiguous_total 1"));
+    // The client's request object must survive untouched: it is a thrift processor argument.
+    Assert.assertEquals(2, request.getComponentSize());
+    Assert.assertEquals("catalog2__sales", request.getComponent().get(0).getDbname());
+    Assert.assertTrue(observability.metrics().render()
+        .contains("hms_proxy_lock_request_split_total{catalog=\"catalog1\"} 1"));
   }
 
   @Test
-  public void lockRequestSpanningTwoDatabasesOfTheDefaultCatalogIsRejected() throws Throwable {
+  public void lockRequestSpanningTwoDatabasesOfOneCatalogKeepsEveryComponent() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
@@ -468,7 +476,7 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
-    AtomicInteger defaultBackendCalls = new AtomicInteger();
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
     CatalogBackend defaultBackend = newBackend(
         config,
         config.catalogs().get("catalog1"),
@@ -477,7 +485,10 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
             config,
             config.catalogs().get("catalog1"),
             newSession((proxy, method, args) -> {
-              defaultBackendCalls.incrementAndGet();
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                return new LockResponse(65L, LockState.ACQUIRED);
+              }
               throw new UnsupportedOperationException(method.getName());
             })));
     CatalogBackend nonDefaultBackend = newBackend(
@@ -497,13 +508,14 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         noTxnLockComponent(LockType.SHARED_READ, "finance", "ledger"),
         noTxnLockComponent(LockType.EXCLUSIVE, "sales", "events"));
 
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, lockMethod, new Object[] {request}));
+    LockResponse lock = (LockResponse) handler.invoke(null, lockMethod, new Object[] {request});
 
-    Assert.assertTrue(error.getMessage().contains("finance"));
-    Assert.assertTrue(error.getMessage().contains("sales"));
-    Assert.assertEquals(0, defaultBackendCalls.get());
+    // Both databases live in the same catalog, so both components reach the one backend that can
+    // lock them - each rewritten to its own database rather than all of them to a single one.
+    Assert.assertEquals(65L, lock.getLockid());
+    Assert.assertEquals(2, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("finance", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(1).getDbname());
   }
 
   @Test
@@ -563,7 +575,7 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
   }
 
   @Test
-  public void lockRequestSpanningTwoCatalogsIsStillRejectedWhenDummyPlaceholderIsPresent() throws Throwable {
+  public void lockRequestSpanningTwoCatalogsKeepsTheDummyPlaceholderWithTheRoutedComponents() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
@@ -575,7 +587,7 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
-    AtomicInteger defaultBackendCalls = new AtomicInteger();
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
     AtomicInteger nonDefaultBackendCalls = new AtomicInteger();
     CatalogBackend defaultBackend = newBackend(
         config,
@@ -585,7 +597,10 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
             config,
             config.catalogs().get("catalog1"),
             newSession((proxy, method, args) -> {
-              defaultBackendCalls.incrementAndGet();
+              if ("lock".equals(method.getName())) {
+                capturedRequest.set((LockRequest) args[0]);
+                return new LockResponse(66L, LockState.ACQUIRED);
+              }
               throw new UnsupportedOperationException(method.getName());
             })));
     CatalogBackend nonDefaultBackend = newBackend(
@@ -614,16 +629,17 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         noTxnLockComponent(LockType.SHARED_READ, "catalog2__sales", "events"),
         noTxnLockComponent(LockType.EXCLUSIVE, "finance", "ledger"));
 
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, lockMethod, new Object[] {request}));
+    LockResponse lock = (LockResponse) handler.invoke(null, lockMethod, new Object[] {request});
 
-    Assert.assertTrue(error.getMessage().contains("catalog2__sales"));
-    Assert.assertTrue(error.getMessage().contains("finance"));
-    Assert.assertFalse(error.getMessage().contains("_dummy_database"));
-    Assert.assertEquals(0, defaultBackendCalls.get());
+    // The placeholder belongs to no catalog, so it never picks one and never counts as a component
+    // that had to be dropped: it travels with whichever backend the real components selected.
+    Assert.assertEquals(66L, lock.getLockid());
+    Assert.assertEquals(2, capturedRequest.get().getComponentSize());
+    Assert.assertEquals("_dummy_database", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertEquals("finance", capturedRequest.get().getComponent().get(1).getDbname());
     Assert.assertEquals(0, nonDefaultBackendCalls.get());
-    Assert.assertTrue(observability.metrics().render().contains("hms_proxy_routing_ambiguous_total 1"));
+    Assert.assertTrue(observability.metrics().render()
+        .contains("hms_proxy_lock_request_split_total{catalog=\"catalog1\"} 1"));
   }
 
   @Test
@@ -1155,6 +1171,85 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         null,
         lockMethod,
         new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 68L)});
+
+    Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+    Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /**
+   * A component of another catalog is dropped from the request that reaches the backend, but it is
+   * still the proxy's job to refuse a write into a READ_ONLY catalog: nothing downstream will ever
+   * see that component, so dropping it must not drop the access-mode check with it.
+   */
+  @Test
+  public void writeComponentOfAReadOnlyCatalogIsRefusedEvenWhenItIsDroppedFromTheRequest()
+      throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_ONLY, List.of(), backendCalls);
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {multiComponentLockRequest(
+                75L,
+                // The default catalog decides where the request is routed, so the READ_ONLY
+                // component below is the one that gets dropped.
+                noTxnLockComponent(LockType.EXCLUSIVE, "finance", "ledger"),
+                writeLockComponent(
+                    LockType.EXCLUSIVE, DataOperationType.INSERT, "catalog2__sales", "events"))}));
+
+    Assert.assertTrue(error.getMessage(), error.getMessage().contains("READ_ONLY"));
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  /**
+   * With no component of the default catalog there is no real lock to keep, so the request routes by
+   * the first catalog it names and the synthetic shim answers for it.
+   */
+  @Test
+  public void lockRequestSpanningTwoNonDefaultCatalogsRoutesByTheFirstOne() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two")),
+            "catalog3", catalogConfig("catalog3", "c3", null, null, Map.of("hive.metastore.uris", "thrift://three"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    for (String catalog : List.of("catalog1", "catalog2", "catalog3")) {
+      backends.put(catalog, newBackend(
+          config,
+          config.catalogs().get(catalog),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(
+              config,
+              config.catalogs().get(catalog),
+              newSession((proxy, method, args) -> {
+                backendCalls.incrementAndGet();
+                throw new UnsupportedOperationException(method.getName());
+              }))));
+    }
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse lock = (LockResponse) handler.invoke(
+        null,
+        lockMethod,
+        new Object[] {multiComponentLockRequest(
+            76L,
+            selectLockComponent("catalog2__sales", "events"),
+            selectLockComponent("catalog3__finance", "ledger"))});
 
     Assert.assertEquals(LockState.ACQUIRED, lock.getState());
     Assert.assertTrue(lock.getLockid() >= Long.MAX_VALUE / 2);

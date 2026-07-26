@@ -30,6 +30,13 @@ public interface FederationOperations {
 
   Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace);
 
+  /**
+   * Internalizes a single value. Lock requests need this: their components may resolve to different
+   * databases, and each has to be rewritten against its own namespace rather than against one
+   * namespace chosen for the whole argument list.
+   */
+  Object internalizeArgument(Object value, CatalogRouter.ResolvedNamespace namespace);
+
   Object[] internalizeDbStringArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace);
 
   Object[] internalizeObjectArguments(Object[] args, CatalogRouter.ResolvedNamespace namespace);

@@ -10,6 +10,20 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ### Fixed
 
+- A query reading across catalogs (`SELECT ... FROM a JOIN catalog2__db.b`) failed
+  with `Error in acquiring locks`. Hive locks every table a statement touches in one
+  request, and the proxy rejected any request whose components resolved to more than
+  one namespace. The same rejection also caught a join across two databases of a
+  *single* catalog, which had one obvious backend all along. Such a request is now
+  split: the components of one catalog are routed to its metastore, each rewritten to
+  its own backend database, and the components of the other catalogs are dropped from
+  the request that reaches the backend. The default catalog is the routing target
+  whenever it is present, since it owns the TxnHandler and holds the only real locks;
+  non-default catalogs are served by the synthetic shim, which records locks without
+  ever enforcing them, so a dropped component loses a ledger entry rather than a
+  guarantee. Writes into a `READ_ONLY` catalog are still refused whether or not their
+  component survived the split, and every split is logged and counted by the new
+  `hms_proxy_lock_request_split_total{catalog}` metric.
 - The `notification` mode of the direct HMS smoke CLI could not connect at all on
   JDK 9+. `HiveMetaStoreClient` in the Hortonworks standalone jars builds its
   `URI[]` through `Arrays.asList(...).toArray()`, which returns `Object[]` since

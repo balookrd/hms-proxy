@@ -434,6 +434,7 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_lock_request_split_total{catalog}`
 - `hms_proxy_filtered_objects_total{method,catalog,object_type}`
 - `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
 - `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
@@ -462,6 +463,7 @@ scrape_configs:
 - `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
 - `hms_proxy_routing_ambiguous_total` считает запросы, которые proxy безопасно отклонил из-за conflicting namespace hints вместо угадывания маршрута
 - `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+- `hms_proxy_lock_request_split_total` считает lock-запросы, назвавшие несколько каталогов и ушедшие в один из них, — компоненты остальных каталогов из запроса к backend удалены
 - `hms_proxy_rate_limited_total` считает запросы, отклонённые overload protection, с лейблами по limiting dimension, configured scope, method family и resolved catalog
 - `hms_proxy_filtered_objects_total` считает базы или таблицы, скрытые selective federation rules до возврата клиенту
 - `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
@@ -1088,10 +1090,20 @@ non-default каталога не сериализуются друг относ
 `MetaException`, а не синтезируется.
 
 Пригодность определяется по всем `LockComponent` запроса, а не только по первому. Вызов `lock`
-берётся, маршрутизируется и подтверждается целиком, поэтому запрос, компоненты которого
-принадлежат разным namespace, отклоняется явным `MetaException` — вместо того чтобы proxy
-поглотил или переписал компоненты остальных баз. Такой вызов нужно разбить на отдельные lock
-request по namespace.
+берётся, маршрутизируется и подтверждается целиком и возвращает один lock id, поэтому его нельзя
+переслать больше чем в один backend. Но запрос, читающий несколько каталогов — или всего лишь две
+базы одного каталога, — приходит именно в таком виде: одним запросом, компоненты которого
+принадлежат разным namespace. Proxy расщепляет его: компоненты одного каталога уходят в его
+metastore, каждый переписанный в свою backend-базу, а компоненты остальных каталогов из запроса к
+backend удаляются.
+
+Целью маршрутизации выбирается default catalog, если он присутствует: ему принадлежит TxnHandler,
+и его локи — настоящие. Отброшенные компоненты при этом не теряют ничего, что было бы удержано:
+non-default каталог обслуживается описанным выше shim, который записывает лок и сразу отвечает
+`ACQUIRED`, ни разу не проверив конфликт. Отброшенный компонент теряет запись в этом журнале, а не
+гарантию. Проверка access mode за решением о маршрутизации не следует — запись в `READ_ONLY`
+каталог отклоняется независимо от того, пережил ли её компонент расщепление. Каждое расщепление
+пишется в лог и считается метрикой `hms_proxy_lock_request_split_total`.
 
 Единственное исключение — плейсхолдер Hive для `INSERT ... VALUES` (`_dummy_database`/
 `_dummy_table`, константа `SemanticAnalyzer.DUMMY_DATABASE`): он не существует ни в одном

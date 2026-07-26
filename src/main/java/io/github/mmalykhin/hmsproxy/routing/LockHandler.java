@@ -66,14 +66,15 @@ final class LockHandler implements InvocationHandler {
   }
 
   private Object handleLock(Object proxy, Method method, Object[] args) throws Throwable {
-    CatalogRouter.ResolvedNamespace namespace = args == null ? null : findLockNamespace(args);
+    LockRequestSplit split = args == null ? null : findLockSplit(args);
+    CatalogRouter.ResolvedNamespace namespace = split == null ? null : split.primary();
     if (namespace != null) {
       LockRequest request = (LockRequest) args[0];
       // Admission must run before the lock state is persisted: a throttled client never learns the
       // lockId and could not release the lock, so it would linger until the txn timeout expires.
       if (syntheticReadLockManager.isSyntheticReadLockCandidate(request, namespace)) {
         RequestContext.currentObservation().recordNamespace(namespace);
-        validateSyntheticWriteAccess(request, namespace, method.getName());
+        validateSyntheticWriteAccess(split, method.getName());
         admissionGate.enforceRateLimit(method.getName(), namespace.catalogName());
         SyntheticReadLockManager.SyntheticLockState syntheticState =
             syntheticReadLockManager.tryAcquire(request, namespace);
@@ -195,17 +196,22 @@ final class LockHandler implements InvocationHandler {
    * The synthetic path never reaches the backend, so the catalog access mode has to be enforced
    * here. Only write components are checked: {@code lock} counts as a mutating method by name, so
    * validating every synthetic lock would reject plain {@code SELECT} reads of a READ_ONLY catalog.
+   *
+   * <p>Each component is checked against its own catalog. A request may span several of them, and a
+   * component whose catalog is not the one the request routes by is dropped rather than locked -
+   * dropping it must not drop the access-mode check with it.
    */
-  private void validateSyntheticWriteAccess(
-      LockRequest request,
-      CatalogRouter.ResolvedNamespace namespace,
-      String methodName
-  ) throws MetaException {
-    for (LockComponent component : request.getComponent()) {
-      if (SyntheticReadLockManager.isWriteOperation(component.getOperationType())) {
+  private void validateSyntheticWriteAccess(LockRequestSplit split, String methodName)
+      throws MetaException {
+    for (LockRequestSplit.Component component : split.components()) {
+      if (component.namespace() == null) {
+        continue;
+      }
+      if (SyntheticReadLockManager.isWriteOperation(component.component().getOperationType())) {
         CatalogAccessModeGuard.validate(
-            config.catalogs().get(namespace.catalogName()), methodName, namespace.backendDbName());
-        return;
+            config.catalogs().get(component.namespace().catalogName()),
+            methodName,
+            component.namespace().backendDbName());
       }
     }
   }
@@ -219,12 +225,13 @@ final class LockHandler implements InvocationHandler {
     }
   }
 
-  private CatalogRouter.ResolvedNamespace findLockNamespace(Object[] args) throws MetaException {
+  private LockRequestSplit findLockSplit(Object[] args) throws MetaException {
     if (args.length == 0 || !(args[0] instanceof LockRequest request)) {
-      return findNamespaceInArgs(args);
+      CatalogRouter.ResolvedNamespace namespace = findNamespaceInArgs(args);
+      return namespace == null ? null : LockRequestSplit.ofResolvedNamespace(namespace);
     }
     try {
-      return HivePlaceholderNamespace.resolveLockNamespace(request, router);
+      return LockRequestSplit.of(request, router, config.defaultCatalog());
     } catch (MetaException e) {
       observability.metrics().recordRoutingAmbiguous();
       throw e;

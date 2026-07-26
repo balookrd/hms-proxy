@@ -237,6 +237,11 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   `INSERT` into a non-default catalog opened its transaction against the default catalog's
   TxnHandler but sent the lock to the catalog's own backend, which answered `NoSuchTxnException`.
   Write locks for non-default catalogs are now served by the shim.
+- A query joining two catalogs failed outright with `Error in acquiring locks`: Hive locks every
+  table of a statement in one request, and any request naming more than one namespace was rejected.
+  The same check also refused a join across two databases of a *single* catalog. Lock requests are
+  now split by catalog. Only a real SQL client shows this — the direct smoke CLI issues one
+  namespace per lock request and never produced the shape.
 - The readiness probe no longer disturbs SASL: 15 `/readyz` scrapes followed by a Kerberos smoke
   run pass, where the old probe would have rewritten the process-wide UGI configuration.
 - The transactional-DDL guard fires on `create_table_with_environment_context`, the RPC Beeline

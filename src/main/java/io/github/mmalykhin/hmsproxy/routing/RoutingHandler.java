@@ -96,7 +96,9 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler addWriteNotificationLog = new AddWriteNotificationLogHandler(support);
     SpecialCaseHandler getTablesExt = new GetTablesExtHandler(support);
     SpecialCaseHandler getAllMvForRewriting = new GetAllMaterializedViewObjectsForRewritingHandler(support);
+    SpecialCaseHandler lock = new LockRoutingHandler(support, this);
     return Map.ofEntries(
+        Map.entry("lock", lock),
         Map.entry("set_ugi", setUgi),
         Map.entry("get_all_databases", getAllDatabases),
         Map.entry("get_databases", getDatabases),
@@ -339,7 +341,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       // Lock components can carry Hive's INSERT ... VALUES placeholder, which the generic argument
       // scan would take for the target namespace because it is the first component of the request.
       if (args.length > 0 && args[0] instanceof LockRequest lockRequest) {
-        return HivePlaceholderNamespace.resolveLockNamespace(lockRequest, router);
+        return HivePlaceholderNamespace.resolveLockNamespace(lockRequest, router, config.defaultCatalog());
       }
       return support.federationLayer.findNamespaceInArgs(args);
     } catch (MetaException e) {

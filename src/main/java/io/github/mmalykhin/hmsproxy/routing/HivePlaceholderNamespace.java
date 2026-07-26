@@ -1,8 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import java.util.List;
 import java.util.Locale;
-import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 
@@ -25,56 +23,16 @@ final class HivePlaceholderNamespace {
   }
 
   /**
-   * A lock request is acquired, routed and acknowledged as a single unit: either the synthetic
-   * shim answers for all of its components or the whole request goes to one backend, where
-   * namespace internalization rewrites every component to the resolved database. Resolving the
-   * namespace from the first component alone would therefore silently drop or rewrite components
-   * of the other databases - including default-catalog DDL locks that must reach a real metastore.
-   * Mixed requests are rejected instead, so the caller can split them per namespace.
-   *
-   * <p>Placeholder components carry no namespace of their own. A request made only of them still
-   * resolves through the placeholder name, which lands on the default catalog that owns the
-   * TxnHandler - the same target such a lock reached before catalog federation existed.
+   * The namespace a lock request is routed by. Components that resolve to another catalog are
+   * dropped from the request that reaches the backend - see {@link LockRequestSplit} for why that
+   * is safe and how the primary catalog is chosen.
    */
-  static CatalogRouter.ResolvedNamespace resolveLockNamespace(LockRequest request, CatalogRouter router)
-      throws MetaException {
-    List<LockComponent> components = request.getComponent();
-    if (components == null || components.isEmpty()) {
-      return null;
-    }
-    CatalogRouter.ResolvedNamespace resolved = null;
-    CatalogRouter.ResolvedNamespace placeholderNamespace = null;
-    for (LockComponent component : components) {
-      String dbName = NamespaceTranslator.extractDbName(component);
-      if (dbName == null) {
-        continue;
-      }
-      if (isPlaceholderDbName(dbName)) {
-        if (placeholderNamespace == null) {
-          placeholderNamespace = router.resolveDatabase(dbName);
-        }
-        continue;
-      }
-      CatalogRouter.ResolvedNamespace candidate = router.resolveDatabase(dbName);
-      if (resolved == null) {
-        resolved = candidate;
-        continue;
-      }
-      if (!sameNamespace(resolved, candidate)) {
-        throw new MetaException("Lock request spans multiple namespaces: '"
-            + resolved.externalDbName() + "' and '" + candidate.externalDbName()
-            + "'. The proxy acquires and acknowledges a lock request as a whole, so it cannot"
-            + " split components across catalogs; issue one lock request per namespace");
-      }
-    }
-    return resolved != null ? resolved : placeholderNamespace;
-  }
-
-  private static boolean sameNamespace(
-      CatalogRouter.ResolvedNamespace left,
-      CatalogRouter.ResolvedNamespace right
-  ) {
-    return left.catalogName().equals(right.catalogName())
-        && left.backendDbName().equals(right.backendDbName());
+  static CatalogRouter.ResolvedNamespace resolveLockNamespace(
+      LockRequest request,
+      CatalogRouter router,
+      String defaultCatalog
+  ) throws MetaException {
+    LockRequestSplit split = LockRequestSplit.of(request, router, defaultCatalog);
+    return split == null ? null : split.primary();
   }
 }

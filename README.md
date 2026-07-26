@@ -432,6 +432,7 @@ Current Prometheus metrics:
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
+- `hms_proxy_lock_request_split_total{catalog}`
 - `hms_proxy_filtered_objects_total{method,catalog,object_type}`
 - `hms_proxy_synthetic_read_lock_events_total{operation,catalog,store_mode,result}`
 - `hms_proxy_synthetic_read_lock_store_failures_total{operation,store_mode,exception}`
@@ -460,6 +461,7 @@ Metric semantics:
 - `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
 - `hms_proxy_routing_ambiguous_total` counts requests that safely failed because the proxy saw conflicting namespace hints and refused to guess
 - `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
+- `hms_proxy_lock_request_split_total` counts lock requests that named several catalogs and were routed to one of them, the other components dropped from the request that reached the backend
 - `hms_proxy_rate_limited_total` counts requests rejected by overload protection with labels for the limiting dimension, configured scope, method family, and resolved catalog
 - `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
 - `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
@@ -1126,10 +1128,20 @@ outside `catalog.<name>.write-db-whitelist`, is rejected with a `MetaException` 
 synthesized.
 
 Eligibility is decided over every `LockComponent` of the request, not just the first one. A
-`lock` call is acquired, routed, and acknowledged as a single unit, so a request whose
-components span more than one namespace is rejected with an explicit `MetaException` instead of
-letting the proxy swallow or rewrite the components of the other databases. Split such a call
-into one lock request per namespace.
+`lock` call is acquired, routed, and acknowledged as a single unit and yields one lock id, so it
+cannot be forwarded to more than one backend. A query that reads across catalogs - or merely
+across two databases of one catalog - nevertheless arrives as exactly that: one request whose
+components resolve to different namespaces. The proxy splits it. Components of one catalog are
+routed to that catalog's metastore, each rewritten to its own backend database, and components of
+the other catalogs are dropped from the request that reaches the backend.
+
+The default catalog is chosen as the routing target whenever it is present, because it owns the
+TxnHandler and its locks are the real ones. Dropping the rest costs nothing that was ever held:
+a non-default catalog is served by the shim described above, which records a lock and reports it
+as acquired without ever testing for a conflict. What a dropped component loses is an entry in
+that ledger, not a guarantee. Access-mode enforcement does not travel with the routing decision -
+a write into a `READ_ONLY` catalog is still refused whether or not its component survived the
+split. Each split is logged and counted by `hms_proxy_lock_request_split_total`.
 
 Hive's `INSERT ... VALUES` placeholder (`_dummy_database`/`_dummy_table`, the
 `SemanticAnalyzer.DUMMY_DATABASE` constant) is the one exception: it exists in no metastore and

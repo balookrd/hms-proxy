@@ -67,6 +67,10 @@ public final class PrometheusMetrics {
       "hms_proxy_default_catalog_routed_total",
       "Requests routed to the default catalog because no explicit catalog namespace was provided",
       List.of("method"));
+  private final Counter lockRequestSplitTotal = new Counter(
+      "hms_proxy_lock_request_split_total",
+      "Lock requests spanning several catalogs, routed to one catalog with the other components dropped",
+      List.of("catalog"));
   private final Counter rateLimitedTotal = new Counter(
       "hms_proxy_rate_limited_total",
       "Requests rejected by proxy overload protection grouped by limiting dimension, scope, method family, and catalog",
@@ -145,6 +149,10 @@ public final class PrometheusMetrics {
 
   public void recordDefaultCatalogRoute(String method) {
     defaultCatalogRoutedTotal.inc(labels("method", method));
+  }
+
+  public void recordLockRequestSplit(String catalog) {
+    lockRequestSplitTotal.inc(labels("catalog", catalog));
   }
 
   public void recordRateLimited(
@@ -277,6 +285,7 @@ public final class PrometheusMetrics {
       backendFallbackTotal,
       routingAmbiguousTotal,
       defaultCatalogRoutedTotal,
+      lockRequestSplitTotal,
       rateLimitedTotal,
       backendSessionAcquireTimeoutsTotal,
       impersonationPoolUsers,
