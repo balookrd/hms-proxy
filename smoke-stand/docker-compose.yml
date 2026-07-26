@@ -3,7 +3,8 @@
 #   docker compose up -d --build          # plain SASL-less stand
 #   docker compose --profile kerberos up -d --build
 #
-# Ports on the host: 19083 apache HMS, 19084 hdp HMS, 19085 proxy thrift, 19090 proxy management.
+# Ports on the host: 19083 apache HMS, 19084 hdp HMS, 19085 proxy thrift (Apache front door),
+# 19086 proxy thrift (Hortonworks front door), 19090 proxy management.
 
 services:
   # HDFS: gives the stand a real distributed filesystem, so external-table purge and the
@@ -152,6 +153,7 @@ services:
       KEYTAB: /keytabs/proxy.keytab
     ports:
       - "19085:9083"
+      - "19086:9084"
       - "19090:9090"
     volumes:
       - ./proxy/hms-proxy.properties:/opt/hms-proxy/hms-proxy.properties:ro

@@ -13,5 +13,5 @@ COPY hms-proxy-fat.jar /opt/hms-proxy/hms-proxy.jar
 COPY entrypoint.sh /opt/hms-proxy/
 RUN chmod +x /opt/hms-proxy/entrypoint.sh
 
-EXPOSE 9083 9090
+EXPOSE 9083 9084 9090
 ENTRYPOINT ["/opt/hms-proxy/entrypoint.sh"]

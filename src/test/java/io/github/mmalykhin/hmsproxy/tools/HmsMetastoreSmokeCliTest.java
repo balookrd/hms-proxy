@@ -5,6 +5,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
@@ -34,6 +35,39 @@ public class HmsMetastoreSmokeCliTest {
     Map<String, String> conf = (Map<String, String>) confMethod.invoke(cli);
     Assert.assertEquals("b", conf.get("a"));
     Assert.assertEquals("d=e", conf.get("c"));
+  }
+
+  // The notification scenario appends its own --uri so that it can reach the Hortonworks front
+  // door while the shared arguments still name the primary one.
+  @Test
+  public void cliArgsTakesTheLastValueOfARepeatedScalarOption() throws Exception {
+    Object cli = parse("--uri", "thrift://primary:9083", "--uri", "thrift://hdp-front:9084");
+
+    Method required = cli.getClass().getDeclaredMethod("required", String.class);
+    required.setAccessible(true);
+    Assert.assertEquals("thrift://hdp-front:9084", required.invoke(cli, "uri"));
+  }
+
+  @Test
+  public void baseConfPinsSequentialMetastoreUriSelection() throws Exception {
+    Configuration conf = new Configuration(false);
+
+    applyBaseConf(conf, "thrift://hms:9083", parse("--uri", "thrift://hms:9083"));
+
+    Assert.assertEquals("SEQUENTIAL", conf.get("metastore.thrift.uri.selection"));
+    Assert.assertEquals("SEQUENTIAL", conf.get("hive.metastore.uri.selection"));
+  }
+
+  @Test
+  public void extraConfOverridesTheMetastoreUriSelection() throws Exception {
+    Configuration conf = new Configuration(false);
+
+    applyBaseConf(
+        conf,
+        "thrift://hms:9083",
+        parse("--uri", "thrift://hms:9083", "--conf", "metastore.thrift.uri.selection=RANDOM"));
+
+    Assert.assertEquals("RANDOM", conf.get("metastore.thrift.uri.selection"));
   }
 
   @Test
@@ -167,6 +201,14 @@ public class HmsMetastoreSmokeCliTest {
     Method parse = cliClass.getDeclaredMethod("parse", String[].class);
     parse.setAccessible(true);
     return parse.invoke(null, (Object) args);
+  }
+
+  private static void applyBaseConf(Object conf, String uri, Object cli) throws Exception {
+    Class<?> cliClass = Class.forName("io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli$CliArgs");
+    Method method = HmsMetastoreSmokeCli.class.getDeclaredMethod(
+        "applyBaseConf", Object.class, String.class, cliClass);
+    method.setAccessible(true);
+    method.invoke(null, conf, uri, cli);
   }
 
   private static LockRequest buildLockRequest(

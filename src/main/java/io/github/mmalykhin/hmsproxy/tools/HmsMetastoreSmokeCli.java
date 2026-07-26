@@ -460,6 +460,13 @@ public final class HmsMetastoreSmokeCli {
   private static void applyBaseConf(Object conf, String uri, CliArgs cli) {
     setConf(conf, "hive.metastore.uris", uri);
     setConf(conf, "hive.metastore.client.capability.check", "false");
+    // The Hortonworks standalone metastore builds its URI[] via Arrays.asList(...).toArray(), which
+    // returns Object[] on JDK 9+ and makes HiveMetaStoreClient.resolveUris die with a
+    // ClassCastException. That branch only runs for the default RANDOM selection, and the smoke CLI
+    // always talks to a single URI, so pinning SEQUENTIAL keeps the client off it. Both spellings
+    // are set because MetastoreConf.getVar prefers the metastore.* name over the hive.* alias.
+    setConf(conf, "metastore.thrift.uri.selection", "SEQUENTIAL");
+    setConf(conf, "hive.metastore.uri.selection", "SEQUENTIAL");
 
     String auth = cli.getOrDefault("auth", AUTH_SIMPLE);
     if (AUTH_KERBEROS.equals(auth)) {
