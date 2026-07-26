@@ -739,6 +739,43 @@ final class RoutingMetaStoreProxyTestSupport {
     return component;
   }
 
+  /**
+   * The placeholder component Hive attaches to every {@code INSERT ... VALUES} plan
+   * ({@code SemanticAnalyzer.DUMMY_DATABASE}/{@code DUMMY_TABLE}); it belongs to no catalog.
+   */
+  static LockComponent dummyPlaceholderLockComponent() {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname("_dummy_database");
+    component.setTablename("_dummy_table");
+    component.setOperationType(DataOperationType.SELECT);
+    component.setIsTransactional(false);
+    return component;
+  }
+
+  static LockComponent insertLockComponent(String dbName, String tableName) {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+    component.setOperationType(DataOperationType.INSERT);
+    component.setIsTransactional(false);
+    return component;
+  }
+
+  static LockComponent selectLockComponent(String dbName, String tableName) {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+    component.setOperationType(DataOperationType.SELECT);
+    component.setIsTransactional(false);
+    return component;
+  }
+
   static LockRequest multiComponentLockRequest(long txnId, LockComponent... components) {
     LockRequest request = new LockRequest();
     request.setComponent(List.of(components));

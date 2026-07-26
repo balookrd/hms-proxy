@@ -134,6 +134,12 @@ final class NamespaceInternalizer {
       return database;
     }
     String originalDbName = NamespaceTranslator.readDbNameProperty(value);
+    if (HivePlaceholderNamespace.isPlaceholderDbName(originalDbName)) {
+      // Hive's INSERT ... VALUES placeholder belongs to no database. Rewriting it to the resolved
+      // backend database would lock a fictitious table of a real database instead of the harmless
+      // placeholder name every unproxied Hive sends.
+      return value;
+    }
     String originalFullTableName = NamespaceTranslator.readFullTableNameProperty(value);
     List<String> originalFullTableNames = NamespaceTranslator.readFullTableNamesProperty(value);
     ThriftReflectionCache.invokeStringSetter(value, "setCatName",

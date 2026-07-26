@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.thrift.TException;
@@ -335,6 +336,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
   private CatalogRouter.ResolvedNamespace findNamespaceInArgs(Object[] args) throws MetaException {
     try {
+      // Lock components can carry Hive's INSERT ... VALUES placeholder, which the generic argument
+      // scan would take for the target namespace because it is the first component of the request.
+      if (args.length > 0 && args[0] instanceof LockRequest lockRequest) {
+        return HivePlaceholderNamespace.resolveLockNamespace(lockRequest, router);
+      }
       return support.federationLayer.findNamespaceInArgs(args);
     } catch (MetaException e) {
       observability.metrics().recordRoutingAmbiguous();

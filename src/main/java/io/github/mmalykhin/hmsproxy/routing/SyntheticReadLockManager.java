@@ -285,12 +285,19 @@ final class SyntheticReadLockManager implements AutoCloseable {
     if (request.getComponent() == null || request.getComponent().isEmpty()) {
       return false;
     }
+    boolean sawRealComponent = false;
     for (LockComponent component : request.getComponent()) {
+      // Hive's INSERT ... VALUES placeholder has no metastore object behind it, so its lock type
+      // says nothing about what the statement does to the real tables of the request.
+      if (component != null && HivePlaceholderNamespace.isPlaceholderDbName(component.getDbname())) {
+        continue;
+      }
       if (!isEligibleSyntheticReadLock(component)) {
         return false;
       }
+      sawRealComponent = true;
     }
-    return true;
+    return sawRealComponent;
   }
 
   private boolean isEligibleSyntheticReadLock(LockComponent component) {

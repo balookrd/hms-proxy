@@ -71,6 +71,7 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario all
 - `security` отвечает за Thrift server auth, Kerberos/front-door request context и local delegation tokens.
 - `observability` отвечает за metrics, audit logging, runtime state и health probes.
 - `tools` содержит entry points для direct HMS smoke CLI.
+- Знание о служебном плейсхолдере Hive (`_dummy_database`/`_dummy_table`, константы `SemanticAnalyzer.DUMMY_DATABASE`/`DUMMY_TABLE`, которые Hive шлёт в `LockRequest` для `INSERT ... VALUES`) живёт только в `routing/HivePlaceholderNamespace`. Плейсхолдер не выбирает каталог, не считается вторым namespace lock-запроса и не переписывается интернализацией в реальную backend-базу. Не добавляй локальных сравнений с `_dummy_database` в других классах.
 - Классификация backend Thrift-ошибок живёт только в `thriftbridge/ThriftFailureClassifier`: «метода нет» - это `TApplicationException` с типом `UNKNOWN_METHOD` (или отсутствие метода в загруженном runtime), transport failure и protocol desync - отдельные категории. Не пиши локальные `instanceof TApplicationException` для решений про fallback, downgrade или переоткрытие соединения.
 
 ## Парсинг конфигурации

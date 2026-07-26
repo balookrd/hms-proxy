@@ -1109,6 +1109,12 @@ components span more than one namespace is rejected with an explicit `MetaExcept
 letting the proxy swallow or rewrite the components of the other databases. Split such a call
 into one lock request per namespace.
 
+Hive's `INSERT ... VALUES` placeholder (`_dummy_database`/`_dummy_table`, the
+`SemanticAnalyzer.DUMMY_DATABASE` constant) is the one exception: it exists in no metastore and
+belongs to no catalog, so its components neither select a catalog, nor count as a second
+namespace, nor get rewritten into a real backend database. A request made only of placeholder
+components goes to the default catalog that owns the TxnHandler.
+
 `synthetic-read-lock.store.mode` must be set explicitly — there is no default. Use `IN_MEMORY`
 for single-instance deployments (non-default catalog SELECT locks are lost on proxy restart or
 load-balancer failover, and the proxy logs a `WARN` on startup to surface that), or `ZOOKEEPER`

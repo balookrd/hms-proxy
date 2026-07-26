@@ -1071,6 +1071,12 @@ security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keyta
 поглотил или переписал компоненты остальных баз. Такой вызов нужно разбить на отдельные lock
 request по namespace.
 
+Единственное исключение — плейсхолдер Hive для `INSERT ... VALUES` (`_dummy_database`/
+`_dummy_table`, константа `SemanticAnalyzer.DUMMY_DATABASE`): он не существует ни в одном
+metastore и не относится ни к какому каталогу, поэтому его компоненты не выбирают каталог, не
+считаются вторым namespace и не переписываются в реальную backend-базу. Запрос, состоящий
+только из таких компонентов, уходит в default catalog, которому принадлежит TxnHandler.
+
 `synthetic-read-lock.store.mode` обязан быть задан явно — default'а нет. Используйте `IN_MEMORY`
 для одиночного инстанса proxy (SELECT-локи на non-default каталогах теряются при рестарте или
 failover через load balancer, и proxy пишет `WARN` в лог на старте, чтобы это было видно), либо
