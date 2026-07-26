@@ -17,6 +17,7 @@
 - `hive-metastore/` содержит standalone Hive/Hortonworks metastore jar-файлы, которые используются в compatibility/runtime-profile путях. Считай эти jar-файлы намеренными артефактами проекта.
 - `capabilities.yaml` управляет генерируемой compatibility-документацией в `README.md` и `README.ru.md`.
 - Скрипты smoke-проверок на реальной установке находятся в `scripts/`; Grafana dashboard assets находятся в `monitoring/`.
+- `smoke-stand/` - локальный docker-compose стенд для тех же smoke-скриптов: два standalone metastore (Apache и Hortonworks) за прокси, HDFS, HiveServer2 и MIT KDC. Собирается из jar-файлов каталога `hive-metastore/`; тяжёлые входные артефакты не хранятся в git и восстанавливаются через `smoke-stand/prepare.sh`. Детали и известные ограничения - в `smoke-stand/README.md`.
 
 ## Сборка и тесты
 
@@ -59,6 +60,15 @@ mvn -DskipTests package
 scripts/run-real-installation-smoke-simple.sh --scenario all
 scripts/run-real-installation-smoke-kerberos.sh --scenario all
 ```
+
+Без реального кластера те же проверки можно прогнать на локальном стенде:
+
+```bash
+cd smoke-stand && ./prepare.sh && docker compose up -d --build
+scripts/run-real-installation-smoke-simple.sh --env-file smoke-stand/env/simple.env --scenario all
+```
+
+Тесты прогоняй только на Java 17: на новых JVM часть тестов молча самоисключается, потому что Hadoop UGI использует удалённый в JDK 24+ Subject API.
 
 ## Архитектурные заметки
 
