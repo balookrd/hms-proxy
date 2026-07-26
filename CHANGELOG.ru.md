@@ -6,6 +6,37 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-07-26
+
+### Исправлено
+
+- Режим `notification` прямого HMS smoke CLI на JDK 9+ не мог даже открыть
+  соединение. `HiveMetaStoreClient` в Hortonworks-сборках standalone metastore
+  собирает `URI[]` через `Arrays.asList(...).toArray()`, а тот начиная с JDK 9
+  возвращает `Object[]`, и `resolveUris` падает с
+  `ClassCastException: [Ljava.lang.Object; cannot be cast to [Ljava.net.URI;`.
+  Эта ветка выполняется только при выборе URI по умолчанию (`RANDOM`), поэтому
+  CLI теперь фиксирует `metastore.thrift.uri.selection=SEQUENTIAL` (по-прежнему
+  переопределяется через `--conf`). Smoke-клиент всегда работает с одним URI, так
+  что стратегия выбора для него ничего не значит.
+
+### Добавлено
+
+- Smoke-раннеры принимают `HMS_SMOKE_NOTIFICATION_URI`: он переопределяет
+  `HMS_SMOKE_URI` только для сценария notification. `add_write_notification_log`
+  есть лишь в Hortonworks-интерфейсе Thrift, а Thrift не умеет согласовывать
+  версии, поэтому такая front door обычно слушает отдельный порт.
+
+### Изменено
+
+- Негативная половина notification-проверки больше не требует, чтобы клиент увидел
+  сообщение `requires a Hortonworks backend runtime`. Hive IDL не объявляет
+  исключений для `add_write_notification_log`, поэтому libthrift 0.9.3 подменяет
+  любую серверную ошибку на `Internal error processing add_write_notification_log`
+  — настоящий Hortonworks metastore теряет свои тексты ошибок точно так же.
+  Раннер теперь проверяет факт отказа именно этого RPC и указывает на лог proxy,
+  где причина по-прежнему названа.
+
 ## 2026-07-25
 
 ### Добавлено

@@ -9,7 +9,7 @@ Two standalone metastores sit behind one proxy:
 | --- | --- | --- | --- |
 | `hms-hdp` | Hortonworks `3.1.0.3.1.0.0-78` | default catalog — owns ACID/txn state | 19084 |
 | `hms-apache` | Apache `3.1.3` | non-default catalog — synthetic lock shim, proxy-side purge | 19083 |
-| `proxy` | the fat jar under test | front door | 19085 thrift, 19090 management |
+| `proxy` | the fat jar under test | front door | 19085 thrift (Apache), 19086 thrift (Hortonworks), 19090 management |
 | `hs2` | HiveServer2 3.1.3, points at the proxy | SQL layer: Beeline scenarios | 10000, 10002 |
 | `namenode` / `datanode` | Hadoop `3.1.3` | HDFS: warehouses and external-table data | 19870 UI, 18020 |
 | `kdc` | MIT Kerberos, realm `SMOKE.LOCAL` | only with `--profile kerberos` | 18848/udp |
@@ -44,6 +44,15 @@ A fresh HDFS needs its directories once:
 ```bash
 docker exec stand-namenode bash -c \
   'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /external && hdfs dfs -chmod -R 1777 /warehouse /external'
+```
+
+The notification scenario needs its table to exist on the HDP backend — `add_write_notification_log`
+resolves the table before writing the log entry:
+
+```bash
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e 'create table if not exists smoke_txn_tbl (id int) stored as orc;'"
 ```
 
 The Kerberos smoke has to run **inside** the compose network, because the KDC and the service
@@ -115,6 +124,23 @@ The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
   Kerberos profile (`LocalJobRunner` against the unsecured HDFS); metadata, locks and DDL work
   there, but verify write paths in the plain profile.
 
+## Hortonworks front door
+
+`add_write_notification_log` exists only in the Hortonworks Thrift interface, and Thrift has no
+version negotiation, so the proxy exposes a second listener for it (`additional-frontends.hdp`,
+container port 9084, host port 19086). The primary listener keeps the Apache 3.1.3 shape that
+HiveServer2 3.1.3 speaks. The smoke env files point the notification scenario there with
+`HMS_SMOKE_NOTIFICATION_URI`; every other scenario stays on the primary front door.
+
+The negative half of the scenario — the same call against `apache__default` — is refused by the
+proxy, but the client cannot see why: the Hive IDL declares no exceptions for this method, so
+libthrift 0.9.3 replaces the failure with `Internal error processing add_write_notification_log`.
+The reason is in the proxy log:
+
+```bash
+docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
+```
+
 ## Notes that cost time to find
 
 - Derby must create its own database directory, so the volume mounts one level above it
@@ -123,6 +149,15 @@ The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
   `HiveMetaStoreClient` rejects a metastore URI whose hostname has one.
 - The vendored standalone jars carry no schema `.sql`, so ACID tables are created programmatically
   by `InitSchema` (`TxnDbUtil.prepDb`); DataNucleus auto-creates the rest on first use.
+- `CREATE TABLE ... TBLPROPERTIES('transactional'='true')` fails with "The table must be stored
+  using an ACID compliant format": the standalone metastore has no `hive-exec`, so its
+  transactional validation cannot load `OrcOutputFormat` and rejects the format it just got.
+  Tables for ACID-adjacent smoke steps are therefore plain ORC — `add_write_notification_log` only
+  needs the table to exist, not to be transactional.
+- `HiveMetaStoreClient` in the Hortonworks jars builds its `URI[]` through
+  `Arrays.asList(...).toArray()`, which returns `Object[]` on JDK 9+ and throws a
+  `ClassCastException` inside `resolveUris`. That branch runs only for the default
+  `RANDOM` URI selection, so the smoke CLI pins `metastore.thrift.uri.selection=SEQUENTIAL`.
 - The metastore needs `metastore.expression.proxy` and `metastore.task.threads.always` overridden:
   their defaults name classes that live in a full Hive distribution, not in the standalone jar.
 - Hadoop reads `hadoop.security.authentication` from `core-site.xml` on the classpath, not from

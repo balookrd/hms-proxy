@@ -28,7 +28,7 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `SHARED_READ` + `DB` + `NO_TXN` | Should pass; confirms the synthetic shim for `CREATE TABLE`-style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
-| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail with an explicit `requires a Hortonworks backend runtime` style error. |
+| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
 
 Practical automation:
@@ -352,6 +352,12 @@ Practical runner:
 - `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
 - `notification` mode covers Hortonworks-only `add_write_notification_log`
+- `add_write_notification_log` exists only on a Hortonworks front door, and Thrift has no version
+  negotiation, so that interface usually listens on a port of its own: point the notification
+  scenario at it with `HMS_SMOKE_NOTIFICATION_URI`, which overrides `HMS_SMOKE_URI` for this
+  scenario only
+- the target table must already exist on the backend: the RPC resolves it before writing the log
+  entry, and a missing table fails the same way any other backend error does
 - see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
 
 Important:
@@ -380,9 +386,14 @@ Send `add_write_notification_log` through an HMS thrift client to a database/tab
 the Apache backend.
 
 Expected:
-- the proxy returns an explicit `requires a Hortonworks backend runtime` error
 - there is no silent success
 - no side notification traffic appears on the Apache backend
+- the proxy log states the reason: `requires a Hortonworks backend runtime`
+- the client sees only `TApplicationException: Internal error processing
+  add_write_notification_log`. The Hive IDL declares no exceptions for this method (3.1.x and 4.x
+  alike), so libthrift 0.9.3 replaces every server-side failure with that fixed message. A real
+  Hortonworks metastore hides its own errors behind the same text, so the client cannot tell the
+  refusal apart from any other backend failure — read the proxy log for that.
 
 Practical runner:
 - set `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`

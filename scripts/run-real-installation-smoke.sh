@@ -53,6 +53,8 @@ EOF
   HMS_SMOKE_LOCK_DB
 
 Optional notification env vars:
+  HMS_SMOKE_NOTIFICATION_URI             front door exposing the Hortonworks interface,
+                                         when it is not HMS_SMOKE_URI
   HMS_SMOKE_NOTIFICATION_DB
   HMS_SMOKE_NOTIFICATION_TABLE
   HMS_SMOKE_NOTIFICATION_NEGATIVE_DB
@@ -367,6 +369,12 @@ run_notification_smoke_target() {
 
   local -a args=()
   local file_added=""
+  # add_write_notification_log only exists on a Hortonworks front door, which Thrift cannot
+  # negotiate and which therefore usually listens on its own port. A repeated --uri wins over the
+  # one in COMMON_ARGS, so the other scenarios keep using the primary front door.
+  if [[ -n "${HMS_SMOKE_NOTIFICATION_URI:-}" ]]; then
+    args+=("--uri" "${HMS_SMOKE_NOTIFICATION_URI}")
+  fi
   args+=("--db" "${db}")
   args+=("--table" "${table}")
   args+=("--txn-id" "${txn_id}")
@@ -397,8 +405,17 @@ run_notification_smoke_target() {
     set -e
     printf '%s\n' "${output}"
     [[ ${status} -ne 0 ]] || fail "${label} was expected to fail but succeeded"
-    grep -F "requires a Hortonworks backend runtime" <<< "${output}" >/dev/null \
-      || fail "${label} failed, but did not mention the expected Hortonworks runtime error"
+    # add_write_notification_log declares no exceptions in the Hive IDL (3.1.x and 4.x alike), so
+    # libthrift 0.9.3 replaces every server-side failure with a fixed "Internal error processing
+    # <method>" message. A real HMS loses its own error texts the same way. The rejection reason
+    # therefore only exists in the proxy log, where it reads "requires a Hortonworks backend
+    # runtime"; the client can confirm no more than a refusal of this exact RPC.
+    if grep -F "requires a Hortonworks backend runtime" <<< "${output}" >/dev/null; then
+      return
+    fi
+    grep -F "Internal error processing add_write_notification_log" <<< "${output}" >/dev/null \
+      || fail "${label} failed, but not with a refusal of add_write_notification_log"
+    log "${label}: the proxy refused the RPC; check its log for 'requires a Hortonworks backend runtime'"
     return
   fi
 
