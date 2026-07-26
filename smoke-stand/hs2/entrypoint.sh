@@ -28,6 +28,12 @@ if [[ "${KERBEROS_ENABLED:-false}" == "true" ]]; then
   <property><name>dfs.datanode.kerberos.principal</name><value>hdfs/datanode@SMOKE.LOCAL</value></property>
   <property><name>dfs.data.transfer.protection</name><value>authentication</value></property>
   <property><name>dfs.http.policy</name><value>HTTPS_ONLY</value></property>
+  <!-- MapReduce collects HDFS delegation tokens before running a job and needs a principal to name
+       as their renewer; without one it dies with "Can't get Master Kerberos principal for use as
+       renewer" and LocalJobRunner reports only "return code 2". There is no ResourceManager here,
+       so point it at this service. It has to live in core-site.xml: hive-site.xml does not reach
+       the job's Configuration. -->
+  <property><name>yarn.resourcemanager.principal</name><value>${SERVICE_PRINCIPAL}</value></property>
 </configuration>
 XML
   KERBEROS_PROPS=$(cat <<XML
@@ -94,6 +100,7 @@ done
 
 echo "[hs2] starting HiveServer2 against ${METASTORE_URI}"
 exec java -Xmx1500m -cp "$CP" \
+  -Djava.library.path=/opt/hs2/native \
   -Dlog4j.configurationFile=file:///opt/hs2/log4j2.properties \
   -Dhive.metastore.uris="${METASTORE_URI}" \
   org.apache.hive.service.server.HiveServer2

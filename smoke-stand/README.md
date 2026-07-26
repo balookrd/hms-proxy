@@ -119,10 +119,7 @@ The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
   HiveServer2, the proxy, both metastores and HDFS (namenode and datanode keytabs, SASL data
   transfer, SPNEGO) all authenticate, and no service falls back to simple auth.
 - **No YARN/Tez.** Queries run as local MapReduce, which is enough for DDL, reads and small
-  writes, but says nothing about distributed execution. MapReduce jobs still fail under the
-  Kerberos profile — `LocalJobRunner` reports only `return code 2` and swallows the cause, and
-  securing HDFS did not change it. Metadata, DDL, locks and the notification path all work there;
-  verify data-writing paths in the plain profile.
+  writes, but says nothing about distributed execution.
 
 ## Hortonworks front door
 
@@ -140,6 +137,26 @@ The reason is in the proxy log:
 ```bash
 docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ```
+
+## MapReduce under Kerberos
+
+Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind
+`return code 2`:
+
+- **A delegation-token renewer.** MapReduce collects HDFS tokens before starting a job and names a
+  renewer for them; with none configured it fails with `Can't get Master Kerberos principal for use
+  as renewer`. There is no ResourceManager here, so `yarn.resourcemanager.principal` points at
+  HiveServer2 itself. It must be in `core-site.xml` — `hive-site.xml` does not reach the job's
+  `Configuration`.
+- **Hadoop's native libraries.** A secure shuffle goes through `SecureIOUtils`, which refuses to
+  run without them (`Secure IO is not possible without native code extensions`). The Maven-resolved
+  classpath carries Java classes only, so the image copies `lib/native` from the matching Hadoop
+  distribution image.
+
+Those libraries are built for x86_64 only. On an arm64 host (Apple Silicon) they cannot load, so
+the HiveServer2 service runs emulated: `HS2_PLATFORM=linux/amd64` in `.env.kerberos`. Emulation
+makes it noticeably slower, and it is only needed for the Kerberos profile — the plain profile has
+no secure shuffle and runs natively.
 
 ## Notes that cost time to find
 

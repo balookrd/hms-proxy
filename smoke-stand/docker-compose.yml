@@ -174,6 +174,9 @@ services:
     build:
       context: ./hs2
     image: hms-stand/hiveserver2:3.1.3
+    # Hadoop ships its native libraries for x86_64 only, and a kerberized local MapReduce shuffle
+    # cannot run without them. On an arm64 host the whole service therefore runs emulated.
+    platform: ${HS2_PLATFORM:-linux/arm64}
     container_name: stand-hs2
     depends_on:
       proxy:

@@ -1,5 +1,13 @@
 # HiveServer2 for the SQL layer of the stand. Hive 3.1.x targets Java 8.
+#
+# Hadoop's native libraries come from the matching distribution image. A kerberized cluster needs
+# them: the local MapReduce shuffle goes through SecureIOUtils, which refuses to work without them
+# ("Secure IO is not possible without native code extensions") and leaves only "return code 2"
+# behind. The Maven-resolved classpath ships Java classes alone.
+FROM bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8 AS hadoop-native
+
 FROM eclipse-temurin:8-jdk
+COPY --from=hadoop-native /opt/hadoop-3.1.3/lib/native /opt/hs2/native
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends krb5-user netcat-openbsd procps \
