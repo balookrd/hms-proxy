@@ -145,6 +145,12 @@ public final class HmsMetastoreSmokeCli {
     String table = lockLevel == LockLevel.DB ? cli.get("table") : cli.required("table");
     String partition = lockLevel == LockLevel.PARTITION ? cli.required("partition") : cli.get("partition");
 
+    // A second component, typically in another catalog. Hive builds such a request for any query
+    // reading more than one database, but the smoke CLI otherwise sends one component per request
+    // and never produces that shape - which is how the proxy shipped refusing it.
+    String secondDb = cli.get("second-db");
+    String secondTable = cli.get("second-table");
+
     if (!TXN_CLOSE_ABORT.equals(closeTxn)
         && !TXN_CLOSE_COMMIT.equals(closeTxn)
         && !TXN_CLOSE_NONE.equals(closeTxn)) {
@@ -167,6 +173,11 @@ public final class HmsMetastoreSmokeCli {
       try {
         LockRequest request = buildLockRequest(
             db, table, partition, user, host, agentInfo, txnId, lockType, lockLevel, operationType, transactional);
+        if (secondDb != null && !secondDb.isBlank()) {
+          request.addToComponent(
+              buildLockComponent(secondDb, secondTable, null, lockType, lockLevel, operationType, transactional));
+          System.out.println("lock request spans two namespaces: " + db + " and " + secondDb);
+        }
         LockResponse lockResp = thriftClient.lock(request);
         System.out.println("lock lockId=" + lockResp.getLockid() + " state=" + lockResp.getState());
 
@@ -259,6 +270,24 @@ public final class HmsMetastoreSmokeCli {
       DataOperationType operationType,
       boolean transactional
   ) {
+    LockComponent component =
+        buildLockComponent(db, table, partition, lockType, lockLevel, operationType, transactional);
+    // A mutable list: the caller may append a component of a second namespace.
+    LockRequest request = new LockRequest(new ArrayList<>(List.of(component)), user, host);
+    request.setTxnid(txnId);
+    request.setAgentInfo(agentInfo);
+    return request;
+  }
+
+  private static LockComponent buildLockComponent(
+      String db,
+      String table,
+      String partition,
+      LockType lockType,
+      LockLevel lockLevel,
+      DataOperationType operationType,
+      boolean transactional
+  ) {
     LockComponent component = new LockComponent(lockType, lockLevel, db);
     if (table != null && !table.isBlank()) {
       component.setTablename(table);
@@ -268,11 +297,7 @@ public final class HmsMetastoreSmokeCli {
     }
     component.setOperationType(operationType);
     component.setIsTransactional(transactional);
-
-    LockRequest request = new LockRequest(List.of(component), user, host);
-    request.setTxnid(txnId);
-    request.setAgentInfo(agentInfo);
-    return request;
+    return component;
   }
 
   private static <E extends Enum<E>> E parseEnumOption(String optionName, String value, Class<E> enumClass) {
@@ -552,6 +577,8 @@ public final class HmsMetastoreSmokeCli {
           --transactional true|false            default: false
           --table smoke_managed_tbl             required for TABLE/PARTITION
           --partition p=2026-04-01              required for PARTITION
+          --second-db apache__default           optional second component, usually another catalog
+          --second-table smoke_read_tbl         optional table of the second component
           --user smoke-user                     optional
           --host localhost                      optional
           --agent-info hms-proxy-smoke-cli      optional

@@ -27,6 +27,7 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `txn` | any | mixed backends | `KERBEROS` | same txn family plus authenticated front door | Should pass when Kerberos login and, if enabled, backend impersonation are configured correctly. |
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `SHARED_READ` + `DB` + `NO_TXN` | Should pass; confirms the synthetic shim for `CREATE TABLE`-style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
+| Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
@@ -241,6 +242,16 @@ The automated runner keeps the view block enabled by default with
 `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
 `HMS_SMOKE_SQL_RUN_UDF=true` and uses `HMS_SMOKE_SQL_UDF_CLASS`
 (default: `org.apache.hadoop.hive.ql.udf.UDFReverse`).
+
+Two joins exercise the lock path that a single-namespace statement never reaches, because Hive
+locks every table of a statement in one request:
+
+- `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default `true`) joins the two read tables across
+  catalogs. The proxy routes that lock request by one catalog and drops the other components;
+  a proxy that cannot split it fails the query with `Error in acquiring locks`.
+- `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default `false`) joins two databases of one catalog,
+  where both components reach the same backend and each must be rewritten to its own database. It
+  is off by default because, unlike every other block here, it creates a database.
 
 ```sql
 use hdp__default;

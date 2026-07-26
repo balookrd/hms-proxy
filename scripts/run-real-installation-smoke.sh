@@ -312,6 +312,50 @@ run_db_lock_smoke() {
   run_cli "non-default DB lock smoke" "lock" "${args[@]}"
 }
 
+# A lock request whose components name two catalogs - the shape Hive builds for any query reading
+# across them. The proxy routes it by one catalog and drops the other components; this checks the
+# call succeeds at all, which it did not before the request was split.
+run_cross_catalog_lock_smoke() {
+  local second_db="${HMS_SMOKE_CROSS_CATALOG_LOCK_DB:-}"
+  if [[ -z "${second_db}" ]]; then
+    log "skipping cross-catalog lock smoke because HMS_SMOKE_CROSS_CATALOG_LOCK_DB is not set"
+    return
+  fi
+
+  require_var HMS_SMOKE_TXN_DB
+
+  local -a args=()
+  # The first component belongs to the default catalog, which owns the TxnHandler and keeps the
+  # real lock; the second one is what the proxy has to drop rather than refuse.
+  args+=("--db" "${HMS_SMOKE_TXN_DB}")
+  args+=("--second-db" "${second_db}")
+  if [[ -n "${HMS_SMOKE_CROSS_CATALOG_LOCK_TABLE:-}" ]]; then
+    args+=("--second-table" "${HMS_SMOKE_CROSS_CATALOG_LOCK_TABLE}")
+  fi
+  args+=("--lock-type" "${HMS_SMOKE_CROSS_CATALOG_LOCK_TYPE:-SHARED_READ}")
+  args+=("--lock-level" "${HMS_SMOKE_CROSS_CATALOG_LOCK_LEVEL:-DB}")
+  args+=("--operation-type" "${HMS_SMOKE_CROSS_CATALOG_LOCK_OPERATION_TYPE:-NO_TXN}")
+  args+=("--transactional" "${HMS_SMOKE_CROSS_CATALOG_LOCK_TRANSACTIONAL:-false}")
+  args+=("--heartbeat" "${HMS_SMOKE_LOCK_HEARTBEAT:-true}")
+  # Unlike the other lock scenarios this one keeps a real backend lock: the request routes by the
+  # default catalog, whose TxnHandler owns it. A metastore refuses to unlock a lock that belongs to
+  # a transaction ("Unlocking locks associated with transaction not permitted") - it is released by
+  # closing the transaction instead.
+  args+=("--unlock" "${HMS_SMOKE_CROSS_CATALOG_LOCK_UNLOCK:-false}")
+  args+=("--close-txn" "${HMS_SMOKE_CROSS_CATALOG_LOCK_CLOSE_TXN:-abort}")
+  if [[ -n "${HMS_SMOKE_USER:-}" ]]; then
+    args+=("--user" "${HMS_SMOKE_USER}")
+  fi
+  if [[ -n "${HMS_SMOKE_HOST:-}" ]]; then
+    args+=("--host" "${HMS_SMOKE_HOST}")
+  fi
+  if [[ -n "${HMS_SMOKE_AGENT_INFO:-}" ]]; then
+    args+=("--agent-info" "${HMS_SMOKE_AGENT_INFO}")
+  fi
+
+  run_cli "cross-catalog lock smoke" "lock" "${args[@]}"
+}
+
 run_partition_lock_smoke() {
   local table="${HMS_SMOKE_LOCK_TABLE:-}"
   local partition="${HMS_SMOKE_LOCK_PARTITION:-}"
@@ -528,6 +572,10 @@ run_sql_smoke() {
   local apache_external_root="${HMS_SMOKE_APACHE_EXTERNAL_ROOT:-${external_root}/${apache_catalog}}"
   local run_view_rewrite="${HMS_SMOKE_SQL_RUN_VIEW_REWRITE:-true}"
   local run_udf="${HMS_SMOKE_SQL_RUN_UDF:-true}"
+  local run_cross_catalog_join="${HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN:-true}"
+  # Off by default: unlike everything else here it creates a database, which a real installation may
+  # not allow the smoke user to do.
+  local run_cross_database_join="${HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN:-false}"
   local udf_class="${HMS_SMOKE_SQL_UDF_CLASS:-org.apache.hadoop.hive.ql.udf.UDFReverse}"
   local udf_expected_result="${HMS_SMOKE_SQL_UDF_EXPECTED_RESULT:-yxorp}"
   local run_id=""
@@ -542,6 +590,8 @@ run_sql_smoke() {
   local view_local="smoke_view_local_${run_id}"
   local view_cross="smoke_view_cross_${run_id}"
   local mv_local="smoke_mv_local_${run_id}"
+  local cross_db="${hdp_catalog}__smoke_cross_db_${run_id}"
+  local cross_db_table="smoke_cross_db_tbl_${run_id}"
   local sql_file=""
   local output_file=""
   sql_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX.sql")"
@@ -704,6 +754,41 @@ drop materialized view if exists ${mv_local};
 EOF
   fi
 
+  # One statement reading both catalogs: Hive locks every table it touches in a single request, so
+  # this is what produces a lock request whose components resolve to two namespaces. It reads only,
+  # and a proxy that cannot split such a request fails it outright with "Error in acquiring locks".
+  if [[ "${run_cross_catalog_join}" == "true" ]]; then
+    cat >> "${sql_file}" <<EOF
+
+use ${hdp_catalog}__default;
+select count(*) as cross_catalog_join_count
+from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE} h
+join ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE} a on 1=1;
+EOF
+  else
+    log "skipping cross-catalog join SQL smoke because HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN=${run_cross_catalog_join}"
+  fi
+
+  # Two databases of one catalog land on a single backend, but they are still two namespaces, and
+  # the components have to be rewritten to their own databases rather than all to one.
+  if [[ "${run_cross_database_join}" == "true" ]]; then
+    cat >> "${sql_file}" <<EOF
+
+create database if not exists ${cross_db};
+use ${cross_db};
+create table if not exists ${cross_db_table} (id int) stored as parquet;
+insert into ${cross_db_table} values (3);
+use ${hdp_catalog}__default;
+select count(*) as cross_database_join_count
+from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE} h
+join ${cross_db}.${cross_db_table} c on 1=1;
+drop table ${cross_db}.${cross_db_table};
+drop database ${cross_db};
+EOF
+  else
+    log "skipping cross-database join SQL smoke because HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN=${run_cross_database_join}"
+  fi
+
   cat >> "${sql_file}" <<EOF
 
 use ${hdp_catalog}__default;
@@ -726,6 +811,12 @@ EOF
   if [[ "${run_udf}" == "true" ]]; then
     assert_file_contains "${output_file}" "${udf_apache}"
     assert_file_contains "${output_file}" "${udf_expected_result}"
+  fi
+  if [[ "${run_cross_catalog_join}" == "true" ]]; then
+    assert_file_contains "${output_file}" "cross_catalog_join_count"
+  fi
+  if [[ "${run_cross_database_join}" == "true" ]]; then
+    assert_file_contains "${output_file}" "cross_database_join_count"
   fi
 }
 
@@ -774,6 +865,7 @@ main() {
       run_txn_smoke
       run_db_lock_smoke
       run_partition_lock_smoke
+      run_cross_catalog_lock_smoke
       run_notification_smoke
       ;;
     sql)
@@ -785,6 +877,7 @@ main() {
     locks)
       run_db_lock_smoke
       run_partition_lock_smoke
+      run_cross_catalog_lock_smoke
       ;;
     notification)
       run_notification_smoke
