@@ -196,6 +196,23 @@ no secure shuffle and runs natively.
 - Secure Hadoop wants `yarn.resourcemanager.principal` as the delegation-token renewer even with
   local MapReduce and no YARN; without it every statement fails with `Can't get Master Kerberos
   principal for use as renewer` *after* the SASL handshake has already succeeded.
+- A secure DataNode may only skip privileged ports when SASL data transfer protection is on *and*
+  the web policy is `HTTPS_ONLY`; anything else aborts with `Cannot start secure DataNode due to
+  incorrect config`. `HTTPS_ONLY` in turn needs a keystore, hence `hdfs/keystore.jks` and
+  `hdfs/truststore.jks` in the tree. They hold a self-signed certificate for a throwaway local
+  stand, and their password sits in plain sight in `hdfs/ssl-server.xml` — nothing here guards
+  anything, so do not reuse them anywhere. The certificate expires in 2036; to reissue it (note
+  `-storetype JKS`: Java 9+ `keytool` writes PKCS12 by default, and Hadoop then reports
+  `Invalid keystore format`):
+
+  ```bash
+  keytool -genkeypair -alias hdfs-stand -keyalg RSA -keysize 2048 -validity 3650 \
+    -dname "CN=hdfs-stand, OU=smoke, O=stand, L=local, ST=local, C=US" \
+    -keystore hdfs/keystore.jks -storetype JKS -storepass smokepass -keypass smokepass
+  keytool -exportcert -alias hdfs-stand -keystore hdfs/keystore.jks -storepass smokepass \
+    | keytool -importcert -alias hdfs-stand -keystore hdfs/truststore.jks -storetype JKS \
+      -storepass smokepass -noprompt
+  ```
 
 ## Kerberos and HiveServer2
 
