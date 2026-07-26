@@ -115,14 +115,14 @@ The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
 - **Not a real installation.** The metastores run from the jars vendored in `hive-metastore/`,
   without the rest of an HDP distribution: no Ranger, no Atlas, no HA. It validates protocol and
   routing behaviour, not stack integration.
-- **HDFS is not kerberized.** The Kerberos profile secures the client, HiveServer2, the proxy and
-  both metastores, but the namenode and datanode stay on simple auth, so the kerberized services
-  set `ipc.client.fallback-to-simple-auth-allowed=true`. Securing HDFS (nn/dn keytabs, SASL data
-  transfer) is a separate piece of work.
+- **No Ranger/Atlas/HA**, as above — the Kerberos profile itself is complete: the client,
+  HiveServer2, the proxy, both metastores and HDFS (namenode and datanode keytabs, SASL data
+  transfer, SPNEGO) all authenticate, and no service falls back to simple auth.
 - **No YARN/Tez.** Queries run as local MapReduce, which is enough for DDL, reads and small
-  writes, but says nothing about distributed execution. Note that MapReduce jobs fail under the
-  Kerberos profile (`LocalJobRunner` against the unsecured HDFS); metadata, locks and DDL work
-  there, but verify write paths in the plain profile.
+  writes, but says nothing about distributed execution. MapReduce jobs still fail under the
+  Kerberos profile — `LocalJobRunner` reports only `return code 2` and swallows the cause, and
+  securing HDFS did not change it. Metadata, DDL, locks and the notification path all work there;
+  verify data-writing paths in the plain profile.
 
 ## Hortonworks front door
 
