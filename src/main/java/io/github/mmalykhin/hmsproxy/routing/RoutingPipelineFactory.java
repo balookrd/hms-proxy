@@ -49,7 +49,7 @@ final class RoutingPipelineFactory {
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
         routingHandler);
     LockHandler lockHandler = new LockHandler(
-        syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
+        config, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
     InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
     return new Pipeline(syntheticReadLockManager, backendRoutingController, routingHandler, chain);
   }

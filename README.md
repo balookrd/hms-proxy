@@ -68,7 +68,7 @@ Routing is then decided like this:
 | Object-scoped reads and writes | Prefer explicit proxy `catName`. Otherwise parse external `dbName` / `fullTableName` such as `catalog2__sales`. Otherwise use `routing.default-catalog` for compatibility. | Routed to `routing.default-catalog`. |
 | Session-level and global reads | Use `routing.default-catalog`. | Routed to `routing.default-catalog`. |
 | ACID RPCs whose payload still names an object | Route by that payload, for example `dbName` or `fullTableName` in `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, or `add_dynamic_partitions`. | If no routable object namespace remains, fall through to the next row. |
-| Txn / lock lifecycle RPCs that only carry ids | Pin to `routing.default-catalog`, for example `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, and `heartbeat`. | Routed to `routing.default-catalog`; non-ACID `SELECT` and eligible `NO_TXN` DDL locks on non-default catalogs can use the synthetic shim. |
+| Txn / lock lifecycle RPCs that only carry ids | Pin to `routing.default-catalog`, for example `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, and `heartbeat`. | Routed to `routing.default-catalog`; non-ACID `SELECT`, eligible `NO_TXN` DDL and non-transactional write locks on non-default catalogs can use the synthetic shim. |
 | Global writes and catalog-registry changes | Require exactly one owned namespace in a multi-catalog deployment. | If that ownership is ambiguous, the proxy fails safely instead of guessing a target catalog. |
 
 If a request carries a backend `catName` such as `hive` instead of a proxy catalog id, the proxy
@@ -100,7 +100,7 @@ These switches change client-visible names or SQL text, not backend selection:
 | Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
 | Read-only service APIs missing on a backend (`TApplicationException UNKNOWN_METHOD` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. A backend that *has* the method but fails the call (any other `TApplicationException` type, transport failure, or `MetaException`) is reported as an error, so an empty answer never masquerades as real ACID, lock, or privilege state. |
 | Optional service reads (`get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`) | degraded | Proxy returns an empty compatibility response on any backend failure, because these RPCs only expose optional workload-management and diagnostic state. |
-| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator. |
+| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks, eligible non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator and the shim does not serialize concurrent writers. |
 | Global write operations without clear catalog context | rejected | Proxy enforces deterministic routing and explicit namespace ownership: namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token` fail safely instead of guessing a catalog. |
 | Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog ownership is policy-managed in proxy config, not delegated to client RPCs. |
 | HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
@@ -134,7 +134,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Supported when the matching Hortonworks front-door and backend runtime jars are configured. |
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
 | HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
-| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT` and `NO_TXN` DDL locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
+| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT`, `NO_TXN` DDL and non-transactional write (`INSERT`/`UPDATE`/`DELETE`) locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
 | Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
 | Clients attempting mutations without explicit namespace ownership or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Safely failed by design to preserve deterministic routing, explicit namespace ownership, and no silent split-brain writes. |
 <!-- END GENERATED: capability-matrix -->
@@ -145,8 +145,9 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 - this keeps Spark/Hive compatibility while still preserving deterministic routing and avoiding silent split-brain metadata writes
 - in practice this means ACID write lifecycle is supported only for the default catalog unless the
   request payload itself carries routable namespace information such as `dbName` or `fullTableName`
-- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks and eligible non-transactional
-  `NO_TXN` DDL locks for non-default catalogs so HiveServer2 read and non-ACID DDL paths stop
+- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks, eligible non-transactional
+  `NO_TXN` DDL locks and non-transactional write locks (`INSERT`, `UPDATE`, `DELETE`) for
+  non-default catalogs so HiveServer2 read, non-ACID DDL and non-ACID `INSERT` paths stop
   depending on backend txn state alignment
 - that synthetic lock state is in-memory by default and can be moved to ZooKeeper for multi-instance
   proxy failover, but it still does not make ACID writes or write-id coordination multi-catalog safe
@@ -471,7 +472,7 @@ Metric semantics:
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
-non-transactional `NO_TXN` DDL locks on non-default catalogs.
+non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.
 
 The bundled Grafana dashboard at `monitoring/grafana/hms-proxy-dashboard.json` includes panels for
 synthetic lock activity, handoffs, store failures, and active lock counts, plus a `store_mode`
@@ -1098,10 +1099,31 @@ delegation-token store config. If `get_delegation_token` fails with
 ### ZooKeeper storage for synthetic read locks
 
 The proxy also has a narrow synthetic lock shim for non-default catalogs. It covers
-non-ACID `SHARED_READ` `SELECT` locks and eligible non-transactional `NO_TXN` DDL locks
+non-ACID `SHARED_READ` `SELECT` locks, eligible non-transactional `NO_TXN` DDL locks
 such as `CREATE TABLE` and partition rename/drop flows that Hive still runs through the
-txn/lock APIs. The proxy serves those locks locally when backend txn ids do not line up
-across catalogs. This does not turn the proxy into a distributed ACID coordinator.
+txn/lock APIs, and non-transactional write locks (`INSERT`, `UPDATE`, `DELETE`) — the locks
+Hive takes for an `INSERT` into a non-ACID table of a non-default catalog. The proxy serves
+those locks locally when backend txn ids do not line up across catalogs. This does not turn
+the proxy into a distributed ACID coordinator.
+
+Write locks are not restricted by lock type: with Hive's default
+`hive.txn.strict.locking.mode=true` an `INSERT` into a non-ACID table takes an `EXCLUSIVE`
+lock, `SHARED_WRITE` only when strict locking is off, and `INSERT OVERWRITE` is always
+`EXCLUSIVE`. A component that declares `isTransactional=true` is never synthesized: it belongs
+to an ACID table, whose write ids only the default catalog's TxnHandler can allocate, so the
+request is left to the backend and fails there. ACID tables cannot exist in a non-default
+catalog anyway — the proxy rejects `create_table` with `transactional=true` outside the default
+catalog and refuses `allocate_table_write_ids` / `get_valid_write_ids` for non-default catalogs.
+
+**The shim grants locks without checking whether they conflict.** It answers `ACQUIRED`
+immediately and never inspects other live locks, so concurrent `INSERT`, `INSERT OVERWRITE` and
+DDL statements against the same table of a non-default catalog are not serialized against each
+other, and neither are clients that reach that metastore without passing through the proxy. A
+non-default catalog therefore gives no ACID or writer-isolation guarantees; if a workload needs
+mutual exclusion, keep it in `routing.default-catalog` or serialize the writers yourself. The
+catalog access mode is still enforced: a write lock for a `READ_ONLY` catalog, or for a database
+outside `catalog.<name>.write-db-whitelist`, is rejected with a `MetaException` instead of being
+synthesized.
 
 Eligibility is decided over every `LockComponent` of the request, not just the first one. A
 `lock` call is acquired, routed, and acknowledged as a single unit, so a request whose
@@ -1109,8 +1131,14 @@ components span more than one namespace is rejected with an explicit `MetaExcept
 letting the proxy swallow or rewrite the components of the other databases. Split such a call
 into one lock request per namespace.
 
+Hive's `_dummy_database._dummy_table` pseudo source is the one exception: `INSERT ... VALUES`
+and FROM-less queries lock it next to the real target table, so such a request always names two
+databases. That pseudo table exists in no metastore and there is nothing to lock on it, so the
+proxy skips it when it decides both the namespace and the shim eligibility of a lock request. A
+request that names only the pseudo source still follows the default-catalog pin.
+
 `synthetic-read-lock.store.mode` must be set explicitly — there is no default. Use `IN_MEMORY`
-for single-instance deployments (non-default catalog SELECT locks are lost on proxy restart or
+for single-instance deployments (non-default catalog synthetic locks are lost on proxy restart or
 load-balancer failover, and the proxy logs a `WARN` on startup to surface that), or `ZOOKEEPER`
 for HA / load-balanced deployments so `check_lock`, `unlock`, `heartbeat`, `commit_txn`, and
 `abort_txn` can continue through a different proxy instance after the first one dies.

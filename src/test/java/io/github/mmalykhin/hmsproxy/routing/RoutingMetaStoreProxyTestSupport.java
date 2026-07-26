@@ -690,6 +690,52 @@ final class RoutingMetaStoreProxyTestSupport {
     return request;
   }
 
+  static LockRequest syntheticWriteLockRequest(
+      String dbName,
+      String tableName,
+      long txnId,
+      LockType lockType,
+      DataOperationType operationType
+  ) {
+    LockRequest request = writeLockRequest(dbName, tableName, txnId, lockType, operationType);
+    request.getComponent().get(0).setIsTransactional(false);
+    return request;
+  }
+
+  static LockRequest transactionalWriteLockRequest(
+      String dbName,
+      String tableName,
+      long txnId,
+      LockType lockType,
+      DataOperationType operationType
+  ) {
+    LockRequest request = writeLockRequest(dbName, tableName, txnId, lockType, operationType);
+    request.getComponent().get(0).setIsTransactional(true);
+    return request;
+  }
+
+  private static LockRequest writeLockRequest(
+      String dbName,
+      String tableName,
+      long txnId,
+      LockType lockType,
+      DataOperationType operationType
+  ) {
+    LockComponent component = new LockComponent();
+    component.setType(lockType);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+    component.setOperationType(operationType);
+
+    LockRequest request = new LockRequest();
+    request.setComponent(List.of(component));
+    request.setTxnid(txnId);
+    request.setUser("alice");
+    request.setHostname("host");
+    return request;
+  }
+
   static LockRequest syntheticNoTxnDbLockRequest(String dbName, long txnId) {
     LockComponent component = new LockComponent();
     component.setType(LockType.SHARED_READ);
@@ -726,6 +772,33 @@ final class RoutingMetaStoreProxyTestSupport {
     request.setUser("alice");
     request.setHostname("host");
     return request;
+  }
+
+  /** The pseudo source Hive locks for {@code INSERT ... VALUES}; it exists in no metastore. */
+  static LockComponent hiveDummySourceLockComponent() {
+    LockComponent component = new LockComponent();
+    component.setType(LockType.SHARED_READ);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname("_dummy_database");
+    component.setTablename("_dummy_table");
+    component.setOperationType(DataOperationType.SELECT);
+    return component;
+  }
+
+  static LockComponent writeLockComponent(
+      LockType lockType,
+      DataOperationType operationType,
+      String dbName,
+      String tableName
+  ) {
+    LockComponent component = new LockComponent();
+    component.setType(lockType);
+    component.setLevel(LockLevel.TABLE);
+    component.setDbname(dbName);
+    component.setTablename(tableName);
+    component.setOperationType(operationType);
+    component.setIsTransactional(false);
+    return component;
   }
 
   static LockComponent noTxnLockComponent(LockType lockType, String dbName, String tableName) {

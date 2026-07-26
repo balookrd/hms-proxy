@@ -12,7 +12,17 @@ import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
 
 public final class NamespaceTranslator {
+  /**
+   * Hive's built-in pseudo source for {@code INSERT ... VALUES} and FROM-less queries. It exists in
+   * no metastore, so a reference to it carries no namespace to route by.
+   */
+  public static final String DUMMY_DATABASE = "_dummy_database";
+
   private NamespaceTranslator() {}
+
+  public static boolean isDummySourceDbName(String dbName) {
+    return DUMMY_DATABASE.equals(dbName);
+  }
 
   public static Object externalizeResult(Object value, CatalogRouter.ResolvedNamespace namespace) {
     return externalizeResult(value, namespace, false);

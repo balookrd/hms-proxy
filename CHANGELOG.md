@@ -10,6 +10,27 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ### Added
 
+- The synthetic lock shim now also serves non-transactional write locks
+  (`INSERT`, `UPDATE`, `DELETE`) for non-default catalogs, so an `INSERT` into a
+  non-ACID table of a non-default catalog no longer fails with
+  `Error in acquiring locks: No record of transaction txnid:NN could be found`.
+  Hive opens the transaction against the default catalog's TxnHandler while the
+  lock is routed by namespace to another metastore, which has no record of that
+  transaction. The lock type is not restricted, because Hive takes `EXCLUSIVE`
+  for an `INSERT` into a non-ACID table under the default
+  `hive.txn.strict.locking.mode=true`. Components declaring
+  `isTransactional=true` are still left to the backend. As with the existing
+  `SELECT` and `NO_TXN` DDL cases, these locks are granted without any conflict
+  checking: a non-default catalog gives no writer isolation. Catalog access mode
+  is enforced — a write lock for a `READ_ONLY` catalog or for a database outside
+  `catalog.<name>.write-db-whitelist` is rejected.
+- Lock requests no longer route or reject on Hive's `_dummy_database._dummy_table`
+  pseudo source. `INSERT ... VALUES` locks it next to the real target table, so such
+  a request named two databases and was rejected as spanning multiple namespaces.
+  The pseudo table exists in no metastore and there is nothing to lock on it, so it
+  is skipped when the proxy picks the namespace and the shim eligibility of a lock
+  request; a request naming only the pseudo source still follows the default pin.
+
 - Bounded front-door client socket lifetime. Accepted connections now get a read
   timeout (`server.client-socket-timeout-ms`, default `600000`, `0` disables) and
   tunable TCP keepalive (`server.tcp-keepalive`, `server.tcp-keepalive-idle-seconds`,
