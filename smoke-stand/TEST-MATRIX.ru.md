@@ -103,6 +103,7 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G14 | Таблица default-каталога под prefix `apache` → чистый 404 | ✅ | n/a |
 | G15 | Внешнее имя `apache__default`, использованное как namespace под prefix `apache` → чистый 404 | ✅ | n/a |
 | G16 | Обычная Hive-таблица второго каталога (`smoke_read_ap`) не видна в листинге под prefix `apache` | ✅ | n/a |
+| G17 | REST-метрики (`requests_total`, `listener_info`) видны на management-endpoint `/metrics` | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -140,6 +141,10 @@ HDP-клиент не может пользоваться Apache-listener — Th
   Дополнительный прогон в тот же день добавил и прошёл строки G12-G16 про федерацию и изоляцию:
   federated-имя под default-prefix (включая листинг и load) и чистые 404 на каждую
   кросс-каталожную форму.
+  Ещё позже jar `1.0.20-eec20f1a` добавил строку G17: с `HMS_SMOKE_REST_METRICS_URL`, указывающим
+  на management-endpoint стенда, оба прогона — `--scenario rest` и `--scenario all` — забрали его
+  curl'ом и подтвердили, что серии `hms_proxy_rest_requests_total` и `hms_proxy_rest_listener_info`
+  присутствуют и заполнены после того, как отработали REST-проверки.
 
 ## Две оговорки честности
 

@@ -45,6 +45,12 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   остальных каталогов под именами `<catalog><separator><db>`) для
   совместимости; любой другой prefix — чистое, per-catalog представление, в
   которое эти federated-имена не просачиваются.
+- Iceberg REST frontend теперь покрыт Prometheus-метриками:
+  `hms_proxy_rest_requests_total{prefix,route,status}`,
+  `hms_proxy_rest_request_duration_seconds{prefix,route}` и
+  `hms_proxy_rest_listener_info{bind_host,port}`. `--scenario rest` в
+  smoke-раннерах проверяет, что management-endpoint `/metrics` несёт первую и
+  третью серии, если задан `HMS_SMOKE_REST_METRICS_URL`.
 
 ### Исправлено
 

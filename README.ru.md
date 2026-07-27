@@ -444,6 +444,9 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_rest_requests_total{prefix,route,status}`
+- `hms_proxy_rest_request_duration_seconds{prefix,route}`
+- `hms_proxy_rest_listener_info{bind_host,port}`
 
 Пример Prometheus scrape config:
 
@@ -474,6 +477,9 @@ scrape_configs:
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
 - `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
+- `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
+- `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
+- `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default
@@ -990,6 +996,10 @@ rest-catalog.port=9183
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 ```
+
+Запросы к этому listener'у покрыты Prometheus-метриками из раздела
+[Prometheus-метрики](#prometheus-метрики): `hms_proxy_rest_requests_total`,
+`hms_proxy_rest_request_duration_seconds` и `hms_proxy_rest_listener_info`.
 
 ### Поддерживаемые endpoint'ы
 

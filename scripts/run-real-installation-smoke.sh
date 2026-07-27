@@ -83,6 +83,9 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_SECOND_NON_ICEBERG_TABLE  plain Hive table of the second catalog that must NOT
                                          appear in its REST listing
   HMS_SMOKE_REST_SEPARATOR               catalog-db separator of the proxy; default: __
+  HMS_SMOKE_REST_METRICS_URL             management /metrics endpoint; when set, the REST smoke
+                                         checks it carries hms_proxy_rest_requests_total and
+                                         hms_proxy_rest_listener_info series
 EOF
 
   cat <<'EOF'
@@ -1043,6 +1046,15 @@ run_rest_smoke() {
       grep -q '"metadata-location"' "${body}" \
         || fail "federated load carries no metadata-location: $(cat "${body}")"
     fi
+  fi
+
+  local metrics_url="${HMS_SMOKE_REST_METRICS_URL:-}"
+  if [[ -n "${metrics_url}" ]]; then
+    curl -sS -o "${body}" "${metrics_url}" || fail "cannot fetch metrics from ${metrics_url}"
+    grep -q 'hms_proxy_rest_requests_total{' "${body}" \
+      || fail "metrics endpoint carries no hms_proxy_rest_requests_total series"
+    grep -q 'hms_proxy_rest_listener_info{' "${body}" \
+      || fail "metrics endpoint carries no hms_proxy_rest_listener_info series"
   fi
 
   log "Iceberg REST smoke passed (prefix '${prefix}', namespace '${namespace}')"

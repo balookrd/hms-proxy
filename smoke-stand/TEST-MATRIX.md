@@ -103,6 +103,7 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | n/a |
 | G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | n/a |
 | G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
+| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -138,6 +139,10 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   run too, in the same `--scenario rest` and `--scenario all` passes. A follow-up run the same
   day added and passed the federation/isolation rows G12-G16: the federated name under the
   default prefix (listing and load included) and clean 404s for every cross-catalog shape.
+  Later still, jar `1.0.20-eec20f1a` added row G17: with `HMS_SMOKE_REST_METRICS_URL` set to the
+  stand's management endpoint, both `--scenario rest` and `--scenario all` fetched it with curl
+  and confirmed the `hms_proxy_rest_requests_total` and `hms_proxy_rest_listener_info` series were
+  present and populated after the REST checks ran.
 
 ## Two caveats on faithfulness
 

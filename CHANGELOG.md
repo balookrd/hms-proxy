@@ -43,6 +43,12 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   federated view (its own databases plus every other catalog's databases
   under `<catalog><separator><db>` names) for compatibility; every other
   prefix is a clean, per-catalog view where those federated names never leak.
+- The Iceberg REST frontend is now covered by Prometheus metrics:
+  `hms_proxy_rest_requests_total{prefix,route,status}`,
+  `hms_proxy_rest_request_duration_seconds{prefix,route}`, and
+  `hms_proxy_rest_listener_info{bind_host,port}`. `--scenario rest` in the
+  smoke runners checks the management `/metrics` endpoint carries the first
+  and third series when `HMS_SMOKE_REST_METRICS_URL` is set.
 
 ### Fixed
 

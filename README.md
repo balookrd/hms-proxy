@@ -442,6 +442,9 @@ Current Prometheus metrics:
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_rest_requests_total{prefix,route,status}`
+- `hms_proxy_rest_request_duration_seconds{prefix,route}`
+- `hms_proxy_rest_listener_info{bind_host,port}`
 
 Example Prometheus scrape config:
 
@@ -472,6 +475,9 @@ Metric semantics:
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 - `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
+- `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
+- `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
+- `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.
@@ -992,6 +998,10 @@ rest-catalog.port=9183
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 ```
+
+Requests to this listener are covered by the Prometheus metrics described in
+[Prometheus metrics](#prometheus-metrics): `hms_proxy_rest_requests_total`,
+`hms_proxy_rest_request_duration_seconds`, and `hms_proxy_rest_listener_info`.
 
 ### Supported endpoints
 
