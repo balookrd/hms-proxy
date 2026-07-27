@@ -37,7 +37,7 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.tables.put("sales.orders", RecordingThriftIface.table("sales", "orders"));
 
     ProxyConfig config = buildConfig();
-    service = new IcebergRestService(config, delegate.iface);
+    service = new IcebergRestService(CATALOG_NAME, delegate.iface, null);
     server = RestCatalogServer.open(config, service);
     Assert.assertNotNull("server must start", server);
   }

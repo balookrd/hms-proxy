@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
-import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Objects;
@@ -24,34 +23,39 @@ import org.apache.iceberg.rest.responses.ErrorResponse;
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";
 
-  private final ProxyConfig config;
+  private final String catalogName;
   private final RoutingHiveCatalog catalog;
   private final RESTCatalogAdapter adapter;
 
-  public IcebergRestService(ProxyConfig config, ThriftHiveMetastore.Iface delegate) {
-    this.config = Objects.requireNonNull(config, "config");
+  public IcebergRestService(
+      String catalogName,
+      ThriftHiveMetastore.Iface delegate,
+      CatalogNameTranslation translationOrNull) {
+    this.catalogName = Objects.requireNonNull(catalogName, "catalogName");
     Objects.requireNonNull(delegate, "delegate");
-    IMetaStoreClient client = RoutingMetaStoreClient.create(delegate);
+    IMetaStoreClient client = RoutingMetaStoreClient.create(delegate, translationOrNull);
     this.catalog = new RoutingHiveCatalog(client, new Configuration());
-    this.catalog.initialize(
-        config.defaultCatalog(),
-        Map.of(CatalogProperties.URI, UNUSED_URI));
+    this.catalog.initialize(catalogName, Map.of(CatalogProperties.URI, UNUSED_URI));
     this.adapter = new RESTCatalogAdapter(catalog);
+  }
+
+  public String catalogName() {
+    return catalogName;
   }
 
   /** True when the prefix segment in the request URL maps to a known catalog we can serve. */
   public boolean supportsPrefix(String prefix) {
-    return prefix != null && prefix.equals(config.defaultCatalog());
+    return prefix != null && prefix.equals(catalogName);
   }
 
   /**
    * Returns the GET /v1/config response that Iceberg clients use for discovery.
-   * Setting overrides.prefix locks the client to the proxy's default catalog
-   * so all subsequent /v1/{prefix}/... requests land here.
+   * Setting overrides.prefix locks the client to this service's catalog so all
+   * subsequent /v1/{prefix}/... requests land here.
    */
   public ConfigResponse loadConfig() {
     return ConfigResponse.builder()
-        .withOverride("prefix", config.defaultCatalog())
+        .withOverride("prefix", catalogName)
         .build();
   }
 

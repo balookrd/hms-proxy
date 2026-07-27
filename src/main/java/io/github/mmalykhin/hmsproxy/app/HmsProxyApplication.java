@@ -58,7 +58,8 @@ public final class HmsProxyApplication {
         try (AdditionalFrontendThriftServers extras =
             AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity);
              IcebergRestService restService =
-                 config.restCatalog().enabled() ? new IcebergRestService(config, proxy) : null;
+                 config.restCatalog().enabled()
+                     ? new IcebergRestService(config.defaultCatalog(), proxy, null) : null;
              RestCatalogServer restServer = RestCatalogServer.open(config, restService)) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server, teardownComplete, config.server().shutdownTimeoutSeconds());
