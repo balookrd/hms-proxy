@@ -127,6 +127,19 @@ public final class PrometheusMetrics {
       "hms_proxy_synthetic_read_lock_store_info",
       "Configured synthetic read-lock store mode for this proxy instance",
       List.of("store_mode"));
+  private final Counter restRequestsTotal = new Counter(
+      "hms_proxy_rest_requests_total",
+      "Total Iceberg REST requests by catalog prefix, route, and terminal HTTP status",
+      List.of("prefix", "route", "status"));
+  private final Histogram restRequestDurationSeconds = new Histogram(
+      "hms_proxy_rest_request_duration_seconds",
+      "Iceberg REST request duration in seconds",
+      List.of("prefix", "route"),
+      REQUEST_DURATION_BUCKETS);
+  private final Gauge restListenerInfo = new Gauge(
+      "hms_proxy_rest_listener_info",
+      "Configured Iceberg REST listener bind host and port for this proxy instance",
+      List.of("bind_host", "port"));
 
   public void recordRequest(String method, String catalog, String backend, String status, double durationSeconds) {
     requestsTotal.inc(labels("method", method, "catalog", catalog, "backend", backend, "status", status));
@@ -276,6 +289,15 @@ public final class PrometheusMetrics {
     syntheticReadLockStoreInfo.set(labels("store_mode", storeMode), 1.0);
   }
 
+  public void recordRestRequest(String prefix, String route, int status, double durationSeconds) {
+    restRequestsTotal.inc(labels("prefix", prefix, "route", route, "status", String.valueOf(status)));
+    restRequestDurationSeconds.observe(labels("prefix", prefix, "route", route), durationSeconds);
+  }
+
+  public void setRestListenerInfo(String bindHost, int port) {
+    restListenerInfo.set(labels("bind_host", bindHost, "port", String.valueOf(port)), 1.0);
+  }
+
   // Declared last so every metric field above is already initialized; render order is the
   // exposition order of /metrics.
   private final List<Metric> exposedMetrics = List.of(
@@ -299,7 +321,10 @@ public final class PrometheusMetrics {
       syntheticReadLockStoreFailuresTotal,
       syntheticReadLockHandoffsTotal,
       syntheticReadLocksActive,
-      syntheticReadLockStoreInfo);
+      syntheticReadLockStoreInfo,
+      restRequestsTotal,
+      restRequestDurationSeconds,
+      restListenerInfo);
 
   public String render() {
     int estimatedSize = 0;

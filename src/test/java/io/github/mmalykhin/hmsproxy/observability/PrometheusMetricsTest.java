@@ -48,6 +48,23 @@ public class PrometheusMetricsTest {
   }
 
   @Test
+  public void rendersRestListenerSeriesAfterRecordingRestRequestsAndListenerInfo() {
+    PrometheusMetrics metrics = new PrometheusMetrics();
+
+    metrics.recordRestRequest("hdp", "load_table", 200, 0.05);
+    metrics.setRestListenerInfo("0.0.0.0", 9183);
+
+    String rendered = metrics.render();
+
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_rest_requests_total{prefix=\"hdp\",route=\"load_table\",status=\"200\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_rest_request_duration_seconds_count{prefix=\"hdp\",route=\"load_table\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_rest_listener_info{bind_host=\"0.0.0.0\",port=\"9183\"} 1"));
+  }
+
+  @Test
   public void unknownExceptionTypesCollapseIntoOtherLabel() {
     PrometheusMetrics metrics = new PrometheusMetrics();
 
