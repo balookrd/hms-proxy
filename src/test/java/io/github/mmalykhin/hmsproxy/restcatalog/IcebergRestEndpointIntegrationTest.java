@@ -8,6 +8,7 @@ import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,15 +16,29 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.hadoop.HadoopOutputFile;
+import org.apache.iceberg.types.Types;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 public class IcebergRestEndpointIntegrationTest {
   private static final String CATALOG_NAME = "catalog1";
   private static final String CATALOG2_NAME = "catalog2";
   private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(5);
+
+  @Rule
+  public TemporaryFolder tempFolder = new TemporaryFolder();
 
   private RecordingThriftIface delegate;
   private IcebergRestServices services;
@@ -43,8 +58,20 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.tablesByDatabase.put("sales", List.of("orders", "shipments"));
     delegate.tables.put("sales.orders", RecordingThriftIface.table("sales", "orders"));
     delegate.tables.put("sales.shipments", RecordingThriftIface.table("sales", "shipments"));
+
+    // "t1" and "events" carry a real metadata_location (unlike "orders"/"shipments" above,
+    // which are deliberately non-loadable so loadingNonIcebergTableReturnsErrorResponse has
+    // a plain Hive table to exercise), so the exists routes can genuinely resolve them to a
+    // valid Iceberg table rather than tripping NoSuchTableException on the missing metadata.
+    Table t1 = RecordingThriftIface.table("default", "t1");
+    t1.getParameters().put("metadata_location", writeIcebergTableMetadata("t1"));
+    delegate.tablesByDatabase.put("default", List.of("t1"));
+    delegate.tables.put("default.t1", t1);
+
+    Table events = RecordingThriftIface.table("catalog2__default", "events");
+    events.getParameters().put("metadata_location", writeIcebergTableMetadata("events"));
     delegate.tablesByDatabase.put("catalog2__default", List.of("events"));
-    delegate.tables.put("catalog2__default.events", RecordingThriftIface.table("catalog2__default", "events"));
+    delegate.tables.put("catalog2__default.events", events);
 
     ProxyConfig config = buildConfig();
     services = IcebergRestServices.open(config, delegate.iface);
@@ -230,12 +257,64 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertEquals(404, get("/v1/no_such_catalog_probe/config").statusCode());
   }
 
+  @Test
+  public void headOnExistingNamespaceReturns204() throws Exception {
+    Assert.assertEquals(204, head("/v1/catalog1/namespaces/default").statusCode());
+  }
+
+  @Test
+  public void headOnMissingNamespaceReturns404() throws Exception {
+    Assert.assertEquals(404, head("/v1/catalog1/namespaces/no_such_ns_probe").statusCode());
+  }
+
+  @Test
+  public void headOnExistingTableReturns204() throws Exception {
+    Assert.assertEquals(204, head("/v1/catalog1/namespaces/default/tables/t1").statusCode());
+  }
+
+  @Test
+  public void headOnMissingTableReturns404() throws Exception {
+    Assert.assertEquals(404, head("/v1/catalog1/namespaces/default/tables/no_such_table_probe").statusCode());
+  }
+
+  @Test
+  public void headOnTableUnderSecondPrefixReturns204() throws Exception {
+    Assert.assertEquals(204, head("/v1/catalog2/namespaces/default/tables/events").statusCode());
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + server.boundPort() + path))
         .timeout(HTTP_TIMEOUT)
         .GET()
+        .build();
+    return client.send(request, HttpResponse.BodyHandlers.ofString());
+  }
+
+  // Writes a minimal but genuinely readable Iceberg table metadata.json to a local temp
+  // directory and returns its path, suitable for the "metadata_location" table parameter.
+  // HiveTableOperations.doRefresh() parses that file for real, so a table only resolves
+  // as an existing Iceberg table (and thus exists routes) when this points at valid JSON.
+  private String writeIcebergTableMetadata(String tableName) throws Exception {
+    File tableDir = tempFolder.newFolder(tableName);
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+    TableMetadata metadata = TableMetadata.newTableMetadata(
+        schema, PartitionSpec.unpartitioned(), "file://" + tableDir.getAbsolutePath(), Map.of());
+    File metadataFile = new File(tableDir, "metadata/v1.metadata.json");
+    metadataFile.getParentFile().mkdirs();
+    TableMetadataParser.write(
+        metadata,
+        HadoopOutputFile.fromPath(new Path(metadataFile.getAbsolutePath()), new Configuration()));
+    return metadataFile.getAbsolutePath();
+  }
+
+  private HttpResponse<String> head(String path) throws Exception {
+    HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:" + server.boundPort() + path))
+        .timeout(HTTP_TIMEOUT)
+        .method("HEAD", HttpRequest.BodyPublishers.noBody())
         .build();
     return client.send(request, HttpResponse.BodyHandlers.ofString());
   }
