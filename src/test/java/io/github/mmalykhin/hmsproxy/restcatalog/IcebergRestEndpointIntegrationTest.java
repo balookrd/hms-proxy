@@ -40,8 +40,9 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.databases.put("marketing", RecordingThriftIface.database("marketing"));
     delegate.databases.put("default", RecordingThriftIface.database("default"));
     delegate.databases.put("catalog2__default", RecordingThriftIface.database("catalog2__default"));
-    delegate.tablesByDatabase.put("sales", List.of("orders"));
+    delegate.tablesByDatabase.put("sales", List.of("orders", "shipments"));
     delegate.tables.put("sales.orders", RecordingThriftIface.table("sales", "orders"));
+    delegate.tables.put("sales.shipments", RecordingThriftIface.table("sales", "shipments"));
     delegate.tablesByDatabase.put("catalog2__default", List.of("events"));
     delegate.tables.put("catalog2__default.events", RecordingThriftIface.table("catalog2__default", "events"));
 
@@ -82,6 +83,18 @@ public class IcebergRestEndpointIntegrationTest {
   }
 
   @Test
+  public void listNamespacesWithPageSizeReturnsFirstPage() throws Exception {
+    // Regression test: Iceberg 1.9.2's CatalogHandlers.paginate() throws
+    // NumberFormatException on a null pageToken, which is exactly what a client requesting
+    // the first page (pageSize but no pageToken yet) sends. See IcebergHttpHandler's
+    // pageToken defaulting for the fix.
+    HttpResponse<String> response = get("/v1/" + CATALOG_NAME + "/namespaces?pageSize=1");
+    Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
+    Assert.assertTrue("response: " + response.body(),
+        response.body().contains("\"next-page-token\""));
+  }
+
+  @Test
   public void loadNamespaceReturnsDatabaseMetadata() throws Exception {
     HttpResponse<String> response = get("/v1/" + CATALOG_NAME + "/namespaces/sales");
     Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
@@ -99,6 +112,15 @@ public class IcebergRestEndpointIntegrationTest {
     HttpResponse<String> response = get("/v1/" + CATALOG_NAME + "/namespaces/sales/tables");
     Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
     Assert.assertTrue(response.body(), response.body().contains("\"orders\""));
+  }
+
+  @Test
+  public void listTablesWithPageSizeReturnsFirstPage() throws Exception {
+    // Same regression as listNamespacesWithPageSizeReturnsFirstPage but for the tables route.
+    HttpResponse<String> response = get("/v1/" + CATALOG_NAME + "/namespaces/sales/tables?pageSize=1");
+    Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
+    Assert.assertTrue("response: " + response.body(),
+        response.body().contains("\"next-page-token\""));
   }
 
   @Test

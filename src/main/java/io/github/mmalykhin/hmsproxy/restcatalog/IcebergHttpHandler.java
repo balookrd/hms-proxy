@@ -15,7 +15,6 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.rest.HTTPRequest.HTTPMethod;
 import org.apache.iceberg.rest.RESTCatalogAdapter;
 import org.apache.iceberg.rest.RESTCatalogAdapter.Route;
@@ -38,6 +37,8 @@ final class IcebergHttpHandler implements HttpHandler {
   private static final String V1_PREFIX = "/v1/";
   private static final String CONFIG_SEGMENT = "config";
   private static final String WAREHOUSE_PARAM = "warehouse";
+  private static final String PAGE_SIZE_PARAM = "pageSize";
+  private static final String PAGE_TOKEN_PARAM = "pageToken";
   private static final String UNKNOWN_PREFIX_LABEL = "unknown";
   private static final String ROUTE_CONFIG = "config";
   private static final String ROUTE_UNKNOWN_PREFIX = "unknown_prefix";
@@ -138,6 +139,13 @@ final class IcebergHttpHandler implements HttpHandler {
 
       Map<String, String> vars = new LinkedHashMap<>(queryParams);
       vars.putAll(routeAndVars.second());
+      if (vars.containsKey(PAGE_SIZE_PARAM) && !vars.containsKey(PAGE_TOKEN_PARAM)) {
+        // Iceberg 1.9.2's CatalogHandlers.paginate() parses pageToken with Integer.parseInt and
+        // throws NumberFormatException when it is absent, which is exactly the first-page request
+        // (no prior token yet). An empty token means "start from the beginning", same as a client
+        // explicitly sending pageToken=.
+        vars.put(PAGE_TOKEN_PARAM, "");
+      }
 
       RESTResponse response;
       Class<? extends RESTResponse> effectiveResponseType =
@@ -247,15 +255,5 @@ final class IcebergHttpHandler implements HttpHandler {
     try (OutputStream out = exchange.getResponseBody()) {
       out.write(bytes);
     }
-  }
-
-  private static int statusForException(RESTException e) {
-    String name = e.getClass().getSimpleName();
-    if (name.contains("NoSuch")) return 404;
-    if (name.contains("AlreadyExists")) return 409;
-    if (name.contains("NotAuthorized")) return 401;
-    if (name.contains("Forbidden")) return 403;
-    if (name.contains("Validation")) return 400;
-    return 500;
   }
 }

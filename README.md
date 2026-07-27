@@ -1019,6 +1019,9 @@ Requests to this listener are covered by the Prometheus metrics described in
 | `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
 | `GET /v1/{prefix}/namespaces/{ns}/views`              | supported (real listing, empty unless Iceberg views exist) |
 | `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported (Iceberg views only)  |
+| `HEAD /v1/{prefix}/namespaces/{ns}`                    | supported (204 if exists, 404 if not) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | supported (204 if exists, 404 if not) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | supported (204 if exists, 404 if not) |
 | `POST`, `DELETE`, commits (including view mutations)  | unsupported                     |
 
 `{prefix}` is any catalog listed in `catalogs=`: every configured catalog is

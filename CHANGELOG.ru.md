@@ -96,7 +96,9 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   (проверено на стенде: format-version 2, 21 поле метаданных). Валидация на
   стенде (`--scenario rest`, `--scenario all` и SQL-слой через оба
   HiveServer2) прошла успешно на обновлённом jar. Именно SQL-слой доказывает,
-  что пин Jackson не сломал пути Hive.
+  что пин Jackson не сломал пути Hive. Листинги также получили настоящую
+  пагинацию: `pageSize`/`pageToken` теперь учитываются, а в ответе может
+  прийти `next-page-token` — Iceberg `1.5.2` этого вообще не поддерживал.
 
 ## 2026-07-26
 

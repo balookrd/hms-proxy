@@ -1016,6 +1016,9 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан (только Iceberg-таблицы)      |
 | `GET /v1/{prefix}/namespaces/{ns}/views`              | поддержан (реальный листинг; пустой, если Iceberg-view нет) |
 | `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан (только Iceberg-view)          |
+| `HEAD /v1/{prefix}/namespaces/{ns}`                    | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | поддержан (204, если существует, 404 — если нет) |
 | `POST`, `DELETE`, commits (включая view-мутации)      | не поддержан                            |
 
 `{prefix}` — любой каталог, перечисленный в `catalogs=`: каждый настроенный

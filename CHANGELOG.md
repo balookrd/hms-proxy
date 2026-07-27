@@ -95,7 +95,9 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   validation (`--scenario rest`, `--scenario all`, and the SQL layer through
   both HiveServer2 instances) all completed successfully on the upgraded
   jar — the SQL layer is what proves the Jackson pin did not break the Hive
-  paths.
+  paths. Listings also gained real pagination: `pageSize`/`pageToken` are now
+  honored and a response can carry `next-page-token`, which Iceberg `1.5.2`
+  did not support at all.
 
 ## 2026-07-26
 
