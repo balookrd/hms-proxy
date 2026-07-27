@@ -6,6 +6,36 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-07-27
+
+### Added
+
+- The direct HMS smoke CLI takes `--second-db` / `--second-table`, appending a
+  second component to the lock request. Until now it sent exactly one component
+  per request and so could never produce the shape that broke every
+  cross-catalog query — the runner drives it as a new `cross-catalog lock`
+  step in `--scenario all` and `--scenario locks`. It defaults to
+  `--unlock false`: the surviving lock is a real one owned by the transaction,
+  and a metastore refuses to unlock those.
+- The SQL smoke runs against every configured front door. With
+  `HMS_SMOKE_BEELINE_HDP_JDBC_URL` set the whole suite repeats against a
+  HiveServer2 on the Hortonworks listener; an Apache and a Hortonworks client
+  cannot share one, because Thrift has no version negotiation.
+  `HMS_SMOKE_SQL_HDP_SESSION_INIT` carries statements that pass needs first.
+- Two joins in the SQL scenario exercise the lock path a single-namespace
+  statement never reaches: `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default
+  `true`, read-only) and `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default
+  `false`, since it creates a database).
+
+### Fixed
+
+- Two SQL smoke assertions were checking the wrong thing, which only a second
+  client exposed. The view-rewrite check compared raw text, but
+  `SHOW CREATE TABLE` quotes identifiers on a Hortonworks HiveServer2 and not on
+  an Apache one; backticks are now stripped before comparing. The cross-catalog
+  join assertions looked for a column alias, which cannot appear because the
+  runner passes `--showHeader=false`; the marker moved into the selected data.
+
 ## 2026-07-26
 
 ### Fixed

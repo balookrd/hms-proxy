@@ -854,6 +854,64 @@ method_matrix:
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#optionalServiceReadsStillFallBackOnAnyBackendFailure
 
+  - id: lock_request_namespace_split
+    method:
+      en: "`lock`"
+      ru: "`lock`"
+    apache_backend:
+      status: supported
+      en: Routed by the namespaces its own components name.
+      ru: Маршрутизируется по namespace, которые называют его собственные компоненты.
+    hdp_backend:
+      status: supported
+      en: Same component-driven routing on Hortonworks backends.
+      ru: Та же маршрутизация по компонентам на Hortonworks backend.
+    hive4_backend:
+      status: supported
+      en: Same component-driven routing on Hive 4 backends.
+      ru: Та же маршрутизация по компонентам на Hive 4 backend.
+    front_door_support:
+      en: Any front-door profile.
+      ru: Любой front-door profile.
+    routing_mode:
+      en: >-
+        Components are grouped by catalog. A request naming several catalogs is
+        routed by one of them - the default catalog whenever it is present, since
+        it owns the TxnHandler - and each surviving component is internalized
+        against its own database, so a request spanning two databases of one
+        catalog reaches the backend intact.
+      ru: >-
+        Компоненты группируются по каталогам. Запрос, назвавший несколько
+        каталогов, маршрутизируется по одному из них - по default catalog, если
+        он присутствует, так как ему принадлежит TxnHandler, - и каждый уцелевший
+        компонент внутренализуется по своей базе, поэтому запрос по двум базам
+        одного каталога доходит до backend целиком.
+    fallback_strategy:
+      en: >-
+        Components of the other catalogs are dropped from the request that
+        reaches the backend, logged, and counted by
+        `hms_proxy_lock_request_split_total`. Nothing held is lost: non-default
+        catalogs are served by the synthetic shim, which records a lock and
+        reports it acquired without ever testing for a conflict. Catalog access
+        mode is still enforced on dropped components.
+      ru: >-
+        Компоненты остальных каталогов из запроса к backend удаляются, пишутся в
+        лог и считаются метрикой `hms_proxy_lock_request_split_total`. Ничего
+        удерживаемого при этом не теряется: non-default каталоги обслуживает
+        synthetic shim, который записывает лок и отвечает «получен», ни разу не
+        проверив конфликт. Access mode каталога на отброшенных компонентах
+        по-прежнему соблюдается.
+    semantic_risk:
+      en: >-
+        Medium; a cross-catalog statement keeps a real lock only in the default
+        catalog, and the shim gives no writer isolation anywhere else
+      ru: >-
+        Средний; кросс-каталожный statement сохраняет настоящий лок только в
+        default catalog, а shim нигде больше не даёт изоляции писателей
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoCatalogsRoutesToTheDefaultCatalog
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoDatabasesOfOneCatalogKeepsEveryComponent
+
   - id: txn_lock_lifecycle_without_namespace
     method:
       en: >-
