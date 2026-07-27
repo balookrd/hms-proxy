@@ -112,7 +112,7 @@ final class IcebergHttpHandler implements HttpHandler {
       String firstSegment = slash < 0 ? trimmed : trimmed.substring(0, slash);
       String remainder = slash < 0 ? "" : trimmed.substring(slash + 1);
 
-      if (CONFIG_SEGMENT.equals(firstSegment) && remainder.isEmpty()) {
+      if (CONFIG_SEGMENT.equals(firstSegment) && remainder.isEmpty() && method == HTTPMethod.GET) {
         handleConfig(exchange, queryParams, outcome);
         return;
       }
@@ -125,7 +125,7 @@ final class IcebergHttpHandler implements HttpHandler {
         return;
       }
       outcome.prefix = service.catalogName();
-      if (CONFIG_SEGMENT.equals(remainder)) {
+      if (CONFIG_SEGMENT.equals(remainder) && method == HTTPMethod.GET) {
         // Same writer path as unprefixed /v1/config?warehouse=<catalog>, but the catalog
         // comes from the path segment instead of a query param.
         outcome.route = ROUTE_CONFIG;

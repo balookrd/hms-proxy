@@ -59,7 +59,9 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   the proxy's own handler with `overrides.prefix` for the catalog named in
   the path, instead of falling through to the vendored adapter and
   advertising every route including writes; an unknown catalog there is
-  still a 404.
+  still a 404. The config endpoint now answers only to `GET`, in both the
+  plain (`/v1/config`) and prefixed (`/v1/{prefix}/config`) form; any other
+  method gets the same 404 an unknown route gets.
 
 ### Fixed
 

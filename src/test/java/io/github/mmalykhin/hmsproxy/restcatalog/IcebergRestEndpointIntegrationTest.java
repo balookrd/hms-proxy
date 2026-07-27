@@ -263,6 +263,16 @@ public class IcebergRestEndpointIntegrationTest {
   }
 
   @Test
+  public void postToConfigReturns404() throws Exception {
+    Assert.assertEquals(404, post("/v1/config", "{}").statusCode());
+  }
+
+  @Test
+  public void postToPrefixedConfigReturns404() throws Exception {
+    Assert.assertEquals(404, post("/v1/" + CATALOG2_NAME + "/config", "{}").statusCode());
+  }
+
+  @Test
   public void headOnExistingNamespaceReturns204() throws Exception {
     Assert.assertEquals(204, head("/v1/catalog1/namespaces/default").statusCode());
   }
