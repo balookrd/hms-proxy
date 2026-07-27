@@ -77,8 +77,12 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_NON_ICEBERG_TABLE       plain Hive table that must NOT appear in the listing
   HMS_SMOKE_REST_SECOND_PREFIX           non-default catalog prefix; enables warehouse discovery
                                          and clean-view checks under it; skipped when unset
-  HMS_SMOKE_REST_SECOND_ICEBERG_TABLE    Iceberg table under the second prefix to load; skipped
-                                         when unset
+  HMS_SMOKE_REST_SECOND_ICEBERG_TABLE    Iceberg table under the second prefix to load (also
+                                         listed and loaded through the federated name under the
+                                         default prefix); skipped when unset
+  HMS_SMOKE_REST_SECOND_NON_ICEBERG_TABLE  plain Hive table of the second catalog that must NOT
+                                         appear in its REST listing
+  HMS_SMOKE_REST_SEPARATOR               catalog-db separator of the proxy; default: __
 EOF
 
   cat <<'EOF'
@@ -974,7 +978,13 @@ run_rest_smoke() {
   # Optional second prefix: proves warehouse discovery and the clean view work for a
   # non-default catalog too, not only for the one /v1/config already advertised.
   local second_prefix="${HMS_SMOKE_REST_SECOND_PREFIX:-}"
+  local separator="${HMS_SMOKE_REST_SEPARATOR:-__}"
   if [[ -n "${second_prefix}" ]]; then
+    # The second catalog's databases appear twice on purpose: under the default
+    # prefix as federated <catalog><separator><db> names, and under their own
+    # prefix as bare internal names. Both sides are asserted here.
+    local fed_ns="${second_prefix}${separator}${namespace}"
+
     code="$(rest_request GET "/v1/config?warehouse=${second_prefix}" "${body}")"
     [[ "${code}" == "200" ]] || fail "config?warehouse=${second_prefix} returned HTTP ${code}: $(cat "${body}")"
     grep -q "\"prefix\"[[:space:]]*:[[:space:]]*\"${second_prefix}\"" "${body}" \
@@ -987,15 +997,51 @@ run_rest_smoke() {
     [[ "${code}" == "200" ]] || fail "GET /v1/${second_prefix}/namespaces returned HTTP ${code}: $(cat "${body}")"
     grep -q "\[\"${namespace}\"\]" "${body}" \
       || fail "namespace '${namespace}' missing under prefix '${second_prefix}': $(cat "${body}")"
-    if grep -q "${second_prefix}__" "${body}"; then
+    if grep -q "${second_prefix}${separator}" "${body}"; then
       fail "external names leaked into the clean view of '${second_prefix}': $(cat "${body}")"
     fi
 
+    code="$(rest_request GET "/v1/${prefix}/namespaces" "${body}")"
+    [[ "${code}" == "200" ]] || fail "GET /v1/${prefix}/namespaces returned HTTP ${code}: $(cat "${body}")"
+    grep -q "\[\"${fed_ns}\"\]" "${body}" \
+      || fail "federated namespace '${fed_ns}' missing under the default prefix '${prefix}': $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${second_prefix}/namespaces/${fed_ns}" "${body}")"
+    [[ "${code}" == "404" ]] \
+      || fail "external namespace name '${fed_ns}' under prefix '${second_prefix}' expected HTTP 404, got ${code}: $(cat "${body}")"
+
+    if [[ -n "${iceberg_table}" ]]; then
+      code="$(rest_request GET "/v1/${second_prefix}/namespaces/${namespace}/tables/${iceberg_table}" "${body}")"
+      [[ "${code}" == "404" ]] \
+        || fail "default-catalog table '${iceberg_table}' under prefix '${second_prefix}' expected HTTP 404, got ${code}: $(cat "${body}")"
+    fi
+
     if [[ -n "${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE:-}" ]]; then
+      code="$(rest_request GET "/v1/${second_prefix}/namespaces/${namespace}/tables" "${body}")"
+      [[ "${code}" == "200" ]] || fail "GET tables under '${second_prefix}' returned HTTP ${code}: $(cat "${body}")"
+      grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}\"" "${body}" \
+        || fail "Iceberg table '${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}' missing from the '${second_prefix}' listing: $(cat "${body}")"
+      if [[ -n "${HMS_SMOKE_REST_SECOND_NON_ICEBERG_TABLE:-}" ]]; then
+        if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${HMS_SMOKE_REST_SECOND_NON_ICEBERG_TABLE}\"" "${body}"; then
+          fail "non-Iceberg table '${HMS_SMOKE_REST_SECOND_NON_ICEBERG_TABLE}' leaked into the '${second_prefix}' listing: $(cat "${body}")"
+        fi
+      fi
+
       code="$(rest_request GET "/v1/${second_prefix}/namespaces/${namespace}/tables/${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}" "${body}")"
       [[ "${code}" == "200" ]] || fail "REST load under '${second_prefix}' returned HTTP ${code}: $(cat "${body}")"
       grep -q '"metadata-location"' "${body}" \
         || fail "second-prefix load carries no metadata-location: $(cat "${body}")"
+
+      code="$(rest_request GET "/v1/${prefix}/namespaces/${fed_ns}/tables" "${body}")"
+      [[ "${code}" == "200" ]] || fail "GET tables of '${fed_ns}' under '${prefix}' returned HTTP ${code}: $(cat "${body}")"
+      grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}\"" "${body}" \
+        || fail "Iceberg table '${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}' missing from the federated '${fed_ns}' listing: $(cat "${body}")"
+
+      code="$(rest_request GET "/v1/${prefix}/namespaces/${fed_ns}/tables/${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}" "${body}")"
+      [[ "${code}" == "200" ]] \
+        || fail "federated load of '${fed_ns}.${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}' returned HTTP ${code}: $(cat "${body}")"
+      grep -q '"metadata-location"' "${body}" \
+        || fail "federated load carries no metadata-location: $(cat "${body}")"
     fi
   fi
 

@@ -98,6 +98,11 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | n/a |
 | G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | n/a |
 | G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | n/a |
+| G12 | Federated namespace `apache__default` stays visible under the default prefix | ✅ | n/a |
+| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | ✅ | n/a |
+| G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | n/a |
+| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | n/a |
+| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -130,7 +135,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   full green `--scenario all`).
   The same day, after the `apache` catalog's second Iceberg table (`smoke_iceberg_tbl_ap`) was
   registered on its own cluster (`namenode-b`), the new multi-catalog REST rows (G8-G11) were
-  run too, in the same `--scenario rest` and `--scenario all` passes.
+  run too, in the same `--scenario rest` and `--scenario all` passes. A follow-up run the same
+  day added and passed the federation/isolation rows G12-G16: the federated name under the
+  default prefix (listing and load included) and clean 404s for every cross-catalog shape.
 
 ## Two caveats on faithfulness
 

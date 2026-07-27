@@ -98,6 +98,11 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G9 | Неизвестный warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → чистый 400 | ✅ | n/a |
 | G10 | Чистое представление namespace под prefix `apache` показывает `default` без утечки внешних имён вида `apache__*` | ✅ | n/a |
 | G11 | Load таблицы под prefix `apache` (`smoke_iceberg_tbl_ap`, второй HDFS-кластер) возвращает `metadata-location` | ✅ | n/a |
+| G12 | Federated namespace `apache__default` остаётся виден под default-prefix | ✅ | n/a |
+| G13 | Листинг и load `smoke_iceberg_tbl_ap` через federated-имя `apache__default` под default-prefix | ✅ | n/a |
+| G14 | Таблица default-каталога под prefix `apache` → чистый 404 | ✅ | n/a |
+| G15 | Внешнее имя `apache__default`, использованное как namespace под prefix `apache` → чистый 404 | ✅ | n/a |
+| G16 | Обычная Hive-таблица второго каталога (`smoke_read_ap`) не видна в листинге под prefix `apache` | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -132,6 +137,9 @@ HDP-клиент не может пользоваться Apache-listener — Th
   В тот же день, после регистрации второй Iceberg-таблицы каталога `apache`
   (`smoke_iceberg_tbl_ap`) на её собственном кластере (`namenode-b`), были прогнаны и новые
   multi-catalog REST-строки (G8-G11) — в тех же прогонах `--scenario rest` и `--scenario all`.
+  Дополнительный прогон в тот же день добавил и прошёл строки G12-G16 про федерацию и изоляцию:
+  federated-имя под default-prefix (включая листинг и load) и чистые 404 на каждую
+  кросс-каталожную форму.
 
 ## Две оговорки честности
 
