@@ -16,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -25,6 +26,10 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.hadoop.HadoopOutputFile;
 import org.apache.iceberg.types.Types;
+import org.apache.log4j.Appender;
+import org.apache.log4j.AppenderSkeleton;
+import org.apache.log4j.Logger;
+import org.apache.log4j.spi.LoggingEvent;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -264,13 +269,9 @@ public class IcebergRestEndpointIntegrationTest {
 
   @Test
   public void headOnMissingNamespaceReturns404() throws Exception {
-    HttpResponse<String> response = head("/v1/catalog1/namespaces/no_such_ns_probe");
+    HttpResponse<String> response = headAssertingNoUnhandledServerError(
+        "/v1/catalog1/namespaces/no_such_ns_probe");
     Assert.assertEquals(404, response.statusCode());
-    // The 404 body would normally carry an ErrorResponse JSON payload; a HEAD response must not
-    // carry a body at all (RFC 9110), and the JDK HttpServer throws "stream closed" if the
-    // handler tries to write one anyway. An empty body here is exactly what proves those bytes
-    // were never written.
-    Assert.assertEquals("", response.body());
   }
 
   @Test
@@ -280,9 +281,9 @@ public class IcebergRestEndpointIntegrationTest {
 
   @Test
   public void headOnMissingTableReturns404() throws Exception {
-    HttpResponse<String> response = head("/v1/catalog1/namespaces/default/tables/no_such_table_probe");
+    HttpResponse<String> response = headAssertingNoUnhandledServerError(
+        "/v1/catalog1/namespaces/default/tables/no_such_table_probe");
     Assert.assertEquals(404, response.statusCode());
-    Assert.assertEquals("", response.body());
   }
 
   @Test
@@ -325,6 +326,52 @@ public class IcebergRestEndpointIntegrationTest {
         .method("HEAD", HttpRequest.BodyPublishers.noBody())
         .build();
     return client.send(request, HttpResponse.BodyHandlers.ofString());
+  }
+
+  // The JDK HttpServer forces contentLen to 0 for every HEAD response and never sets a
+  // Content-length header for one, regardless of what the handler passed to
+  // sendResponseHeaders(status, ...) - so neither response.body() (always "" per RFC 9110) nor
+  // the Content-Length header can tell apart sendResponseHeaders(status, -1) (no body, correct)
+  // from sendResponseHeaders(status, bytes.length) (a declared body whose write then fails with
+  // "stream closed"): both are wire-identical to the client. The one thing that does differ is
+  // that the failed write throws, which the handler's catch-all logs as "Unhandled error serving
+  // ..." at WARN. Assert on that instead: attach an appender to the handler's logger for the
+  // duration of the request and require it to have logged nothing.
+  private HttpResponse<String> headAssertingNoUnhandledServerError(String path) throws Exception {
+    Logger logger = Logger.getLogger(IcebergHttpHandler.class);
+    List<LoggingEvent> captured = new CopyOnWriteArrayList<>();
+    Appender appender = new AppenderSkeleton() {
+      @Override
+      protected void append(LoggingEvent event) {
+        captured.add(event);
+      }
+
+      @Override
+      public void close() {
+      }
+
+      @Override
+      public boolean requiresLayout() {
+        return false;
+      }
+    };
+    logger.addAppender(appender);
+    try {
+      HttpResponse<String> response = head(path);
+      // LOG.warn(...) runs synchronously on the request-handling thread, strictly after the
+      // response is already flushed to the client socket; poll briefly so a slow-to-log event
+      // is not missed, but return as soon as one shows up.
+      long deadlineNanos = System.nanoTime() + Duration.ofMillis(500).toNanos();
+      while (captured.isEmpty() && System.nanoTime() < deadlineNanos) {
+        Thread.sleep(10);
+      }
+      Assert.assertTrue(
+          "expected no server-side error log from the HEAD handler, but got: " + captured,
+          captured.isEmpty());
+      return response;
+    } finally {
+      logger.removeAppender(appender);
+    }
   }
 
   private HttpResponse<String> post(String path, String body) throws Exception {
