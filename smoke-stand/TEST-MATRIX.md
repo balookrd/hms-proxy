@@ -89,6 +89,23 @@ only path that covers the Hortonworks front door with a real client.
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
 | Concurrency / load | Every scenario is single-client. The synthetic lock shim in particular grants locks without checking conflicts, so nothing here validates writer isolation |
 
+## Revalidation log
+
+Full-matrix reruns after the table above was first filled in. Only what a rerun actually
+executed is claimed; a row not listed was not repeated and its ✅ stands on the earlier run.
+
+- **2026-07-27**, jar `1.0.4-38128c8b` (branch `feature/iceberg-rest-fe-phase1` rebased onto
+  `main`; the Iceberg REST listener stays disabled, so the Thrift path is what was under test).
+  Rerun and green: all of section A on both profiles, sections B and C on both profiles through
+  both HiveServer2 instances — except the steps their env flags keep off by default (B9
+  cross-database join, C2/C3 ACID SQL, C5 materialized view). Sections D and E were not repeated.
+  The rerun surfaced three stand/runner defects, all fixed on `main` the same day: the SQL pass
+  exhausted `server.max-worker-threads=64` (each HiveServer2 async-exec thread owns one
+  metastore connection — the limit is now 256), the B10 assertion relied on
+  `show functions like` matching a bare name that Hive 3.1.3 registers qualified, and the
+  runner's cleanup `RETURN` trap re-fired in the enclosing function after a two-pass run and
+  killed it under `set -u` after every assertion had already passed.
+
 ## Two caveats on faithfulness
 
 - The Kerberos profile is complete end to end — client → HiveServer2 → proxy → metastores → HDFS,
