@@ -3,16 +3,13 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Consumer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.rest.RESTCatalogAdapter;
-import org.apache.iceberg.rest.RESTCatalogAdapter.HTTPMethod;
 import org.apache.iceberg.rest.RESTResponse;
 import org.apache.iceberg.rest.responses.ConfigResponse;
-import org.apache.iceberg.rest.responses.ErrorResponse;
 
 /**
  * Bridges Iceberg REST calls to the proxy's ThriftHiveMetastore.Iface via a
@@ -57,14 +54,11 @@ public final class IcebergRestService implements AutoCloseable {
   }
 
   public <T extends RESTResponse> T dispatch(
-      HTTPMethod method,
-      String relativePath,
-      Map<String, String> queryParams,
+      RESTCatalogAdapter.Route route,
+      Map<String, String> vars,
       Object body,
-      Class<T> responseType,
-      Map<String, String> headers,
-      Consumer<ErrorResponse> errorHandler) {
-    return adapter.execute(method, relativePath, queryParams, body, responseType, headers, errorHandler);
+      Class<T> responseType) {
+    return adapter.handleRequest(route, vars, body, responseType);
   }
 
   @Override

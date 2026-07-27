@@ -16,7 +16,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import org.apache.iceberg.exceptions.RESTException;
-import org.apache.iceberg.rest.RESTCatalogAdapter.HTTPMethod;
+import org.apache.iceberg.rest.HTTPRequest.HTTPMethod;
+import org.apache.iceberg.rest.RESTCatalogAdapter;
 import org.apache.iceberg.rest.RESTCatalogAdapter.Route;
 import org.apache.iceberg.rest.RESTRequest;
 import org.apache.iceberg.rest.RESTResponse;
@@ -135,26 +136,18 @@ final class IcebergHttpHandler implements HttpHandler {
       Object body = readBody(exchange, route);
       Class<? extends RESTResponse> responseType = route.responseClass();
 
-      ErrorResponse[] capturedError = new ErrorResponse[1];
+      Map<String, String> vars = new LinkedHashMap<>(queryParams);
+      vars.putAll(routeAndVars.second());
+
       RESTResponse response;
       Class<? extends RESTResponse> effectiveResponseType =
           responseType == null ? RESTResponse.class : responseType;
       try {
-        response = dispatchInternal(service, method, relativePath, queryParams, body,
-            effectiveResponseType, err -> capturedError[0] = err);
-      } catch (RESTException e) {
-        // RESTCatalogAdapter always rethrows after invoking the error handler,
-        // so an error response is already captured when we get here.
-        if (capturedError[0] != null) {
-          writeErrorResponse(exchange, outcome, capturedError[0]);
-        } else {
-          writeError(exchange, outcome, 500, e.getClass().getSimpleName(), e.getMessage());
-        }
-        return;
-      }
-
-      if (capturedError[0] != null) {
-        writeErrorResponse(exchange, outcome, capturedError[0]);
+        response = service.dispatch(route, vars, body, effectiveResponseType);
+      } catch (RuntimeException e) {
+        ErrorResponse.Builder builder = ErrorResponse.builder();
+        RESTCatalogAdapter.configureResponseFromException(e, builder);
+        writeErrorResponse(exchange, outcome, builder.build());
         return;
       }
 
@@ -186,18 +179,6 @@ final class IcebergHttpHandler implements HttpHandler {
     outcome.route = ROUTE_CONFIG;
     ConfigResponse cfg = service.loadConfig();
     writeJson(exchange, outcome, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
-  }
-
-  private <T extends RESTResponse> T dispatchInternal(
-      IcebergRestService service,
-      HTTPMethod method,
-      String relativePath,
-      Map<String, String> queryParams,
-      Object body,
-      Class<T> responseType,
-      java.util.function.Consumer<ErrorResponse> errorHandler) {
-    return service.dispatch(method, relativePath, queryParams, body, responseType,
-        java.util.Map.of(), errorHandler);
   }
 
   private Object readBody(HttpExchange exchange, Route route) throws IOException {
