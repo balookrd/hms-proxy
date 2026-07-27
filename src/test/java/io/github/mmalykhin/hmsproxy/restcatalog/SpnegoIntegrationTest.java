@@ -7,6 +7,7 @@ import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -92,7 +93,7 @@ public class SpnegoIntegrationTest {
 
   @Test
   public void unauthenticatedRequestGetsNegotiateChallenge() throws Exception {
-    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null)) {
+    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null, new PrometheusMetrics())) {
       HttpResponse<String> response = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build()
           .send(HttpRequest.newBuilder()
               .uri(URI.create("http://127.0.0.1:" + server.boundPort() + "/v1/config"))
@@ -108,7 +109,7 @@ public class SpnegoIntegrationTest {
 
   @Test
   public void invalidNegotiateTokenIsRejected() throws Exception {
-    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null)) {
+    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null, new PrometheusMetrics())) {
       HttpResponse<String> response = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build()
           .send(HttpRequest.newBuilder()
               .uri(URI.create("http://127.0.0.1:" + server.boundPort() + "/v1/config"))
@@ -124,7 +125,7 @@ public class SpnegoIntegrationTest {
 
   @Test
   public void authenticatedRequestSucceeds() throws Exception {
-    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null)) {
+    try (RestCatalogServer server = RestCatalogServer.open(buildProxyConfig(), null, new PrometheusMetrics())) {
       UserGroupInformation clientUgi = UserGroupInformation
           .loginUserFromKeytabAndReturnUGI(clientPrincipal, clientKeytab.getAbsolutePath());
       String token = clientUgi.doAs((PrivilegedExceptionAction<String>) () -> {

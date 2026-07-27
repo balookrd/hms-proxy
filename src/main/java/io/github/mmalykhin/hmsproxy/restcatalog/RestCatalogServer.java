@@ -6,11 +6,13 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
@@ -34,11 +36,9 @@ public final class RestCatalogServer implements AutoCloseable {
     this.executor = executor;
   }
 
-  public static RestCatalogServer open(ProxyConfig config) throws IOException {
-    return open(config, null);
-  }
-
-  public static RestCatalogServer open(ProxyConfig config, IcebergRestServices services) throws IOException {
+  public static RestCatalogServer open(
+      ProxyConfig config, IcebergRestServices services, PrometheusMetrics metrics) throws IOException {
+    Objects.requireNonNull(metrics, "metrics");
     RestCatalogConfig restConfig = config.restCatalog();
     if (!restConfig.enabled()) {
       return null;
@@ -69,7 +69,7 @@ public final class RestCatalogServer implements AutoCloseable {
 
     HttpContext v1Context;
     if (services != null) {
-      v1Context = server.createContext("/v1/", new IcebergHttpHandler(services));
+      v1Context = server.createContext("/v1/", new IcebergHttpHandler(services, metrics));
     } else {
       v1Context = server.createContext("/v1/config", new ConfigHandler());
     }
@@ -88,6 +88,7 @@ public final class RestCatalogServer implements AutoCloseable {
         new ThreadPoolExecutor.CallerRunsPolicy());
     server.setExecutor(executor);
     server.start();
+    metrics.setRestListenerInfo(restConfig.bindHost(), server.getAddress().getPort());
     LOG.info("Iceberg REST catalog listener started on {}:{} (threads: {}..{})",
         restConfig.bindHost(), restConfig.port(),
         restConfig.minWorkerThreads(), restConfig.maxWorkerThreads());

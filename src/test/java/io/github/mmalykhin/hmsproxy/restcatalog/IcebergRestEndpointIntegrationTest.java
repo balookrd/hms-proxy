@@ -7,6 +7,7 @@ import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -27,6 +28,7 @@ public class IcebergRestEndpointIntegrationTest {
   private RecordingThriftIface delegate;
   private IcebergRestServices services;
   private RestCatalogServer server;
+  private PrometheusMetrics metrics;
 
   @Before
   public void setUp() throws Exception {
@@ -45,7 +47,8 @@ public class IcebergRestEndpointIntegrationTest {
 
     ProxyConfig config = buildConfig();
     services = IcebergRestServices.open(config, delegate.iface);
-    server = RestCatalogServer.open(config, services);
+    metrics = new PrometheusMetrics();
+    server = RestCatalogServer.open(config, services, metrics);
     Assert.assertNotNull("server must start", server);
   }
 
@@ -143,6 +146,22 @@ public class IcebergRestEndpointIntegrationTest {
     HttpResponse<String> response = get("/v1/catalog1/namespaces");
     Assert.assertEquals(200, response.statusCode());
     Assert.assertTrue(response.body(), response.body().contains("[\"catalog2__default\"]"));
+  }
+
+  @Test
+  public void recordsRestRequestMetricsAndListenerInfo() throws Exception {
+    Assert.assertEquals(200, get("/v1/" + CATALOG_NAME + "/namespaces").statusCode());
+    Assert.assertEquals(404, get("/v1/nope/namespaces").statusCode());
+    Assert.assertEquals(400, get("/v1/config?warehouse=nope").statusCode());
+
+    String rendered = metrics.render();
+    Assert.assertTrue("rendered: " + rendered,
+        rendered.contains("prefix=\"" + CATALOG_NAME + "\",route=\"list_namespaces\",status=\"200\""));
+    Assert.assertTrue("rendered: " + rendered,
+        rendered.contains("prefix=\"unknown\",route=\"unknown_prefix\",status=\"404\""));
+    Assert.assertTrue("rendered: " + rendered,
+        rendered.contains("prefix=\"unknown\",route=\"bad_request\",status=\"400\""));
+    Assert.assertTrue("rendered: " + rendered, rendered.contains("hms_proxy_rest_listener_info"));
   }
 
   private HttpResponse<String> get(String path) throws Exception {

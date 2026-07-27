@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpPrincipal;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,7 +12,9 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.rest.RESTCatalogAdapter.HTTPMethod;
 import org.apache.iceberg.rest.RESTCatalogAdapter.Route;
@@ -34,11 +37,30 @@ final class IcebergHttpHandler implements HttpHandler {
   private static final String V1_PREFIX = "/v1/";
   private static final String CONFIG_SEGMENT = "config";
   private static final String WAREHOUSE_PARAM = "warehouse";
+  private static final String UNKNOWN_PREFIX_LABEL = "unknown";
+  private static final String ROUTE_CONFIG = "config";
+  private static final String ROUTE_UNKNOWN_PREFIX = "unknown_prefix";
+  private static final String ROUTE_UNKNOWN_ROUTE = "unknown_route";
+  private static final String ROUTE_BAD_REQUEST = "bad_request";
 
   private final IcebergRestServices services;
+  private final PrometheusMetrics metrics;
 
-  IcebergHttpHandler(IcebergRestServices services) {
+  IcebergHttpHandler(IcebergRestServices services, PrometheusMetrics metrics) {
     this.services = services;
+    this.metrics = Objects.requireNonNull(metrics, "metrics");
+  }
+
+  /**
+   * Per-request mutable state threaded through {@link #doHandle} and the write helpers so the
+   * resolved prefix/route/status can be recorded once in {@link #handle}'s finally block. The
+   * handler instance itself is shared across the HTTP executor's threads, so this state must
+   * never live in handler fields.
+   */
+  private static final class RequestOutcome {
+    private String prefix = UNKNOWN_PREFIX_LABEL;
+    private String route = ROUTE_UNKNOWN_ROUTE;
+    private int status;
   }
 
   @Override
@@ -50,26 +72,32 @@ final class IcebergHttpHandler implements HttpHandler {
     String remoteUser = principal != null ? principal.getUsername() : null;
     String previousAddress = ClientRequestContext.setRemoteAddress(remoteAddress);
     String previousUser = ClientRequestContext.setRemoteUser(remoteUser);
+    RequestOutcome outcome = new RequestOutcome();
+    long startNanos = System.nanoTime();
     try {
-      doHandle(exchange);
+      doHandle(exchange, outcome);
     } finally {
+      double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+      metrics.recordRestRequest(outcome.prefix, outcome.route, outcome.status, durationSeconds);
       ClientRequestContext.restoreRemoteAddress(previousAddress);
       ClientRequestContext.restoreRemoteUser(previousUser);
     }
   }
 
-  private void doHandle(HttpExchange exchange) throws IOException {
+  private void doHandle(HttpExchange exchange, RequestOutcome outcome) throws IOException {
     try {
       String rawPath = exchange.getRequestURI().getPath();
       if (!rawPath.startsWith(V1_PREFIX) && !rawPath.equals("/v1")) {
-        writeError(exchange, 404, "NotImplementedException", "Path not handled by Iceberg REST endpoint");
+        outcome.route = ROUTE_UNKNOWN_ROUTE;
+        writeError(exchange, outcome, 404, "NotImplementedException", "Path not handled by Iceberg REST endpoint");
         return;
       }
       HTTPMethod method;
       try {
         method = HTTPMethod.valueOf(exchange.getRequestMethod().toUpperCase());
       } catch (IllegalArgumentException e) {
-        writeError(exchange, 405, "BadRequestException",
+        outcome.route = ROUTE_BAD_REQUEST;
+        writeError(exchange, outcome, 405, "BadRequestException",
             "Method not allowed: " + exchange.getRequestMethod());
         return;
       }
@@ -81,25 +109,29 @@ final class IcebergHttpHandler implements HttpHandler {
       String remainder = slash < 0 ? "" : trimmed.substring(slash + 1);
 
       if (CONFIG_SEGMENT.equals(firstSegment) && remainder.isEmpty()) {
-        handleConfig(exchange, queryParams);
+        handleConfig(exchange, queryParams, outcome);
         return;
       }
 
       IcebergRestService service = services.serviceFor(firstSegment);
       if (service == null) {
-        writeError(exchange, 404, "NoSuchCatalogException",
+        outcome.route = ROUTE_UNKNOWN_PREFIX;
+        writeError(exchange, outcome, 404, "NoSuchCatalogException",
             "Unknown catalog prefix in URL: " + rawPath);
         return;
       }
+      outcome.prefix = service.catalogName();
       String relativePath = remainder.isEmpty() ? "v1" : "v1/" + remainder;
 
       Pair<Route, Map<String, String>> routeAndVars = Route.from(method, relativePath);
       if (routeAndVars == null) {
-        writeError(exchange, 404, "NotImplementedException",
+        outcome.route = ROUTE_UNKNOWN_ROUTE;
+        writeError(exchange, outcome, 404, "NotImplementedException",
             "Route not supported: " + method + " " + relativePath);
         return;
       }
       Route route = routeAndVars.first();
+      outcome.route = route.name().toLowerCase(Locale.ROOT);
       Object body = readBody(exchange, route);
       Class<? extends RESTResponse> responseType = route.responseClass();
 
@@ -114,41 +146,46 @@ final class IcebergHttpHandler implements HttpHandler {
         // RESTCatalogAdapter always rethrows after invoking the error handler,
         // so an error response is already captured when we get here.
         if (capturedError[0] != null) {
-          writeErrorResponse(exchange, capturedError[0]);
+          writeErrorResponse(exchange, outcome, capturedError[0]);
         } else {
-          writeError(exchange, 500, e.getClass().getSimpleName(), e.getMessage());
+          writeError(exchange, outcome, 500, e.getClass().getSimpleName(), e.getMessage());
         }
         return;
       }
 
       if (capturedError[0] != null) {
-        writeErrorResponse(exchange, capturedError[0]);
+        writeErrorResponse(exchange, outcome, capturedError[0]);
         return;
       }
 
       if (responseType == null || response == null) {
+        outcome.status = 204;
         exchange.sendResponseHeaders(204, -1);
         exchange.getResponseBody().close();
         return;
       }
-      writeJson(exchange, 200, IcebergRestMapper.mapper().writeValueAsString(response));
+      writeJson(exchange, outcome, 200, IcebergRestMapper.mapper().writeValueAsString(response));
     } catch (Exception e) {
       LOG.warn("Unhandled error serving {} {}",
           exchange.getRequestMethod(), exchange.getRequestURI(), e);
-      writeError(exchange, 500, e.getClass().getSimpleName(),
+      writeError(exchange, outcome, 500, e.getClass().getSimpleName(),
           e.getMessage() == null ? "internal error" : e.getMessage());
     }
   }
 
-  private void handleConfig(HttpExchange exchange, Map<String, String> queryParams) throws IOException {
+  private void handleConfig(HttpExchange exchange, Map<String, String> queryParams, RequestOutcome outcome)
+      throws IOException {
     String warehouse = queryParams.get(WAREHOUSE_PARAM);
     IcebergRestService service = services.byWarehouse(warehouse);
     if (service == null) {
-      writeError(exchange, 400, "BadRequestException", "Unknown warehouse: " + warehouse);
+      outcome.route = ROUTE_BAD_REQUEST;
+      writeError(exchange, outcome, 400, "BadRequestException", "Unknown warehouse: " + warehouse);
       return;
     }
+    outcome.prefix = service.catalogName();
+    outcome.route = ROUTE_CONFIG;
     ConfigResponse cfg = service.loadConfig();
-    writeJson(exchange, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
+    writeJson(exchange, outcome, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
   }
 
   private <T extends RESTResponse> T dispatchInternal(
@@ -196,7 +233,9 @@ final class IcebergHttpHandler implements HttpHandler {
     return result;
   }
 
-  private static void writeJson(HttpExchange exchange, int status, String body) throws IOException {
+  private static void writeJson(HttpExchange exchange, RequestOutcome outcome, int status, String body)
+      throws IOException {
+    outcome.status = status;
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", JSON_CONTENT_TYPE);
     exchange.sendResponseHeaders(status, bytes.length);
@@ -205,18 +244,21 @@ final class IcebergHttpHandler implements HttpHandler {
     }
   }
 
-  private static void writeError(HttpExchange exchange, int status, String type, String message) throws IOException {
+  private static void writeError(
+      HttpExchange exchange, RequestOutcome outcome, int status, String type, String message) throws IOException {
     ErrorResponse error = ErrorResponse.builder()
         .responseCode(status)
         .withType(type)
         .withMessage(message == null ? "" : message)
         .withStackTrace(Arrays.asList())
         .build();
-    writeErrorResponse(exchange, error);
+    writeErrorResponse(exchange, outcome, error);
   }
 
-  private static void writeErrorResponse(HttpExchange exchange, ErrorResponse error) throws IOException {
+  private static void writeErrorResponse(HttpExchange exchange, RequestOutcome outcome, ErrorResponse error)
+      throws IOException {
     int status = error.code() > 0 ? error.code() : 500;
+    outcome.status = status;
     String body = IcebergRestMapper.mapper().writeValueAsString(error);
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", JSON_CONTENT_TYPE);
