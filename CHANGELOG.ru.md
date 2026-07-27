@@ -70,7 +70,7 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   `dependencyManagement`. `1.9.2` собран под Jackson `2.18`, а Hive `3.1.3`
   тянет databind `2.12`; без пина дерево резолвило `core 2.18.3` рядом с
   `databind 2.12.0`, что сломало бы `TableMetadataParser` — путь, который
-  читает `metadata.json`. Vendored `RESTCatalogAdapter` пересобран заново по
+  читает `metadata.json`. Vendored `RESTCatalogAdapter` пересобран по
   upstream-тегу `1.9.2`; dispatch перешёл с удалённого overload
   `execute(...)` на `handleRequest(route, vars, body, responseType)`, а
   обработка ошибок — со схемы captured-callback на перехват исключений и их
@@ -79,9 +79,15 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   реальные данные — пустой листинг
   `{"identifiers":[],"next-page-token":null}` вместо прежнего пустого `204`,
   потому что `HiveCatalog` стал `ViewCatalog`, начиная с Iceberg `1.7`.
-  `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` теперь достижимы внутри
-  adapter, но пока не подключены в handler; это отдельная будущая фаза.
-  Совместимость с клиентами не пострадала: REST endpoint — это wire
+  `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` теперь отвечают по REST-спеке
+  под любым catalog prefix: `HEAD` на существующий namespace, таблицу или view
+  возвращает `204`, а на несуществующий — `404`; handler форвардит любой route,
+  который резолвит `Route.from(...)`, без allowlist, поэтому эти роуты
+  заработали вместе с апгрейдом. Iceberg `1.5.2` вообще не имел `HEAD`-роутов,
+  поэтому `HEAD` на существующую таблицу раньше возвращал `404`, а у клиентов
+  вроде PyIceberg `table_exists()` возвращал `false` для таблиц, которые
+  реально существовали; теперь это исправлено. Совместимость с клиентами не
+  пострадала: REST endpoint — это wire
   protocol, поэтому версия Iceberg на стороне клиента не зависит от версии
   proxy, и таблица с `format-version: 2` по-прежнему загружается как v2
   (проверено на стенде: format-version 2, 21 поле метаданных). Валидация на

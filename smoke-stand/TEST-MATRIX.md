@@ -104,6 +104,7 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | n/a |
 | G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
 | G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | n/a |
+| G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
 
 ## F. Not covered, and why
 

@@ -77,9 +77,15 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 - View routes (`GET .../views`, `GET .../views/{view}`) now return real data
   — an empty `{"identifiers":[],"next-page-token":null}` listing rather than
   the previous empty `204` — because `HiveCatalog` became a `ViewCatalog`
-  from Iceberg `1.7` on. `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` are
-  now reachable inside the adapter but are not yet wired into the handler;
-  that wiring is a later phase. Client compatibility is unaffected: the REST
+  from Iceberg `1.7` on. `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` now
+  answer per the REST spec across every catalog prefix: a `HEAD` on an
+  existing namespace, table or view returns `204`, and `404` when it does
+  not exist — the handler forwards any route `Route.from(...)` resolves
+  with no allowlist, so these routes went live with the upgrade. Iceberg
+  `1.5.2` shipped no `HEAD` routes at all, so a `HEAD` on an existing table
+  used to return `404`, and clients such as PyIceberg reported
+  `table_exists()` as `false` for tables that were really there; that is
+  now fixed. Client compatibility is unaffected: the REST
   endpoint is a wire protocol, so a client's own Iceberg version is
   independent of the proxy's, and a `format-version: 2` table still loads as
   v2 (verified on the stand: format-version 2, 21 metadata fields). Stand
