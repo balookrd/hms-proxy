@@ -7,12 +7,90 @@ STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${STAND_DIR}/.." && pwd)"
 JAVA_HOME_17=${JAVA_HOME_17:-/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19}
 
+# A real Hortonworks HiveServer2 needs the vendor distribution, which is not redistributable and
+# not in any open Maven repository - Cloudera closed the HDP repositories. Point HDP_DIST_DIR at an
+# unpacked copy; without one the stand still builds, just without its Hortonworks SQL client.
+HDP_DIST_DIR=${HDP_DIST_DIR:-${HOME}/hdp/3.1.0.0-78}
+
+# Staging copies ~1 GB, so it is skipped when the result is already in place. Pass
+# HDP_RESTAGE=true after replacing the distribution.
+stage_hdp_distribution() {
+  local dist="${STAND_DIR}/hs2-hdp/dist"
+
+  if [[ ! -d "${HDP_DIST_DIR}" ]]; then
+    echo "[prepare] no HDP distribution at ${HDP_DIST_DIR}; skipping the Hortonworks HiveServer2"
+    echo "[prepare]   (set HDP_DIST_DIR to enable it; the compose profile 'hdp' needs it)"
+    return
+  fi
+
+  if [[ -d "${dist}/hive" && -d "${dist}/hadoop" && "${HDP_RESTAGE:-false}" != "true" ]]; then
+    echo "[prepare] HDP distribution already staged (HDP_RESTAGE=true to redo it)"
+    return
+  fi
+
+  local tarball="${HDP_DIST_DIR}/hadoop/mapreduce.tar.gz"
+  [[ -f "${tarball}" ]] || {
+    echo "[prepare] ${tarball} not found. It carries hadoop-common/hdfs/mapreduce/yarn and the" >&2
+    echo "[prepare] native libraries; the bare hadoop/ directory of HDP has no MapReduce client," >&2
+    echo "[prepare] so HiveServer2 could not run a single INSERT without it." >&2
+    exit 1
+  }
+
+  echo "[prepare] staging the HDP distribution from ${HDP_DIST_DIR} (about 1 GB, once)"
+  rm -rf "${dist}"
+  mkdir -p "${dist}"
+
+  # The tarball is a self-contained Hadoop: common, hdfs, yarn, mapreduce, bin, etc and lib/native.
+  # Sources and test jars are dead weight in an image, so they never reach the build context.
+  tar xzf "${tarball}" -C "${dist}" \
+    --exclude='*/sources/*' \
+    --exclude='*-tests.jar' \
+    --exclude='*/hadoop/share/doc/*'
+
+  cp -r "${HDP_DIST_DIR}/hive" "${dist}/hive"
+  # Beeline and hiveserver2 are shell scripts; the copy loses nothing but the exec bit sometimes.
+  chmod +x "${dist}"/hive/bin/* "${dist}"/hadoop/bin/* 2>/dev/null || true
+
+  echo "[prepare] staged $(du -sh "${dist}" | cut -f1) of HDP runtime"
+}
+
 echo "[prepare] resolving the metastore runtime classpath"
 JAVA_HOME="${JAVA_HOME_17}" mvn -q -f "${STAND_DIR}/hms/pom.xml" package
+
+echo "[prepare] resolving the HiveServer2 runtime classpath"
+JAVA_HOME="${JAVA_HOME_17}" mvn -q -f "${STAND_DIR}/hs2/pom.xml" package
+
+# Before the hive-exec copies below: the Hortonworks one comes out of this.
+stage_hdp_distribution
 
 echo "[prepare] copying metastore jars"
 cp "${REPO_DIR}/hive-metastore/hive-standalone-metastore-3.1.3.jar" "${STAND_DIR}/hms/"
 cp "${REPO_DIR}/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar" "${STAND_DIR}/hms/"
+
+# A standalone metastore cannot validate the storage format of a transactional table on its own:
+# TransactionalValidationListener asks whether the output format implements AcidOutputFormat, the
+# class lives in hive-exec, and without it every "transactional"="true" CREATE TABLE fails with
+# "The table must be stored using an ACID compliant format". Each metastore gets the hive-exec of
+# its own line - Apache from Maven, Hortonworks from the vendor distribution - and it is appended
+# after the jar under test on the classpath so it can never shadow it.
+# OrcOutputFormat in turn implements org.apache.hadoop.mapred.InputFormat, which lives in
+# hadoop-mapreduce-client-core - absent from a standalone metastore, and without it the class the
+# validator just found fails to load with NoClassDefFoundError.
+echo "[prepare] copying hive-exec and mapreduce-client-core for ACID format validation"
+mkdir -p "${STAND_DIR}/hms/acid-apache" "${STAND_DIR}/hms/acid-hdp"
+cp "${STAND_DIR}/hs2/lib/hive-exec-3.1.3.jar" "${STAND_DIR}/hms/acid-apache/"
+cp "${STAND_DIR}/hs2/lib/hadoop-mapreduce-client-core-"*.jar "${STAND_DIR}/hms/acid-apache/"
+
+HDP_HIVE_LIB="${STAND_DIR}/hs2-hdp/dist/hive/lib"
+HDP_MR_LIB="${STAND_DIR}/hs2-hdp/dist/hadoop/share/hadoop/mapreduce"
+if [[ -f "${HDP_HIVE_LIB}/hive-exec-3.1.0.3.1.0.0-78.jar" ]]; then
+  cp "${HDP_HIVE_LIB}/hive-exec-3.1.0.3.1.0.0-78.jar" "${STAND_DIR}/hms/acid-hdp/"
+  cp "${HDP_MR_LIB}/hadoop-mapreduce-client-core-"*.jar "${STAND_DIR}/hms/acid-hdp/"
+else
+  # No HDP distribution staged: fall back to the Apache jars so the image still builds. The HDP
+  # metastore then validates ACID formats with Apache code, which is fine for a format check.
+  cp "${STAND_DIR}/hms/acid-apache/"*.jar "${STAND_DIR}/hms/acid-hdp/"
+fi
 
 echo "[prepare] copying the proxy fat jar"
 FAT_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1)

@@ -3,6 +3,7 @@
 FROM eclipse-temurin:8-jdk
 
 ARG METASTORE_JAR=hive-standalone-metastore-3.1.3.jar
+ARG ACID_LIB_DIR=acid-apache
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends krb5-user netcat-openbsd \
@@ -16,6 +17,10 @@ WORKDIR /opt/hms
 # Runtime classpath: the metastore jar under test plus the dependency set Maven already resolved.
 COPY lib/ /opt/hms/lib/
 COPY ${METASTORE_JAR} /opt/hms/metastore.jar
+# Only for the ACID storage-format check (see prepare.sh). hive-exec is an uber jar that carries its
+# own copy of the metastore classes, so the entrypoint puts these last on the classpath - the jar
+# under test has to win every lookup, or the stand would stop testing the runtime it claims to.
+COPY ${ACID_LIB_DIR}/ /opt/hms/acid-lib/
 
 COPY InitSchema.java /opt/hms/
 RUN javac -cp "/opt/hms/metastore.jar:/opt/hms/lib/*" -d /opt/hms /opt/hms/InitSchema.java

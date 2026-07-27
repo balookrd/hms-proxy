@@ -8,7 +8,10 @@ set -euo pipefail
 WAREHOUSE=${WAREHOUSE_DIR:-/opt/hms/warehouse}
 DERBY_DIR=${DERBY_DIR:-/opt/hms/metastore_db}
 PORT=${METASTORE_PORT:-9083}
-CP="/opt/hms:/opt/hms/metastore.jar:/opt/hms/lib/*"
+# acid-lib goes last on purpose: it is only here so TransactionalValidationListener can resolve
+# OrcOutputFormat and accept a transactional table, and hive-exec carries its own metastore classes
+# that must never shadow the jar under test.
+CP="/opt/hms:/opt/hms/metastore.jar:/opt/hms/lib/*:/opt/hms/acid-lib/*"
 
 mkdir -p "$WAREHOUSE" "$(dirname "$DERBY_DIR")" /opt/hms/conf
 
@@ -33,9 +36,12 @@ CONF=(
   -Ddatanucleus.schema.autoCreateAll=true
   -Ddatanucleus.autoStartMechanismMode=ignored
   -Dmetastore.thrift.port="${PORT}"
-  # The default proxy lives in hive-exec, which a standalone metastore does not ship.
-  -Dmetastore.expression.proxy=org.apache.hadoop.hive.metastore.DefaultPartitionExpressionProxy
-  -Dhive.metastore.expression.proxy=org.apache.hadoop.hive.metastore.DefaultPartitionExpressionProxy
+  # The real proxy lives in hive-exec, which is on the classpath for the ACID format check anyway.
+  # Its stand-in, DefaultPartitionExpressionProxy, throws UnsupportedOperationException the moment a
+  # client filters partitions by expression - a plain "WHERE p='...'" over a partitioned table comes
+  # back as MetaException(java.lang.UnsupportedOperationException).
+  -Dmetastore.expression.proxy=org.apache.hadoop.hive.ql.optimizer.ppr.PartitionExpressionForMetastore
+  -Dhive.metastore.expression.proxy=org.apache.hadoop.hive.ql.optimizer.ppr.PartitionExpressionForMetastore
   # Same reason: the default housekeeping list names DumpDirCleanerTask, a replication task that
   # only exists in a full Hive distribution. Keep the tasks the standalone jar actually carries.
   -Dmetastore.task.threads.always=org.apache.hadoop.hive.metastore.events.EventCleanerTask,org.apache.hadoop.hive.metastore.RuntimeStatsCleanerTask
@@ -63,7 +69,13 @@ if [[ "${KERBEROS_ENABLED:-false}" == "true" ]]; then
 
   # Without these UGI stays in simple mode and the server tries to use the OS user ("root")
   # as a service principal.
-  CORE_SITE_PROPS+="<property><name>dfs.namenode.kerberos.principal</name><value>hdfs/namenode@SMOKE.LOCAL</value></property>
+  # Each catalog sits on its own HDFS cluster, so the namenode principal follows the filesystem this
+  # metastore was pointed at rather than being hardcoded to the first cluster. The pattern is what
+  # lets a client accept a namenode whose principal it did not configure ahead of time; without it
+  # the write fails with "Server has invalid Kerberos principal: hdfs/namenode-b@SMOKE.LOCAL".
+  HDFS_HOST=$(echo "${HDFS_DEFAULT_FS:-hdfs://namenode:8020}" | sed -E 's#^[a-z]+://([^:/]+).*#\1#')
+  CORE_SITE_PROPS+="<property><name>dfs.namenode.kerberos.principal</name><value>hdfs/${HDFS_HOST}@SMOKE.LOCAL</value></property>
+  <property><name>dfs.namenode.kerberos.principal.pattern</name><value>*</value></property>
   <property><name>dfs.datanode.kerberos.principal</name><value>hdfs/datanode@SMOKE.LOCAL</value></property>
   <property><name>dfs.data.transfer.protection</name><value>authentication</value></property>
   <property><name>dfs.http.policy</name><value>HTTPS_ONLY</value></property>

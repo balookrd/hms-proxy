@@ -10,13 +10,18 @@ Two standalone metastores sit behind one proxy:
 | `hms-hdp` | Hortonworks `3.1.0.3.1.0.0-78` | default catalog — owns ACID/txn state | 19084 |
 | `hms-apache` | Apache `3.1.3` | non-default catalog — synthetic lock shim, proxy-side purge | 19083 |
 | `proxy` | the fat jar under test | front door | 19085 thrift (Apache), 19086 thrift (Hortonworks), 19090 management |
-| `hs2` | HiveServer2 3.1.3, points at the proxy | SQL layer: Beeline scenarios | 10000, 10002 |
-| `namenode` / `datanode` | Hadoop `3.1.3` | HDFS: warehouses and external-table data | 19870 UI, 18020 |
+| `hs2` | HiveServer2 3.1.3, points at the proxy | SQL layer, Apache front door | 10000, 10002 |
+| `hs2-hdp` | vendor HDP HiveServer2, points at the Hortonworks front door | SQL layer, `--profile hdp` | 10010, 10012 |
+| `namenode` / `datanode` | Apache Hadoop `3.1.3` | first HDFS cluster — storage for the `hdp` catalog | 19870 UI, 18020 |
+| `namenode-b` / `datanode-b` | Apache Hadoop `3.1.3` | second HDFS cluster — storage for the `apache` catalog | 19871 UI, 18021 |
 | `kdc` | MIT Kerberos, realm `SMOKE.LOCAL` | only with `--profile kerberos` | 18848/udp |
 
-Databases are exposed as `<catalog>__<db>`: `hdp__default`, `apache__default`. Warehouses live on
-HDFS (`/warehouse/hdp`, `/warehouse/apache`), and `/external` is the allowlisted root for
-external-table purge.
+Databases are exposed as `<catalog>__<db>`: `hdp__default`, `apache__default`. The two catalogs
+live on **different HDFS clusters** (see below), each with its own `/warehouse` and an `/external`
+root allowlisted for external-table purge.
+
+What has actually been run here — and what has not — is recorded in
+[TEST-MATRIX.md](TEST-MATRIX.md).
 
 ## Run it
 
@@ -110,6 +115,42 @@ FileSystemExternalTableDropPurger: purged external table data for catalog 'apach
 
 The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
 
+## Two HDFS clusters
+
+The catalogs sit on **different filesystems**, which is what makes the proxy's cross-filesystem
+behaviour testable at all:
+
+| Catalog | Metastore | Filesystem | Host ports |
+| --- | --- | --- | --- |
+| `hdp` (default) | `hms-hdp` | `hdfs://namenode:8020` | 19870 / 18020 |
+| `apache` | `hms-apache` | `hdfs://namenode-b:8020` | 19871 / 18021 |
+
+Both clusters run **Apache** Hadoop 3.1.3, whatever the catalog on top of them is called: the names
+`hdp` and `apache` describe the metastore runtime the proxy federates, not the storage. The vendor
+HDP distribution enters the stand only as a *client* — the `hs2-hdp` service — and never as a
+filesystem.
+
+Both clusters share one Kerberos realm on purpose: a client holding a single TGT can then reach
+either one, which is what allows a single query to read across them. Cross-realm trust would test
+the KDC rather than the proxy.
+
+Two settings carry the weight:
+
+- `federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS` together with
+  `catalog.<name>.conf.fs.defaultFS`. A `CREATE EXTERNAL TABLE ... LOCATION '/external/x'` in the
+  `apache` catalog would otherwise be recorded against the *client's* `fs.defaultFS` — a path the
+  catalog's own cluster cannot serve. The proxy rewrites it to `hdfs://namenode-b:8020/external/x`,
+  and does the same for a location that explicitly names the other cluster.
+- `mapreduce.job.hdfs-servers` on both HiveServer2 instances, listing both namenodes. A kerberized
+  MapReduce job collects delegation tokens only for the filesystems it is told about; a missing one
+  fails the job with `Can't get Master Kerberos principal for use as renewer`, which surfaces as a
+  bare `return code 2`.
+
+Purge deletes data on the catalog's own cluster, bounded by
+`catalog.<name>.conf.hms.proxy.external-table-drop-purge.allowed-prefixes`. Note that it also needs
+the table property `external.table.purge=true` — the ordinary Hive rule for external tables. Without
+it `DROP TABLE ... PURGE` leaves the data in place, and the proxy is right not to touch it.
+
 ## What the stand is not
 
 - **Not a real installation.** The metastores run from the jars vendored in `hive-metastore/`,
@@ -119,7 +160,9 @@ The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
   HiveServer2, the proxy, both metastores and HDFS (namenode and datanode keytabs, SASL data
   transfer, SPNEGO) all authenticate, and no service falls back to simple auth.
 - **No YARN/Tez.** Queries run as local MapReduce, which is enough for DDL, reads and small
-  writes, but says nothing about distributed execution.
+  writes, but says nothing about distributed execution. The Hortonworks HiveServer2 only starts at
+  all because `hive.in.test` lets it past the vendor's "mr execution engine is not supported!"
+  check — see its section below.
 
 ## Hortonworks front door
 
@@ -137,6 +180,51 @@ The reason is in the proxy log:
 ```bash
 docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ```
+
+## Hortonworks HiveServer2 (`--profile hdp`)
+
+A real HDP HiveServer2 that connects to the Hortonworks front door, so that listener is driven by
+the client it exists for instead of by the smoke CLI alone. It needs the vendor distribution —
+Cloudera closed the HDP repositories, so nothing here can be fetched from Maven:
+
+```bash
+# Needs exactly two things from an HDP 3.1.0.0-78 install: hive/ and hadoop/mapreduce.tar.gz.
+# The tarball is a self-contained Hadoop (common, hdfs, mapreduce, yarn, bin, lib/native) and is
+# what a real HDP cluster ships to its nodes; the bare hadoop/ directory has no MapReduce client,
+# so HiveServer2 could not run a single INSERT from it. Note this is the HDP *client* side only -
+# the stand's own HDFS clusters are Apache Hadoop and are untouched by it.
+HDP_DIST_DIR=~/hdp/3.1.0.0-78 ./prepare.sh
+docker compose --profile hdp up -d --build
+docker exec stand-hs2-hdp beeline -u jdbc:hive2://localhost:10000/default -n hive -e 'show databases;'
+```
+
+Without `HDP_DIST_DIR` the stand still builds; only this service is skipped.
+
+What it adds over the Apache HiveServer2 next door:
+
+- `add_write_notification_log` sent by **Hive itself** after an ACID write, not synthesized by the
+  smoke CLI — with real delta paths and checksums.
+- Transactional tables. The standalone metastores could not create them (`The table must be stored
+  using an ACID compliant format`), because `TransactionalValidationListener` needs `OrcOutputFormat`
+  from `hive-exec` and that class in turn needs `org.apache.hadoop.mapred.InputFormat` from
+  `hadoop-mapreduce-client-core`. `prepare.sh` now stages both next to each metastore — Apache jars
+  for the Apache one, vendor jars for the Hortonworks one — and the entrypoint appends them **after**
+  the jar under test, so `hive-exec`'s own copy of the metastore classes can never shadow it.
+
+Two things this profile does not reproduce faithfully:
+
+- **The execution engine.** Hortonworks builds without MapReduce, and the check fires in two places
+  with two different messages. `HiveConf.initialize()` runs `validateExecutionEngine`, so naming
+  `mr` in `hive-site.xml` stops the server from starting (`mr execution engine is not supported!`);
+  the config therefore keeps the vendor default of Tez, and clients switch per session with
+  `set hive.execution.engine=mr;` — which the SQL smoke does through
+  `HMS_SMOKE_SQL_HDP_SESSION_INIT`. That `set` is validated too (`hive execution engine mr is not
+  supported.`), and passing it is the single thing `hive.in.test=true` buys here. Tez itself is not
+  an option: it needs a ResourceManager and the Tez tarball in HDFS, and this distribution ships
+  neither. The *metadata* path — every RPC the proxy actually serves — is unaffected; only query
+  execution differs from a real HDP cluster.
+- **Emulation.** The distribution's native libraries are x86_64 only, so on Apple Silicon the whole
+  service runs under `linux/amd64` and is noticeably slow to start (allow a couple of minutes).
 
 ## MapReduce under Kerberos
 
@@ -247,6 +335,17 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 - The transactional-DDL guard fires on `create_table_with_environment_context`, the RPC Beeline
   actually sends — the method the guard did not cover before.
 - External-table purge deletes real HDFS data for `APACHE_3_1_3` catalogs, off the request thread.
+- The Hortonworks front door now answers a real HDP HiveServer2: federation, DDL, ACID writes and a
+  cross-catalog join all pass, and `add_write_notification_log` arrives from Hive itself. Until the
+  vendor distribution was available, that listener had only ever been exercised by the smoke CLI.
+- With the catalogs split across two HDFS clusters, external-table location rewriting stopped being
+  a unit-test-only feature: an unqualified `LOCATION` and one naming the other cluster both land on
+  the filesystem of the catalog that owns the table, and a single MapReduce job reads from both.
+- Purge across clusters needs the *catalog's own* namenode principal in the proxy config. The purger
+  opens that filesystem itself, so with only the first cluster's principal configured the delete died
+  with `Failed to specify server's Kerberos principal name` — **after** the drop had already
+  succeeded, leaving the data orphaned. Hence `catalog.<name>.conf.dfs.namenode.kerberos.principal`
+  per catalog in the Kerberos profile.
 
 ## Verified end to end
 

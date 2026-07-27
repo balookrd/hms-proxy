@@ -21,11 +21,19 @@ principals=(
   "hive/hms-hdp@${REALM}:hms-hdp.keytab"
   "hive/proxy@${REALM}:proxy.keytab"
   "hive/hs2@${REALM}:hs2.keytab"
+  "hive/hs2-hdp@${REALM}:hs2-hdp.keytab"
   "hdfs/namenode@${REALM}:namenode.keytab"
   "HTTP/namenode@${REALM}:namenode.keytab"
   "hdfs/datanode@${REALM}:datanode.keytab"
   "HTTP/datanode@${REALM}:datanode.keytab"
+  # Second HDFS cluster. Same realm on purpose: one TGT then opens both filesystems, which is what
+  # lets a single query read across them without cross-realm trust.
+  "hdfs/namenode-b@${REALM}:namenode-b.keytab"
+  "HTTP/namenode-b@${REALM}:namenode-b.keytab"
+  "hdfs/datanode-b@${REALM}:datanode-b.keytab"
+  "HTTP/datanode-b@${REALM}:datanode-b.keytab"
   "HTTP/hs2@${REALM}:spnego.keytab"
+  "HTTP/hs2-hdp@${REALM}:hs2-hdp.keytab"
   "smoke-user@${REALM}:smoke-user.keytab"
 )
 

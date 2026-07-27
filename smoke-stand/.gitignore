@@ -7,3 +7,8 @@ proxy/hms-proxy-fat.jar
 
 # Maven output of the classpath-resolving poms.
 */target/
+
+# Vendor HDP runtime staged by prepare.sh from HDP_DIST_DIR. Not redistributable.
+hs2-hdp/dist/
+hms/acid-apache/
+hms/acid-hdp/

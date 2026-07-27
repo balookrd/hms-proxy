@@ -71,6 +71,73 @@ services:
       retries: 30
       start_period: 30s
 
+  # Second HDFS cluster. The two catalogs live on different filesystems, which is what a real
+  # federation looks like and what makes the proxy's location rewriting and per-catalog purge
+  # prefixes mean anything: with one namenode they were untestable outside unit tests.
+  namenode-b:
+    build:
+      context: ./hdfs
+      args:
+        BASE_IMAGE: bde2020/hadoop-namenode:2.0.0-hadoop3.1.3-java8
+    image: hms-stand/hadoop-namenode:3.1.3
+    container_name: stand-namenode-b
+    hostname: namenode-b
+    env_file:
+      - ./hdfs/hadoop.env
+      - ./hdfs/hadoop-b.env
+      - ${HDFS_KERBEROS_ENV_B:-./hdfs/hadoop-plain.env}
+    environment:
+      CLUSTER_NAME: hms-smoke-b
+    ports:
+      - "19871:9870"
+      - "18021:8020"
+    volumes:
+      - namenode-b-data:/hadoop/dfs/name
+      - keytabs:/keytabs:ro
+      - ./hdfs/keystore.jks:/ssl/keystore.jks:ro
+      - ./hdfs/truststore.jks:/ssl/truststore.jks:ro
+      - ./hdfs/ssl-server.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-server.xml:ro
+      - ./hdfs/ssl-client.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-client.xml:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sfk http://localhost:9870 >/dev/null || curl -sfk https://localhost:9871 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+
+  datanode-b:
+    build:
+      context: ./hdfs
+      args:
+        BASE_IMAGE: bde2020/hadoop-datanode:2.0.0-hadoop3.1.3-java8
+    image: hms-stand/hadoop-datanode:3.1.3
+    container_name: stand-datanode-b
+    hostname: datanode-b
+    env_file:
+      - ./hdfs/hadoop.env
+      - ./hdfs/hadoop-b.env
+      - ${HDFS_KERBEROS_ENV_B:-./hdfs/hadoop-plain.env}
+    environment:
+      SERVICE_PRECONDITION: "namenode-b:8020"
+    depends_on:
+      namenode-b:
+        condition: service_healthy
+    volumes:
+      - datanode-b-data:/hadoop/dfs/data
+      - keytabs:/keytabs:ro
+      - ./hdfs/keystore.jks:/ssl/keystore.jks:ro
+      - ./hdfs/truststore.jks:/ssl/truststore.jks:ro
+      - ./hdfs/ssl-server.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-server.xml:ro
+      - ./hdfs/ssl-client.xml:/opt/hadoop-3.1.3/etc/hadoop/ssl-client.xml:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "jps | grep -q DataNode || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
   hms-apache:
     build:
       context: ./hms
@@ -79,15 +146,16 @@ services:
     image: hms-stand/metastore:apache-3.1.3
     container_name: stand-hms-apache
     depends_on:
-      datanode:
+      datanode-b:
         condition: service_healthy
     environment:
       METASTORE_PORT: 9083
       WAREHOUSE_DIR: /opt/hms/warehouse
       DERBY_DIR: /opt/hms/db/metastore_db
       KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
-      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
-      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/apache"
+      # This catalog lives on the second cluster; hdp stays on the first one.
+      HDFS_DEFAULT_FS: "hdfs://namenode-b:8020"
+      WAREHOUSE_URI: "hdfs://namenode-b:8020/warehouse/apache"
       SERVICE_PRINCIPAL: "hive/hms-apache@SMOKE.LOCAL"
       KEYTAB: /keytabs/hms-apache.keytab
     ports:
@@ -109,6 +177,7 @@ services:
       context: ./hms
       args:
         METASTORE_JAR: hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
+        ACID_LIB_DIR: acid-hdp
     image: hms-stand/metastore:hdp-3.1.0
     container_name: stand-hms-hdp
     depends_on:
@@ -184,6 +253,8 @@ services:
     environment:
       METASTORE_URI: "thrift://proxy:9083"
       HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      # Both clusters, so a kerberized MapReduce job collects a delegation token for each.
+      HDFS_SERVERS: "hdfs://namenode:8020,hdfs://namenode-b:8020"
       WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hdp"
       WAREHOUSE_DIR: /opt/hs2/warehouse
       SCRATCH_DIR: /opt/hs2/scratch
@@ -204,6 +275,49 @@ services:
       timeout: 5s
       retries: 40
       start_period: 90s
+
+  # The Hortonworks half of the SQL layer: a real HDP HiveServer2 against the proxy's Hortonworks
+  # front door (9084). Only that listener speaks the HDP interface - Thrift has no version
+  # negotiation - and it is the one carrying add_write_notification_log, which HDP Hive calls on
+  # every ACID write. Started with --profile hdp, because it needs the vendor distribution staged
+  # by prepare.sh from HDP_DIST_DIR.
+  hs2-hdp:
+    build:
+      context: ./hs2-hdp
+    image: hms-stand/hiveserver2:hdp-3.1.0.3.1.0.0-78
+    # The distribution's native libraries are x86_64 only, and a kerberized local MapReduce shuffle
+    # cannot run without them, so on arm64 the whole service runs emulated.
+    platform: ${HS2_HDP_PLATFORM:-linux/amd64}
+    profiles: ["hdp"]
+    container_name: stand-hs2-hdp
+    hostname: hs2-hdp
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      METASTORE_URI: "thrift://proxy:9084"
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      HDFS_SERVERS: "hdfs://namenode:8020,hdfs://namenode-b:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hdp"
+      WAREHOUSE_DIR: /opt/hs2-hdp/warehouse
+      SCRATCH_DIR: /opt/hs2-hdp/scratch
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      SERVICE_PRINCIPAL: "hive/hs2-hdp@SMOKE.LOCAL"
+      METASTORE_PRINCIPAL: "hive/proxy@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hs2-hdp.keytab
+    ports:
+      - "10010:10000"
+      - "10012:10002"
+    volumes:
+      - hs2-hdp-warehouse:/opt/hs2-hdp/warehouse
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 120s
 
   # Only started with --profile kerberos. Publishes keytabs on a shared volume that the
   # metastores and the proxy wait for before advertising SASL.
@@ -236,7 +350,10 @@ networks:
 volumes:
   namenode-data:
   datanode-data:
+  namenode-b-data:
+  datanode-b-data:
   hs2-warehouse:
+  hs2-hdp-warehouse:
   apache-db:
   apache-warehouse:
   hdp-db:
