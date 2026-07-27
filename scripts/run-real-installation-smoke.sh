@@ -633,7 +633,10 @@ run_sql_smoke() {
   local output_file=""
   sql_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX.sql")"
   output_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX.out")"
-  trap 'rm -f "${sql_file}" "${output_file}"' RETURN
+  # ${var:-} guards matter: the RETURN trap stays installed after this function returns and
+  # fires again for enclosing functions, where these locals no longer exist and set -u would
+  # kill the whole run.
+  trap 'rm -f "${sql_file:-}" "${output_file:-}"' RETURN
 
   beeline_run_maybe_kinit
 
@@ -782,7 +785,7 @@ EOF
 use ${apache_catalog}__default;
 drop function if exists ${udf_apache};
 create function ${udf_apache} as '${udf_class}';
-show functions like '${udf_apache}';
+show functions like '*${udf_apache}';
 select ${udf_apache}('proxy') as ${udf_apache}_value;
 drop function if exists ${udf_apache};
 EOF
