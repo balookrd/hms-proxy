@@ -25,19 +25,20 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Maps JDK HttpExchange requests to {@link IcebergRestService} dispatches.
- * URL form: /v1/{prefix}/...  The {prefix} segment must equal the proxy's
- * default catalog name; any other prefix returns 404.
+ * URL form: /v1/{prefix}/...  The {prefix} segment selects the target catalog
+ * via {@link IcebergRestServices#serviceFor(String)}; an unknown prefix returns 404.
  */
 final class IcebergHttpHandler implements HttpHandler {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergHttpHandler.class);
   private static final String JSON_CONTENT_TYPE = "application/json; charset=utf-8";
   private static final String V1_PREFIX = "/v1/";
-  private static final String CONFIG_PATH = "v1/config";
+  private static final String CONFIG_SEGMENT = "config";
+  private static final String WAREHOUSE_PARAM = "warehouse";
 
-  private final IcebergRestService service;
+  private final IcebergRestServices services;
 
-  IcebergHttpHandler(IcebergRestService service) {
-    this.service = service;
+  IcebergHttpHandler(IcebergRestServices services) {
+    this.services = services;
   }
 
   @Override
@@ -74,18 +75,23 @@ final class IcebergHttpHandler implements HttpHandler {
       }
 
       Map<String, String> queryParams = parseQueryString(exchange.getRequestURI().getRawQuery());
-      String relativePath = stripPrefixSegment(rawPath);
-      if (relativePath == null) {
+      String trimmed = rawPath.equals("/v1") ? "" : rawPath.substring(V1_PREFIX.length());
+      int slash = trimmed.indexOf('/');
+      String firstSegment = slash < 0 ? trimmed : trimmed.substring(0, slash);
+      String remainder = slash < 0 ? "" : trimmed.substring(slash + 1);
+
+      if (CONFIG_SEGMENT.equals(firstSegment) && remainder.isEmpty()) {
+        handleConfig(exchange, queryParams);
+        return;
+      }
+
+      IcebergRestService service = services.serviceFor(firstSegment);
+      if (service == null) {
         writeError(exchange, 404, "NoSuchCatalogException",
             "Unknown catalog prefix in URL: " + rawPath);
         return;
       }
-
-      if (CONFIG_PATH.equals(relativePath)) {
-        ConfigResponse cfg = service.loadConfig();
-        writeJson(exchange, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
-        return;
-      }
+      String relativePath = remainder.isEmpty() ? "v1" : "v1/" + remainder;
 
       Pair<Route, Map<String, String>> routeAndVars = Route.from(method, relativePath);
       if (routeAndVars == null) {
@@ -102,7 +108,7 @@ final class IcebergHttpHandler implements HttpHandler {
       Class<? extends RESTResponse> effectiveResponseType =
           responseType == null ? RESTResponse.class : responseType;
       try {
-        response = dispatchInternal(method, relativePath, queryParams, body,
+        response = dispatchInternal(service, method, relativePath, queryParams, body,
             effectiveResponseType, err -> capturedError[0] = err);
       } catch (RESTException e) {
         // RESTCatalogAdapter always rethrows after invoking the error handler,
@@ -134,7 +140,19 @@ final class IcebergHttpHandler implements HttpHandler {
     }
   }
 
+  private void handleConfig(HttpExchange exchange, Map<String, String> queryParams) throws IOException {
+    String warehouse = queryParams.get(WAREHOUSE_PARAM);
+    IcebergRestService service = services.byWarehouse(warehouse);
+    if (service == null) {
+      writeError(exchange, 400, "BadRequestException", "Unknown warehouse: " + warehouse);
+      return;
+    }
+    ConfigResponse cfg = service.loadConfig();
+    writeJson(exchange, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
+  }
+
   private <T extends RESTResponse> T dispatchInternal(
+      IcebergRestService service,
       HTTPMethod method,
       String relativePath,
       Map<String, String> queryParams,
@@ -143,30 +161,6 @@ final class IcebergHttpHandler implements HttpHandler {
       java.util.function.Consumer<ErrorResponse> errorHandler) {
     return service.dispatch(method, relativePath, queryParams, body, responseType,
         java.util.Map.of(), errorHandler);
-  }
-
-  private String stripPrefixSegment(String rawPath) {
-    String trimmed = rawPath.substring(V1_PREFIX.length());
-    int slash = trimmed.indexOf('/');
-    if (slash < 0) {
-      String prefixOnly = trimmed;
-      if ("config".equals(prefixOnly)) {
-        return CONFIG_PATH;
-      }
-      if (!service.supportsPrefix(prefixOnly)) {
-        return null;
-      }
-      return "v1";
-    }
-    String prefix = trimmed.substring(0, slash);
-    if ("config".equals(prefix) && slash == trimmed.length() - 1) {
-      return CONFIG_PATH;
-    }
-    if (!service.supportsPrefix(prefix)) {
-      return null;
-    }
-    String rest = trimmed.substring(slash + 1);
-    return rest.isEmpty() ? "v1" : "v1/" + rest;
   }
 
   private Object readBody(HttpExchange exchange, Route route) throws IOException {

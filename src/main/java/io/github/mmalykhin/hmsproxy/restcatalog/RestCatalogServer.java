@@ -38,7 +38,7 @@ public final class RestCatalogServer implements AutoCloseable {
     return open(config, null);
   }
 
-  public static RestCatalogServer open(ProxyConfig config, IcebergRestService service) throws IOException {
+  public static RestCatalogServer open(ProxyConfig config, IcebergRestServices services) throws IOException {
     RestCatalogConfig restConfig = config.restCatalog();
     if (!restConfig.enabled()) {
       return null;
@@ -68,8 +68,8 @@ public final class RestCatalogServer implements AutoCloseable {
     }
 
     HttpContext v1Context;
-    if (service != null) {
-      v1Context = server.createContext("/v1/", new IcebergHttpHandler(service));
+    if (services != null) {
+      v1Context = server.createContext("/v1/", new IcebergHttpHandler(services));
     } else {
       v1Context = server.createContext("/v1/config", new ConfigHandler());
     }

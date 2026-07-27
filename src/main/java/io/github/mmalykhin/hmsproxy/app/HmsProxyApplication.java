@@ -6,7 +6,7 @@ import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
-import io.github.mmalykhin.hmsproxy.restcatalog.IcebergRestService;
+import io.github.mmalykhin.hmsproxy.restcatalog.IcebergRestServices;
 import io.github.mmalykhin.hmsproxy.restcatalog.RestCatalogServer;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
@@ -57,10 +57,9 @@ public final class HmsProxyApplication {
                 HortonworksFrontendExtension.class);
         try (AdditionalFrontendThriftServers extras =
             AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity);
-             IcebergRestService restService =
-                 config.restCatalog().enabled()
-                     ? new IcebergRestService(config.defaultCatalog(), proxy, null) : null;
-             RestCatalogServer restServer = RestCatalogServer.open(config, restService)) {
+             IcebergRestServices restServices =
+                 config.restCatalog().enabled() ? IcebergRestServices.open(config, proxy) : null;
+             RestCatalogServer restServer = RestCatalogServer.open(config, restServices)) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server, teardownComplete, config.server().shutdownTimeoutSeconds());
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),

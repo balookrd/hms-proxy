@@ -21,24 +21,31 @@ import org.junit.Test;
 
 public class IcebergRestEndpointIntegrationTest {
   private static final String CATALOG_NAME = "catalog1";
+  private static final String CATALOG2_NAME = "catalog2";
   private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(5);
 
   private RecordingThriftIface delegate;
-  private IcebergRestService service;
+  private IcebergRestServices services;
   private RestCatalogServer server;
 
   @Before
   public void setUp() throws Exception {
     delegate = new RecordingThriftIface();
-    delegate.allDatabases = List.of("sales", "marketing");
+    // "default" and "catalog2__default" back catalog2's clean view (translated
+    // to/from "default"); "sales"/"marketing" back the existing catalog1 cases.
+    delegate.allDatabases = List.of("sales", "marketing", "default", "catalog2__default");
     delegate.databases.put("sales", RecordingThriftIface.database("sales"));
     delegate.databases.put("marketing", RecordingThriftIface.database("marketing"));
+    delegate.databases.put("default", RecordingThriftIface.database("default"));
+    delegate.databases.put("catalog2__default", RecordingThriftIface.database("catalog2__default"));
     delegate.tablesByDatabase.put("sales", List.of("orders"));
     delegate.tables.put("sales.orders", RecordingThriftIface.table("sales", "orders"));
+    delegate.tablesByDatabase.put("catalog2__default", List.of("events"));
+    delegate.tables.put("catalog2__default.events", RecordingThriftIface.table("catalog2__default", "events"));
 
     ProxyConfig config = buildConfig();
-    service = new IcebergRestService(CATALOG_NAME, delegate.iface, null);
-    server = RestCatalogServer.open(config, service);
+    services = IcebergRestServices.open(config, delegate.iface);
+    server = RestCatalogServer.open(config, services);
     Assert.assertNotNull("server must start", server);
   }
 
@@ -47,8 +54,8 @@ public class IcebergRestEndpointIntegrationTest {
     if (server != null) {
       server.close();
     }
-    if (service != null) {
-      service.close();
+    if (services != null) {
+      services.close();
     }
   }
 
@@ -111,6 +118,33 @@ public class IcebergRestEndpointIntegrationTest {
         response.statusCode() >= 400 && response.statusCode() < 500);
   }
 
+  @Test
+  public void configWithWarehouseSelectsCatalogPrefix() throws Exception {
+    HttpResponse<String> response = get("/v1/config?warehouse=catalog2");
+    Assert.assertEquals(200, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("\"prefix\":\"catalog2\""));
+  }
+
+  @Test
+  public void configWithUnknownWarehouseReturns400() throws Exception {
+    Assert.assertEquals(400, get("/v1/config?warehouse=nope").statusCode());
+  }
+
+  @Test
+  public void secondPrefixShowsCleanView() throws Exception {
+    HttpResponse<String> response = get("/v1/catalog2/namespaces");
+    Assert.assertEquals(200, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("[\"default\"]"));
+    Assert.assertFalse(response.body(), response.body().contains("catalog2__default"));
+  }
+
+  @Test
+  public void defaultPrefixKeepsFederatedView() throws Exception {
+    HttpResponse<String> response = get("/v1/catalog1/namespaces");
+    Assert.assertEquals(200, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("[\"catalog2__default\"]"));
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
@@ -124,18 +158,29 @@ public class IcebergRestEndpointIntegrationTest {
   private static ProxyConfig buildConfig() {
     return ProxyConfig.builder()
         .server(new ServerConfig("hms-proxy-test", "127.0.0.1", 9083, 1, 4))
-        .catalogDbSeparator(".")
+        .catalogDbSeparator("__")
         .defaultCatalog(CATALOG_NAME)
-        .catalogs(Map.of(CATALOG_NAME, new CatalogConfig(
-            CATALOG_NAME,
-            null,
-            null,
-            false,
-            CatalogAccessMode.READ_WRITE,
-            List.of(),
-            null,
-            null,
-            Map.of("hive.metastore.uris", "thrift://hms-test:9083"))))
+        .catalogs(Map.of(
+            CATALOG_NAME, new CatalogConfig(
+                CATALOG_NAME,
+                null,
+                null,
+                false,
+                CatalogAccessMode.READ_WRITE,
+                List.of(),
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://hms-test:9083")),
+            CATALOG2_NAME, new CatalogConfig(
+                CATALOG2_NAME,
+                null,
+                null,
+                false,
+                CatalogAccessMode.READ_WRITE,
+                List.of(),
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://hms-test:9084"))))
         .backend(new BackendConfig(Map.of()))
         .restCatalog(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())

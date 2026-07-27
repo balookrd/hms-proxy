@@ -43,11 +43,6 @@ public final class IcebergRestService implements AutoCloseable {
     return catalogName;
   }
 
-  /** True when the prefix segment in the request URL maps to a known catalog we can serve. */
-  public boolean supportsPrefix(String prefix) {
-    return prefix != null && prefix.equals(catalogName);
-  }
-
   /**
    * Returns the GET /v1/config response that Iceberg clients use for discovery.
    * Setting overrides.prefix locks the client to this service's catalog so all
