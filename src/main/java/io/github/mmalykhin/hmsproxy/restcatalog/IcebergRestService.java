@@ -16,9 +16,11 @@ import org.apache.iceberg.rest.responses.ErrorResponse;
 
 /**
  * Bridges Iceberg REST calls to the proxy's ThriftHiveMetastore.Iface via a
- * single shared RoutingHiveCatalog. The MVP supports the proxy's default catalog
- * only; multi-catalog support requires namespace prefix rewriting on both
- * request and response paths (planned for a follow-up step).
+ * RoutingHiveCatalog. Each instance serves a single catalog prefix. The
+ * default catalog's service exposes the federated view as-is, with no name
+ * translation; every other catalog's service is given a CatalogNameTranslation
+ * so REST clients see that catalog's internal database names instead of the
+ * federated ones.
  */
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";

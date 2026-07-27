@@ -49,8 +49,20 @@ public final class IcebergRestServices implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    IOException first = null;
     for (IcebergRestService service : byPrefix.values()) {
-      service.close();
+      try {
+        service.close();
+      } catch (IOException e) {
+        if (first == null) {
+          first = e;
+        } else {
+          first.addSuppressed(e);
+        }
+      }
+    }
+    if (first != null) {
+      throw first;
     }
   }
 }
