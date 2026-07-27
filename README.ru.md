@@ -986,8 +986,10 @@ Iceberg REST Catalog, использующий тот же routing/federation pi
 Thrift HMS front door. Статус: **экспериментально, read-only**. Iceberg-клиенты
 (PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) могут discover и load
 Iceberg-таблицы, хранящиеся в HMS через стандартный параметр
-`metadata_location`. Writes, commits и view-операции в этой итерации НЕ
-поддерживаются.
+`metadata_location`. View routes теперь возвращают реальные данные вместо
+пустого `204`, так как `HiveCatalog` стал `ViewCatalog`, начиная с Iceberg
+`1.7`; writes, commits и view-мутации (create/drop/rename) в этой итерации
+по-прежнему НЕ поддерживаются.
 
 Включается так:
 
@@ -1012,7 +1014,9 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | `GET /v1/{prefix}/namespaces/{ns}`                    | поддержан                               |
 | `GET /v1/{prefix}/namespaces/{ns}/tables`             | поддержан (только Iceberg-таблицы)      |
 | `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан (только Iceberg-таблицы)      |
-| `POST`, `DELETE`, view-операции, commits              | не поддержан                            |
+| `GET /v1/{prefix}/namespaces/{ns}/views`              | поддержан (реальный листинг; пустой, если Iceberg-view нет) |
+| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан (только Iceberg-view)          |
+| `POST`, `DELETE`, commits (включая view-мутации)      | не поддержан                            |
 
 `{prefix}` — любой каталог, перечисленный в `catalogs=`: каждый настроенный
 каталог получает собственный REST prefix, `/v1/<catalog>/...`. `GET
@@ -1081,7 +1085,7 @@ spark.sql.catalog.sales_catalog.warehouse=sales
   отфильтровывает, и через REST их не видно. Для native Hive продолжайте
   использовать Thrift listener.
 - `RoutingHiveCatalog` использует reflection на private поле
-  `HiveCatalog.clients`, привязанное к Iceberg `1.5.2`. При апгрейде Iceberg
+  `HiveCatalog.clients`, привязанное к Iceberg `1.9.2`. При апгрейде Iceberg
   обязательно прогнать `RoutingHiveCatalogTest`, чтобы убедиться, что inject
   ещё работает.
 

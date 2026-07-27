@@ -61,6 +61,33 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   join assertions looked for a column alias, which cannot appear because the
   runner passes `--showHeader=false`; the marker moved into the selected data.
 
+### Changed
+
+- The Iceberg REST front door moved from Iceberg `1.5.2` to `1.9.2`.
+  `jackson-core` and `jackson-databind` are now pinned to `2.18.3` in
+  `dependencyManagement`: `1.9.2` is compiled against Jackson `2.18` while
+  Hive `3.1.3` brings databind `2.12`, and without the pin the tree resolved
+  `core 2.18.3` next to `databind 2.12.0`, which would have broken
+  `TableMetadataParser` — the path that reads `metadata.json`. The vendored
+  `RESTCatalogAdapter` was re-taken from the `1.9.2` upstream tag; dispatch
+  moved from the removed `execute(...)` overload to
+  `handleRequest(route, vars, body, responseType)`, and error reporting
+  moved from a captured-callback scheme to catching exceptions and mapping
+  them with `RESTCatalogAdapter.configureResponseFromException`.
+- View routes (`GET .../views`, `GET .../views/{view}`) now return real data
+  — an empty `{"identifiers":[],"next-page-token":null}` listing rather than
+  the previous empty `204` — because `HiveCatalog` became a `ViewCatalog`
+  from Iceberg `1.7` on. `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` are
+  now reachable inside the adapter but are not yet wired into the handler;
+  that wiring is a later phase. Client compatibility is unaffected: the REST
+  endpoint is a wire protocol, so a client's own Iceberg version is
+  independent of the proxy's, and a `format-version: 2` table still loads as
+  v2 (verified on the stand: format-version 2, 21 metadata fields). Stand
+  validation (`--scenario rest`, `--scenario all`, and the SQL layer through
+  both HiveServer2 instances) all completed successfully on the upgraded
+  jar — the SQL layer is what proves the Jackson pin did not break the Hive
+  paths.
+
 ## 2026-07-26
 
 ### Fixed

@@ -988,8 +988,11 @@ The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
 Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
 front door. Status: **experimental, read-only**. Iceberg clients (PyIceberg,
 Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg
-tables stored in HMS via the standard `metadata_location` table parameter;
-writes, commits, and view operations are NOT supported in this iteration.
+tables stored in HMS via the standard `metadata_location` table parameter.
+View routes now return real data instead of an empty `204`, since
+`HiveCatalog` is a `ViewCatalog` as of Iceberg `1.7`; writes, commits, and
+view mutations (create/drop/rename) are still NOT supported in this
+iteration.
 
 Enable it via:
 
@@ -1014,7 +1017,9 @@ Requests to this listener are covered by the Prometheus metrics described in
 | `GET /v1/{prefix}/namespaces/{ns}`                    | supported                       |
 | `GET /v1/{prefix}/namespaces/{ns}/tables`             | supported (Iceberg tables only) |
 | `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
-| `POST`, `DELETE`, view operations, commits            | unsupported                     |
+| `GET /v1/{prefix}/namespaces/{ns}/views`              | supported (real listing, empty unless Iceberg views exist) |
+| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported (Iceberg views only)  |
+| `POST`, `DELETE`, commits (including view mutations)  | unsupported                     |
 
 `{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
 exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
@@ -1083,7 +1088,7 @@ spark.sql.catalog.sales_catalog.warehouse=sales
   and stay invisible through REST. Continue to use the Thrift listener for
   native Hive tables.
 - `RoutingHiveCatalog` uses reflection on Iceberg's private `HiveCatalog.clients`
-  field, pinned to Iceberg `1.5.2`. Bumping the Iceberg version requires
+  field, pinned to Iceberg `1.9.2`. Bumping the Iceberg version requires
   running `RoutingHiveCatalogTest` to confirm the inject still works.
 
 ## Security

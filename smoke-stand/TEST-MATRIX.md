@@ -143,6 +143,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   stand's management endpoint, both `--scenario rest` and `--scenario all` fetched it with curl
   and confirmed the `hms_proxy_rest_requests_total` and `hms_proxy_rest_listener_info` series were
   present and populated after the REST checks ran.
+  Later still, jar `1.0.23-613b7a1e` (the Iceberg 1.9.2 upgrade, Jackson pinned to `2.18.3`)
+  re-ran sections A-D and G green, including the SQL layer through both HiveServer2 instances as
+  the Jackson-regression detector for the pin.
 
 ## Two caveats on faithfulness
 

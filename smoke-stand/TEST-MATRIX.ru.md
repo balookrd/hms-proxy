@@ -145,6 +145,9 @@ HDP-клиент не может пользоваться Apache-listener — Th
   на management-endpoint стенда, оба прогона — `--scenario rest` и `--scenario all` — забрали его
   curl'ом и подтвердили, что серии `hms_proxy_rest_requests_total` и `hms_proxy_rest_listener_info`
   присутствуют и заполнены после того, как отработали REST-проверки.
+  Ещё позже jar `1.0.23-613b7a1e` (апгрейд на Iceberg 1.9.2, Jackson запинен на `2.18.3`)
+  перепрогнал разделы A-D и G и получил зелёный результат; SQL-слой через оба HiveServer2
+  сыграл роль детектора Jackson-регрессии для этого пина.
 
 ## Две оговорки честности
 

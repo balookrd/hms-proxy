@@ -63,6 +63,32 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   искали алиас колонки, который появиться не может: раннер запускает beeline с
   `--showHeader=false`; маркер перенесён в сами данные.
 
+### Изменено
+
+- Iceberg REST front door перешёл с Iceberg `1.5.2` на `1.9.2`.
+  `jackson-core` и `jackson-databind` теперь запинены на `2.18.3` в
+  `dependencyManagement`. `1.9.2` собран под Jackson `2.18`, а Hive `3.1.3`
+  тянет databind `2.12`; без пина дерево резолвило `core 2.18.3` рядом с
+  `databind 2.12.0`, что сломало бы `TableMetadataParser` — путь, который
+  читает `metadata.json`. Vendored `RESTCatalogAdapter` пересобран заново по
+  upstream-тегу `1.9.2`; dispatch перешёл с удалённого overload
+  `execute(...)` на `handleRequest(route, vars, body, responseType)`, а
+  обработка ошибок — со схемы captured-callback на перехват исключений и их
+  маппинг через `RESTCatalogAdapter.configureResponseFromException`.
+- View routes (`GET .../views`, `GET .../views/{view}`) теперь возвращают
+  реальные данные — пустой листинг
+  `{"identifiers":[],"next-page-token":null}` вместо прежнего пустого `204`,
+  потому что `HiveCatalog` стал `ViewCatalog`, начиная с Iceberg `1.7`.
+  `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` теперь достижимы внутри
+  adapter, но пока не подключены в handler; это отдельная будущая фаза.
+  Совместимость с клиентами не пострадала: REST endpoint — это wire
+  protocol, поэтому версия Iceberg на стороне клиента не зависит от версии
+  proxy, и таблица с `format-version: 2` по-прежнему загружается как v2
+  (проверено на стенде: format-version 2, 21 поле метаданных). Валидация на
+  стенде (`--scenario rest`, `--scenario all` и SQL-слой через оба
+  HiveServer2) прошла успешно на обновлённом jar. Именно SQL-слой доказывает,
+  что пин Jackson не сломал пути Hive.
+
 ## 2026-07-26
 
 ### Исправлено
