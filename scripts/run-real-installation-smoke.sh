@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|txn|locks|notification]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|txn|locks|notification|rest]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,11 +23,12 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + txn + non-default DB lock + optional partition lock + optional notification
+  all           run optional beeline SQL smoke + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
   txn           run only the direct ACID/txn smoke
   locks         run only the non-default catalog lock smoke
   notification  run only Hortonworks add_write_notification_log smoke
+  rest          run only the Iceberg REST catalog smoke (HTTP, via curl)
 
 Important env vars:
   HMS_SMOKE_URI
@@ -67,6 +68,13 @@ Optional notification env vars:
 Optional partition lock env vars:
   HMS_SMOKE_LOCK_TABLE
   HMS_SMOKE_LOCK_PARTITION
+
+Optional Iceberg REST env vars:
+  HMS_SMOKE_REST_URL                     base URL of the rest-catalog listener; enables the smoke
+  HMS_SMOKE_REST_PREFIX                  expected catalog prefix; default: whatever /v1/config advertises
+  HMS_SMOKE_REST_NAMESPACE               default: default
+  HMS_SMOKE_REST_ICEBERG_TABLE           Iceberg table to list and load; skipped when unset
+  HMS_SMOKE_REST_NON_ICEBERG_TABLE       plain Hive table that must NOT appear in the listing
 EOF
 
   cat <<'EOF'
@@ -872,6 +880,96 @@ EOF
   fi
 }
 
+# Iceberg REST catalog smoke. The endpoint is read-only by design, so the positive checks
+# are discovery and loads, and the negative checks pin down that an unknown prefix, an
+# unknown table and a write route all fail cleanly instead of half-working.
+rest_is_configured() {
+  [[ -n "${HMS_SMOKE_REST_URL:-}" ]]
+}
+
+rest_request() {
+  local method="$1"
+  local path="$2"
+  local body_file="$3"
+  curl -sS -o "${body_file}" -w '%{http_code}' -X "${method}" "${HMS_SMOKE_REST_URL}${path}"
+}
+
+run_rest_smoke() {
+  if ! rest_is_configured; then
+    if [[ "${SCENARIO}" == "rest" ]]; then
+      fail "rest scenario requires HMS_SMOKE_REST_URL"
+    fi
+    log "skipping Iceberg REST smoke because HMS_SMOKE_REST_URL is not configured"
+    return
+  fi
+  require_command curl
+
+  local namespace="${HMS_SMOKE_REST_NAMESPACE:-default}"
+  local iceberg_table="${HMS_SMOKE_REST_ICEBERG_TABLE:-}"
+  local non_iceberg_table="${HMS_SMOKE_REST_NON_ICEBERG_TABLE:-}"
+  local body=""
+  body="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-rest-smoke.XXXXXX.json")"
+  trap 'rm -f "${body:-}"' RETURN
+
+  log "running Iceberg REST smoke against ${HMS_SMOKE_REST_URL}"
+
+  local code=""
+  code="$(rest_request GET "/v1/config" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET /v1/config returned HTTP ${code}: $(cat "${body}")"
+
+  # The config response pins clients to the proxy's default catalog; every later path
+  # reuses the advertised prefix instead of guessing it.
+  local prefix=""
+  prefix="$(grep -o '"prefix"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+  [[ -n "${prefix}" ]] || fail "GET /v1/config carries no prefix override: $(cat "${body}")"
+  if [[ -n "${HMS_SMOKE_REST_PREFIX:-}" && "${HMS_SMOKE_REST_PREFIX}" != "${prefix}" ]]; then
+    fail "GET /v1/config prefix '${prefix}' does not match HMS_SMOKE_REST_PREFIX='${HMS_SMOKE_REST_PREFIX}'"
+  fi
+
+  code="$(rest_request GET "/v1/${prefix}/namespaces" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET /v1/${prefix}/namespaces returned HTTP ${code}: $(cat "${body}")"
+  grep -q "\"${namespace}\"" "${body}" \
+    || fail "namespace '${namespace}' missing from the REST listing: $(cat "${body}")"
+
+  code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET namespace '${namespace}' returned HTTP ${code}: $(cat "${body}")"
+
+  code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET tables of '${namespace}' returned HTTP ${code}: $(cat "${body}")"
+  if [[ -n "${iceberg_table}" ]]; then
+    grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${iceberg_table}\"" "${body}" \
+      || fail "Iceberg table '${iceberg_table}' missing from the REST listing: $(cat "${body}")"
+  fi
+  if [[ -n "${non_iceberg_table}" ]]; then
+    if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${non_iceberg_table}\"" "${body}"; then
+      fail "non-Iceberg table '${non_iceberg_table}' leaked into the Iceberg REST listing: $(cat "${body}")"
+    fi
+  fi
+
+  if [[ -n "${iceberg_table}" ]]; then
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/${iceberg_table}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST load of '${iceberg_table}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q '"metadata-location"' "${body}" \
+      || fail "REST load of '${iceberg_table}' carries no metadata-location: $(cat "${body}")"
+  else
+    log "skipping REST load-table check because HMS_SMOKE_REST_ICEBERG_TABLE is not set"
+  fi
+
+  code="$(rest_request GET "/v1/no_such_prefix_smoke/namespaces" "${body}")"
+  [[ "${code}" == "404" ]] \
+    || fail "unknown REST prefix expected HTTP 404, got ${code}: $(cat "${body}")"
+
+  code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/no_such_table_smoke" "${body}")"
+  [[ "${code}" == "404" ]] \
+    || fail "unknown REST table expected HTTP 404, got ${code}: $(cat "${body}")"
+
+  # Writes are out of scope for this phase; the route must refuse, not half-apply.
+  code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/no_such_table_smoke" "${body}")"
+  [[ "${code}" =~ ^2 ]] && fail "REST write route unexpectedly succeeded with HTTP ${code}: $(cat "${body}")"
+
+  log "Iceberg REST smoke passed (prefix '${prefix}', namespace '${namespace}')"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -919,6 +1017,7 @@ main() {
       run_partition_lock_smoke
       run_cross_catalog_lock_smoke
       run_notification_smoke
+      run_rest_smoke
       ;;
     sql)
       run_sql_smoke_all
@@ -934,8 +1033,11 @@ main() {
     notification)
       run_notification_smoke
       ;;
+    rest)
+      run_rest_smoke
+      ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, txn, locks, notification"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, txn, locks, notification, rest"
       ;;
   esac
 

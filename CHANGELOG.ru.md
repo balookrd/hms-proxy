@@ -27,6 +27,14 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   запросом в одном namespace: `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (по
   умолчанию `true`, только чтение) и `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (по
   умолчанию `false`, так как создаёт базу).
+- `--scenario rest` в smoke-раннерах гоняет Iceberg REST catalog front door
+  curl'ом: discovery конфигурации, листинги namespace и таблиц, load таблицы
+  (с проверкой, что вернулся `metadata-location`), невидимость обычных
+  Hive-таблиц и чистые отказы на неизвестный prefix, неизвестную таблицу и
+  write-роут. Настраивается через `HMS_SMOKE_REST_*`; в `--scenario all`
+  пропускается, если `HMS_SMOKE_REST_URL` не задан. Локальный стенд включает
+  listener в plain-профиле (host-порт 19183) и регистрирует минимальную
+  Iceberg-таблицу для проверки load.
 
 ### Исправлено
 

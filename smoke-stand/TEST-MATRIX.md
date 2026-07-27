@@ -79,6 +79,22 @@ only path that covers the Hortonworks front door with a real client.
 | E2 | Readiness probe does not disturb SASL (15 × `/readyz`, then a Kerberos smoke run) | ✅ |
 | E3 | `hms_proxy_lock_request_split_total{catalog}` counts lock-request splits | ✅ |
 
+## G. Iceberg REST catalog front door (host port 19183)
+
+Plain profile only; the Kerberos profile keeps the listener off (SPNEGO is covered in-JVM by
+`SpnegoIntegrationTest`). Driven by `--scenario rest` with curl from the host; the loaded
+table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
+
+| # | Check | plain | kerberos |
+| --- | --- | --- | --- |
+| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | n/a |
+| G2 | Namespace list and load (`default`) | ✅ | n/a |
+| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | n/a |
+| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | n/a |
+| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | n/a |
+| G6 | Unknown table → clean 404 | ✅ | n/a |
+| G7 | Write route (`DELETE` table) refused, non-2xx | ✅ | n/a |
+
 ## F. Not covered, and why
 
 | Area | Reason |
@@ -105,6 +121,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `show functions like` matching a bare name that Hive 3.1.3 registers qualified, and the
   runner's cleanup `RETURN` trap re-fired in the enclosing function after a two-pass run and
   killed it under `set -u` after every assertion had already passed.
+  Later the same day the branch's Iceberg REST listener was enabled on the plain profile and
+  section G was run for the first time (`--scenario rest`, and again as the REST step of a
+  full green `--scenario all`).
 
 ## Two caveats on faithfulness
 

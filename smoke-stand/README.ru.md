@@ -179,6 +179,46 @@ door.
 docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ```
 
+## Iceberg REST catalog front door
+
+Plain-профиль включает и Iceberg REST listener прокси (`rest-catalog.*` в
+`proxy/hms-proxy.properties`, host-порт 19183). Он read-only и обслуживает только
+default-каталог (`hdp`). `--scenario rest` (или REST-шаг `--scenario all`) гоняет его
+curl'ом с хоста: discovery конфигурации, листинги namespace и таблиц, load таблицы и
+негативные формы — неизвестный prefix, неизвестная таблица и write-роут; все должны
+падать чисто.
+
+Проверке load-table нужна настоящая Iceberg-таблица. Стенд регистрирует минимальную
+вручную — написанный руками `metadata.json` в HDFS плюс Hive-оболочка таблицы, которая
+на него указывает:
+
+```bash
+# 1. Положить минимальный файл table metadata Iceberg на кластер каталога hdp
+docker cp <metadata.json> stand-namenode:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode bash -c \
+  'hdfs dfs -mkdir -p /warehouse/hdp/smoke_iceberg_tbl/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/hdp/smoke_iceberg_tbl/metadata/'
+
+# 2. Зарегистрировать таблицу в каталоге hdp с двумя свойствами, по которым её узнаёт HiveCatalog
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists hdp__default.smoke_iceberg_tbl (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl/metadata/00000-smoke.metadata.json');\""
+```
+
+Файл метаданных прокси читает из HDFS сам (HadoopFileIO с голой `Configuration`), поэтому
+прошедший load доказывает всю цепочку: REST-роут → HiveCatalog → собственный routing-слой
+прокси → HMS → HDFS. Обычные Hive-таблицы той же базы (`smoke_read_hdp`, `smoke_txn_tbl`)
+через REST видны быть не должны — smoke проверяет и это.
+
+Kerberos-профиль оставляет REST listener выключенным: SPNEGO требует curl с GSS внутри
+сети, а сам handshake уже покрыт end-to-end тестом `SpnegoIntegrationTest` на
+hadoop-minikdc.
+
 ## Hortonworks HiveServer2 (`--profile hdp`)
 
 Настоящий HDP HiveServer2, подключённый к Hortonworks front door: этот listener наконец проверяется

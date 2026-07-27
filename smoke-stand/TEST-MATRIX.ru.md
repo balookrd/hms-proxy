@@ -79,6 +79,22 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | E2 | Readiness-проба не ломает SASL (15 × `/readyz`, следом Kerberos-смоук) | ✅ |
 | E3 | `hms_proxy_lock_request_split_total{catalog}` считает расщепления lock-запросов | ✅ |
 
+## G. Iceberg REST catalog front door (host-порт 19183)
+
+Только plain-профиль; Kerberos-профиль держит listener выключенным (SPNEGO покрыт in-JVM
+тестом `SpnegoIntegrationTest`). Гоняется через `--scenario rest` curl'ом с хоста;
+загружаемая таблица — зарегистрированная вручную `smoke_iceberg_tbl` (см. README стенда).
+
+| # | Проверка | plain | kerberos |
+| --- | --- | --- | --- |
+| G1 | `GET /v1/config` объявляет `prefix=hdp` (default-каталог) | ✅ | n/a |
+| G2 | Листинг и load namespace (`default`) | ✅ | n/a |
+| G3 | Листинг таблиц показывает Iceberg-таблицу и прячет обычные Hive-таблицы той же базы | ✅ | n/a |
+| G4 | Load таблицы возвращает `metadata-location` и полные метаданные, прочитанные из HDFS самим прокси | ✅ | n/a |
+| G5 | Неизвестный prefix → чистый 404 `NoSuchCatalogException` | ✅ | n/a |
+| G6 | Неизвестная таблица → чистый 404 | ✅ | n/a |
+| G7 | Write-роут (`DELETE` таблицы) отклонён, не-2xx | ✅ | n/a |
+
 ## F. Что не покрыто и почему
 
 | Область | Причина |
@@ -106,6 +122,9 @@ HDP-клиент не может пользоваться Apache-listener — Th
   `show functions like` найдёт короткое имя, хотя Hive 3.1.3 регистрирует функцию
   квалифицированной, а cleanup-`trap RETURN` раннера срабатывал повторно в объемлющей функции
   после двухпроходного прогона и убивал его под `set -u` уже после всех пройденных проверок.
+  Позже в тот же день на plain-профиле был включён Iceberg REST listener ветки и впервые
+  прогнан раздел G (`--scenario rest`, затем ещё раз как REST-шаг полностью зелёного
+  `--scenario all`).
 
 ## Две оговорки честности
 

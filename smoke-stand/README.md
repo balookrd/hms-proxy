@@ -181,6 +181,45 @@ The reason is in the proxy log:
 docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ```
 
+## Iceberg REST catalog front door
+
+The plain profile also enables the proxy's Iceberg REST listener (`rest-catalog.*` in
+`proxy/hms-proxy.properties`, host port 19183). It is read-only and serves the default
+catalog (`hdp`) only. `--scenario rest` (or the REST step of `--scenario all`) drives it
+with curl from the host: config discovery, namespace and table listings, a table load, and
+the negative shapes — unknown prefix, unknown table, and a write route, all of which must
+fail cleanly.
+
+The load-table check needs a real Iceberg table. The stand registers a minimal one by hand —
+a hand-written `metadata.json` in HDFS plus a Hive table shell that points at it:
+
+```bash
+# 1. Put a minimal Iceberg table metadata file onto the hdp catalog's cluster
+docker cp <metadata.json> stand-namenode:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode bash -c \
+  'hdfs dfs -mkdir -p /warehouse/hdp/smoke_iceberg_tbl/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/hdp/smoke_iceberg_tbl/metadata/'
+
+# 2. Register the table in the hdp catalog with the two properties HiveCatalog keys on
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists hdp__default.smoke_iceberg_tbl (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl/metadata/00000-smoke.metadata.json');\""
+```
+
+The proxy reads the metadata file from HDFS itself (HadoopFileIO with a bare `Configuration`),
+so a passing load proves the whole chain: REST route → HiveCatalog → the proxy's own routing
+layer → HMS → HDFS. Plain Hive tables of the same database (`smoke_read_hdp`,
+`smoke_txn_tbl`) must stay invisible through REST — the smoke asserts that too.
+
+The Kerberos profile leaves the REST listener off: SPNEGO needs a GSS-enabled curl inside
+the network, and the handshake itself is already covered end-to-end by
+`SpnegoIntegrationTest` on hadoop-minikdc.
+
 ## Hortonworks HiveServer2 (`--profile hdp`)
 
 A real HDP HiveServer2 that connects to the Hortonworks front door, so that listener is driven by

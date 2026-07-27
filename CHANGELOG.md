@@ -26,6 +26,14 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   statement never reaches: `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default
   `true`, read-only) and `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default
   `false`, since it creates a database).
+- `--scenario rest` in the smoke runners drives the Iceberg REST catalog
+  front door with curl: config discovery, namespace and table listings, a
+  table load (asserting `metadata-location` comes back), the invisibility of
+  plain Hive tables, and clean failures for an unknown prefix, an unknown
+  table and a write route. Configured via `HMS_SMOKE_REST_*`; skipped in
+  `--scenario all` when `HMS_SMOKE_REST_URL` is unset. The local stand enables
+  the listener on its plain profile (host port 19183) and registers a minimal
+  Iceberg table for the load check.
 
 ### Fixed
 
