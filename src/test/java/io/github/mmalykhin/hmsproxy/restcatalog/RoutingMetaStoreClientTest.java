@@ -91,4 +91,34 @@ public class RoutingMetaStoreClientTest {
     client.close();
     Assert.assertTrue(delegate.calls.isEmpty());
   }
+
+  @Test
+  public void scopedClientTranslatesDatabaseArguments() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    recording.databases.put("apache__default", RecordingThriftIface.database("apache__default"));
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    Database db = client.getDatabase("default");
+    Assert.assertEquals("default", db.getName());
+    Assert.assertEquals(List.of("get_database:apache__default"), recording.calls);
+  }
+
+  @Test
+  public void scopedClientFiltersAndStripsDatabaseListing() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    recording.allDatabases = List.of("default", "apache__default", "hdp__x");
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    Assert.assertEquals(List.of("default"), client.getAllDatabases());
+  }
+
+  @Test
+  public void scopedClientRewritesTableDbName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    recording.tables.put("apache__default.t1", RecordingThriftIface.table("apache__default", "t1"));
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    Table t = client.getTable("default", "t1");
+    Assert.assertEquals("default", t.getDbName());
+  }
 }
