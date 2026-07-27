@@ -978,6 +978,32 @@ run_rest_smoke() {
   code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/no_such_table_smoke" "${body}")"
   [[ "${code}" =~ ^2 ]] && fail "REST write route unexpectedly succeeded with HTTP ${code}: $(cat "${body}")"
 
+  # Error responses keep the mapped status, type and message but must not leak the server
+  # stack trace: this listener may be unauthenticated, so a trace would expose internal
+  # package structure, file names and line numbers.
+  code="$(rest_request GET "/v1/${prefix}/namespaces/no_such_ns_smoke" "${body}")"
+  [[ "${code}" == "404" ]] || fail "missing namespace expected HTTP 404, got ${code}: $(cat "${body}")"
+  if grep -q '"stack":\["' "${body}"; then
+    fail "error response leaks a server stack trace: $(cat "${body}")"
+  fi
+
+  # A body that fails to parse must answer 400, not fall through to a 500.
+  if [[ -n "${iceberg_table}" ]]; then
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data 'not json at all' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/tables/${iceberg_table}/metrics")"
+    [[ "${code}" == "400" ]] || fail "unparseable body expected HTTP 400, got ${code}: $(cat "${body}")"
+  else
+    log "skipping REST unparseable-body check because HMS_SMOKE_REST_ICEBERG_TABLE is not set"
+  fi
+
+  # GET /v1/config must advertise the served endpoints so modern clients know not to
+  # attempt writes.
+  code="$(rest_request GET "/v1/config" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET /v1/config returned HTTP ${code}: $(cat "${body}")"
+  grep -q '"endpoints"' "${body}" \
+    || fail "config does not advertise an endpoint list: $(cat "${body}")"
+
   # Optional second prefix: proves warehouse discovery and the clean view work for a
   # non-default catalog too, not only for the one /v1/config already advertised.
   local second_prefix="${HMS_SMOKE_REST_SECOND_PREFIX:-}"

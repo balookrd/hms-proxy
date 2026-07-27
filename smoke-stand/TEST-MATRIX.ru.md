@@ -105,6 +105,9 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G16 | Обычная Hive-таблица второго каталога (`smoke_read_ap`) не видна в листинге под prefix `apache` | ✅ | n/a |
 | G17 | REST-метрики (`requests_total`, `listener_info`) видны на management-endpoint `/metrics` | ✅ | n/a |
 | G18 | `HEAD` на namespace/таблицу отвечает `204`, если объект существует, и `404`, если нет — в том числе под не-default prefix `apache` и для обычной Hive-таблицы (`smoke_read_hdp`) | ✅ | n/a |
+| G19 | Error-ответ на отсутствующий namespace несёт смапленные `404`, `type` и `message`, но без `"stack":[...]` server trace | ✅ | n/a |
+| G20 | Нераспарсиваемое тело `POST .../metrics` отвечает `400` (`BadRequestException`), а не `500` | ✅ | n/a |
+| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` оба несут поле `endpoints` с ровно девятью обслуживаемыми read-роутами | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -149,6 +152,11 @@ HDP-клиент не может пользоваться Apache-listener — Th
   Ещё позже jar `1.0.23-613b7a1e` (апгрейд на Iceberg 1.9.2, Jackson запинен на `2.18.3`)
   перепрогнал разделы A-D и G и получил зелёный результат; SQL-слой через оба HiveServer2
   сыграл роль детектора Jackson-регрессии для этого пина.
+  Ещё позже jar `1.0.33-01704804` (укрепление: error-ответы без stack trace, 400 на
+  нераспарсиваемое тело, объявление endpoint'ов) добавил строки G19-G21 и перепрогнал
+  `--scenario rest` и `--scenario all` — оба зелёные; `GET /v1/config` и `GET /v1/apache/config`
+  забраны curl'ом, и оба несли девятиэлементный список `endpoints`, а `docker logs stand-proxy`
+  не показал WARN-шума `stream closed` от HEAD-проверок из G18.
 
 ## Две оговорки честности
 

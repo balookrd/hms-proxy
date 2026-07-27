@@ -1010,6 +1010,7 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | Endpoint                                              | Статус                                  |
 | ----------------------------------------------------- | --------------------------------------- |
 | `GET /v1/config`                                      | поддержан                               |
+| `GET /v1/{prefix}/config`                             | поддержан                               |
 | `GET /v1/{prefix}/namespaces`                         | поддержан                               |
 | `GET /v1/{prefix}/namespaces/{ns}`                    | поддержан                               |
 | `GET /v1/{prefix}/namespaces/{ns}/tables`             | поддержан (только Iceberg-таблицы)      |
@@ -1028,7 +1029,23 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 привязаться к нужному prefix, не зашивая его в конфигурацию (см. примеры
 клиентов ниже). Без `warehouse` `/v1/config` объявляет `routing.default-catalog`
 — как и в phase 1; неизвестное значение `warehouse` возвращает HTTP 400
-(`BadRequestException`).
+(`BadRequestException`). Поле `endpoints` в ответе перечисляет ровно девять
+read-роутов из таблицы выше (list/load namespace + namespace-exists, list/load
+table + table-exists, list/load view + view-exists), чтобы современный клиент
+знал, что писать сюда не стоит; старые клиенты, которые это поле не смотрят,
+ничего не теряют. `GET /v1/{prefix}/config` отвечает так же, но из
+собственного handler'а прокси — `overrides.prefix` называет каталог из
+сегмента пути, а не из query-параметра `warehouse`, — и неизвестный prefix
+здесь по-прежнему даёт 404.
+
+Error-ответы несут смапленный HTTP-статус, `type` и `message`, но никогда —
+server stack trace, потому что этот listener может быть доступен без
+аутентификации. Тело запроса, которое не удаётся распарсить, отвечает 400
+(`BadRequestException`) вместо падения в 500; это касается любого роута,
+принимающего тело. `HEAD`-ответ никогда не пишет тело, как того требует RFC
+9110, — включая error-статусы, — так что exists-check на отсутствующий
+namespace, таблицу или view возвращает обычный 404 без тела, а не 404 с
+JSON-телом.
 
 Prefix дефолтного каталога сохраняет federated-представление из phase 1: его
 собственные базы плюс базы всех остальных каталогов под именами

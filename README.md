@@ -1013,6 +1013,7 @@ Requests to this listener are covered by the Prometheus metrics described in
 | Endpoint                                              | Status                          |
 | ----------------------------------------------------- | ------------------------------- |
 | `GET /v1/config`                                      | supported                       |
+| `GET /v1/{prefix}/config`                             | supported                       |
 | `GET /v1/{prefix}/namespaces`                         | supported                       |
 | `GET /v1/{prefix}/namespaces/{ns}`                    | supported                       |
 | `GET /v1/{prefix}/namespaces/{ns}/tables`             | supported (Iceberg tables only) |
@@ -1031,7 +1032,23 @@ warehouse discovery: pass `?warehouse=<catalog>` and the response's
 right prefix without hardcoding it (see the client examples below). Without
 `warehouse`, `/v1/config` advertises `routing.default-catalog`, matching
 phase-1 behavior; an unknown `warehouse` value returns HTTP 400
-(`BadRequestException`).
+(`BadRequestException`). The response's `endpoints` field lists exactly the
+nine read routes above (list/load namespace + namespace-exists, list/load
+table + table-exists, list/load view + view-exists), so a modern client knows
+not to attempt a write; older clients that don't look at the field are
+unaffected. `GET /v1/{prefix}/config` answers the same way from the proxy's
+own handler — `overrides.prefix` names the catalog from the path segment
+instead of the `warehouse` query param — and an unknown prefix there is still
+a 404.
+
+Error responses carry the mapped HTTP status, `type` and `message` but never
+a server stack trace, since this listener can be reached without
+authentication. A request body that fails to parse answers 400
+(`BadRequestException`) instead of falling through to a 500; this applies to
+every route that takes a body. A `HEAD` response never writes a body, per RFC
+9110 — including on an error status — so an exists-check against a missing
+namespace, table or view returns a plain 404 with no body, not a 404 with a
+JSON payload.
 
 The default catalog's prefix keeps the phase-1 federated view: its own
 databases plus every other catalog's databases under their

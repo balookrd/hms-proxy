@@ -51,6 +51,15 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   and third series when `HMS_SMOKE_REST_METRICS_URL` is set. The bundled
   Grafana dashboard gains an Iceberg REST row: rate/error-ratio/latency
   stats, quantiles, and breakdowns by HTTP status, catalog prefix and route.
+- `GET /v1/config` now advertises, in the `endpoints` field Iceberg 1.9.2
+  added, exactly the nine read routes this front door serves: list/load
+  namespace + namespace-exists, list/load table + table-exists, list/load
+  view + view-exists. Modern clients use it to know not to attempt writes;
+  older clients ignore the field. `GET /v1/{prefix}/config` now answers from
+  the proxy's own handler with `overrides.prefix` for the catalog named in
+  the path, instead of falling through to the vendored adapter and
+  advertising every route including writes; an unknown catalog there is
+  still a 404.
 
 ### Fixed
 
@@ -60,6 +69,21 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   an Apache one; backticks are now stripped before comparing. The cross-catalog
   join assertions looked for a column alias, which cannot appear because the
   runner passes `--showHeader=false`; the marker moved into the selected data.
+- Error responses from the Iceberg REST front door no longer carry the
+  server stack trace. They keep the mapped status code, `type` and
+  `message`; only the `stack` field is gone. This listener may be
+  unauthenticated, so the trace was leaking internal package structure, file
+  names and line numbers. A request body that fails to parse now answers 400
+  (`BadRequestException`) instead of falling through to a 500; this applies
+  to every route that takes a body, and a valid metrics report still answers
+  204 as before. `HEAD` responses no longer write a body: previously every
+  `HEAD` that produced an error hit `IOException: stream closed` inside the
+  JDK HTTP server and logged a WARN with a full stack trace on each request —
+  the status the client saw was already correct, so this was pure log noise,
+  and a client polling exists-checks for missing objects flooded the log.
+  The same defect was fixed on the management listener (`/healthz`,
+  `/readyz`, `/metrics`), where it was silent because that server has no
+  catch-all logger.
 
 ### Changed
 

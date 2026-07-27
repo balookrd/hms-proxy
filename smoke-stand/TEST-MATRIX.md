@@ -105,6 +105,9 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
 | G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | n/a |
 | G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
+| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | n/a |
+| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` both carry an `endpoints` field listing exactly the nine served read routes | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -147,6 +150,11 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Later still, jar `1.0.23-613b7a1e` (the Iceberg 1.9.2 upgrade, Jackson pinned to `2.18.3`)
   re-ran sections A-D and G green, including the SQL layer through both HiveServer2 instances as
   the Jackson-regression detector for the pin.
+  Later still, jar `1.0.33-01704804` (the stack-free error, 400-on-unparseable-body and
+  endpoint-advertising hardening) added rows G19-G21 and re-ran `--scenario rest` and
+  `--scenario all` green; `GET /v1/config` and `GET /v1/apache/config` were fetched with curl and
+  both carried the nine-route `endpoints` list, and `docker logs stand-proxy` showed no
+  `stream closed` WARN noise from the HEAD checks in G18.
 
 ## Two caveats on faithfulness
 
