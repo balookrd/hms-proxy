@@ -515,7 +515,9 @@ computed for output nobody reads.
 
 A ready-to-import Grafana dashboard is included in
 `monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
-fallbacks, default-catalog routing, and ambiguous routing events.
+fallbacks, default-catalog routing, and ambiguous routing events, plus an Iceberg REST row:
+request rate, error ratio and latency quantiles of the REST listener, breakdowns by HTTP status,
+catalog prefix and route, and a listener-up stat.
 
 ### Selective federation exposure
 

@@ -518,7 +518,9 @@ Proxy также пишет один structured audit log на каждый за
 
 Готовый Grafana dashboard лежит в
 `monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
-backend failures, fallbacks, default-catalog routing и ambiguous routing.
+backend failures, fallbacks, default-catalog routing и ambiguous routing, а также ряд Iceberg
+REST: request rate, error ratio и квантили латентности REST-listener'а, разбивки по HTTP-статусу,
+catalog prefix и route, и stat «listener up».
 
 ### Selective federation exposure
 

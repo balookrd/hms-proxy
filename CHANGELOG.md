@@ -48,7 +48,9 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   `hms_proxy_rest_request_duration_seconds{prefix,route}`, and
   `hms_proxy_rest_listener_info{bind_host,port}`. `--scenario rest` in the
   smoke runners checks the management `/metrics` endpoint carries the first
-  and third series when `HMS_SMOKE_REST_METRICS_URL` is set.
+  and third series when `HMS_SMOKE_REST_METRICS_URL` is set. The bundled
+  Grafana dashboard gains an Iceberg REST row: rate/error-ratio/latency
+  stats, quantiles, and breakdowns by HTTP status, catalog prefix and route.
 
 ### Fixed
 
