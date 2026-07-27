@@ -35,6 +35,16 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   пропускается, если `HMS_SMOKE_REST_URL` не задан. Локальный стенд включает
   listener в plain-профиле (host-порт 19183) и регистрирует минимальную
   Iceberg-таблицу для проверки load.
+- Iceberg REST frontend теперь отдаёт каждый настроенный каталог под своим
+  prefix, `/v1/<catalog>/...`, а не только под `routing.default-catalog`.
+  `GET /v1/config?warehouse=<catalog>` возвращает `overrides.prefix=<catalog>`
+  для warehouse discovery; неизвестный warehouse — это 400
+  (`BadRequestException`), а неизвестный prefix по-прежнему 404
+  (`NoSuchCatalogException`). Prefix дефолтного каталога сохраняет
+  federated-представление из phase 1 (его собственные базы плюс базы всех
+  остальных каталогов под именами `<catalog><separator><db>`) для
+  совместимости; любой другой prefix — чистое, per-catalog представление, в
+  которое эти federated-имена не просачиваются.
 
 ### Исправлено
 

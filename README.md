@@ -981,8 +981,7 @@ Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
 front door. Status: **experimental, read-only**. Iceberg clients (PyIceberg,
 Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg
 tables stored in HMS via the standard `metadata_location` table parameter;
-writes, commits, view operations, and multi-catalog routing are NOT supported
-in this iteration.
+writes, commits, and view operations are NOT supported in this iteration.
 
 Enable it via:
 
@@ -1005,9 +1004,22 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
 | `POST`, `DELETE`, view operations, commits            | unsupported                     |
 
-`{prefix}` must equal the proxy's `routing.default-catalog`. Multi-catalog REST
-(prefix-per-catalog with namespace prefix rewriting on both request and
-response paths) is a planned follow-up.
+`{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
+exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
+warehouse discovery: pass `?warehouse=<catalog>` and the response's
+`overrides.prefix` names that catalog, so a client can bind itself to the
+right prefix without hardcoding it (see the client examples below). Without
+`warehouse`, `/v1/config` advertises `routing.default-catalog`, matching
+phase-1 behavior; an unknown `warehouse` value returns HTTP 400
+(`BadRequestException`).
+
+The default catalog's prefix keeps the phase-1 federated view: its own
+databases plus every other catalog's databases under their
+`<catalog><separator><db>` names (see [HiveServer2](#hiveserver2) above).
+Every other prefix is a clean view: only that catalog's own databases, under
+their internal names — the federated `<catalog><separator><db>` names never
+leak into a non-default prefix. An unknown prefix still returns 404
+(`NoSuchCatalogException`).
 
 ### SPNEGO setup
 
@@ -1035,6 +1047,21 @@ Spark:
 spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
 spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
+```
+
+To target a non-default catalog, pass `warehouse=<catalog>`; the client sends
+it to `GET /v1/config` during discovery and binds itself to that catalog's
+prefix for every following request:
+
+```python
+catalog = RestCatalog("sales-catalog", **{
+    "uri": "http://hms-proxy:9183",
+    "warehouse": "sales",
+})
+```
+
+```properties
+spark.sql.catalog.sales_catalog.warehouse=sales
 ```
 
 ### Caveats

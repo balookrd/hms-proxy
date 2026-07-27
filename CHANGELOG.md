@@ -34,6 +34,15 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   `--scenario all` when `HMS_SMOKE_REST_URL` is unset. The local stand enables
   the listener on its plain profile (host port 19183) and registers a minimal
   Iceberg table for the load check.
+- The Iceberg REST frontend now exposes every configured catalog as its own
+  prefix, `/v1/<catalog>/...`, instead of only `routing.default-catalog`.
+  `GET /v1/config?warehouse=<catalog>` returns `overrides.prefix=<catalog>`
+  for warehouse discovery; an unknown warehouse is a 400
+  (`BadRequestException`), and an unknown prefix is still a 404
+  (`NoSuchCatalogException`). The default catalog's prefix keeps the phase-1
+  federated view (its own databases plus every other catalog's databases
+  under `<catalog><separator><db>` names) for compatibility; every other
+  prefix is a clean, per-catalog view where those federated names never leak.
 
 ### Fixed
 
