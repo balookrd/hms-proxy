@@ -216,6 +216,34 @@ so a passing load proves the whole chain: REST route → HiveCatalog → the pro
 layer → HMS → HDFS. Plain Hive tables of the same database (`smoke_read_hdp`,
 `smoke_txn_tbl`) must stay invisible through REST — the smoke asserts that too.
 
+### A second table, on the second catalog
+
+`HMS_SMOKE_REST_SECOND_PREFIX` (see `smoke-stand/env/simple.env`) points the REST smoke at the
+`apache` catalog too, which proves warehouse discovery and the clean view also work for a
+non-default prefix. It needs a second Iceberg table, registered the same way but on the
+`apache` catalog's own cluster (`namenode-b`):
+
+```bash
+# 1. Put a minimal Iceberg table metadata file onto the apache catalog's cluster
+docker cp <metadata.json> stand-namenode-b:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode-b bash -c \
+  'hdfs dfs -mkdir -p /warehouse/apache/smoke_iceberg_tbl_ap/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/'
+
+# 2. Register the table in the apache catalog
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');\""
+```
+
+The `metadata.json` is a copy of the first table's, with `location` pointed at the
+`smoke_iceberg_tbl_ap` path above and a fresh `table-uuid`.
+
 The Kerberos profile leaves the REST listener off: SPNEGO needs a GSS-enabled curl inside
 the network, and the handshake itself is already covered end-to-end by
 `SpnegoIntegrationTest` on hadoop-minikdc.

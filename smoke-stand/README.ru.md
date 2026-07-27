@@ -215,6 +215,34 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 прокси → HMS → HDFS. Обычные Hive-таблицы той же базы (`smoke_read_hdp`, `smoke_txn_tbl`)
 через REST видны быть не должны — smoke проверяет и это.
 
+### Вторая таблица, на втором каталоге
+
+`HMS_SMOKE_REST_SECOND_PREFIX` (см. `smoke-stand/env/simple.env`) направляет REST-smoke ещё и
+на каталог `apache` — это доказывает, что warehouse discovery и чистое представление работают
+и для non-default prefix. Ему нужна вторая Iceberg-таблица, зарегистрированная так же, но на
+собственном кластере каталога `apache` (`namenode-b`):
+
+```bash
+# 1. Положить минимальный файл table metadata Iceberg на кластер каталога apache
+docker cp <metadata.json> stand-namenode-b:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode-b bash -c \
+  'hdfs dfs -mkdir -p /warehouse/apache/smoke_iceberg_tbl_ap/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/'
+
+# 2. Зарегистрировать таблицу в каталоге apache
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');\""
+```
+
+`metadata.json` — копия файла первой таблицы, с `location`, указывающим на путь
+`smoke_iceberg_tbl_ap` выше, и новым `table-uuid`.
+
 Kerberos-профиль оставляет REST listener выключенным: SPNEGO требует curl с GSS внутри
 сети, а сам handshake уже покрыт end-to-end тестом `SpnegoIntegrationTest` на
 hadoop-minikdc.

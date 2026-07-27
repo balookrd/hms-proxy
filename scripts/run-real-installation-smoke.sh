@@ -75,6 +75,10 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_NAMESPACE               default: default
   HMS_SMOKE_REST_ICEBERG_TABLE           Iceberg table to list and load; skipped when unset
   HMS_SMOKE_REST_NON_ICEBERG_TABLE       plain Hive table that must NOT appear in the listing
+  HMS_SMOKE_REST_SECOND_PREFIX           non-default catalog prefix; enables warehouse discovery
+                                         and clean-view checks under it; skipped when unset
+  HMS_SMOKE_REST_SECOND_ICEBERG_TABLE    Iceberg table under the second prefix to load; skipped
+                                         when unset
 EOF
 
   cat <<'EOF'
@@ -966,6 +970,34 @@ run_rest_smoke() {
   # Writes are out of scope for this phase; the route must refuse, not half-apply.
   code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/no_such_table_smoke" "${body}")"
   [[ "${code}" =~ ^2 ]] && fail "REST write route unexpectedly succeeded with HTTP ${code}: $(cat "${body}")"
+
+  # Optional second prefix: proves warehouse discovery and the clean view work for a
+  # non-default catalog too, not only for the one /v1/config already advertised.
+  local second_prefix="${HMS_SMOKE_REST_SECOND_PREFIX:-}"
+  if [[ -n "${second_prefix}" ]]; then
+    code="$(rest_request GET "/v1/config?warehouse=${second_prefix}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "config?warehouse=${second_prefix} returned HTTP ${code}: $(cat "${body}")"
+    grep -q "\"prefix\"[[:space:]]*:[[:space:]]*\"${second_prefix}\"" "${body}" \
+      || fail "warehouse discovery did not advertise prefix '${second_prefix}': $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/config?warehouse=no_such_warehouse_smoke" "${body}")"
+    [[ "${code}" == "400" ]] || fail "unknown warehouse expected HTTP 400, got ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${second_prefix}/namespaces" "${body}")"
+    [[ "${code}" == "200" ]] || fail "GET /v1/${second_prefix}/namespaces returned HTTP ${code}: $(cat "${body}")"
+    grep -q "\[\"${namespace}\"\]" "${body}" \
+      || fail "namespace '${namespace}' missing under prefix '${second_prefix}': $(cat "${body}")"
+    if grep -q "${second_prefix}__" "${body}"; then
+      fail "external names leaked into the clean view of '${second_prefix}': $(cat "${body}")"
+    fi
+
+    if [[ -n "${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE:-}" ]]; then
+      code="$(rest_request GET "/v1/${second_prefix}/namespaces/${namespace}/tables/${HMS_SMOKE_REST_SECOND_ICEBERG_TABLE}" "${body}")"
+      [[ "${code}" == "200" ]] || fail "REST load under '${second_prefix}' returned HTTP ${code}: $(cat "${body}")"
+      grep -q '"metadata-location"' "${body}" \
+        || fail "second-prefix load carries no metadata-location: $(cat "${body}")"
+    fi
+  fi
 
   log "Iceberg REST smoke passed (prefix '${prefix}', namespace '${namespace}')"
 }

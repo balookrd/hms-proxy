@@ -94,6 +94,10 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G5 | Неизвестный prefix → чистый 404 `NoSuchCatalogException` | ✅ | n/a |
 | G6 | Неизвестная таблица → чистый 404 | ✅ | n/a |
 | G7 | Write-роут (`DELETE` таблицы) отклонён, не-2xx | ✅ | n/a |
+| G8 | `GET /v1/config?warehouse=apache` объявляет `prefix=apache` | ✅ | n/a |
+| G9 | Неизвестный warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → чистый 400 | ✅ | n/a |
+| G10 | Чистое представление namespace под prefix `apache` показывает `default` без утечки внешних имён с префиксом `apache__` | ✅ | n/a |
+| G11 | Load таблицы под prefix `apache` (`smoke_iceberg_tbl_ap`, второй HDFS-кластер) возвращает `metadata-location` | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -125,6 +129,9 @@ HDP-клиент не может пользоваться Apache-listener — Th
   Позже в тот же день на plain-профиле был включён Iceberg REST listener ветки и впервые
   прогнан раздел G (`--scenario rest`, затем ещё раз как REST-шаг полностью зелёного
   `--scenario all`).
+  В тот же день, после регистрации второй Iceberg-таблицы каталога `apache`
+  (`smoke_iceberg_tbl_ap`) на её собственном кластере (`namenode-b`), были прогнаны и новые
+  multi-catalog REST-строки (G8-G11) — в тех же прогонах `--scenario rest` и `--scenario all`.
 
 ## Две оговорки честности
 

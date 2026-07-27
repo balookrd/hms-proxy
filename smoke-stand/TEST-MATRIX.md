@@ -94,6 +94,10 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | n/a |
 | G6 | Unknown table → clean 404 | ✅ | n/a |
 | G7 | Write route (`DELETE` table) refused, non-2xx | ✅ | n/a |
+| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | n/a |
+| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | n/a |
+| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | n/a |
+| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -124,6 +128,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Later the same day the branch's Iceberg REST listener was enabled on the plain profile and
   section G was run for the first time (`--scenario rest`, and again as the REST step of a
   full green `--scenario all`).
+  The same day, after the `apache` catalog's second Iceberg table (`smoke_iceberg_tbl_ap`) was
+  registered on its own cluster (`namenode-b`), the new multi-catalog REST rows (G8-G11) were
+  run too, in the same `--scenario rest` and `--scenario all` passes.
 
 ## Two caveats on faithfulness
 
