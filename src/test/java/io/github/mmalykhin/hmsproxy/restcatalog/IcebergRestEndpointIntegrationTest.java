@@ -264,7 +264,13 @@ public class IcebergRestEndpointIntegrationTest {
 
   @Test
   public void headOnMissingNamespaceReturns404() throws Exception {
-    Assert.assertEquals(404, head("/v1/catalog1/namespaces/no_such_ns_probe").statusCode());
+    HttpResponse<String> response = head("/v1/catalog1/namespaces/no_such_ns_probe");
+    Assert.assertEquals(404, response.statusCode());
+    // The 404 body would normally carry an ErrorResponse JSON payload; a HEAD response must not
+    // carry a body at all (RFC 9110), and the JDK HttpServer throws "stream closed" if the
+    // handler tries to write one anyway. An empty body here is exactly what proves those bytes
+    // were never written.
+    Assert.assertEquals("", response.body());
   }
 
   @Test
@@ -274,7 +280,9 @@ public class IcebergRestEndpointIntegrationTest {
 
   @Test
   public void headOnMissingTableReturns404() throws Exception {
-    Assert.assertEquals(404, head("/v1/catalog1/namespaces/default/tables/no_such_table_probe").statusCode());
+    HttpResponse<String> response = head("/v1/catalog1/namespaces/default/tables/no_such_table_probe");
+    Assert.assertEquals(404, response.statusCode());
+    Assert.assertEquals("", response.body());
   }
 
   @Test

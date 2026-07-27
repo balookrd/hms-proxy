@@ -247,10 +247,7 @@ final class IcebergHttpHandler implements HttpHandler {
     outcome.status = status;
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", JSON_CONTENT_TYPE);
-    exchange.sendResponseHeaders(status, bytes.length);
-    try (OutputStream out = exchange.getResponseBody()) {
-      out.write(bytes);
-    }
+    sendBody(exchange, status, bytes);
   }
 
   private static void writeError(
@@ -271,6 +268,22 @@ final class IcebergHttpHandler implements HttpHandler {
     String body = IcebergRestMapper.mapper().writeValueAsString(error);
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", JSON_CONTENT_TYPE);
+    sendBody(exchange, status, bytes);
+  }
+
+  /**
+   * Writes the response body for every non-HEAD request. RFC 9110 forbids a body on a HEAD
+   * response; the JDK {@code HttpServer} enforces this by throwing {@code IOException: stream
+   * closed} from the body write, which otherwise escapes as log noise for every HEAD error path
+   * (missing namespace/table exists-checks, in particular). For HEAD, send only the headers with
+   * no content length and close the body unwritten, mirroring the existing 204 exists-response.
+   */
+  private static void sendBody(HttpExchange exchange, int status, byte[] bytes) throws IOException {
+    if ("HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+      exchange.sendResponseHeaders(status, -1);
+      exchange.getResponseBody().close();
+      return;
+    }
     exchange.sendResponseHeaders(status, bytes.length);
     try (OutputStream out = exchange.getResponseBody()) {
       out.write(bytes);
