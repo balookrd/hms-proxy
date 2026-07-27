@@ -997,12 +997,32 @@ run_rest_smoke() {
     log "skipping REST unparseable-body check because HMS_SMOKE_REST_ICEBERG_TABLE is not set"
   fi
 
-  # GET /v1/config must advertise the served endpoints so modern clients know not to
-  # attempt writes.
+  # GET /v1/config must advertise the read routes this phase actually serves and none of the
+  # write routes it refuses: at least one concrete read entry (the namespaces listing route),
+  # no POST namespaces-create entry and no DELETE entry at all. Checked against both the
+  # unprefixed /v1/config and the prefixed /v1/{prefix}/config, which clients pin to via the
+  # "prefix" override and use identically for discovery.
   code="$(rest_request GET "/v1/config" "${body}")"
   [[ "${code}" == "200" ]] || fail "GET /v1/config returned HTTP ${code}: $(cat "${body}")"
-  grep -q '"endpoints"' "${body}" \
-    || fail "config does not advertise an endpoint list: $(cat "${body}")"
+  grep -qF '"GET /v1/{prefix}/namespaces"' "${body}" \
+    || fail "config does not advertise the namespaces read route: $(cat "${body}")"
+  if grep -qF 'POST /v1/{prefix}/namespaces"' "${body}"; then
+    fail "config unexpectedly advertises a namespaces write route: $(cat "${body}")"
+  fi
+  if grep -qF 'DELETE ' "${body}"; then
+    fail "config unexpectedly advertises a write (DELETE) route: $(cat "${body}")"
+  fi
+
+  code="$(rest_request GET "/v1/${prefix}/config" "${body}")"
+  [[ "${code}" == "200" ]] || fail "GET /v1/${prefix}/config returned HTTP ${code}: $(cat "${body}")"
+  grep -qF '"GET /v1/{prefix}/namespaces"' "${body}" \
+    || fail "prefixed config does not advertise the namespaces read route: $(cat "${body}")"
+  if grep -qF 'POST /v1/{prefix}/namespaces"' "${body}"; then
+    fail "prefixed config unexpectedly advertises a namespaces write route: $(cat "${body}")"
+  fi
+  if grep -qF 'DELETE ' "${body}"; then
+    fail "prefixed config unexpectedly advertises a write (DELETE) route: $(cat "${body}")"
+  fi
 
   # Optional second prefix: proves warehouse discovery and the clean view work for a
   # non-default catalog too, not only for the one /v1/config already advertised.

@@ -9,9 +9,9 @@ import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.util.HttpResponseWriter;
 import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -148,26 +148,7 @@ public final class ManagementHttpServer implements AutoCloseable {
   private static void respond(HttpExchange exchange, int status, String contentType, String body) throws IOException {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", contentType);
-    sendBody(exchange, status, bytes);
-  }
-
-  /**
-   * Writes the response body for every non-HEAD request. RFC 9110 forbids a body on a HEAD
-   * response; the JDK {@code HttpServer} enforces this by throwing {@code IOException: stream
-   * closed} from the body write, which health checkers trigger on every HEAD probe of /healthz,
-   * /metrics and /readyz. For HEAD, send only the headers with no content length and close the
-   * body unwritten, mirroring the equivalent fix in {@code IcebergHttpHandler}.
-   */
-  private static void sendBody(HttpExchange exchange, int status, byte[] bytes) throws IOException {
-    if ("HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
-      exchange.sendResponseHeaders(status, -1);
-      exchange.getResponseBody().close();
-      return;
-    }
-    exchange.sendResponseHeaders(status, bytes.length);
-    try (OutputStream output = exchange.getResponseBody()) {
-      output.write(bytes);
-    }
+    HttpResponseWriter.sendBody(exchange, status, bytes);
   }
 
   private static final class ReadinessHandler implements HttpHandler {

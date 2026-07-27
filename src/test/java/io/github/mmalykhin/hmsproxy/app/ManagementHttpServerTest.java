@@ -54,12 +54,12 @@ public class ManagementHttpServerTest {
              config, router, new ProxyObservability(config))) {
       Assert.assertNotNull(server);
 
-      // The JDK HttpServer rejects a body write on a HEAD exchange with "stream closed"; that
-      // failure is swallowed silently (no catch-all logger in this server), so the only client-
-      // observable symptom would be the connection failing before a status is received. Getting a
-      // response with the same status as GET, with no exception here, is what a health checker
-      // actually depends on; whether the server logged/threw internally is not observable from the
-      // client and is not asserted here.
+      // This is an end-to-end sanity check that a health checker's actual HEAD request gets a
+      // response with no exception, not the regression guard for the HEAD "stream closed" bug:
+      // the client-visible status here is identical whether or not the shared
+      // HttpResponseWriter's HEAD guard exists, so this test cannot fail if that guard is
+      // removed. HttpResponseWriterTest asserts the (status, contentLength) pair and body bytes
+      // the helper actually sends and is the test that fails in that case.
       for (String path : new String[] {"/healthz", "/metrics", "/readyz"}) {
         int getStatus = statusOf(port, path, "GET");
         int headStatus = statusOf(port, path, "HEAD");

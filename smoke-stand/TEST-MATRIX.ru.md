@@ -107,7 +107,7 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G18 | `HEAD` на namespace/таблицу отвечает `204`, если объект существует, и `404`, если нет — в том числе под не-default prefix `apache` и для обычной Hive-таблицы (`smoke_read_hdp`) | ✅ | n/a |
 | G19 | Error-ответ на отсутствующий namespace несёт смапленные `404`, `type` и `message`, но без `"stack":[...]` server trace | ✅ | n/a |
 | G20 | Нераспарсиваемое тело `POST .../metrics` отвечает `400` (`BadRequestException`), а не `500` | ✅ | n/a |
-| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` оба несут поле `endpoints` с ровно девятью обслуживаемыми read-роутами | ✅ | n/a |
+| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` оба объявляют read-роут `GET /v1/{prefix}/namespaces` и не несут ни одного write-роута (ни `POST /v1/{prefix}/namespaces`, ни записи `DELETE`) | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -157,6 +157,14 @@ HDP-клиент не может пользоваться Apache-listener — Th
   `--scenario rest` и `--scenario all` — оба зелёные; `GET /v1/config` и `GET /v1/apache/config`
   забраны curl'ом, и оба несли девятиэлементный список `endpoints`, а `docker logs stand-proxy`
   не показал WARN-шума `stream closed` от HEAD-проверок из G18.
+  Ещё позже jar `1.0.34-5397bb81` укрепил проверку строки G21: раньше раннер лишь делал `grep`
+  на присутствие ключа `"endpoints"`, что не отличает read-only листинг от такого же листинга
+  с добавленным write-роутом. Теперь для `GET /v1/config` и `GET /v1/{prefix}/config` проверяется
+  и наличие read-записи `GET /v1/{prefix}/namespaces`, и отсутствие любой записи
+  `POST /v1/{prefix}/namespaces` или `DELETE`. `--scenario rest` перепрогнан зелёным на
+  пересобранном jar'е; то, что укреплённая проверка действительно различает случаи, подтверждено
+  временной подменой ожидаемого имени роута на несуществующее — раннер упал с сообщением
+  "config does not advertise the namespaces read route", после чего подмена была отменена.
 
 ## Две оговорки честности
 

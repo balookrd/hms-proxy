@@ -107,7 +107,7 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
 | G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | n/a |
 | G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
-| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` both carry an `endpoints` field listing exactly the nine served read routes | ✅ | n/a |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` both advertise the `GET /v1/{prefix}/namespaces` read route and carry no write route (no `POST /v1/{prefix}/namespaces`, no `DELETE` entry) | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -155,6 +155,14 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `--scenario all` green; `GET /v1/config` and `GET /v1/apache/config` were fetched with curl and
   both carried the nine-route `endpoints` list, and `docker logs stand-proxy` showed no
   `stream closed` WARN noise from the HEAD checks in G18.
+  Later still, jar `1.0.34-5397bb81` strengthened the G21 assertion: the runner used to only
+  `grep` for the `"endpoints"` key's presence, which cannot distinguish a read-only listing from
+  one that also advertised a write route. It now checks both `GET /v1/config` and
+  `GET /v1/{prefix}/config` for the `GET /v1/{prefix}/namespaces` read entry and for the absence
+  of any `POST /v1/{prefix}/namespaces` or `DELETE` entry. `--scenario rest` re-ran green against
+  the rebuilt jar; the strengthened assertion was proven to discriminate by temporarily pointing
+  it at a route name the server does not serve and confirming the runner failed with
+  "config does not advertise the namespaces read route" before restoring it.
 
 ## Two caveats on faithfulness
 
