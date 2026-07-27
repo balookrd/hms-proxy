@@ -76,6 +76,12 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_BEELINE_BIN                  default: beeline
   HMS_SMOKE_BEELINE_USER                 optional
   HMS_SMOKE_BEELINE_PASSWORD             optional
+  HMS_SMOKE_BEELINE_HDP_JDBC_URL         a HiveServer2 on the Hortonworks front door; when set,
+                                         the whole SQL suite runs a second time against it
+  HMS_SMOKE_BEELINE_HDP_BIN              default: HMS_SMOKE_BEELINE_BIN
+  HMS_SMOKE_BEELINE_HDP_USER             default: HMS_SMOKE_BEELINE_USER
+  HMS_SMOKE_SQL_SESSION_INIT             statements run before the suite, e.g. a `set`
+  HMS_SMOKE_SQL_HDP_SESSION_INIT         same, for the Hortonworks pass only
   HMS_SMOKE_HDP_CATALOG                  default: hdp
   HMS_SMOKE_APACHE_CATALOG               default: apache
   HMS_SMOKE_HDP_READ_TABLE               required for SQL smoke
@@ -553,7 +559,38 @@ assert_file_contains() {
   grep -F "${expected}" "${file}" >/dev/null || fail "expected '${expected}' in ${file}"
 }
 
+# Identifier quoting is a dialect difference, not a behavioural one: `SHOW CREATE TABLE` on a
+# Hortonworks HiveServer2 prints `db`.`table` where the Apache one prints db.table. Both mean the
+# view was rewritten to the same external name, so the backticks are stripped before comparing.
+assert_file_contains_identifier() {
+  local file="$1"
+  local expected="$2"
+  tr -d '`' < "${file}" | grep -F "${expected}" >/dev/null \
+    || fail "expected identifier '${expected}' in ${file}"
+}
+
+# The proxy can expose more than one front door, and an Apache and a Hortonworks client do not
+# speak the same Thrift interface - Hive has no version negotiation, so each listener answers only
+# its own line. Running the SQL suite against every configured HiveServer2 is what proves both
+# combinations of client and backend actually work, rather than assuming the second one follows
+# from the first.
+run_sql_smoke_all() {
+  run_sql_smoke "apache"
+
+  if [[ -n "${HMS_SMOKE_BEELINE_HDP_JDBC_URL:-}" ]]; then
+    HMS_SMOKE_BEELINE_JDBC_URL="${HMS_SMOKE_BEELINE_HDP_JDBC_URL}" \
+    HMS_SMOKE_BEELINE_BIN="${HMS_SMOKE_BEELINE_HDP_BIN:-${HMS_SMOKE_BEELINE_BIN:-beeline}}" \
+    HMS_SMOKE_BEELINE_USER="${HMS_SMOKE_BEELINE_HDP_USER:-${HMS_SMOKE_BEELINE_USER:-}}" \
+      run_sql_smoke "hdp"
+  else
+    log "skipping the Hortonworks SQL smoke because HMS_SMOKE_BEELINE_HDP_JDBC_URL is not set"
+  fi
+}
+
 run_sql_smoke() {
+  # Names the front door this pass runs against, and keeps the objects of the two passes apart.
+  local front_door="${1:-primary}"
+
   if ! beeline_is_configured; then
     if [[ "${SCENARIO}" == "sql" ]]; then
       fail "sql scenario requires HMS_SMOKE_BEELINE_JDBC_URL and related beeline settings"
@@ -579,7 +616,7 @@ run_sql_smoke() {
   local udf_class="${HMS_SMOKE_SQL_UDF_CLASS:-org.apache.hadoop.hive.ql.udf.UDFReverse}"
   local udf_expected_result="${HMS_SMOKE_SQL_UDF_EXPECTED_RESULT:-yxorp}"
   local run_id=""
-  run_id="$(date +%Y%m%d%H%M%S)"
+  run_id="$(date +%Y%m%d%H%M%S)_${front_door}"
   local managed_hdp="smoke_managed_hdp_${run_id}"
   local managed_apache="smoke_managed_apache_${run_id}"
   local external_hdp="smoke_external_hdp_${run_id}"
@@ -600,7 +637,17 @@ run_sql_smoke() {
 
   beeline_run_maybe_kinit
 
+  # Session settings applied before anything else. A Hortonworks HiveServer2 needs one: its build
+  # has no MapReduce, so the engine cannot be named in hive-site.xml (the server would not start),
+  # and a stand without YARN cannot use the vendor default of Tez either. `set` is the only place
+  # left to choose, and it is what an operator types on a real cluster too.
+  local session_init="${HMS_SMOKE_SQL_SESSION_INIT:-}"
+  if [[ "${front_door}" == "hdp" && -n "${HMS_SMOKE_SQL_HDP_SESSION_INIT:-}" ]]; then
+    session_init="${HMS_SMOKE_SQL_HDP_SESSION_INIT}"
+  fi
+
   cat > "${sql_file}" <<EOF
+${session_init}
 set hive.cli.print.header=true;
 
 show databases;
@@ -761,7 +808,9 @@ EOF
     cat >> "${sql_file}" <<EOF
 
 use ${hdp_catalog}__default;
-select count(*) as cross_catalog_join_count
+-- The marker is selected as a value, not as a column alias: the runner drives beeline with
+-- --showHeader=false, so an alias would never reach the output being asserted on.
+select 'cross_catalog_join_ok', count(*)
 from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE} h
 join ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE} a on 1=1;
 EOF
@@ -779,7 +828,7 @@ use ${cross_db};
 create table if not exists ${cross_db_table} (id int) stored as parquet;
 insert into ${cross_db_table} values (3);
 use ${hdp_catalog}__default;
-select count(*) as cross_database_join_count
+select 'cross_database_join_ok', count(*)
 from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE} h
 join ${cross_db}.${cross_db_table} c on 1=1;
 drop table ${cross_db}.${cross_db_table};
@@ -799,24 +848,24 @@ use ${hdp_catalog}__default;
 show tables;
 EOF
 
-  run_beeline_script "beeline SQL smoke" "${sql_file}" "${output_file}"
+  run_beeline_script "beeline SQL smoke via the ${front_door} front door" "${sql_file}" "${output_file}"
 
   assert_file_contains "${output_file}" "${hdp_catalog}__default"
   assert_file_contains "${output_file}" "${apache_catalog}__default"
   assert_file_contains "${output_file}" "2026-04-01"
   if [[ "${run_view_rewrite}" == "true" ]]; then
-    assert_file_contains "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
-    assert_file_contains "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
+    assert_file_contains_identifier "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
+    assert_file_contains_identifier "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
   fi
   if [[ "${run_udf}" == "true" ]]; then
     assert_file_contains "${output_file}" "${udf_apache}"
     assert_file_contains "${output_file}" "${udf_expected_result}"
   fi
   if [[ "${run_cross_catalog_join}" == "true" ]]; then
-    assert_file_contains "${output_file}" "cross_catalog_join_count"
+    assert_file_contains "${output_file}" "cross_catalog_join_ok"
   fi
   if [[ "${run_cross_database_join}" == "true" ]]; then
-    assert_file_contains "${output_file}" "cross_database_join_count"
+    assert_file_contains "${output_file}" "cross_database_join_ok"
   fi
 }
 
@@ -861,7 +910,7 @@ main() {
 
   case "${SCENARIO}" in
     all)
-      run_sql_smoke
+      run_sql_smoke_all
       run_txn_smoke
       run_db_lock_smoke
       run_partition_lock_smoke
@@ -869,7 +918,7 @@ main() {
       run_notification_smoke
       ;;
     sql)
-      run_sql_smoke
+      run_sql_smoke_all
       ;;
     txn)
       run_txn_smoke
