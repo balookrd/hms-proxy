@@ -124,6 +124,14 @@ final class IcebergHttpHandler implements HttpHandler {
         return;
       }
       outcome.prefix = service.catalogName();
+      if (CONFIG_SEGMENT.equals(remainder)) {
+        // Same writer path as unprefixed /v1/config?warehouse=<catalog>, but the catalog
+        // comes from the path segment instead of a query param.
+        outcome.route = ROUTE_CONFIG;
+        ConfigResponse cfg = service.loadConfig();
+        writeJson(exchange, outcome, 200, IcebergRestMapper.mapper().writeValueAsString(cfg));
+        return;
+      }
       String relativePath = remainder.isEmpty() ? "v1" : "v1/" + remainder;
 
       Pair<Route, Map<String, String>> routeAndVars = Route.from(method, relativePath);

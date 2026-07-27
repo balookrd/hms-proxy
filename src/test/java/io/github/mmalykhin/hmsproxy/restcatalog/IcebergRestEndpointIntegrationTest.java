@@ -203,6 +203,33 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertTrue(response.body().contains("BadRequestException"));
   }
 
+  @Test
+  public void configAdvertisesOnlyServedEndpoints() throws Exception {
+    HttpResponse<String> response = get("/v1/config");
+    Assert.assertEquals(200, response.statusCode());
+    String body = response.body();
+    Assert.assertTrue(body, body.contains("GET /v1/{prefix}/namespaces"));
+    Assert.assertTrue(body, body.contains("HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
+    Assert.assertFalse("read-only endpoint must not advertise writes: " + body,
+        body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+    Assert.assertFalse("read-only endpoint must not advertise deletes: " + body,
+        body.contains("DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
+  }
+
+  @Test
+  public void prefixedConfigAnswersLikeConfigWithWarehouse() throws Exception {
+    HttpResponse<String> response = get("/v1/catalog2/config");
+    Assert.assertEquals(200, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("\"prefix\":\"catalog2\""));
+    Assert.assertFalse("prefixed config must not advertise writes either: " + response.body(),
+        response.body().contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+  }
+
+  @Test
+  public void prefixedConfigForUnknownCatalogReturns404() throws Exception {
+    Assert.assertEquals(404, get("/v1/no_such_catalog_probe/config").statusCode());
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()

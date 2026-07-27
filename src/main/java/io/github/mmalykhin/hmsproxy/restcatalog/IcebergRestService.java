@@ -1,12 +1,14 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.rest.Endpoint;
 import org.apache.iceberg.rest.RESTCatalogAdapter;
 import org.apache.iceberg.rest.RESTResponse;
 import org.apache.iceberg.rest.responses.ConfigResponse;
@@ -21,6 +23,24 @@ import org.apache.iceberg.rest.responses.ConfigResponse;
  */
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";
+
+  /**
+   * Routes this read-only front door actually serves. Kept in sync by hand with the
+   * dispatch table in {@link IcebergHttpHandler}: every entry here must answer for
+   * real, and every route the handler serves must be listed here so REST clients
+   * (which use this list for discovery) do not learn about write support we don't
+   * have, or fail to learn about a read route we do have, one request at a time.
+   */
+  private static final List<Endpoint> SERVED_ENDPOINTS = List.of(
+      Endpoint.V1_LIST_NAMESPACES,
+      Endpoint.V1_LOAD_NAMESPACE,
+      Endpoint.V1_NAMESPACE_EXISTS,
+      Endpoint.V1_LIST_TABLES,
+      Endpoint.V1_LOAD_TABLE,
+      Endpoint.V1_TABLE_EXISTS,
+      Endpoint.V1_LIST_VIEWS,
+      Endpoint.V1_LOAD_VIEW,
+      Endpoint.V1_VIEW_EXISTS);
 
   private final String catalogName;
   private final RoutingHiveCatalog catalog;
@@ -50,6 +70,7 @@ public final class IcebergRestService implements AutoCloseable {
   public ConfigResponse loadConfig() {
     return ConfigResponse.builder()
         .withOverride("prefix", catalogName)
+        .withEndpoints(SERVED_ENDPOINTS)
         .build();
   }
 
