@@ -186,12 +186,40 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertTrue("rendered: " + rendered, rendered.contains("hms_proxy_rest_listener_info"));
   }
 
+  @Test
+  public void errorResponsesCarryNoStackTrace() throws Exception {
+    HttpResponse<String> response = get("/v1/catalog1/namespaces/no_such_ns_probe");
+    Assert.assertEquals(404, response.statusCode());
+    Assert.assertTrue(response.body().contains("\"type\""));
+    Assert.assertFalse("error body must not leak a server stack trace: " + response.body(),
+        response.body().contains("\"stack\":[\""));
+  }
+
+  @Test
+  public void unparseableRequestBodyReturns400() throws Exception {
+    HttpResponse<String> response = post(
+        "/v1/catalog1/namespaces/default/tables/t1/metrics", "not json at all");
+    Assert.assertEquals(400, response.statusCode());
+    Assert.assertTrue(response.body().contains("BadRequestException"));
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + server.boundPort() + path))
         .timeout(HTTP_TIMEOUT)
         .GET()
+        .build();
+    return client.send(request, HttpResponse.BodyHandlers.ofString());
+  }
+
+  private HttpResponse<String> post(String path, String body) throws Exception {
+    HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:" + server.boundPort() + path))
+        .timeout(HTTP_TIMEOUT)
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body))
         .build();
     return client.send(request, HttpResponse.BodyHandlers.ofString());
   }

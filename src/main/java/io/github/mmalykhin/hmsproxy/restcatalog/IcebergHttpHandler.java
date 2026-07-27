@@ -12,6 +12,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -134,7 +135,14 @@ final class IcebergHttpHandler implements HttpHandler {
       }
       Route route = routeAndVars.first();
       outcome.route = route.name().toLowerCase(Locale.ROOT);
-      Object body = readBody(exchange, route);
+      Object body;
+      try {
+        body = readBody(exchange, route);
+      } catch (IOException | RuntimeException e) {
+        writeError(exchange, outcome, 400, "BadRequestException",
+            "Malformed request body: " + e.getMessage());
+        return;
+      }
       Class<? extends RESTResponse> responseType = route.responseClass();
 
       Map<String, String> vars = new LinkedHashMap<>(queryParams);
@@ -155,6 +163,10 @@ final class IcebergHttpHandler implements HttpHandler {
       } catch (RuntimeException e) {
         ErrorResponse.Builder builder = ErrorResponse.builder();
         RESTCatalogAdapter.configureResponseFromException(e, builder);
+        // Upstream's helper attaches the server stack trace; it is fine in a test
+        // harness but this listener answers real clients, so keep the mapped code,
+        // type and message and drop the trace.
+        builder.withStackTrace(List.of());
         writeErrorResponse(exchange, outcome, builder.build());
         return;
       }
