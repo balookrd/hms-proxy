@@ -79,11 +79,14 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   the previous empty `204` — because `HiveCatalog` became a `ViewCatalog`
   from Iceberg `1.7` on. `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` now
   answer per the REST spec across every catalog prefix: a `HEAD` on an
-  existing namespace, table or view returns `204`, and `404` when it does
-  not exist — the handler forwards any route `Route.from(...)` resolves
-  with no allowlist, so these routes went live with the upgrade. Iceberg
-  `1.5.2` shipped no `HEAD` routes at all, so a `HEAD` on an existing table
-  used to return `404`, and clients such as PyIceberg reported
+  existing namespace or table returns `204`, and `404` when it does not
+  exist — the handler forwards any route `Route.from(...)` resolves with
+  no allowlist, so these routes went live with the upgrade. `VIEW_EXISTS`
+  is served by the same unconditional dispatch and answers `404` for a
+  view that does not exist; the existing-view `204` case was not
+  exercised because the stand has no views. Iceberg `1.5.2` shipped no
+  `HEAD` routes at all, so a `HEAD` on an existing table used to return
+  `404`, and clients such as PyIceberg reported
   `table_exists()` as `false` for tables that were really there; that is
   now fixed. Client compatibility is unaffected: the REST
   endpoint is a wire protocol, so a client's own Iceberg version is
