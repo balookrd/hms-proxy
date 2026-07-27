@@ -16,11 +16,11 @@ import org.apache.iceberg.rest.responses.ErrorResponse;
 
 /**
  * Bridges Iceberg REST calls to the proxy's ThriftHiveMetastore.Iface via a
- * RoutingHiveCatalog. Each instance serves a single catalog prefix. The
- * default catalog's service exposes the federated view as-is, with no name
- * translation; every other catalog's service is given a CatalogNameTranslation
- * so REST clients see that catalog's internal database names instead of the
- * federated ones.
+ * RoutingHiveCatalog. Each instance serves a single catalog prefix and is
+ * looked up through the IcebergRestServices registry. The default catalog's
+ * service exposes the federated view as-is, with no name translation; every
+ * other catalog's service is given a CatalogNameTranslation so REST clients
+ * see that catalog's internal database names instead of the federated ones.
  */
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";
