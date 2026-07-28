@@ -52,8 +52,8 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   независимо от каталога. Имена транслируются через существующий
   `CatalogNameTranslation`, а payload `Database`, передаваемый в
   create/alter, транслируется на копии, а не мутацией объекта вызывающего.
-- `GET /v1/config` и `GET /v1/{prefix}/config` теперь объявляют весь
-  обслуживаемый write-роут целиком: view CRUD/rename и namespace CRUD уже
+- `GET /v1/config` и `GET /v1/{prefix}/config` теперь объявляют все
+  обслуживаемые write-роуты: view CRUD/rename и namespace CRUD уже
   были достижимы через тот же общий dispatch-путь, которым пользуется write
   таблиц, и `WriteRouteGate` уже гейтил все тринадцать write-роутов — отставали
   только discovery и smoke. В `endpoints` дефолтного каталога теперь

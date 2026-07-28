@@ -182,7 +182,7 @@ docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ## Iceberg REST catalog front door
 
 Plain-профиль включает и Iceberg REST listener прокси (`rest-catalog.*` в
-`proxy/hms-proxy.properties`, host-порт 19183). Он обслуживает весь write-роут —
+`proxy/hms-proxy.properties`, host-порт 19183). Он обслуживает все write-роуты —
 table, view и namespace DDL, а также multi-table transaction commit, — но только для
 default-каталога (`hdp`): его таблицы подкреплены реальным HMS-локом, а любой другой
 каталог обслуживает synthetic lock shim и отказывает write с `403`. `--scenario rest`

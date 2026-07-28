@@ -89,8 +89,8 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_WRITE_TABLE             table name to create, commit, rename and drop through
                                          the REST write routes; skipped when unset. Also gates a
                                          namespace DDL round trip (create/load/update-property/
-                                         drop of namespace "smoke_rest_ns"), a view round trip
-                                         (create/list/drop of view "smoke_rest_view" in
+                                         drop of HMS_SMOKE_REST_WRITE_NAMESPACE), a view round
+                                         trip (create/list/drop of HMS_SMOKE_REST_WRITE_VIEW in
                                          HMS_SMOKE_REST_NAMESPACE) and a multi-table transaction
                                          commit round trip (create "<name>_txn", commit through
                                          POST /v1/{prefix}/transactions/commit, assert its
@@ -99,14 +99,24 @@ Optional Iceberg REST env vars:
                                          Writes only work when the advertised default-prefix
                                          catalog resolves to the real backend (non-default
                                          catalogs are served by the synthetic lock shim and refuse
-                                         writes with 403). The block drops leftovers under every
+                                         writes with 403). All three objects (the table, the
+                                         namespace and the view) are created and destroyed by this
+                                         smoke run itself. The block drops leftovers under every
                                          name it can create defensively before creating, so a
-                                         rerun on a dirty stand cannot half-fail. Requires
-                                         HMS_SMOKE_REST_SECOND_PREFIX to also exercise the gate
-                                         negatives: CREATE_TABLE under that prefix and under its
-                                         federated name, COMMIT_TRANSACTION naming a federated
-                                         table, CREATE_NAMESPACE with a federated name, and RENAME
-                                         with a federated destination - all expected 403
+                                         rerun on a dirty stand cannot half-fail; the namespace
+                                         drop only goes through when the namespace does not exist
+                                         yet or is already empty (no tables, no views), so a
+                                         pre-existing namespace of the same name on a real
+                                         installation is refused rather than silently destroyed.
+                                         Requires HMS_SMOKE_REST_SECOND_PREFIX to also exercise
+                                         the gate negatives: CREATE_TABLE under that prefix and
+                                         under its federated name, COMMIT_TRANSACTION naming a
+                                         federated table, CREATE_NAMESPACE with a federated name,
+                                         and RENAME with a federated destination - all expected 403
+  HMS_SMOKE_REST_WRITE_NAMESPACE         namespace created/destroyed by the write round trip
+                                         above; default: smoke_rest_ns
+  HMS_SMOKE_REST_WRITE_VIEW              view created/destroyed by the write round trip above,
+                                         in HMS_SMOKE_REST_NAMESPACE; default: smoke_rest_view
 EOF
 
   cat <<'EOF'
@@ -671,8 +681,16 @@ run_sql_smoke() {
   local cross_db_table="smoke_cross_db_tbl_${run_id}"
   local sql_file=""
   local output_file=""
-  sql_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX.sql")"
-  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX.out")"
+  # The X's must be the last characters of the template: BSD mktemp (macOS) only randomizes a
+  # trailing run of X's and leaves a literal suffix untouched, so every run would otherwise reuse
+  # the same filename - and a leftover from an interrupted run (fail() exits before the cleanup
+  # trap runs) then breaks the next one. The .sql/.out suffix is appended after creation instead.
+  sql_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX")"
+  mv "${sql_file}" "${sql_file}.sql"
+  sql_file="${sql_file}.sql"
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-sql-smoke.XXXXXX")"
+  mv "${output_file}" "${output_file}.out"
+  output_file="${output_file}.out"
   # ${var:-} guards matter: the RETURN trap stays installed after this function returns and
   # fires again for enclosing functions, where these locals no longer exist and set -u would
   # kill the whole run.
@@ -942,7 +960,13 @@ run_rest_smoke() {
   local iceberg_table="${HMS_SMOKE_REST_ICEBERG_TABLE:-}"
   local non_iceberg_table="${HMS_SMOKE_REST_NON_ICEBERG_TABLE:-}"
   local body=""
-  body="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-rest-smoke.XXXXXX.json")"
+  # The X's must trail the template with nothing after them: BSD mktemp (macOS) does not
+  # randomize X's followed by a literal suffix, so a fixed ".json" suffix here would make every
+  # run reuse the same filename - and a leftover from an interrupted run (fail() exits before the
+  # cleanup trap runs) then breaks the next one. The suffix is appended after creation instead.
+  body="$(mktemp "${TMPDIR:-/tmp}/hms-proxy-rest-smoke.XXXXXX")"
+  mv "${body}" "${body}.json"
+  body="${body}.json"
   trap 'rm -f "${body:-}"' RETURN
 
   log "running Iceberg REST smoke against ${HMS_SMOKE_REST_URL}"
@@ -1270,10 +1294,35 @@ run_rest_smoke() {
     # Namespace DDL round trip: create, load, update a property and drop - genuinely new since
     # RoutingMetaStoreClient only gained createDatabase/alterDatabase/dropDatabase this phase.
     # Same default-catalog-only restriction as table writes (WriteRouteGate covers CREATE_NAMESPACE
-    # by namespace, not by the request's own prefix). Dropped defensively first so a rerun on a
-    # dirty stand cannot half-fail.
-    local ns_smoke="smoke_rest_ns"
-    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    # by namespace, not by the request's own prefix). This namespace (like the write table above,
+    # and the view below) is created and destroyed by the smoke itself.
+    local ns_smoke="${HMS_SMOKE_REST_WRITE_NAMESPACE:-smoke_rest_ns}"
+    # Dropped defensively first so a rerun on a dirty stand cannot half-fail - but only when it is
+    # either absent or already empty. A real installation may already have a namespace under this
+    # exact name (especially the default), and blindly dropping it would destroy real content;
+    # emptiness (no tables, no views) is the cheap signal that whatever is there was left by an
+    # earlier interrupted run of this same smoke rather than being genuine.
+    local ns_precheck_code=""
+    ns_precheck_code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    if [[ "${ns_precheck_code}" == "200" ]]; then
+      local ns_precheck_tables_code=""
+      ns_precheck_tables_code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}/tables" "${body}")"
+      [[ "${ns_precheck_tables_code}" == "200" ]] \
+        || fail "GET tables of '${ns_smoke}' before the defensive namespace drop returned HTTP ${ns_precheck_tables_code}: $(cat "${body}")"
+      grep -q '"identifiers"[[:space:]]*:[[:space:]]*\[\]' "${body}" \
+        || fail "namespace '${ns_smoke}' already exists and has tables; refusing to drop it defensively. Set HMS_SMOKE_REST_WRITE_NAMESPACE to a namespace name that is not in use on this installation."
+
+      local ns_precheck_views_code=""
+      ns_precheck_views_code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}/views" "${body}")"
+      [[ "${ns_precheck_views_code}" == "200" ]] \
+        || fail "GET views of '${ns_smoke}' before the defensive namespace drop returned HTTP ${ns_precheck_views_code}: $(cat "${body}")"
+      grep -q '"identifiers"[[:space:]]*:[[:space:]]*\[\]' "${body}" \
+        || fail "namespace '${ns_smoke}' already exists and has views; refusing to drop it defensively. Set HMS_SMOKE_REST_WRITE_NAMESPACE to a namespace name that is not in use on this installation."
+
+      discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    elif [[ "${ns_precheck_code}" != "404" ]]; then
+      fail "GET namespace '${ns_smoke}' before the defensive namespace drop returned HTTP ${ns_precheck_code}: $(cat "${body}")"
+    fi
 
     code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       --data '{"namespace":["'"${ns_smoke}"'"]}' "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces")"
@@ -1304,10 +1353,12 @@ run_rest_smoke() {
     # View write round trip: create (asserting a real metadata-location), list, update and
     # rename (asserting effects, not just status codes), and drop. View writes were already
     # reachable after phase 5a's commit path; this smoke makes that officially covered rather
-    # than merely advertised, under the same default-catalog-only restriction. Both the
-    # original and the renamed name are dropped defensively first so a rerun on a dirty stand
-    # cannot half-fail.
-    local view_smoke="smoke_rest_view"
+    # than merely advertised, under the same default-catalog-only restriction. This view is
+    # created and destroyed by the smoke itself. Both the original and the renamed name are
+    # dropped defensively first so a rerun on a dirty stand cannot half-fail - a single named
+    # view is a narrower blast radius than a whole namespace, so no emptiness check is needed
+    # here the way there is for the namespace above.
+    local view_smoke="${HMS_SMOKE_REST_WRITE_VIEW:-smoke_rest_view}"
     local renamed_view_smoke="${view_smoke}_renamed"
     discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
     discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${renamed_view_smoke}" "${body}")"

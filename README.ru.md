@@ -983,11 +983,11 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 
 Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
 Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
-Thrift HMS front door. Статус: **экспериментально**; весь write-роут, который
-выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
+Thrift HMS front door. Статус: **экспериментально**; вся write-поверхность,
+которую выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
 rename, register), write view (create, commit, drop, rename) и namespace DDL
 (create, update properties, drop), а также multi-table transaction commit —
-поддержан, но **только когда целевой namespace резолвится в
+поддержана, но **только когда целевой namespace резолвится в
 `routing.default-catalog`**. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
 Trino `iceberg-rest`) могут discover и load Iceberg-таблицы, хранящиеся в HMS
 через стандартный параметр `metadata_location`.
