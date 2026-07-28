@@ -134,7 +134,12 @@ final class RecordingThriftIface {
       }
       case "drop_database": {
         String db = (String) args[0];
-        calls.add("drop_database:" + db);
+        boolean deleteData = (Boolean) args[1];
+        boolean cascade = (Boolean) args[2];
+        calls.add("drop_database:" + db + ":" + deleteData + ":" + cascade);
+        if (!databases.containsKey(db)) {
+          throw new NoSuchObjectException("no database " + db);
+        }
         databases.remove(db);
         return null;
       }

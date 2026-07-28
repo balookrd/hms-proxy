@@ -190,9 +190,19 @@ public final class RoutingMetaStoreClient {
           }
           break;
         case "dropDatabase":
-          if (paramTypes.length == 4) {
-            delegate.drop_database(
-                db((String) args[0]), (Boolean) args[1], (Boolean) args[3]);
+          if (paramTypes.length == 4
+              && paramTypes[0] == String.class && paramTypes[1] == boolean.class
+              && paramTypes[2] == boolean.class && paramTypes[3] == boolean.class) {
+            boolean deleteData = (Boolean) args[1];
+            boolean ignoreUnknownDb = (Boolean) args[2];
+            boolean cascade = (Boolean) args[3];
+            try {
+              delegate.drop_database(db((String) args[0]), deleteData, cascade);
+            } catch (NoSuchObjectException e) {
+              if (!ignoreUnknownDb) {
+                throw e;
+              }
+            }
             return null;
           }
           break;

@@ -5,6 +5,7 @@ import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.ShowLocksRequest;
 import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -166,12 +167,56 @@ public class RoutingMetaStoreClientTest {
   }
 
   @Test
-  public void dropDatabaseTranslatesName() throws Exception {
+  public void dropDatabaseTranslatesNameAndForwardsFlagsInOrder() throws Exception {
     RecordingThriftIface recording = new RecordingThriftIface();
+    recording.databases.put("apache__sales", RecordingThriftIface.database("apache__sales"));
     IMetaStoreClient client = RoutingMetaStoreClient.create(
         recording.iface, new CatalogNameTranslation("apache", "__"));
-    client.dropDatabase("sales", false, true, false);
-    Assert.assertEquals(List.of("drop_database:apache__sales"), recording.calls);
+    client.dropDatabase("sales", true, false, false);
+    Assert.assertEquals(
+        List.of("drop_database:apache__sales:true:false"), recording.calls);
+  }
+
+  @Test
+  public void dropDatabaseWithCatalogNameOverloadThrowsUnsupportedOperation() {
+    RecordingThriftIface delegate = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
+
+    try {
+      client.dropDatabase("hive", "sales", false, true);
+      Assert.fail("expected UnsupportedOperationException");
+    } catch (UnsupportedOperationException expected) {
+      Assert.assertTrue(expected.getMessage(),
+          expected.getMessage().contains("dropDatabase"));
+    } catch (Exception other) {
+      Assert.fail("expected UnsupportedOperationException, got " + other.getClass().getName());
+    }
+  }
+
+  @Test
+  public void dropDatabaseIgnoresMissingDatabaseWhenFlagSet() throws Exception {
+    RecordingThriftIface delegate = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
+
+    client.dropDatabase("missing", false, true, false);
+
+    Assert.assertEquals(
+        List.of("drop_database:missing:false:false"), delegate.calls);
+  }
+
+  @Test
+  public void dropDatabasePropagatesMissingDatabaseWhenFlagUnset() {
+    RecordingThriftIface delegate = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
+
+    try {
+      client.dropDatabase("missing", false, false, false);
+      Assert.fail("expected NoSuchObjectException");
+    } catch (NoSuchObjectException expected) {
+      // expected: ignoreUnknownDb was false, so the exception must propagate.
+    } catch (Exception other) {
+      Assert.fail("expected NoSuchObjectException, got " + other.getClass().getName());
+    }
   }
 
   @Test
