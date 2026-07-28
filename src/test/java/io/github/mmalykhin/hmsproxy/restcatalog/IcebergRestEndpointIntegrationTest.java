@@ -270,6 +270,73 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
   }
 
+  // --- Coverage for the write routes WriteRouteGate had to be extended to cover: every write
+  // route RESTCatalogAdapter.Route exposes, not just the original five table routes. Each
+  // request below only needs to survive JSON parsing far enough to reach the gate - the gate
+  // check runs, and refuses, before the request would ever reach RoutingHiveCatalog's dispatch.
+
+  @Test
+  public void dropViewUnderFederatedNamespaceIsRefused() throws Exception {
+    // Path-shaped: namespace comes from the URL, same as the table routes above.
+    HttpResponse<String> response =
+        delete("/v1/catalog1/namespaces/catalog2__default/views/v1");
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+  }
+
+  // Body used by the rename-view refusal test: a RenameTableRequest whose destination lands
+  // in catalog2's federated namespace. RENAME_VIEW carries the same request shape as
+  // RENAME_TABLE, so the gate reuses that same source/destination check.
+  private static final String RENAME_VIEW_FEDERATED_DESTINATION_BODY =
+      "{\"source\":{\"namespace\":[\"default\"],\"name\":\"v1\"},"
+          + "\"destination\":{\"namespace\":[\"catalog2__default\"],\"name\":\"v2\"}}";
+
+  @Test
+  public void renameViewToFederatedNamespaceIsRefused() throws Exception {
+    // Rename-shaped: both source and destination are in the body, not the URL.
+    HttpResponse<String> response =
+        post("/v1/catalog1/views/rename", RENAME_VIEW_FEDERATED_DESTINATION_BODY);
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+  }
+
+  // Body used by the create-namespace refusal test: a CreateNamespaceRequest whose namespace
+  // is catalog2's federated database name.
+  private static final String CREATE_NAMESPACE_FEDERATED_BODY =
+      "{\"namespace\":[\"catalog2__default\"],\"properties\":{}}";
+
+  @Test
+  public void createNamespaceUnderFederatedNamespaceIsRefused() throws Exception {
+    // Body-shaped: CreateNamespaceRequest carries its namespace in the body, not the URL.
+    HttpResponse<String> response = post("/v1/catalog1/namespaces", CREATE_NAMESPACE_FEDERATED_BODY);
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+  }
+
+  // Body used by the commit-transaction refusal test: two table changes, one for a
+  // default-catalog table ("default.t1") and one for a table in catalog2's federated
+  // namespace ("catalog2__default.t2"). This is the shape of the hole this task closes: a
+  // client bundling one federated table into an otherwise-legitimate multi-table atomic
+  // commit must have the whole commit refused, not just the one table silently dropped.
+  private static final String COMMIT_TRANSACTION_MIXED_CATALOG_BODY =
+      "{\"table-changes\":["
+          + "{\"identifier\":{\"namespace\":[\"default\"],\"name\":\"t1\"},"
+          + "\"requirements\":[],\"updates\":[]},"
+          + "{\"identifier\":{\"namespace\":[\"catalog2__default\"],\"name\":\"t2\"},"
+          + "\"requirements\":[],\"updates\":[]}]}";
+
+  @Test
+  public void commitTransactionMixingFederatedTableIsRefused() throws Exception {
+    // Body-shaped, worst case: COMMIT_TRANSACTION is the standard multi-table atomic-commit
+    // endpoint. Before this fix, it dispatched unguarded regardless of any of its tables'
+    // catalogs - this is the proof that it no longer does, for the specific mixed case a
+    // per-table check must not miss.
+    HttpResponse<String> response =
+        post("/v1/catalog1/transactions/commit", COMMIT_TRANSACTION_MIXED_CATALOG_BODY);
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+  }
+
   @Test
   public void configAdvertisesOnlyServedEndpoints() throws Exception {
     HttpResponse<String> response = get("/v1/config");
@@ -417,6 +484,16 @@ public class IcebergRestEndpointIntegrationTest {
     } finally {
       logger.removeAppender(appender);
     }
+  }
+
+  private HttpResponse<String> delete(String path) throws Exception {
+    HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("http://127.0.0.1:" + server.boundPort() + path))
+        .timeout(HTTP_TIMEOUT)
+        .DELETE()
+        .build();
+    return client.send(request, HttpResponse.BodyHandlers.ofString());
   }
 
   private HttpResponse<String> post(String path, String body) throws Exception {

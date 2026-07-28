@@ -9,7 +9,10 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalogAdapter.Route;
 import org.apache.iceberg.rest.RESTUtil;
+import org.apache.iceberg.rest.requests.CommitTransactionRequest;
+import org.apache.iceberg.rest.requests.CreateNamespaceRequest;
 import org.apache.iceberg.rest.requests.RenameTableRequest;
+import org.apache.iceberg.rest.requests.UpdateTableRequest;
 
 /**
  * Refuses Iceberg REST writes whose namespace resolves to any catalog other than the proxy's
@@ -29,8 +32,14 @@ import org.apache.iceberg.rest.requests.RenameTableRequest;
  * gate's business - {@code null} is returned so the normal dispatch can produce its usual 404.
  */
 final class WriteRouteGate {
+  // Every write route RESTCatalogAdapter.Route exposes. Read-only routes (LIST_*, LOAD_*,
+  // *_EXISTS, CONFIG, TOKENS...) and REPORT_METRICS (phase-3 metrics bookkeeping, not a
+  // metadata write) are deliberately left out and always pass through unchecked.
   private static final Set<Route> WRITE_ROUTES = EnumSet.of(
-      Route.CREATE_TABLE, Route.UPDATE_TABLE, Route.DROP_TABLE, Route.RENAME_TABLE, Route.REGISTER_TABLE);
+      Route.CREATE_TABLE, Route.UPDATE_TABLE, Route.DROP_TABLE, Route.RENAME_TABLE, Route.REGISTER_TABLE,
+      Route.CREATE_VIEW, Route.UPDATE_VIEW, Route.DROP_VIEW, Route.RENAME_VIEW,
+      Route.CREATE_NAMESPACE, Route.UPDATE_NAMESPACE, Route.DROP_NAMESPACE,
+      Route.COMMIT_TRANSACTION);
   private static final String NAMESPACE_VAR = "namespace";
 
   private final String defaultCatalogName;
@@ -49,16 +58,40 @@ final class WriteRouteGate {
     if (!WRITE_ROUTES.contains(route)) {
       return null;
     }
-    if (route == Route.RENAME_TABLE) {
+    if (route == Route.RENAME_TABLE || route == Route.RENAME_VIEW) {
+      // Both routes carry the same RenameTableRequest {source, destination} body shape; either
+      // side landing in a non-default catalog must refuse the whole rename.
       RenameTableRequest request = (RenameTableRequest) body;
       String sourceRefusal = refusalFor(externalDbName(request.source()));
       return sourceRefusal != null ? sourceRefusal : refusalFor(externalDbName(request.destination()));
     }
+    if (route == Route.CREATE_NAMESPACE) {
+      CreateNamespaceRequest request = (CreateNamespaceRequest) body;
+      return refusalFor(externalDbName(request.namespace()));
+    }
+    if (route == Route.COMMIT_TRANSACTION) {
+      // A multi-table atomic commit; every table change must resolve to the default catalog,
+      // or the whole request is refused - one federated table riding along with default-catalog
+      // ones must not slip through.
+      CommitTransactionRequest request = (CommitTransactionRequest) body;
+      for (UpdateTableRequest tableChange : request.tableChanges()) {
+        String refusal = refusalFor(externalDbName(tableChange.identifier()));
+        if (refusal != null) {
+          return refusal;
+        }
+      }
+      return null;
+    }
+    // Remaining write routes (table and view CRUD, DROP_NAMESPACE, UPDATE_NAMESPACE) carry the
+    // namespace as a path variable.
     return refusalFor(externalDbName(vars.get(NAMESPACE_VAR)));
   }
 
   private static String externalDbName(TableIdentifier identifier) {
-    Namespace namespace = identifier.namespace();
+    return externalDbName(identifier.namespace());
+  }
+
+  private static String externalDbName(Namespace namespace) {
     return namespace.isEmpty() ? null : namespace.level(0);
   }
 
