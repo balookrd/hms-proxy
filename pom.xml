@@ -127,6 +127,21 @@
           <groupId>log4j</groupId>
           <artifactId>log4j</artifactId>
         </exclusion>
+        <!-- xerces:xercesImpl is pulled in only for hadoop-hdfs's offline image/edits viewer,
+             never for the DFSClient runtime path this proxy uses. xercesImpl ships
+             META-INF/services/javax.xml.parsers.* entries, which in a shaded fat jar make this
+             2007-vintage parser (with known CVEs) the JVM-wide JAXP provider for every
+             DocumentBuilderFactory/SAXParserFactory lookup in the process, including Hadoop
+             Configuration and hive-site parsing - silently displacing the JDK's own parser.
+             Exclude it and its xml-apis dependency. -->
+        <exclusion>
+          <groupId>xerces</groupId>
+          <artifactId>xercesImpl</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>

@@ -42,6 +42,15 @@ final class WriteRouteGate {
       Route.COMMIT_TRANSACTION);
   private static final String NAMESPACE_VAR = "namespace";
 
+  /**
+   * Test-only accessor so {@code WriteRouteGateTest} can assert every {@link Route} constant is
+   * explicitly classified as a write or a deliberate non-write - never widen this beyond
+   * package-private.
+   */
+  static Set<Route> writeRoutesForTesting() {
+    return WRITE_ROUTES;
+  }
+
   private final String defaultCatalogName;
   private final Function<String, String> catalogForNamespace;
 
