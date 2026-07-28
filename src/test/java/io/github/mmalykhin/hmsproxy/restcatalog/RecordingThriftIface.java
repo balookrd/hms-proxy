@@ -126,6 +126,25 @@ final class RecordingThriftIface {
         }
         return result;
       }
+      case "create_database": {
+        Database database = (Database) args[0];
+        calls.add("create_database:" + database.getName());
+        databases.put(database.getName(), database);
+        return null;
+      }
+      case "drop_database": {
+        String db = (String) args[0];
+        calls.add("drop_database:" + db);
+        databases.remove(db);
+        return null;
+      }
+      case "alter_database": {
+        String db = (String) args[0];
+        Database database = (Database) args[1];
+        calls.add("alter_database:" + db + ":" + database.getName());
+        databases.put(db, database);
+        return null;
+      }
       case "create_table": {
         Table table = (Table) args[0];
         calls.add("create_table:" + table.getDbName() + "." + table.getTableName());

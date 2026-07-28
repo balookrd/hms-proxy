@@ -157,6 +157,33 @@ public class RoutingMetaStoreClientTest {
   }
 
   @Test
+  public void createDatabaseTranslatesName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    client.createDatabase(RecordingThriftIface.database("sales"));
+    Assert.assertEquals(List.of("create_database:apache__sales"), recording.calls);
+  }
+
+  @Test
+  public void dropDatabaseTranslatesName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    client.dropDatabase("sales", false, true, false);
+    Assert.assertEquals(List.of("drop_database:apache__sales"), recording.calls);
+  }
+
+  @Test
+  public void alterDatabaseTranslatesBothArgumentAndPayload() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    client.alterDatabase("sales", RecordingThriftIface.database("sales"));
+    Assert.assertEquals(List.of("alter_database:apache__sales:apache__sales"), recording.calls);
+  }
+
+  @Test
   public void lockAndUnlockReachTheDelegate() throws Exception {
     RecordingThriftIface recording = new RecordingThriftIface();
     IMetaStoreClient client = RoutingMetaStoreClient.create(recording.iface);

@@ -22,10 +22,11 @@ import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 
 /**
  * Bridges Iceberg's HiveCatalog (which requires IMetaStoreClient) to the proxy's
- * ThriftHiveMetastore.Iface. Read paths, table writes (create/drop/alter) and the
- * commit-lock RPCs Iceberg's write path needs are implemented; everything else throws
- * UnsupportedOperationException. This class only wires the client through: it does not
- * restrict writes to the default catalog, that gate is a separate concern.
+ * ThriftHiveMetastore.Iface. Read paths, table writes (create/drop/alter), namespace DDL
+ * (create/drop/alter database) and the commit-lock RPCs Iceberg's write path needs are
+ * implemented; everything else throws UnsupportedOperationException. This class only wires
+ * the client through: it does not restrict writes to the default catalog, that gate is a
+ * separate concern.
  */
 public final class RoutingMetaStoreClient {
   private RoutingMetaStoreClient() {
@@ -91,6 +92,16 @@ public final class RoutingMetaStoreClient {
       }
       Table copy = new Table(table);
       copy.setDbName(db(table.getDbName()));
+      return copy;
+    }
+
+    /** Translates a caller-supplied Database's own name to the external name, on a copy. */
+    private Database translateDatabaseName(Database database) {
+      if (translation == null || database == null) {
+        return database;
+      }
+      Database copy = new Database(database);
+      copy.setName(db(database.getName()));
       return copy;
     }
 
@@ -169,6 +180,26 @@ public final class RoutingMetaStoreClient {
         case "createTable":
           if (paramTypes.length == 1) {
             delegate.create_table(translateDbName((Table) args[0]));
+            return null;
+          }
+          break;
+        case "createDatabase":
+          if (paramTypes.length == 1) {
+            delegate.create_database(translateDatabaseName((Database) args[0]));
+            return null;
+          }
+          break;
+        case "dropDatabase":
+          if (paramTypes.length == 4) {
+            delegate.drop_database(
+                db((String) args[0]), (Boolean) args[1], (Boolean) args[3]);
+            return null;
+          }
+          break;
+        case "alterDatabase":
+          if (paramTypes.length == 2) {
+            delegate.alter_database(
+                db((String) args[0]), translateDatabaseName((Database) args[1]));
             return null;
           }
           break;
