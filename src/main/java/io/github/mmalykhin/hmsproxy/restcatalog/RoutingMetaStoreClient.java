@@ -197,9 +197,12 @@ public final class RoutingMetaStoreClient {
           }
           break;
         case "lock":
-          // The LockRequest's own database names are resolved downstream by the
-          // proxy's LockHandler; translating them here would double-translate.
-          return delegate.lock((LockRequest) args[0]);
+          if (paramTypes.length == 1) {
+            // The LockRequest's own database names are resolved downstream by the
+            // proxy's LockHandler; translating them here would double-translate.
+            return delegate.lock((LockRequest) args[0]);
+          }
+          break;
         case "checkLock":
           if (paramTypes.length == 1) {
             return delegate.check_lock(new CheckLockRequest((Long) args[0]));
@@ -212,9 +215,6 @@ public final class RoutingMetaStoreClient {
           }
           break;
         case "showLocks":
-          if (paramTypes.length == 0) {
-            return delegate.show_locks(new ShowLocksRequest());
-          }
           if (paramTypes.length == 1) {
             return delegate.show_locks((ShowLocksRequest) args[0]);
           }

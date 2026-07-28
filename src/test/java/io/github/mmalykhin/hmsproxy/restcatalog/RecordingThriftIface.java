@@ -28,6 +28,7 @@ final class RecordingThriftIface {
   final Map<String, Table> tables = new HashMap<>();
   final Map<String, List<String>> tablesByDatabase = new HashMap<>();
   List<String> allDatabases = Collections.emptyList();
+  ShowLocksResponse lastShowLocksResponse;
   final ThriftHiveMetastore.Iface iface;
 
   RecordingThriftIface() {
@@ -132,7 +133,7 @@ final class RecordingThriftIface {
         String db = (String) args[0];
         String tbl = (String) args[1];
         Table table = (Table) args[2];
-        calls.add("alter_table:" + db + "." + tbl);
+        calls.add("alter_table:" + db + "." + tbl + ":table=" + table.getDbName());
         tables.put(db + "." + tbl, table);
         return null;
       }
@@ -152,7 +153,8 @@ final class RecordingThriftIface {
       }
       case "show_locks": {
         calls.add("show_locks");
-        return new ShowLocksResponse();
+        lastShowLocksResponse = new ShowLocksResponse();
+        return lastShowLocksResponse;
       }
       case "heartbeat": {
         HeartbeatRequest request = (HeartbeatRequest) args[0];

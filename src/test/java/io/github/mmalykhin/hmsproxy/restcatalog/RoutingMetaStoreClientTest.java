@@ -5,6 +5,8 @@ import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.ShowLocksRequest;
+import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
@@ -150,7 +152,8 @@ public class RoutingMetaStoreClientTest {
         recording.iface, new CatalogNameTranslation("apache", "__"));
     Table table = RecordingThriftIface.table("default", "t1");
     client.alter_table_with_environmentContext("default", "t1", table, null);
-    Assert.assertEquals(List.of("alter_table:apache__default.t1"), recording.calls);
+    Assert.assertEquals(
+        List.of("alter_table:apache__default.t1:table=apache__default"), recording.calls);
   }
 
   @Test
@@ -162,5 +165,38 @@ public class RoutingMetaStoreClientTest {
     client.unlock(RecordingThriftIface.LOCK_ID);
     Assert.assertEquals(
         List.of("lock", "unlock:" + RecordingThriftIface.LOCK_ID), recording.calls);
+  }
+
+  @Test
+  public void checkLockReachesTheDelegateAndReturnsItsResponse() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(recording.iface);
+
+    LockResponse response = client.checkLock(RecordingThriftIface.LOCK_ID);
+
+    Assert.assertEquals(RecordingThriftIface.LOCK_ID, response.getLockid());
+    Assert.assertEquals(
+        List.of("check_lock:" + RecordingThriftIface.LOCK_ID), recording.calls);
+  }
+
+  @Test
+  public void showLocksReachesTheDelegateAndReturnsItsResponse() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(recording.iface);
+
+    ShowLocksResponse response = client.showLocks(new ShowLocksRequest());
+
+    Assert.assertSame(recording.lastShowLocksResponse, response);
+    Assert.assertEquals(List.of("show_locks"), recording.calls);
+  }
+
+  @Test
+  public void heartbeatReachesTheDelegateWithGivenIds() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(recording.iface);
+
+    client.heartbeat(5L, 7L);
+
+    Assert.assertEquals(List.of("heartbeat:5:7"), recording.calls);
   }
 }
