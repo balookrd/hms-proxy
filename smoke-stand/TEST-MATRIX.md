@@ -89,8 +89,8 @@ because SPNEGO needed a GSS-capable curl inside the network; once that stopped b
 listener was turned on there too (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`,
 same keytab as the Thrift front door) and the write round trip, the write gate and an
 unauthenticated-request check were run against it - see the 2026-07-28 kerberos entry below.
-The read-only rows (G2-G22, G27-G30) have not yet been re-run against the Kerberos profile and
-stay `n/a` until they are.
+The read-only rows (G2-G22, G27-G30, G35-G38) have not yet been re-run against the Kerberos
+profile and stay `n/a` until they are.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
@@ -126,8 +126,12 @@ stay `n/a` until they are.
 | G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
 | G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
 | G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | ✅ | ✅ |
-| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `DELETE` answers `204` | ✅ | ✅ |
+| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `POST .../views/{view}` update (`assert-view-uuid` requirement + `set-properties`) answers `200` with a follow-up `GET` confirming the property is actually present, `POST /v1/{prefix}/views/rename` answers `204` and the view loads back `200` under the new name while the old name answers `404` - the pair that proves the rename moved it rather than copying it, `DELETE` answers `204` | ✅ | ✅ |
 | G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | n/a |
+| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | ✅ | n/a |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -285,6 +289,22 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `"authenticatedUser":"smoke-user@SMOKE.LOCAL"`, confirming namespace DDL reached the real HDP
   backend under Kerberos too. G34 (transaction commit) was not re-run under Kerberos and stays
   `n/a`, matching the task's scope.
+  Later still (same jar, script-only change, back on the plain profile): the view round trip
+  (G33) was extended to drive the two advertised view routes it had never exercised - update
+  (`assert-view-uuid` requirement, `POST .../views/{view}`) and rename (`POST
+  /v1/{prefix}/views/rename`) - and four more `WriteRouteGate` negatives were added (G35-G38:
+  CREATE_VIEW, DROP_VIEW, DROP_NAMESPACE and UPDATE_NAMESPACE, all against the federated
+  `apache__default` namespace under the default prefix). `--scenario rest` and `--scenario all`
+  both re-ran green: the view update's property reload confirmed `"smoke":"updated"` actually
+  stuck, the rename answered `204` and the view loaded back `200` under the new name while the
+  old name answered `404`, and all four new negatives answered `403` (the CREATE_VIEW one with
+  the full valid view body, since a stub body had earlier answered `400` before the gate was even
+  reached). The new rename-effect assertion was proven to discriminate by temporarily flipping its
+  expected status from `404` to `200` (i.e. asserting the old view name is still reachable after
+  the rename); the rerun failed - the pre-rename name still answered its real `404`, which the
+  inverted assertion now rejected - confirming the check would catch a rename that copies the view
+  instead of moving it; the assertion was restored and both `--scenario rest` and `--scenario all`
+  re-ran green.
 
 ## Two caveats on faithfulness
 

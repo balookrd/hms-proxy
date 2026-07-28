@@ -1224,6 +1224,33 @@ run_rest_smoke() {
         "${HMS_SMOKE_REST_URL}/v1/${prefix}/tables/rename")"
       [[ "${code}" == "403" ]] \
         || fail "REST rename with federated destination namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # CREATE_VIEW with a federated namespace. Needs the FULL valid view body, not a stub -
+      # an earlier attempt with a minimal body got HTTP 400 because the body failed to parse
+      # before the gate was ever consulted. A 400 from this assertion means the request body is
+      # malformed, not that the gate let the write through.
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data '{"name":"zzz_smoke_view","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]},"view-version":{"version-id":1,"timestamp-ms":1753700000000,"schema-id":0,"summary":{"operation":"create"},"default-namespace":["'"${write_fed_ns}"'"],"representations":[{"type":"sql","sql":"select 1","dialect":"hive"}]},"properties":{}}' \
+        "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${write_fed_ns}/views")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST CREATE_VIEW under federated namespace '${write_fed_ns}' expected HTTP 403, got ${code} (400 would mean the request body is malformed, not that the gate refused it): $(cat "${body}")"
+
+      # DROP_VIEW with a federated namespace.
+      code="$(rest_request DELETE "/v1/${prefix}/namespaces/${write_fed_ns}/views/whatever" "${body}")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST DROP_VIEW under federated namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # DROP_NAMESPACE of a federated namespace.
+      code="$(rest_request DELETE "/v1/${prefix}/namespaces/${write_fed_ns}" "${body}")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST DROP_NAMESPACE of federated namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # UPDATE_NAMESPACE (properties) of a federated namespace.
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data '{"removals":[],"updates":{"x":"y"}}' \
+        "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${write_fed_ns}/properties")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST UPDATE_NAMESPACE of federated namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
     else
       log "skipping REST write-gate negative checks because HMS_SMOKE_REST_SECOND_PREFIX is not set"
     fi
@@ -1274,11 +1301,16 @@ run_rest_smoke() {
     [[ "${code}" == "404" ]] \
       || fail "REST namespace load of dropped '${ns_smoke}' expected HTTP 404, got ${code}: $(cat "${body}")"
 
-    # View write round trip: create (asserting a real metadata-location), list, and drop. View
-    # writes were already reachable after phase 5a's commit path; this smoke makes that officially
-    # covered rather than merely advertised, under the same default-catalog-only restriction.
+    # View write round trip: create (asserting a real metadata-location), list, update and
+    # rename (asserting effects, not just status codes), and drop. View writes were already
+    # reachable after phase 5a's commit path; this smoke makes that officially covered rather
+    # than merely advertised, under the same default-catalog-only restriction. Both the
+    # original and the renamed name are dropped defensively first so a rerun on a dirty stand
+    # cannot half-fail.
     local view_smoke="smoke_rest_view"
+    local renamed_view_smoke="${view_smoke}_renamed"
     discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${renamed_view_smoke}" "${body}")"
 
     local view_create_body='{"name":"'"${view_smoke}"'","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]},"view-version":{"version-id":1,"timestamp-ms":1753700000000,"schema-id":0,"summary":{"operation":"create"},"default-namespace":["'"${namespace}"'"],"representations":[{"type":"sql","sql":"select 1","dialect":"hive"}]},"properties":{}}'
     code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
@@ -1287,13 +1319,45 @@ run_rest_smoke() {
     grep -q '"metadata-location"' "${body}" \
       || fail "REST view create of '${view_smoke}' carries no metadata-location: $(cat "${body}")"
 
+    local view_uuid=""
+    view_uuid="$(grep -o '"view-uuid"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${view_uuid}" ]] \
+      || fail "REST view create of '${view_smoke}' carries no metadata.view-uuid: $(cat "${body}")"
+
     code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/views" "${body}")"
     [[ "${code}" == "200" ]] || fail "REST view listing of '${namespace}' returned HTTP ${code}: $(cat "${body}")"
     grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${view_smoke}\"" "${body}" \
       || fail "view '${view_smoke}' missing from the REST view listing: $(cat "${body}")"
 
-    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
-    [[ "${code}" == "204" ]] || fail "REST view drop of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+    # Update: the effect that matters is the property actually landing, not merely a 200 status -
+    # a no-op update route would still answer 200.
+    local view_update_body='{"requirements":[{"type":"assert-view-uuid","uuid":"'"${view_uuid}"'"}],"updates":[{"action":"set-properties","updates":{"smoke":"updated"}}]}'
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data "${view_update_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}")"
+    [[ "${code}" == "200" ]] || fail "REST view update of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST view reload of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q '"smoke"[[:space:]]*:[[:space:]]*"updated"' "${body}" \
+      || fail "REST view update of '${view_smoke}' did not stick: $(cat "${body}")"
+
+    # Rename: the pair below (200 under the new name, 404 under the old) is what proves the
+    # rename moved the view rather than copying it - a bare 204 status would not distinguish
+    # the two.
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"source":{"namespace":["'"${namespace}"'"],"name":"'"${view_smoke}"'"},"destination":{"namespace":["'"${namespace}"'"],"name":"'"${renamed_view_smoke}"'"}}' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/views/rename")"
+    [[ "${code}" == "204" ]] || fail "REST rename of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/views/${renamed_view_smoke}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST load of renamed '${renamed_view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
+    [[ "${code}" == "404" ]] \
+      || fail "REST load of pre-rename view name '${view_smoke}' expected HTTP 404, got ${code}: $(cat "${body}")"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${renamed_view_smoke}" "${body}")"
+    [[ "${code}" == "204" ]] || fail "REST view drop of '${renamed_view_smoke}' returned HTTP ${code}: $(cat "${body}")"
 
     # Transaction commit round trip: a fresh table committed through
     # POST /v1/{prefix}/transactions/commit rather than the per-table commit route already

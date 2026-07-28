@@ -89,7 +89,7 @@ HDP-клиент не может пользоваться Apache-listener — Th
 и там тоже (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`, тот же keytab, что и у
 Thrift front door), и против него прогнали write round trip, write gate и проверку
 неаутентифицированного запроса — см. вторую запись за 2026-07-28 в журнале ниже. Read-only строки
-(G2-G22, G27-G30) на Kerberos-профиле пока не перепрогонялись и остаются `n/a`.
+(G2-G22, G27-G30, G35-G38) на Kerberos-профиле пока не перепрогонялись и остаются `n/a`.
 
 | # | Проверка | plain | kerberos |
 | --- | --- | --- | --- |
@@ -125,8 +125,12 @@ Thrift front door), и против него прогнали write round trip, 
 | G30 | `POST /v1/{prefix}/tables/rename` с federated destination-namespace (source-таблица ещё под текущим именем) отклонён с `403` — доказывает проверку именно destination-стороны gate, а не только source | ✅ | n/a |
 | G31 | Запрос без `--negotiate` отклоняется `401` с вызовом `WWW-Authenticate: Negotiate` и пустым телом | n/a | ✅ |
 | G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) с последующим `GET`, подтверждающим, что property реально появилось, `DELETE` (`204`), `GET` после этого (`404`) — по-настоящему новое: `RoutingMetaStoreClient` не реализовывал `createDatabase`/`alterDatabase`/`dropDatabase` до этой фазы, так что namespace DDL впервые дошёл до реального metastore | ✅ | ✅ |
-| G33 | View write round trip: `POST .../views` create отвечает `200` с реальным `metadata-location`, `GET .../views` листит новый view, `DELETE` отвечает `204` | ✅ | ✅ |
+| G33 | View write round trip: `POST .../views` create отвечает `200` с реальным `metadata-location`, `GET .../views` листит новый view, `POST .../views/{view}` update (requirement `assert-view-uuid` + `set-properties`) отвечает `200`, и последующий `GET` подтверждает, что property реально появилось, `POST /v1/{prefix}/views/rename` отвечает `204`, view загружается обратно `200` под новым именем, а под старым именем отвечает `404` — именно эта пара доказывает, что rename переместил view, а не скопировал его, `DELETE` отвечает `204` | ✅ | ✅ |
 | G34 | `POST /v1/{prefix}/transactions/commit` против только что созданной таблицы: отвечает `204`, и `metadata-location` таблицы после этого отличается от того, что дал create — доказательство, что multi-table commit реально записал новый metadata-файл, а не тихий no-op | ✅ | n/a |
+| G35 | `POST .../views` (CREATE_VIEW, полное валидное тело view) в federated-namespace `apache__default` отклонён с `403` — минимальное тело вместо этого получает `400`, потому что не парсится ещё до того, как gate вообще проверяется, так что `400` здесь означал бы, что тело запроса некорректно, а не что gate пропустил write | ✅ | n/a |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) под federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -284,6 +288,22 @@ Thrift front door), и против него прогнали write round trip, 
   `drop_database` с `"authenticatedUser":"smoke-user@SMOKE.LOCAL"`, подтверждая, что namespace
   DDL под Kerberos тоже дошёл до реального HDP-бэкенда. G34 (transaction commit) под Kerberos не
   перепрогонялся и остаётся `n/a` — в рамках заявленного объёма задачи.
+  Ещё позже (тот же jar, изменение только в скрипте, снова на plain-профиле): view round trip
+  (G33) расширен, чтобы прогнать два объявленных view-роута, которые он до сих пор ни разу не
+  прогонял, — update (requirement `assert-view-uuid`, `POST .../views/{view}`) и rename (`POST
+  /v1/{prefix}/views/rename`), — и добавлены ещё четыре негатива `WriteRouteGate` (G35-G38:
+  CREATE_VIEW, DROP_VIEW, DROP_NAMESPACE и UPDATE_NAMESPACE — все против federated-namespace
+  `apache__default` под default-prefix). `--scenario rest` и `--scenario all` оба перепрогнаны
+  зелёными: перезагрузка view после update подтвердила, что `"smoke":"updated"` реально
+  закрепилось, rename ответил `204`, view загрузилось обратно `200` под новым именем, а под
+  старым именем ответило `404`, и все четыре новых негатива ответили `403` (у CREATE_VIEW —
+  с полным валидным телом view, поскольку заглушка ранее отвечала `400` ещё до того, как gate
+  вообще был достигнут). Новая проверка эффекта rename доказала свою различающую способность:
+  ожидаемый статус был временно перевёрнут с `404` на `200` (то есть утверждалось, что старое
+  имя view остаётся доступным после rename); перепрогон упал — старое имя по-прежнему честно
+  отвечало `404`, что инвертированная проверка теперь отвергала, — подтвердив, что проверка
+  поймает rename, который копирует view вместо того, чтобы его переместить; проверка
+  восстановлена, оба сценария (`rest` и `all`) перепрогнаны зелёными.
 
 ## Две оговорки честности
 
