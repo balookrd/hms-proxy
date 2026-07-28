@@ -355,9 +355,10 @@ public class IcebergRestEndpointIntegrationTest {
   @Test
   public void configAdvertisesOnlyServedEndpoints() throws Exception {
     // /v1/config with no warehouse resolves to the default catalog (catalog1 in this fixture),
-    // which now serves table writes (phase 5a). Other write kinds (view, namespace,
-    // transaction-commit) are gated by WriteRouteGate for safety but are not implemented
-    // features of this phase, so they must never be advertised, even for the default catalog.
+    // which serves table writes (phase 5a) plus view writes, namespace DDL and the
+    // transaction-commit (phase 5b) - all thirteen routes WriteRouteGate gates are now genuinely
+    // working features, dispatched through the same generic RESTCatalogAdapter/RoutingHiveCatalog
+    // path the table routes use, so all of them belong on this list.
     HttpResponse<String> response = get("/v1/config");
     Assert.assertEquals(200, response.statusCode());
     String body = response.body();
@@ -367,13 +368,40 @@ public class IcebergRestEndpointIntegrationTest {
         body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
     Assert.assertTrue("default catalog must advertise table deletes: " + body,
         body.contains("DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
-    Assert.assertFalse(
-        "view writes are gated but not implemented in this phase, must not be advertised: " + body,
+    Assert.assertTrue(
+        "default catalog must advertise view writes: " + body,
         body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
-    Assert.assertFalse(
-        "namespace/transaction writes are gated but not implemented in this phase, "
-            + "must not be advertised: " + body,
+    Assert.assertTrue(
+        "default catalog must advertise view renames: " + body,
+        body.contains("POST /v1/{prefix}/views/rename"));
+    Assert.assertTrue(
+        "default catalog must advertise namespace creation: " + body,
+        body.contains("POST /v1/{prefix}/namespaces"));
+    Assert.assertTrue(
+        "default catalog must advertise namespace property updates: " + body,
+        body.contains("POST /v1/{prefix}/namespaces/{namespace}/properties"));
+    Assert.assertTrue(
+        "default catalog must advertise namespace deletes: " + body,
+        body.contains("DELETE /v1/{prefix}/namespaces/{namespace}"));
+    Assert.assertTrue(
+        "default catalog must advertise the transaction commit: " + body,
         body.contains("POST /v1/{prefix}/transactions/commit"));
+  }
+
+  @Test
+  public void defaultCatalogAdvertisesViewAndNamespaceWrites() throws Exception {
+    String body = get("/v1/" + CATALOG_NAME + "/config").body();
+    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
+    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces"));
+    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/transactions/commit"));
+  }
+
+  @Test
+  public void nonDefaultCatalogAdvertisesNoWritesAtAll() throws Exception {
+    String body = get("/v1/" + CATALOG2_NAME + "/config").body();
+    Assert.assertFalse(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
+    Assert.assertFalse(body, body.contains("POST /v1/{prefix}/transactions/commit"));
+    Assert.assertTrue(body, body.contains("GET /v1/{prefix}/namespaces"));
   }
 
   @Test

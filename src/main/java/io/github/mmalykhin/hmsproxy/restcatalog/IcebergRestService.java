@@ -23,8 +23,9 @@ import org.apache.iceberg.rest.responses.ConfigResponse;
  * other catalog's service is given a CatalogNameTranslation so REST clients
  * see that catalog's internal database names instead of the federated ones.
  * Only the default catalog's service advertises (and, via {@link WriteRouteGate},
- * actually allows) table writes - every other catalog is discovery-only, matching
- * the synthetic lock shim that backs its writes with no real conflict checking.
+ * actually allows) writes - table, view, namespace and transaction-commit alike -
+ * every other catalog is discovery-only, matching the synthetic lock shim that
+ * backs its writes with no real conflict checking.
  */
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";
@@ -48,18 +49,30 @@ public final class IcebergRestService implements AutoCloseable {
       Endpoint.V1_VIEW_EXISTS);
 
   /**
-   * Table write routes phase 5a actually implements: only the default catalog's tables are
-   * backed by a real HMS lock, so only the default catalog's service advertises these. {@link
-   * WriteRouteGate} additionally gates view, namespace and transaction-commit writes for safety,
-   * but this phase does not implement any of those as working features, so they must stay off
-   * this list - advertising them would promise a capability the proxy does not deliver.
+   * Write routes actually served for the default catalog: only its tables, views and namespaces
+   * are backed by a real HMS lock, so only its service advertises these. Every entry here has a
+   * counterpart in {@link WriteRouteGate}'s WRITE_ROUTES - the gate covers all thirteen write
+   * routes, but a route belongs on this list only once it is a genuinely working feature, not
+   * merely gated for safety; advertising a gated-but-unimplemented route would promise a
+   * capability the proxy does not deliver. View writes (HiveViewOperations), namespace DDL and
+   * the multi-table transaction commit all dispatch through the same generic
+   * RESTCatalogAdapter/RoutingHiveCatalog path the table routes use, so they are genuine features
+   * as of phase 5b, not gate-only placeholders.
    */
   private static final List<Endpoint> WRITE_ENDPOINTS = List.of(
       Endpoint.V1_CREATE_TABLE,
       Endpoint.V1_UPDATE_TABLE,
       Endpoint.V1_DELETE_TABLE,
       Endpoint.V1_RENAME_TABLE,
-      Endpoint.V1_REGISTER_TABLE);
+      Endpoint.V1_REGISTER_TABLE,
+      Endpoint.V1_CREATE_VIEW,
+      Endpoint.V1_UPDATE_VIEW,
+      Endpoint.V1_DELETE_VIEW,
+      Endpoint.V1_RENAME_VIEW,
+      Endpoint.V1_CREATE_NAMESPACE,
+      Endpoint.V1_UPDATE_NAMESPACE,
+      Endpoint.V1_DELETE_NAMESPACE,
+      Endpoint.V1_COMMIT_TRANSACTION);
 
   private static final List<Endpoint> DEFAULT_CATALOG_ENDPOINTS =
       Stream.concat(READ_ENDPOINTS.stream(), WRITE_ENDPOINTS.stream()).toList();
