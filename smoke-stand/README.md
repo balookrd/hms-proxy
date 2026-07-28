@@ -184,11 +184,13 @@ docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ## Iceberg REST catalog front door
 
 The plain profile also enables the proxy's Iceberg REST listener (`rest-catalog.*` in
-`proxy/hms-proxy.properties`, host port 19183). It is read-only and serves the default
-catalog (`hdp`) only. `--scenario rest` (or the REST step of `--scenario all`) drives it
-with curl from the host: config discovery, namespace and table listings, a table load, and
-the negative shapes — unknown prefix, unknown table, and a write route, all of which must
-fail cleanly.
+`proxy/hms-proxy.properties`, host port 19183). Every write route — table, view and namespace
+DDL, plus multi-table transaction commit — is served, but only for the default catalog (`hdp`):
+its tables are backed by a real HMS lock, while every other catalog is served by the synthetic
+lock shim and refuses writes with `403`. `--scenario rest` (or the REST step of `--scenario all`)
+drives it with curl from the host: config discovery, namespace and table listings, a table load,
+the full write round trips, and the negative shapes — unknown prefix, unknown table, and a write
+route on a non-default catalog, all of which must fail cleanly.
 
 The load-table check needs a real Iceberg table. The stand registers a minimal one by hand —
 a hand-written `metadata.json` in HDFS plus a Hive table shell that points at it:

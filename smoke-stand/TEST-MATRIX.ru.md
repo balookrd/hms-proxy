@@ -124,6 +124,9 @@ Thrift front door), и против него прогнали write round trip, 
 | G29 | `POST /v1/{prefix}/namespaces` с federated-именем (`apache__zzz_smoke`) отклонён с `403` | ✅ | n/a |
 | G30 | `POST /v1/{prefix}/tables/rename` с federated destination-namespace (source-таблица ещё под текущим именем) отклонён с `403` — доказывает проверку именно destination-стороны gate, а не только source | ✅ | n/a |
 | G31 | Запрос без `--negotiate` отклоняется `401` с вызовом `WWW-Authenticate: Negotiate` и пустым телом | n/a | ✅ |
+| G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) с последующим `GET`, подтверждающим, что property реально появилось, `DELETE` (`204`), `GET` после этого (`404`) — по-настоящему новое: `RoutingMetaStoreClient` не реализовывал `createDatabase`/`alterDatabase`/`dropDatabase` до этой фазы, так что namespace DDL впервые дошёл до реального metastore | ✅ | ✅ |
+| G33 | View write round trip: `POST .../views` create отвечает `200` с реальным `metadata-location`, `GET .../views` листит новый view, `DELETE` отвечает `204` | ✅ | ✅ |
+| G34 | `POST /v1/{prefix}/transactions/commit` против только что созданной таблицы: отвечает `204`, и `metadata-location` таблицы после этого отличается от того, что дал create — доказательство, что multi-table commit реально записал новый metadata-файл, а не тихий no-op | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -247,6 +250,40 @@ Thrift front door), и против него прогнали write round trip, 
   бэкенда, а не synthetic-shim'а), а `logs/hms-proxy-audit.log` нёс
   `"authenticatedUser":"smoke-user@SMOKE.LOCAL"` в каждой из этих записей. Остальные read-only
   строки Kerberos-колонки (G2-G22, G27-G30) не перепрогонялись и остаются `n/a`.
+
+- **2026-07-28** (третья запись), jar `1.0.49-2b778592` (фаза 5b: namespace DDL в
+  `RoutingMetaStoreClient` и объявление полного write-роута в `GET /v1/config`). До этого прогона
+  стенд ещё стоял на jar'е до фазы, и прямая проверка показала, что `POST
+  /v1/{prefix}/namespaces` отвечает `406` ("does not support `IMetaStoreClient.createDatabase`")
+  — namespace DDL ни разу ещё не проверялся против настоящего metastore. Добавлены строки
+  G32-G34 для трёх новых round trip'ов (namespace DDL, view write, transaction commit через
+  `POST /v1/{prefix}/transactions/commit`); роут per-table commit (G26) уже был покрыт и остался
+  зелёным, эта фаза его не затронула.
+  После пересборки fat jar и рестейджа (`./prepare.sh && docker compose up -d --build`,
+  plain-профиль) `--scenario rest` и `--scenario all` оба перепрогнаны зелёными, на этот раз
+  реально прогоняя namespace DDL впервые: `POST /v1/hdp/namespaces` создал `smoke_rest_ns`
+  (`200`), `GET` загрузил его обратно, `POST .../properties` выставил `smoke=yes` (`200`), и
+  последующий `GET` подтвердил, что property реально появилось, `DELETE` отвечал `204`, а
+  финальный `GET` — `404`. View round trip создал `smoke_rest_view` (`200`, реальный
+  `metadata-location`), листнул его и удалил (`204`). Transaction round trip создал таблицу,
+  закоммитил её через `POST /v1/hdp/transactions/commit` (`204`) и подтвердил, что
+  `metadata-location` таблицы при перезагрузке сместился с файла `00000-...` на `00001-...` —
+  ручные curl round trip'ы против работающего стенда зафиксировали те же verbatim-ответы вне
+  smoke-скрипта, для протокола.
+  Шаг 4 задачи доказал, что новая transaction-проверка реально различающая: проверка была
+  временно инвертирована — потребовать, чтобы `metadata-location` НЕ менялся, `--scenario rest`
+  перепрогнан и упал с "did not write a new metadata file: metadata-location is still
+  '...00001-...'", как и ожидалось, затем проверка восстановлена и оба сценария (`rest` и `all`)
+  перепрогнаны зелёными.
+  Затем стенд переключён на Kerberos-профиль
+  (`docker compose --env-file .env.kerberos --profile kerberos up -d --build`), и изнутри
+  `stand-proxy` после `kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL` curl с
+  `--negotiate` вручную прогнал G32 (namespace DDL) и G33 (view write) — именно так задача и
+  ограничила Kerberos-перепрогон. Оба прошли идентично plain-профилю — те же статусы, тот же
+  эффект, — а `hms-proxy-audit.log` показал настоящие записи `create_database`/`alter_database`/
+  `drop_database` с `"authenticatedUser":"smoke-user@SMOKE.LOCAL"`, подтверждая, что namespace
+  DDL под Kerberos тоже дошёл до реального HDP-бэкенда. G34 (transaction commit) под Kerberos не
+  перепрогонялся и остаётся `n/a` — в рамках заявленного объёма задачи.
 
 ## Две оговорки честности
 

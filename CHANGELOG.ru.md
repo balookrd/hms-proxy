@@ -45,6 +45,29 @@ English version: [CHANGELOG.md](CHANGELOG.md).
   `HMS_SMOKE_REST_WRITE_TABLE`; пропускается, если не задана. Раннер также
   теперь проверяет write/read-асимметрию в config, описанную выше, — и для
   дефолтного каталога, и для настроенного второго каталога.
+- `RoutingMetaStoreClient` теперь реализует `createDatabase`,
+  `dropDatabase(String, boolean, boolean, boolean)` и `alterDatabase` вместо
+  того, чтобы кидать `UnsupportedOperationException` — по-настоящему новое:
+  до сих пор любой namespace-DDL роут Iceberg REST отвечал unsupported
+  независимо от каталога. Имена транслируются через существующий
+  `CatalogNameTranslation`, а payload `Database`, передаваемый в
+  create/alter, транслируется на копии, а не мутацией объекта вызывающего.
+- `GET /v1/config` и `GET /v1/{prefix}/config` теперь объявляют весь
+  обслуживаемый write-роут целиком: view CRUD/rename и namespace CRUD уже
+  были достижимы через тот же общий dispatch-путь, которым пользуется write
+  таблиц, и `WriteRouteGate` уже гейтил все тринадцать write-роутов — отставали
+  только discovery и smoke. В `endpoints` дефолтного каталога теперь
+  перечислены все тринадцать write-роутов (write таблиц, view и namespace
+  DDL, transaction commit); у любого другого каталога по-прежнему только
+  девять read-роутов.
+- `--scenario rest` теперь также гоняет namespace DDL round trip
+  (create/load/update-property/drop), view round trip (create/list/drop,
+  с проверкой реального `metadata-location`) и multi-table
+  transaction-commit round trip через
+  `POST /v1/{prefix}/transactions/commit`, проверяя, что
+  `metadata-location` таблицы реально изменился, а не доверяя одному
+  только `204`. Все три настраиваются существующей
+  `HMS_SMOKE_REST_WRITE_TABLE`.
 
 ### Исправлено
 

@@ -125,6 +125,9 @@ stay `n/a` until they are.
 | G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | n/a |
 | G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
 | G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
+| G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | ✅ | ✅ |
+| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `DELETE` answers `204` | ✅ | ✅ |
+| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -247,6 +250,41 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `logs/hms-proxy-audit.log` carried `"authenticatedUser":"smoke-user@SMOKE.LOCAL"` on every one
   of those entries. The remaining Kerberos-column read-only rows (G2-G22, G27-G30) were not
   re-run and stay `n/a`.
+
+- **2026-07-28** (third entry), jar `1.0.49-2b778592` (phase 5b: namespace DDL in
+  `RoutingMetaStoreClient` and the full-write-surface `GET /v1/config` advertising). Before this
+  run the stand was still on a pre-phase jar, and probing it directly showed `POST
+  /v1/{prefix}/namespaces` answering `406` ("does not support `IMetaStoreClient.createDatabase`")
+  - namespace DDL had never actually been validated against a real metastore. Added rows G32-G34
+  for the three new round trips (namespace DDL, view writes, transaction commit via
+  `POST /v1/{prefix}/transactions/commit`); the per-table commit route (G26) was already covered
+  and stayed green, unaffected by this phase's changes.
+  After rebuilding the fat jar and restaging (`./prepare.sh && docker compose up -d --build`,
+  plain profile), `--scenario rest` and `--scenario all` both re-ran green, this time actually
+  exercising namespace DDL for the first time: `POST /v1/hdp/namespaces` created
+  `smoke_rest_ns` (`200`), `GET` loaded it back, `POST .../properties` set `smoke=yes` (`200`)
+  and a follow-up `GET` confirmed the property was actually present, `DELETE` answered `204` and
+  a final `GET` answered `404`. The view round trip created `smoke_rest_view` (`200`, a real
+  `metadata-location`), listed it, and dropped it (`204`). The transaction round trip created a
+  table, committed it through `POST /v1/hdp/transactions/commit` (`204`), and confirmed the
+  table's `metadata-location` moved from a `00000-...` file to a `00001-...` one on reload -
+  manual curl round trips against the running stand captured the same verbatim responses outside
+  the smoke script, for the record.
+  Step 4 of the task proved the new transaction assertion actually discriminates: the check was
+  temporarily inverted to demand the `metadata-location` stay unchanged, `--scenario rest` was
+  rerun and failed with "did not write a new metadata file: metadata-location is still
+  '...00001-...'" as expected, then the assertion was restored and both `--scenario rest` and
+  `--scenario all` re-ran green.
+  The stand was then switched to the Kerberos profile
+  (`docker compose --env-file .env.kerberos --profile kerberos up -d --build`) and, from inside
+  `stand-proxy` after `kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL`, curl
+  `--negotiate` drove G32 (namespace DDL) and G33 (view writes) by hand per the task brief, which
+  scoped the Kerberos re-run to those two round trips only. Both passed identically to the plain
+  profile - same status codes, same effects - and `hms-proxy-audit.log` showed genuine
+  `create_database`/`alter_database`/`drop_database` entries with
+  `"authenticatedUser":"smoke-user@SMOKE.LOCAL"`, confirming namespace DDL reached the real HDP
+  backend under Kerberos too. G34 (transaction commit) was not re-run under Kerberos and stays
+  `n/a`, matching the task's scope.
 
 ## Two caveats on faithfulness
 

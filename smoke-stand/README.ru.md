@@ -182,11 +182,14 @@ docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ## Iceberg REST catalog front door
 
 Plain-профиль включает и Iceberg REST listener прокси (`rest-catalog.*` в
-`proxy/hms-proxy.properties`, host-порт 19183). Он read-only и обслуживает только
-default-каталог (`hdp`). `--scenario rest` (или REST-шаг `--scenario all`) гоняет его
-curl'ом с хоста: discovery конфигурации, листинги namespace и таблиц, load таблицы и
-негативные формы — неизвестный prefix, неизвестная таблица и write-роут; все должны
-падать чисто.
+`proxy/hms-proxy.properties`, host-порт 19183). Он обслуживает весь write-роут —
+table, view и namespace DDL, а также multi-table transaction commit, — но только для
+default-каталога (`hdp`): его таблицы подкреплены реальным HMS-локом, а любой другой
+каталог обслуживает synthetic lock shim и отказывает write с `403`. `--scenario rest`
+(или REST-шаг `--scenario all`) гоняет его curl'ом с хоста: discovery конфигурации,
+листинги namespace и таблиц, load таблицы, полные write round trip'ы и негативные
+формы — неизвестный prefix, неизвестная таблица и write-роут на non-default каталоге;
+все должны падать чисто.
 
 Проверке load-table нужна настоящая Iceberg-таблица. Стенд регистрирует минимальную
 вручную — написанный руками `metadata.json` в HDFS плюс Hive-оболочка таблицы, которая

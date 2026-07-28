@@ -45,6 +45,28 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   Guarded by the new `HMS_SMOKE_REST_WRITE_TABLE`; skipped when unset. The
   runner also now asserts the config write/read asymmetry above, for both
   the default catalog and a configured second catalog.
+- `RoutingMetaStoreClient` now implements `createDatabase`,
+  `dropDatabase(String, boolean, boolean, boolean)` and `alterDatabase`
+  instead of throwing `UnsupportedOperationException` - genuinely new: until
+  now every namespace-DDL Iceberg REST route answered unsupported regardless
+  of catalog. Names are translated through the existing
+  `CatalogNameTranslation`, and the `Database` payload passed to
+  create/alter is translated on a copy, never by mutating the caller's
+  object.
+- `GET /v1/config` and `GET /v1/{prefix}/config` now advertise the full
+  served write surface: view CRUD/rename and namespace CRUD were already
+  reachable through the same generic dispatch path table writes use, and
+  `WriteRouteGate` already gated all thirteen write routes - only discovery
+  and smoke lagged behind. The default catalog's `endpoints` now carry all
+  thirteen write routes (table, view and namespace DDL, transaction
+  commit); every other catalog still advertises the nine read routes only.
+- `--scenario rest` now also drives a namespace DDL round trip
+  (create/load/update-property/drop), a view round trip
+  (create/list/drop, asserting a real `metadata-location`) and a
+  multi-table transaction-commit round trip via
+  `POST /v1/{prefix}/transactions/commit`, asserting the table's
+  `metadata-location` actually changed rather than trusting the `204`
+  alone. All three are guarded by the existing `HMS_SMOKE_REST_WRITE_TABLE`.
 
 ### Fixed
 

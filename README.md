@@ -986,15 +986,24 @@ ambiguously, so `__` is usually the safer choice.
 
 The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
 Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
-front door. Status: **experimental**; table writes (create, commit, drop,
-rename, register) are supported, but **only when the target namespace
-resolves to `routing.default-catalog`**. Iceberg clients (PyIceberg, Spark
-`iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg tables
-stored in HMS via the standard `metadata_location` table parameter.
-View routes now return real data instead of an empty `204`, since
-`HiveCatalog` is a `ViewCatalog` as of Iceberg `1.7`; view mutations
-(create/drop/rename), namespace mutations and multi-table transaction
-commits are still NOT supported in this iteration, on any catalog.
+front door. Status: **experimental**; the full write surface `RESTCatalogAdapter`
+exposes - table writes (create, commit, drop, rename, register), view writes
+(create, commit, drop, rename) and namespace DDL (create, update properties,
+drop), plus multi-table transaction commit - is supported, but **only when the
+target namespace resolves to `routing.default-catalog`**. Iceberg clients
+(PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load
+Iceberg tables stored in HMS via the standard `metadata_location` table
+parameter.
+
+Table writes and the default-catalog-only gate landed first; view writes and
+multi-table transaction commit were already reachable at that point too - the
+REST dispatch path for them shares the same generic `RoutingHiveCatalog`/
+`RoutingMetaStoreClient` plumbing table writes use, and `WriteRouteGate`
+already classified all thirteen routes as writes - they were simply not yet
+advertised in `GET /v1/config` or covered by smoke. Namespace DDL is genuinely
+new: `RoutingMetaStoreClient` did not implement `createDatabase`,
+`alterDatabase` or `dropDatabase` until now, so `POST /v1/{prefix}/namespaces`
+and friends answered `UnsupportedOperationException` regardless of catalog.
 
 **Why writes are default-catalog only:** only the default catalog's tables
 are backed by a real HMS lock (see [ZooKeeper storage for synthetic read
@@ -1010,12 +1019,13 @@ names (see [Supported endpoints](#supported-endpoints) below), so a create
 under `/v1/{default-prefix}/namespaces/apache__default/tables` is refused
 exactly like a direct create under `/v1/apache/namespaces/default/tables` -
 both resolve to the `apache` catalog and get the same `403`
-(`ForbiddenException`) with a message naming the resolved catalog. `GET
-/v1/config` and `GET /v1/{prefix}/config` advertise this asymmetry
-directly: the default catalog's `endpoints` list carries the five write
-routes below, every other catalog's carries only the nine read routes, so a
-spec-compliant client discovers the restriction instead of learning about it
-from a failed request.
+(`ForbiddenException`) with a message naming the resolved catalog. This
+applies uniformly to every one of the thirteen write routes below - table,
+view and namespace DDL, and transaction commit alike. `GET /v1/config` and
+`GET /v1/{prefix}/config` advertise this asymmetry directly: the default
+catalog's `endpoints` list carries all thirteen write routes below, every
+other catalog's carries only the nine read routes, so a spec-compliant client
+discovers the restriction instead of learning about it from a failed request.
 
 Enable it via:
 
@@ -1051,7 +1061,14 @@ Requests to this listener are covered by the Prometheus metrics described in
 | `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop); `403` elsewhere |
 | `POST /v1/{prefix}/tables/rename`                      | supported for the default catalog only (rename); `403` elsewhere |
 | `POST /v1/{prefix}/namespaces/{ns}/register`           | supported for the default catalog only (register); `403` elsewhere |
-| Namespace/view mutations, multi-table transaction commits | unsupported on every catalog |
+| `POST /v1/{prefix}/namespaces/{ns}/views`               | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported for the default catalog only (commit/update); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/views/rename`                        | supported for the default catalog only (rename); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces`                          | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/properties`          | supported for the default catalog only (update properties); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}`                   | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/transactions/commit`                 | supported for the default catalog only (multi-table commit); `403` elsewhere |
 
 `{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
 exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
@@ -1063,9 +1080,10 @@ phase-1 behavior; an unknown `warehouse` value returns HTTP 400
 (`BadRequestException`). The response's `endpoints` field lists the nine
 read routes above for every catalog (list/load namespace + namespace-exists,
 list/load table + table-exists, list/load view + view-exists); the default
-catalog's `endpoints` additionally carry the five table-write routes above,
-so a modern client can discover the write/read asymmetry between catalogs
-instead of learning about it from a failed request. `GET /v1/{prefix}/config`
+catalog's `endpoints` additionally carry all thirteen write routes above
+(table, view and namespace DDL, transaction commit), so a modern client can
+discover the write/read asymmetry between catalogs instead of learning about
+it from a failed request. `GET /v1/{prefix}/config`
 answers the same way from the proxy's own handler — `overrides.prefix` names
 the catalog from the path segment instead of the `warehouse` query param —
 and an unknown prefix there is still a 404.

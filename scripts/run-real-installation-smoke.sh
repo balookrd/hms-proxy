@@ -87,18 +87,26 @@ Optional Iceberg REST env vars:
                                          checks it carries hms_proxy_rest_requests_total and
                                          hms_proxy_rest_listener_info series
   HMS_SMOKE_REST_WRITE_TABLE             table name to create, commit, rename and drop through
-                                         the REST write routes; skipped when unset. Writes only
-                                         work when the advertised default-prefix catalog resolves
-                                         to the real backend (non-default catalogs are served by
-                                         the synthetic lock shim and refuse writes with 403). The
-                                         block drops both this name and "<name>_renamed"
-                                         defensively before creating, so a rerun on a dirty stand
-                                         cannot half-fail. Requires HMS_SMOKE_REST_SECOND_PREFIX to
-                                         also exercise the gate negatives: CREATE_TABLE under that
-                                         prefix and under its federated name, COMMIT_TRANSACTION
-                                         naming a federated table, CREATE_NAMESPACE with a
-                                         federated name, and RENAME with a federated destination -
-                                         all expected 403
+                                         the REST write routes; skipped when unset. Also gates a
+                                         namespace DDL round trip (create/load/update-property/
+                                         drop of namespace "smoke_rest_ns"), a view round trip
+                                         (create/list/drop of view "smoke_rest_view" in
+                                         HMS_SMOKE_REST_NAMESPACE) and a multi-table transaction
+                                         commit round trip (create "<name>_txn", commit through
+                                         POST /v1/{prefix}/transactions/commit, assert its
+                                         metadata-location changed, drop) - the same default-
+                                         catalog restriction applies to every one of these routes.
+                                         Writes only work when the advertised default-prefix
+                                         catalog resolves to the real backend (non-default
+                                         catalogs are served by the synthetic lock shim and refuse
+                                         writes with 403). The block drops leftovers under every
+                                         name it can create defensively before creating, so a
+                                         rerun on a dirty stand cannot half-fail. Requires
+                                         HMS_SMOKE_REST_SECOND_PREFIX to also exercise the gate
+                                         negatives: CREATE_TABLE under that prefix and under its
+                                         federated name, COMMIT_TRANSACTION naming a federated
+                                         table, CREATE_NAMESPACE with a federated name, and RENAME
+                                         with a federated destination - all expected 403
 EOF
 
   cat <<'EOF'
@@ -904,9 +912,11 @@ EOF
   fi
 }
 
-# Iceberg REST catalog smoke. The endpoint is read-only by design, so the positive checks
-# are discovery and loads, and the negative checks pin down that an unknown prefix, an
-# unknown table and a write route all fail cleanly instead of half-working.
+# Iceberg REST catalog smoke. Discovery and loads are always checked; when HMS_SMOKE_REST_WRITE_TABLE
+# is set, the default catalog's full served write surface (table, view and namespace DDL plus
+# multi-table transaction commit) is exercised as round trips, not just status codes, and the
+# negative checks pin down that an unknown prefix, an unknown table and a write route on any other
+# catalog all fail cleanly instead of half-working.
 rest_is_configured() {
   [[ -n "${HMS_SMOKE_REST_URL:-}" ]]
 }
@@ -1229,6 +1239,104 @@ run_rest_smoke() {
 
     code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${renamed_write_table}" "${body}")"
     [[ "${code}" =~ ^2 ]] || fail "REST drop of '${renamed_write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    # Namespace DDL round trip: create, load, update a property and drop - genuinely new since
+    # RoutingMetaStoreClient only gained createDatabase/alterDatabase/dropDatabase this phase.
+    # Same default-catalog-only restriction as table writes (WriteRouteGate covers CREATE_NAMESPACE
+    # by namespace, not by the request's own prefix). Dropped defensively first so a rerun on a
+    # dirty stand cannot half-fail.
+    local ns_smoke="smoke_rest_ns"
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"namespace":["'"${ns_smoke}"'"]}' "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces")"
+    [[ "${code}" == "200" ]] || fail "REST namespace create of '${ns_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST namespace load of '${ns_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"removals":[],"updates":{"smoke":"yes"}}' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${ns_smoke}/properties")"
+    [[ "${code}" == "200" ]] || fail "REST namespace property update of '${ns_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    # The effect that matters: the property must actually be there, not just a 200 status - a
+    # no-op update route would still answer 200.
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST namespace reload of '${ns_smoke}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q '"smoke"[[:space:]]*:[[:space:]]*"yes"' "${body}" \
+      || fail "REST namespace property update of '${ns_smoke}' did not stick: $(cat "${body}")"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    [[ "${code}" == "204" ]] || fail "REST namespace drop of '${ns_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${ns_smoke}" "${body}")"
+    [[ "${code}" == "404" ]] \
+      || fail "REST namespace load of dropped '${ns_smoke}' expected HTTP 404, got ${code}: $(cat "${body}")"
+
+    # View write round trip: create (asserting a real metadata-location), list, and drop. View
+    # writes were already reachable after phase 5a's commit path; this smoke makes that officially
+    # covered rather than merely advertised, under the same default-catalog-only restriction.
+    local view_smoke="smoke_rest_view"
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
+
+    local view_create_body='{"name":"'"${view_smoke}"'","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]},"view-version":{"version-id":1,"timestamp-ms":1753700000000,"schema-id":0,"summary":{"operation":"create"},"default-namespace":["'"${namespace}"'"],"representations":[{"type":"sql","sql":"select 1","dialect":"hive"}]},"properties":{}}'
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data "${view_create_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/views")"
+    [[ "${code}" == "200" ]] || fail "REST view create of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q '"metadata-location"' "${body}" \
+      || fail "REST view create of '${view_smoke}' carries no metadata-location: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/views" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST view listing of '${namespace}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${view_smoke}\"" "${body}" \
+      || fail "view '${view_smoke}' missing from the REST view listing: $(cat "${body}")"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/views/${view_smoke}" "${body}")"
+    [[ "${code}" == "204" ]] || fail "REST view drop of '${view_smoke}' returned HTTP ${code}: $(cat "${body}")"
+
+    # Transaction commit round trip: a fresh table committed through
+    # POST /v1/{prefix}/transactions/commit rather than the per-table commit route already
+    # exercised above - the multi-table atomic-commit path is what phase 5a's write gate had a
+    # critical bypass in (COMMIT_TRANSACTION naming a federated table), so it gets its own
+    # positive proof here too. A no-op commit would still answer 204, so the check that matters is
+    # the metadata-location actually changing, not the status code.
+    local txn_table="${write_table}_txn"
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${txn_table}" "${body}")"
+
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"name":"'"${txn_table}"'","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]}}' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/tables")"
+    [[ "${code}" == "200" ]] || fail "REST create of '${txn_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    local txn_create_metadata_location=""
+    txn_create_metadata_location="$(grep -o '"metadata-location"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${txn_create_metadata_location}" ]] \
+      || fail "REST create of '${txn_table}' carries no metadata-location: $(cat "${body}")"
+
+    local txn_table_uuid=""
+    txn_table_uuid="$(grep -o '"table-uuid"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${txn_table_uuid}" ]] \
+      || fail "REST create of '${txn_table}' carries no metadata.table-uuid: $(cat "${body}")"
+
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"table-changes":[{"identifier":{"namespace":["'"${namespace}"'"],"name":"'"${txn_table}"'"},"requirements":[{"type":"assert-table-uuid","uuid":"'"${txn_table_uuid}"'"}],"updates":[{"action":"set-properties","updates":{"txn":"yes"}}]}]}' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/transactions/commit")"
+    [[ "${code}" == "204" ]] || fail "REST transaction commit of '${txn_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/${txn_table}" "${body}")"
+    [[ "${code}" == "200" ]] \
+      || fail "REST load of '${txn_table}' after transaction commit returned HTTP ${code}: $(cat "${body}")"
+
+    local txn_commit_metadata_location=""
+    txn_commit_metadata_location="$(grep -o '"metadata-location"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${txn_commit_metadata_location}" ]] \
+      || fail "REST load of '${txn_table}' after transaction commit carries no metadata-location: $(cat "${body}")"
+    [[ "${txn_commit_metadata_location}" != "${txn_create_metadata_location}" ]] \
+      || fail "REST transaction commit of '${txn_table}' did not write a new metadata file: metadata-location is still '${txn_commit_metadata_location}'"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${txn_table}" "${body}")"
+    [[ "${code}" =~ ^2 ]] || fail "REST drop of '${txn_table}' returned HTTP ${code}: $(cat "${body}")"
   else
     log "skipping REST write round trip because HMS_SMOKE_REST_WRITE_TABLE is not set"
   fi

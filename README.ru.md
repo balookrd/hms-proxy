@@ -983,16 +983,24 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 
 Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
 Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
-Thrift HMS front door. Статус: **экспериментально**; write-запросы к таблицам
-(create, commit, drop, rename, register) поддержаны, но **только когда
-целевой namespace резолвится в `routing.default-catalog`**. Iceberg-клиенты
-(PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) могут discover и load
-Iceberg-таблицы, хранящиеся в HMS через стандартный параметр
-`metadata_location`. View routes теперь возвращают реальные данные вместо
-пустого `204`, так как `HiveCatalog` стал `ViewCatalog`, начиная с Iceberg
-`1.7`; view-мутации (create/drop/rename), namespace-мутации и multi-table
-transaction commit по-прежнему НЕ поддерживаются в этой итерации, ни для
-одного каталога.
+Thrift HMS front door. Статус: **экспериментально**; весь write-роут, который
+выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
+rename, register), write view (create, commit, drop, rename) и namespace DDL
+(create, update properties, drop), а также multi-table transaction commit —
+поддержан, но **только когда целевой namespace резолвится в
+`routing.default-catalog`**. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
+Trino `iceberg-rest`) могут discover и load Iceberg-таблицы, хранящиеся в HMS
+через стандартный параметр `metadata_location`.
+
+Write таблиц и gate «только default-каталог» появились первыми; write view и
+multi-table transaction commit к этому моменту уже были достижимы — их
+REST-путь идёт через тот же общий `RoutingHiveCatalog`/`RoutingMetaStoreClient`,
+которым пользуется write таблиц, и `WriteRouteGate` уже классифицировал все
+тринадцать роутов как write — их просто ещё не объявляли в `GET /v1/config` и
+не покрывали smoke. Namespace DDL — по-настоящему новое: `RoutingMetaStoreClient`
+не реализовывал `createDatabase`, `alterDatabase` и `dropDatabase` до сих пор,
+поэтому `POST /v1/{prefix}/namespaces` и соседние роуты отвечали
+`UnsupportedOperationException` независимо от каталога.
 
 **Почему writes работают только в default-каталоге:** реальным HMS-локом
 подкреплены только таблицы дефолтного каталога (см. [ZooKeeper storage для
@@ -1009,11 +1017,13 @@ synthetic read locks](#zookeeper-storage-для-synthetic-read-locks));
 `/v1/{default-prefix}/namespaces/apache__default/tables` отказывается точно
 так же, как прямой create по `/v1/apache/namespaces/default/tables` — оба
 резолвятся в каталог `apache` и получают один и тот же `403`
-(`ForbiddenException`). `GET /v1/config` и `GET /v1/{prefix}/config`
-объявляют эту асимметрию напрямую: в `endpoints` дефолтного каталога
-перечислены пять write-роутов из таблицы ниже, у любого другого каталога —
-только девять read-роутов, так что спецификация-совместимый клиент узнаёт об
-ограничении из discovery, а не из проваленного запроса.
+(`ForbiddenException`). Это касается всех тринадцати write-роутов из таблицы
+ниже одинаково — write таблиц, view и namespace DDL, transaction commit.
+`GET /v1/config` и `GET /v1/{prefix}/config` объявляют эту асимметрию
+напрямую: в `endpoints` дефолтного каталога перечислены все тринадцать
+write-роутов из таблицы ниже, у любого другого каталога — только девять
+read-роутов, так что спецификация-совместимый клиент узнаёт об ограничении
+из discovery, а не из проваленного запроса.
 
 Включается так:
 
@@ -1049,7 +1059,14 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | поддержан только для дефолтного каталога (drop); иначе `403` |
 | `POST /v1/{prefix}/tables/rename`                      | поддержан только для дефолтного каталога (rename); иначе `403` |
 | `POST /v1/{prefix}/namespaces/{ns}/register`           | поддержан только для дефолтного каталога (register); иначе `403` |
-| Namespace/view-мутации, multi-table transaction commit | не поддержаны ни для одного каталога    |
+| `POST /v1/{prefix}/namespaces/{ns}/views`               | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/views/rename`                        | поддержан только для дефолтного каталога (rename); иначе `403` |
+| `POST /v1/{prefix}/namespaces`                          | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/properties`          | поддержан только для дефолтного каталога (update properties); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}`                   | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/transactions/commit`                 | поддержан только для дефолтного каталога (multi-table commit); иначе `403` |
 
 `{prefix}` — любой каталог, перечисленный в `catalogs=`: каждый настроенный
 каталог получает собственный REST prefix, `/v1/<catalog>/...`. `GET
@@ -1061,9 +1078,10 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 (`BadRequestException`). Поле `endpoints` в ответе перечисляет девять
 read-роутов из таблицы выше для любого каталога (list/load namespace +
 namespace-exists, list/load table + table-exists, list/load view +
-view-exists); у дефолтного каталога `endpoints` дополнительно несёт пять
-write-роутов таблиц из таблицы выше, так что современный клиент может
-обнаружить write/read-асимметрию между каталогами через discovery, а не из
+view-exists); у дефолтного каталога `endpoints` дополнительно несёт все
+тринадцать write-роутов из таблицы выше (write таблиц, view и namespace DDL,
+transaction commit), так что современный клиент может обнаружить
+write/read-асимметрию между каталогами через discovery, а не из
 провалившегося запроса. `GET /v1/{prefix}/config` отвечает так же, но из
 собственного handler'а прокси — `overrides.prefix` называет каталог из
 сегмента пути, а не из query-параметра `warehouse`, — и неизвестный prefix
