@@ -243,9 +243,19 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 `metadata.json` — копия файла первой таблицы, с `location`, указывающим на путь
 `smoke_iceberg_tbl_ap` выше, и новым `table-uuid`.
 
-Kerberos-профиль оставляет REST listener выключенным: SPNEGO требует curl с GSS внутри
-сети, а сам handshake уже покрыт end-to-end тестом `SpnegoIntegrationTest` на
-hadoop-minikdc.
+Kerberos-профиль тоже гоняет REST listener, на том же порту (19183), что и plain-профиль.
+Он отвечает на SPNEGO: KDC выдаёт принципал `HTTP/proxy@SMOKE.LOCAL` в тот же keytab, которым
+пользуется Thrift front door, а `hms-proxy-kerberos.properties` указывает `rest-catalog.kerberos.*`
+на него. Сам handshake по-прежнему покрыт end-to-end тестом `SpnegoIntegrationTest` на
+hadoop-minikdc; дополнительно стенд проверяет его curl'ом с `--negotiate` *изнутри*
+`stand-proxy` (KDC и hostname `proxy` резолвятся только внутри сети):
+
+```bash
+docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
+docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
+```
+
+Какие именно проверки прогонялись на этом профиле — раздел G в `TEST-MATRIX.ru.md`.
 
 ## Hortonworks HiveServer2 (`--profile hdp`)
 

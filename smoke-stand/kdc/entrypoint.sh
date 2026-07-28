@@ -20,6 +20,9 @@ principals=(
   "hive/hms-apache@${REALM}:hms-apache.keytab"
   "hive/hms-hdp@${REALM}:hms-hdp.keytab"
   "hive/proxy@${REALM}:proxy.keytab"
+  # SPNEGO for the proxy's Iceberg REST listener; same keytab as the Thrift service principal
+  # since both run in the same container under the same hostname.
+  "HTTP/proxy@${REALM}:proxy.keytab"
   "hive/hs2@${REALM}:hs2.keytab"
   "hive/hs2-hdp@${REALM}:hs2-hdp.keytab"
   "hdfs/namenode@${REALM}:namenode.keytab"

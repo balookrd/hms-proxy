@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Function;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 /**
@@ -32,13 +33,28 @@ public final class IcebergRestServices implements AutoCloseable {
    */
   public static IcebergRestServices open(
       ProxyConfig config, ThriftHiveMetastore.Iface delegate, Function<String, String> catalogForExternalDb) {
+    return open(config, delegate, catalogForExternalDb, catalog -> new Configuration());
+  }
+
+  /**
+   * @param hadoopConfForCatalog supplies the Hadoop {@link Configuration} each catalog's REST
+   *     service uses to reach its warehouse filesystem. Production wiring passes {@code
+   *     catalog -> router.requireBackend(catalog).hiveConf()} - the same Configuration the
+   *     Thrift path already built for that catalog - so REST writes see the same
+   *     fs.defaultFS/Kerberos settings instead of a second, independently-built (and
+   *     Kerberos-blind) Configuration.
+   */
+  public static IcebergRestServices open(
+      ProxyConfig config, ThriftHiveMetastore.Iface delegate, Function<String, String> catalogForExternalDb,
+      Function<String, Configuration> hadoopConfForCatalog) {
     Map<String, IcebergRestService> services = new LinkedHashMap<>();
     for (String catalog : config.catalogNames()) {
       CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
           ? null
           : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
       services.put(catalog,
-          new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb));
+          new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb,
+              hadoopConfForCatalog.apply(catalog)));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
   }

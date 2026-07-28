@@ -81,13 +81,20 @@ only path that covers the Hortonworks front door with a real client.
 
 ## G. Iceberg REST catalog front door (host port 19183)
 
-Plain profile only; the Kerberos profile keeps the listener off (SPNEGO is covered in-JVM by
-`SpnegoIntegrationTest`). Driven by `--scenario rest` with curl from the host; the loaded
-table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
+Driven by `--scenario rest` with curl from the host (plain) or curl `--negotiate` from inside
+`stand-proxy` (kerberos - the KDC and the `proxy` hostname only resolve in-network, and the
+container's curl is GSS-capable). The loaded table is the hand-registered `smoke_iceberg_tbl`
+(see the stand README). The Kerberos profile carried the listener disabled through phase 5a
+because SPNEGO needed a GSS-capable curl inside the network; once that stopped being true the
+listener was turned on there too (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`,
+same keytab as the Thrift front door) and the write round trip, the write gate and an
+unauthenticated-request check were run against it - see the 2026-07-28 kerberos entry below.
+The read-only rows (G2-G22, G27-G30) have not yet been re-run against the Kerberos profile and
+stay `n/a` until they are.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | n/a |
+| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | ✅ |
 | G2 | Namespace list and load (`default`) | ✅ | n/a |
 | G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | n/a |
 | G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | n/a |
@@ -109,14 +116,15 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
 | G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | n/a |
 | G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | n/a |
-| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | n/a |
-| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | n/a |
-| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | n/a |
-| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | n/a |
+| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | ✅ |
+| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | ✅ |
+| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | ✅ |
+| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | ✅ |
 | G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | n/a |
 | G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | n/a |
 | G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | n/a |
 | G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
+| G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
 
 ## F. Not covered, and why
 
@@ -206,6 +214,39 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   (i.e. asserting a no-op commit); the runner failed with "did not write a new metadata file",
   confirming the check would catch a silently no-opped commit; the assertion was restored and
   both scenarios re-ran green.
+
+- **2026-07-28** (second entry), the Iceberg REST listener was turned on for the first time in
+  the Kerberos profile: the KDC gained an `HTTP/proxy@SMOKE.LOCAL` principal in the same keytab
+  the Thrift front door already uses, and `hms-proxy-kerberos.properties` gained a
+  `rest-catalog.*` block pointing at it, on the same port 19183 the plain profile uses. Bringing
+  the stand up this way surfaced a real bug, not just a missing config row: `IcebergRestService`
+  built its own bare `Configuration` instead of reusing the catalog's Kerberos-aware `HiveConf`,
+  so every REST write failed with "Failed to specify server's Kerberos principal name" once the
+  NameNode RPC was reached; fixed by threading `CatalogBackend.hiveConf()` through
+  `IcebergRestServices.open(...)`. A second, stand-only gap followed once the NameNode RPC
+  itself worked: the per-catalog Hadoop conf was missing `dfs.data.transfer.protection`, so a
+  create's actual block write to the datanode reset the connection ("could only be written to 0
+  of the 1 minReplication nodes") even though a plain NameNode-only RPC (the existing purge-path
+  delete) had never needed it; added `catalog.hdp.conf.dfs.data.transfer.protection=authentication`
+  and the same key for `catalog.apache` to `hms-proxy-kerberos.properties`, matching what
+  `hdfs/hadoop-kerberos*.env` already requires of the datanodes. With both fixed, first
+  `docker exec stand-proxy /opt/hms-proxy/scripts/run-real-installation-smoke-kerberos.sh
+  --scenario all` was re-run to confirm the Hadoop dependency bump the REST feature travelled in
+  on (`hadoop-hdfs` 2.2.0 -> 2.6.0) had not regressed the existing kerberized Thrift/lock paths -
+  it completed with `scenario 'all' completed successfully` (the notification-negative check's
+  `TApplicationException` is the documented libthrift 0.9.3 behavior for exception-less RPCs, not
+  a failure). Then, from inside `stand-proxy` after `kinit -kt smoke-user.keytab`, curl
+  `--negotiate` drove rows G1, G23-G26 and the new G31 (below): an unauthenticated request got a
+  clean `401`/`WWW-Authenticate: Negotiate`; `GET /v1/config` advertised `prefix=hdp` with the
+  write routes; a table was created (`200`), loaded back (`200`), committed for real (`200`,
+  `metadata-location` moved from a `00000-...` file to a `00001-...` one), refused with `403`
+  both directly under the `apache` prefix and via the federated `apache__default` namespace
+  under the default prefix, and dropped (`204`). `docker logs stand-proxy` traced the create's
+  and commit's `lock`/`unlock` to `catalog=hdp, backend=hdp` with small sequential lock IDs (387,
+  388 - the real backend's scheme, not the synthetic shim's), and
+  `logs/hms-proxy-audit.log` carried `"authenticatedUser":"smoke-user@SMOKE.LOCAL"` on every one
+  of those entries. The remaining Kerberos-column read-only rows (G2-G22, G27-G30) were not
+  re-run and stay `n/a`.
 
 ## Two caveats on faithfulness
 

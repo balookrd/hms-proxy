@@ -73,8 +73,12 @@ public final class HmsProxyApplication {
         };
         try (AdditionalFrontendThriftServers extras =
             AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity);
+             // Reuses each catalog's own HiveConf (fs.defaultFS, Kerberos namenode principal, ...)
+             // instead of building REST a second, independent Configuration: see
+             // IcebergRestServices.open javadoc for why that would break HDFS writes under Kerberos.
              IcebergRestServices restServices = config.restCatalog().enabled()
-                 ? IcebergRestServices.open(config, proxy, catalogForExternalDb)
+                 ? IcebergRestServices.open(config, proxy, catalogForExternalDb,
+                     catalog -> router.requireBackend(catalog).hiveConf())
                  : null;
              RestCatalogServer restServer = RestCatalogServer.open(config, restServices, observability.metrics())) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
