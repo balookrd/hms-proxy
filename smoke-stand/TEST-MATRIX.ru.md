@@ -112,6 +112,11 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G23 | Write round trip таблицы на default-каталоге: `POST` create (`200`), `GET` load (`metadata-location` присутствует), `DELETE` drop (`2xx`) | ✅ | n/a |
 | G24 | Прямой `POST` create под non-default prefix `apache` отклонён с `403` (`ForbiddenException`) | ✅ | n/a |
 | G25 | `POST` create под federated-namespace `apache__default`, достигнутым через default-prefix, отклонён с `403` — доказывает, что write gate проверяется на *резолвленном* каталоге, а не на prefix запроса | ✅ | n/a |
+| G26 | Настоящий `POST` commit против только что созданной таблицы (requirement `assert-table-uuid` + update `set-properties`) отвечает `200`, и возвращённый `metadata-location` отличается от того, что дал create — доказательство, что новый metadata-файл действительно записан через `HiveTableOperations.commit`, а не тихий no-op | ✅ | n/a |
+| G27 | `POST /v1/{prefix}/tables/rename` отвечает `204`, а `GET` по новому имени отвечает `200` | ✅ | n/a |
+| G28 | `POST /v1/{prefix}/transactions/commit`, называющий таблицу в federated-namespace `apache__default`, отклонён с `403` | ✅ | n/a |
+| G29 | `POST /v1/{prefix}/namespaces` с federated-именем (`apache__zzz_smoke`) отклонён с `403` | ✅ | n/a |
+| G30 | `POST /v1/{prefix}/tables/rename` с federated destination-namespace (source-таблица ещё под текущим именем) отклонён с `403` — доказывает проверку именно destination-стороны gate, а не только source | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -186,6 +191,21 @@ HDP-клиент не может пользоваться Apache-listener — Th
   иначе не тронутого состояния HDFS), а для прохода через Hortonworks понадобился
   `HMS_SMOKE_SQL_HDP_SESSION_INIT=set hive.execution.engine=mr;`, как документировано в
   `smoke-stand/env/simple.env`.
+
+- **2026-07-28**, jar `1.0.43-c4685ef7` (на стенде не менялся; новые проверки добавлены только
+  в smoke-скрипт). Добавлены строки G26-G30: write round trip теперь включает НАСТОЯЩИЙ commit
+  против только что созданной таблицы и rename round trip, а не только create/load/drop, а
+  негативы gate теперь покрывают COMMIT_TRANSACTION, CREATE_NAMESPACE и rename с federated
+  destination — поверх уже существующей пары CREATE_TABLE. COMMIT_TRANSACTION в частности был
+  критическим обходом, найденным в ходе этой фазы, и до сих пор был закрыт только unit-тестами.
+  `--scenario rest` и `--scenario all` оба перепрогнаны зелёными: `metadata-location` из ответа
+  create (оканчивающийся на `00000-...`) отличался от `metadata-location` из ответа commit
+  (`00001-...`), переименованная таблица загрузилась обратно с `200`, все три новых негатива
+  ответили `403`. Проверка G26 доказала свою различающую способность: она была временно изменена
+  так, чтобы требовать равенства `metadata-location` commit'а и create (то есть утверждать
+  no-op commit); раннер упал с сообщением "did not write a new metadata file", подтвердив, что
+  проверка ловит тихо не сработавший commit; проверка была восстановлена, оба сценария
+  перепрогнаны зелёными.
 
 ## Две оговорки честности
 

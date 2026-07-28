@@ -86,16 +86,19 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_METRICS_URL             management /metrics endpoint; when set, the REST smoke
                                          checks it carries hms_proxy_rest_requests_total and
                                          hms_proxy_rest_listener_info series
-  HMS_SMOKE_REST_WRITE_TABLE             table name to create/load/drop through the REST write
-                                         routes; skipped when unset. Writes only work when the
-                                         advertised default-prefix catalog resolves to the real
-                                         backend (non-default catalogs are served by the synthetic
-                                         lock shim and refuse writes with 403). Requires
-                                         HMS_SMOKE_REST_SECOND_PREFIX to also exercise the two
-                                         negative checks (a direct create under that prefix and a
-                                         create under its federated name under the default prefix,
-                                         both expected 403); use a name distinct from every other
-                                         table already on the stand so a rerun cannot collide
+  HMS_SMOKE_REST_WRITE_TABLE             table name to create, commit, rename and drop through
+                                         the REST write routes; skipped when unset. Writes only
+                                         work when the advertised default-prefix catalog resolves
+                                         to the real backend (non-default catalogs are served by
+                                         the synthetic lock shim and refuse writes with 403). The
+                                         block drops both this name and "<name>_renamed"
+                                         defensively before creating, so a rerun on a dirty stand
+                                         cannot half-fail. Requires HMS_SMOKE_REST_SECOND_PREFIX to
+                                         also exercise the gate negatives: CREATE_TABLE under that
+                                         prefix and under its federated name, COMMIT_TRANSACTION
+                                         naming a federated table, CREATE_NAMESPACE with a
+                                         federated name, and RENAME with a federated destination -
+                                         all expected 403
 EOF
 
   cat <<'EOF'
@@ -1121,26 +1124,61 @@ run_rest_smoke() {
   # only that catalog's commit path reaches the real backend's Hive lock; every other catalog is
   # served by the synthetic lock shim, which grants locks without conflict checking, so a commit
   # there would race concurrent writers into silently lost updates. Guarded by
-  # HMS_SMOKE_REST_WRITE_TABLE so the check stays off unless a stand is known to support it. The
-  # create/load/drop round trip proves the default catalog actually commits; the two negatives
-  # prove the gate is enforced on the *resolved* catalog, not just the request's own prefix - a
-  # federated name under the default prefix is refused exactly like a direct request against the
-  # non-default prefix.
+  # HMS_SMOKE_REST_WRITE_TABLE so the check stays off unless a stand is known to support it.
+  #
+  # The round trip below exercises create, a REAL commit against the just-created table, and a
+  # rename - not just create/load/drop - because the commit is the lock-taking path the whole
+  # phase-5a safety argument is about, and rename is a second write route entirely. The gate
+  # negatives cover write routes beyond CREATE_TABLE too: COMMIT_TRANSACTION was a critical
+  # bypass found during this phase and, unlike CREATE_TABLE, is otherwise only pinned down by
+  # unit tests. All gate negatives prove enforcement on the *resolved* catalog, not just the
+  # request's own prefix - a federated name under the default prefix is refused exactly like a
+  # direct request against the non-default prefix.
   local write_table="${HMS_SMOKE_REST_WRITE_TABLE:-}"
   if [[ -n "${write_table}" ]]; then
+    local renamed_write_table="${write_table}_renamed"
+    # A rerun against a dirty stand must not half-fail on a leftover from a previous run left
+    # under either name this block can leave the table under; neither drop result is asserted.
+    local discard=""
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${write_table}" "${body}")"
+    discard="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${renamed_write_table}" "${body}")"
+
     local create_body='{"name":"'"${write_table}"'","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]}}'
 
     code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       --data "${create_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/tables")"
     [[ "${code}" == "200" ]] || fail "REST create of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
 
+    local create_metadata_location=""
+    create_metadata_location="$(grep -o '"metadata-location"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${create_metadata_location}" ]] \
+      || fail "REST create of '${write_table}' carries no metadata-location: $(cat "${body}")"
+
+    local table_uuid=""
+    table_uuid="$(grep -o '"table-uuid"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${table_uuid}" ]] \
+      || fail "REST create of '${write_table}' carries no metadata.table-uuid: $(cat "${body}")"
+
     code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/${write_table}" "${body}")"
     [[ "${code}" == "200" ]] || fail "REST load of freshly-created '${write_table}' returned HTTP ${code}: $(cat "${body}")"
     grep -q '"metadata-location"' "${body}" \
       || fail "REST load of '${write_table}' carries no metadata-location: $(cat "${body}")"
 
-    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${write_table}" "${body}")"
-    [[ "${code}" =~ ^2 ]] || fail "REST drop of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+    # Real commit against the existing table: the phase-5a safety argument rests on this path
+    # taking a real Hive lock via HiveTableOperations.commit. A commit that silently no-ops
+    # would still answer 200 but hand back the SAME metadata-location, so the check that matters
+    # is the new location differing from create's, not merely the status code.
+    local commit_body='{"requirements":[{"type":"assert-table-uuid","uuid":"'"${table_uuid}"'"}],"updates":[{"action":"set-properties","updates":{"smoke":"committed"}}]}'
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data "${commit_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/tables/${write_table}")"
+    [[ "${code}" == "200" ]] || fail "REST commit of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    local commit_metadata_location=""
+    commit_metadata_location="$(grep -o '"metadata-location"[[:space:]]*:[[:space:]]*"[^"]*"' "${body}" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ -n "${commit_metadata_location}" ]] \
+      || fail "REST commit of '${write_table}' carries no metadata-location: $(cat "${body}")"
+    [[ "${commit_metadata_location}" != "${create_metadata_location}" ]] \
+      || fail "REST commit of '${write_table}' did not write a new metadata file: metadata-location is still '${commit_metadata_location}'"
 
     if [[ -n "${second_prefix}" ]]; then
       code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
@@ -1153,9 +1191,44 @@ run_rest_smoke() {
         --data "${create_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${write_fed_ns}/tables")"
       [[ "${code}" == "403" ]] \
         || fail "REST create under federated namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # COMMIT_TRANSACTION naming a federated table: the bypass this phase actually found, and
+      # otherwise only covered by unit tests.
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data '{"table-changes":[{"identifier":{"namespace":["'"${write_fed_ns}"'"],"name":"t"},"requirements":[],"updates":[]}]}' \
+        "${HMS_SMOKE_REST_URL}/v1/${prefix}/transactions/commit")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST COMMIT_TRANSACTION naming federated table in '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # CREATE_NAMESPACE with a federated name.
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data '{"namespace":["'"${second_prefix}${separator}zzz_smoke"'"]}' \
+        "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST CREATE_NAMESPACE with federated name '${second_prefix}${separator}zzz_smoke' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      # RENAME with a federated destination: proves the destination-side check, not just the
+      # source. Must run while the source table still exists under its current name.
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data '{"source":{"namespace":["'"${namespace}"'"],"name":"'"${write_table}"'"},"destination":{"namespace":["'"${write_fed_ns}"'"],"name":"'"${write_table}"'"}}' \
+        "${HMS_SMOKE_REST_URL}/v1/${prefix}/tables/rename")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST rename with federated destination namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
     else
       log "skipping REST write-gate negative checks because HMS_SMOKE_REST_SECOND_PREFIX is not set"
     fi
+
+    # Rename round trip: the real table must survive under its new name, not just answer 204.
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data '{"source":{"namespace":["'"${namespace}"'"],"name":"'"${write_table}"'"},"destination":{"namespace":["'"${namespace}"'"],"name":"'"${renamed_write_table}"'"}}' \
+      "${HMS_SMOKE_REST_URL}/v1/${prefix}/tables/rename")"
+    [[ "${code}" == "204" ]] || fail "REST rename of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/${renamed_write_table}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST load of renamed '${renamed_write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${renamed_write_table}" "${body}")"
+    [[ "${code}" =~ ^2 ]] || fail "REST drop of '${renamed_write_table}' returned HTTP ${code}: $(cat "${body}")"
   else
     log "skipping REST write round trip because HMS_SMOKE_REST_WRITE_TABLE is not set"
   fi

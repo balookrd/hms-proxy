@@ -112,6 +112,11 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | n/a |
 | G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | n/a |
 | G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | n/a |
+| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | n/a |
+| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | n/a |
+| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | n/a |
+| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -187,6 +192,20 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   otherwise-untouched HDFS state) and `HMS_SMOKE_SQL_HDP_SESSION_INIT=set
   hive.execution.engine=mr;` supplied for the Hortonworks pass, as documented
   in `smoke-stand/env/simple.env`.
+
+- **2026-07-28**, jar `1.0.43-c4685ef7` (unchanged on the stand; only the smoke script grew new
+  checks against it). Added rows G26-G30: the write round trip now includes a REAL commit against
+  the just-created table and a rename round trip, not just create/load/drop, and the gate
+  negatives now cover COMMIT_TRANSACTION, CREATE_NAMESPACE and rename-with-federated-destination
+  on top of the existing CREATE_TABLE pair - COMMIT_TRANSACTION in particular was a critical
+  bypass found during phase 5a and had until now only been pinned down by unit tests. `--scenario
+  rest` and `--scenario all` both re-ran green: the create response's `metadata-location` (ending
+  `00000-...`) differed from the commit response's (`00001-...`), the renamed table loaded back
+  with `200`, and all three new negatives answered `403`. The G26 assertion was proven to
+  discriminate by temporarily requiring the commit's `metadata-location` to equal create's
+  (i.e. asserting a no-op commit); the runner failed with "did not write a new metadata file",
+  confirming the check would catch a silently no-opped commit; the assertion was restored and
+  both scenarios re-ran green.
 
 ## Two caveats on faithfulness
 
