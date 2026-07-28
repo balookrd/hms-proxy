@@ -8,13 +8,21 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.LockState;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 
 /** In-memory fake of ThriftHiveMetastore.Iface for unit tests in the restcatalog package. */
 final class RecordingThriftIface {
+  static final long LOCK_ID = 42L;
+
   final List<String> calls = new ArrayList<>();
   final Map<String, Database> databases = new HashMap<>();
   final Map<String, Table> tables = new HashMap<>();
@@ -106,6 +114,50 @@ final class RecordingThriftIface {
           }
         }
         return result;
+      }
+      case "create_table": {
+        Table table = (Table) args[0];
+        calls.add("create_table:" + table.getDbName() + "." + table.getTableName());
+        tables.put(table.getDbName() + "." + table.getTableName(), table);
+        return null;
+      }
+      case "drop_table": {
+        String db = (String) args[0];
+        String tbl = (String) args[1];
+        calls.add("drop_table:" + db + "." + tbl);
+        tables.remove(db + "." + tbl);
+        return null;
+      }
+      case "alter_table_with_environment_context": {
+        String db = (String) args[0];
+        String tbl = (String) args[1];
+        Table table = (Table) args[2];
+        calls.add("alter_table:" + db + "." + tbl);
+        tables.put(db + "." + tbl, table);
+        return null;
+      }
+      case "lock": {
+        calls.add("lock");
+        return new LockResponse(LOCK_ID, LockState.ACQUIRED);
+      }
+      case "check_lock": {
+        CheckLockRequest request = (CheckLockRequest) args[0];
+        calls.add("check_lock:" + request.getLockid());
+        return new LockResponse(LOCK_ID, LockState.ACQUIRED);
+      }
+      case "unlock": {
+        UnlockRequest request = (UnlockRequest) args[0];
+        calls.add("unlock:" + request.getLockid());
+        return null;
+      }
+      case "show_locks": {
+        calls.add("show_locks");
+        return new ShowLocksResponse();
+      }
+      case "heartbeat": {
+        HeartbeatRequest request = (HeartbeatRequest) args[0];
+        calls.add("heartbeat:" + request.getLockid() + ":" + request.getTxnid());
+        return null;
       }
       default:
         throw new UnsupportedOperationException("unexpected Iface call: " + name

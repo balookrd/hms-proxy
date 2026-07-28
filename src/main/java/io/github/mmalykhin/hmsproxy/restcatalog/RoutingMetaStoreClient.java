@@ -7,16 +7,25 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
+import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.ShowLocksRequest;
+import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 
 /**
  * Bridges Iceberg's HiveCatalog (which requires IMetaStoreClient) to the proxy's
- * ThriftHiveMetastore.Iface. Only methods used by HiveCatalog's read paths are
- * implemented; write paths and unsupported methods throw UnsupportedOperationException
- * until Phase 5 brings write support online.
+ * ThriftHiveMetastore.Iface. Read paths, table writes (create/drop/alter) and the
+ * commit-lock RPCs Iceberg's write path needs are implemented; everything else throws
+ * UnsupportedOperationException. This class only wires the client through: it does not
+ * restrict writes to the default catalog, that gate is a separate concern.
  */
 public final class RoutingMetaStoreClient {
   private RoutingMetaStoreClient() {
@@ -72,6 +81,16 @@ public final class RoutingMetaStoreClient {
       }
       Table copy = new Table(result);
       copy.setDbName(internalName);
+      return copy;
+    }
+
+    /** Translates a caller-supplied Table's dbName to the external name, on a copy. */
+    private Table translateDbName(Table table) {
+      if (translation == null || table == null) {
+        return table;
+      }
+      Table copy = new Table(table);
+      copy.setDbName(db(table.getDbName()));
       return copy;
     }
 
@@ -145,6 +164,68 @@ public final class RoutingMetaStoreClient {
             } catch (NoSuchObjectException e) {
               return false;
             }
+          }
+          break;
+        case "createTable":
+          if (paramTypes.length == 1) {
+            delegate.create_table(translateDbName((Table) args[0]));
+            return null;
+          }
+          break;
+        case "dropTable":
+          if (paramTypes.length == 4
+              && paramTypes[0] == String.class && paramTypes[1] == String.class
+              && paramTypes[2] == boolean.class && paramTypes[3] == boolean.class) {
+            boolean deleteData = (Boolean) args[2];
+            boolean ignoreUnknownTable = (Boolean) args[3];
+            try {
+              delegate.drop_table(db((String) args[0]), (String) args[1], deleteData);
+            } catch (NoSuchObjectException e) {
+              if (!ignoreUnknownTable) {
+                throw e;
+              }
+            }
+            return null;
+          }
+          break;
+        case "alter_table_with_environmentContext":
+          if (paramTypes.length == 4) {
+            delegate.alter_table_with_environment_context(
+                db((String) args[0]), (String) args[1],
+                translateDbName((Table) args[2]), (EnvironmentContext) args[3]);
+            return null;
+          }
+          break;
+        case "lock":
+          // The LockRequest's own database names are resolved downstream by the
+          // proxy's LockHandler; translating them here would double-translate.
+          return delegate.lock((LockRequest) args[0]);
+        case "checkLock":
+          if (paramTypes.length == 1) {
+            return delegate.check_lock(new CheckLockRequest((Long) args[0]));
+          }
+          break;
+        case "unlock":
+          if (paramTypes.length == 1) {
+            delegate.unlock(new UnlockRequest((Long) args[0]));
+            return null;
+          }
+          break;
+        case "showLocks":
+          if (paramTypes.length == 0) {
+            return delegate.show_locks(new ShowLocksRequest());
+          }
+          if (paramTypes.length == 1) {
+            return delegate.show_locks((ShowLocksRequest) args[0]);
+          }
+          break;
+        case "heartbeat":
+          if (paramTypes.length == 2) {
+            HeartbeatRequest request = new HeartbeatRequest();
+            request.setLockid((Long) args[0]);
+            request.setTxnid((Long) args[1]);
+            delegate.heartbeat(request);
+            return null;
           }
           break;
         default:

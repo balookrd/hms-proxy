@@ -3,6 +3,8 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 import java.util.List;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.junit.Assert;
 import org.junit.Test;
@@ -120,5 +122,45 @@ public class RoutingMetaStoreClientTest {
         recording.iface, new CatalogNameTranslation("apache", "__"));
     Table t = client.getTable("default", "t1");
     Assert.assertEquals("default", t.getDbName());
+  }
+
+  @Test
+  public void createTableTranslatesDatabaseName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    Table table = RecordingThriftIface.table("default", "t1");
+    client.createTable(table);
+    Assert.assertEquals(List.of("create_table:apache__default.t1"), recording.calls);
+  }
+
+  @Test
+  public void dropTableTranslatesDatabaseName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    client.dropTable("default", "t1", false, true);
+    Assert.assertEquals(List.of("drop_table:apache__default.t1"), recording.calls);
+  }
+
+  @Test
+  public void alterTableTranslatesDatabaseName() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(
+        recording.iface, new CatalogNameTranslation("apache", "__"));
+    Table table = RecordingThriftIface.table("default", "t1");
+    client.alter_table_with_environmentContext("default", "t1", table, null);
+    Assert.assertEquals(List.of("alter_table:apache__default.t1"), recording.calls);
+  }
+
+  @Test
+  public void lockAndUnlockReachTheDelegate() throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    IMetaStoreClient client = RoutingMetaStoreClient.create(recording.iface);
+    LockResponse response = client.lock(new LockRequest());
+    Assert.assertEquals(RecordingThriftIface.LOCK_ID, response.getLockid());
+    client.unlock(RecordingThriftIface.LOCK_ID);
+    Assert.assertEquals(
+        List.of("lock", "unlock:" + RecordingThriftIface.LOCK_ID), recording.calls);
   }
 }
