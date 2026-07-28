@@ -81,10 +81,17 @@ final class IcebergHttpHandler implements HttpHandler {
     try {
       doHandle(exchange, outcome);
     } finally {
+      // Restore the thread-local request context before recording the metric, not after: this
+      // handler instance is shared across the HTTP executor's threads, so if
+      // recordRestRequest ever threw, an ordering with the restore last would leak
+      // remoteAddress/remoteUser into whatever request that pool thread serves next.
+      try {
+        ClientRequestContext.restoreRemoteAddress(previousAddress);
+      } finally {
+        ClientRequestContext.restoreRemoteUser(previousUser);
+      }
       double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
       metrics.recordRestRequest(outcome.prefix, outcome.route, outcome.status, durationSeconds);
-      ClientRequestContext.restoreRemoteAddress(previousAddress);
-      ClientRequestContext.restoreRemoteUser(previousUser);
     }
   }
 

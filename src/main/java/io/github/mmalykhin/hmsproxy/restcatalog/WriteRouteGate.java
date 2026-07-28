@@ -28,8 +28,11 @@ import org.apache.iceberg.rest.requests.UpdateTableRequest;
  * resolves an external database name to the catalog that owns it; for the default catalog's own
  * service that is the federated name as-is, and for a name-translated service {@link
  * IcebergRestService} composes it with that service's own translation so it always answers with
- * that service's own (non-default) catalog. A namespace that does not resolve at all is not this
- * gate's business - {@code null} is returned so the normal dispatch can produce its usual 404.
+ * that service's own (non-default) catalog. This gate fails closed: a namespace whose owning
+ * catalog cannot be determined is refused, not allowed - an unknown catalog ownership is exactly
+ * the ambiguous case the synthetic lock shim's lack of conflict checking makes unsafe to guess
+ * about. Today {@code CatalogRouter.resolveDatabase} is total and never actually produces this
+ * case, but the gate does not rely on that holding forever.
  */
 final class WriteRouteGate {
   // Every write route RESTCatalogAdapter.Route exposes. Read-only routes (LIST_*, LOAD_*,
@@ -117,7 +120,15 @@ final class WriteRouteGate {
       return null;
     }
     String resolvedCatalog = catalogForNamespace.apply(externalDbName);
-    if (resolvedCatalog == null || resolvedCatalog.equals(defaultCatalogName)) {
+    if (resolvedCatalog == null) {
+      // Fail closed: an unresolved namespace's owning catalog - and so whether it is backed by
+      // a real HMS lock or the synthetic shim - cannot be determined, so the write is refused
+      // rather than permitted by default.
+      return "Writes are only supported in the default catalog '" + defaultCatalogName
+          + "'; namespace '" + externalDbName + "' could not be resolved to any catalog, so "
+          + "whether it is safe to write could not be determined.";
+    }
+    if (resolvedCatalog.equals(defaultCatalogName)) {
       return null;
     }
     return "Writes are only supported in the default catalog '" + defaultCatalogName

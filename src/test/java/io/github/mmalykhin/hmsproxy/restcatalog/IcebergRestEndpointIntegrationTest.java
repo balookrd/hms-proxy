@@ -352,6 +352,22 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
   }
 
+  // Iceberg's Endpoint#toString() renders "<HTTP method> <path>", and several write routes'
+  // renderings are a plain prefix of a sibling route's rendering - e.g. V1_CREATE_TABLE's
+  // "POST /v1/{prefix}/namespaces/{namespace}/tables" is a prefix of V1_UPDATE_TABLE's
+  // ".../tables/{table}", and V1_CREATE_NAMESPACE's bare "POST /v1/{prefix}/namespaces" is a
+  // prefix of nearly every other namespace/table/view write route. A plain body.contains(...) on
+  // one of these bare renderings would still pass even if that exact Endpoint constant were
+  // dropped from IcebergRestService.WRITE_ENDPOINTS, as long as the sibling with the longer
+  // rendering stayed - it would not pin the route it claims to. Printing the actual
+  // ConfigResponse JSON (via ConfigResponseParser, e.g. {"endpoints":["POST /v1/{prefix}/namespaces",
+  // "POST /v1/{prefix}/namespaces/{namespace}/tables", ...]}) confirms each endpoint is emitted as
+  // its own JSON string, so wrapping the expected rendering in its JSON quotes pins it to exactly
+  // the one Endpoint constant that produces that full quoted token.
+  private static String jsonEndpoint(String httpMethodAndPath) {
+    return "\"" + httpMethodAndPath + "\"";
+  }
+
   @Test
   public void configAdvertisesOnlyServedEndpoints() throws Exception {
     // /v1/config with no warehouse resolves to the default catalog (catalog1 in this fixture),
@@ -365,24 +381,24 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertTrue(body, body.contains("GET /v1/{prefix}/namespaces"));
     Assert.assertTrue(body, body.contains("HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
     Assert.assertTrue("default catalog must advertise table writes: " + body,
-        body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+        body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces/{namespace}/tables")));
     Assert.assertTrue("default catalog must advertise table deletes: " + body,
         body.contains("DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
     Assert.assertTrue(
         "default catalog must advertise view writes: " + body,
-        body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
+        body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces/{namespace}/views")));
     Assert.assertTrue(
         "default catalog must advertise view renames: " + body,
         body.contains("POST /v1/{prefix}/views/rename"));
     Assert.assertTrue(
         "default catalog must advertise namespace creation: " + body,
-        body.contains("POST /v1/{prefix}/namespaces"));
+        body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces")));
     Assert.assertTrue(
         "default catalog must advertise namespace property updates: " + body,
         body.contains("POST /v1/{prefix}/namespaces/{namespace}/properties"));
     Assert.assertTrue(
         "default catalog must advertise namespace deletes: " + body,
-        body.contains("DELETE /v1/{prefix}/namespaces/{namespace}"));
+        body.contains(jsonEndpoint("DELETE /v1/{prefix}/namespaces/{namespace}")));
     Assert.assertTrue(
         "default catalog must advertise the transaction commit: " + body,
         body.contains("POST /v1/{prefix}/transactions/commit"));
@@ -391,8 +407,8 @@ public class IcebergRestEndpointIntegrationTest {
   @Test
   public void defaultCatalogAdvertisesViewAndNamespaceWrites() throws Exception {
     String body = get("/v1/" + CATALOG_NAME + "/config").body();
-    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
-    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces"));
+    Assert.assertTrue(body, body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces/{namespace}/views")));
+    Assert.assertTrue(body, body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces")));
     Assert.assertTrue(body, body.contains("POST /v1/{prefix}/transactions/commit"));
   }
 
@@ -407,7 +423,7 @@ public class IcebergRestEndpointIntegrationTest {
   @Test
   public void defaultCatalogConfigAdvertisesWrites() throws Exception {
     String body = get("/v1/" + CATALOG_NAME + "/config").body();
-    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+    Assert.assertTrue(body, body.contains(jsonEndpoint("POST /v1/{prefix}/namespaces/{namespace}/tables")));
   }
 
   @Test

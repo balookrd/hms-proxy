@@ -77,6 +77,14 @@ public final class IcebergRestService implements AutoCloseable {
   private static final List<Endpoint> DEFAULT_CATALOG_ENDPOINTS =
       Stream.concat(READ_ENDPOINTS.stream(), WRITE_ENDPOINTS.stream()).toList();
 
+  /**
+   * Test-only accessor so a test can assert {@link #WRITE_ENDPOINTS} corresponds one-to-one with
+   * {@link WriteRouteGate}'s gated write routes - never widen this beyond package-private.
+   */
+  static List<Endpoint> writeEndpointsForTesting() {
+    return WRITE_ENDPOINTS;
+  }
+
   private final String catalogName;
   private final RoutingHiveCatalog catalog;
   private final RESTCatalogAdapter adapter;

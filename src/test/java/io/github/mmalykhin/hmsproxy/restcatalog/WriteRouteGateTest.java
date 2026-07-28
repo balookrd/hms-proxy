@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -8,6 +9,7 @@ import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.UpdateRequirement;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.rest.Endpoint;
 import org.apache.iceberg.rest.RESTCatalogAdapter.Route;
 import org.apache.iceberg.rest.requests.CommitTransactionRequest;
 import org.apache.iceberg.rest.requests.CreateNamespaceRequest;
@@ -46,6 +48,62 @@ public class WriteRouteGateTest {
       Route.LIST_TABLES, Route.TABLE_EXISTS, Route.LOAD_TABLE,
       Route.REPORT_METRICS,
       Route.LIST_VIEWS, Route.VIEW_EXISTS, Route.LOAD_VIEW);
+
+  // Hand-maintained Route -> Endpoint correspondence for the write surface: WriteRouteGate gates
+  // on org.apache.iceberg.rest.RESTCatalogAdapter.Route, while IcebergRestService advertises
+  // discovery through the unrelated org.apache.iceberg.rest.Endpoint type, so nothing in the
+  // production code ties the two enumerations together. This table is that tie: it must be kept
+  // in sync with both WriteRouteGate.WRITE_ROUTES and IcebergRestService.WRITE_ENDPOINTS whenever
+  // either changes, and everyGatedWriteRouteHasAnAdvertisedEndpointAndViceVersa below fails until
+  // it is.
+  private static final Map<Route, Endpoint> WRITE_ROUTE_TO_ENDPOINT = new EnumMap<>(Route.class);
+
+  static {
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.CREATE_TABLE, Endpoint.V1_CREATE_TABLE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.UPDATE_TABLE, Endpoint.V1_UPDATE_TABLE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.DROP_TABLE, Endpoint.V1_DELETE_TABLE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.RENAME_TABLE, Endpoint.V1_RENAME_TABLE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.REGISTER_TABLE, Endpoint.V1_REGISTER_TABLE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.CREATE_VIEW, Endpoint.V1_CREATE_VIEW);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.UPDATE_VIEW, Endpoint.V1_UPDATE_VIEW);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.DROP_VIEW, Endpoint.V1_DELETE_VIEW);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.RENAME_VIEW, Endpoint.V1_RENAME_VIEW);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.CREATE_NAMESPACE, Endpoint.V1_CREATE_NAMESPACE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.UPDATE_NAMESPACE, Endpoint.V1_UPDATE_NAMESPACE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.DROP_NAMESPACE, Endpoint.V1_DELETE_NAMESPACE);
+    WRITE_ROUTE_TO_ENDPOINT.put(Route.COMMIT_TRANSACTION, Endpoint.V1_COMMIT_TRANSACTION);
+  }
+
+  @Test
+  public void everyGatedWriteRouteHasAnAdvertisedEndpointAndViceVersa() {
+    Set<Route> gatedRoutes = WriteRouteGate.writeRoutesForTesting();
+    List<Endpoint> advertisedEndpoints = IcebergRestService.writeEndpointsForTesting();
+    String updateBothMessage = "WriteRouteGate.WRITE_ROUTES, IcebergRestService.WRITE_ENDPOINTS and "
+        + "this test's WRITE_ROUTE_TO_ENDPOINT table have drifted apart - update all three together.";
+
+    Assert.assertEquals(
+        "every gated write Route must have exactly one corresponding advertised Endpoint mapped "
+            + "in this test's WRITE_ROUTE_TO_ENDPOINT; " + updateBothMessage,
+        gatedRoutes, WRITE_ROUTE_TO_ENDPOINT.keySet());
+
+    for (Map.Entry<Route, Endpoint> entry : WRITE_ROUTE_TO_ENDPOINT.entrySet()) {
+      Assert.assertTrue(
+          "Route." + entry.getKey().name() + " is gated as a write but its mapped Endpoint "
+              + entry.getValue() + " is not in IcebergRestService.WRITE_ENDPOINTS; "
+              + updateBothMessage,
+          advertisedEndpoints.contains(entry.getValue()));
+    }
+    for (Endpoint endpoint : advertisedEndpoints) {
+      Assert.assertTrue(
+          "IcebergRestService advertises write endpoint " + endpoint + " that no gated write "
+              + "Route maps to in this test's WRITE_ROUTE_TO_ENDPOINT; " + updateBothMessage,
+          WRITE_ROUTE_TO_ENDPOINT.containsValue(endpoint));
+    }
+    Assert.assertEquals(
+        "IcebergRestService.WRITE_ENDPOINTS has a duplicate or is missing an entry relative to "
+            + "the gated write routes; " + updateBothMessage,
+        WRITE_ROUTE_TO_ENDPOINT.size(), advertisedEndpoints.size());
+  }
 
   private static String catalogForNamespace(String externalDbName) {
     if (externalDbName != null && externalDbName.startsWith(OTHER_CATALOG + SEPARATOR)) {
@@ -89,6 +147,18 @@ public class WriteRouteGateTest {
   public void writeToDefaultCatalogNamespaceIsAllowed() {
     Map<String, String> vars = Map.of("namespace", "default");
     Assert.assertNull(GATE.check(Route.CREATE_TABLE, vars, null));
+  }
+
+  @Test
+  public void writeToUnresolvableNamespaceIsRefused() {
+    // The gate must fail closed: if the resolver cannot say which catalog owns this namespace,
+    // it is refused rather than permitted - an unknown catalog is exactly the ambiguous case the
+    // synthetic lock shim's lack of conflict checking makes unsafe to guess about.
+    WriteRouteGate gateWithUnresolvingCatalogLookup = new WriteRouteGate(DEFAULT_CATALOG, externalDbName -> null);
+    Map<String, String> vars = Map.of("namespace", "mystery");
+    String refusal = gateWithUnresolvingCatalogLookup.check(Route.CREATE_TABLE, vars, null);
+    Assert.assertNotNull("an unresolvable namespace must be refused, not allowed", refusal);
+    Assert.assertTrue(refusal, refusal.contains("could not be determined"));
   }
 
   @Test
