@@ -986,13 +986,36 @@ ambiguously, so `__` is usually the safer choice.
 
 The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
 Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
-front door. Status: **experimental, read-only**. Iceberg clients (PyIceberg,
-Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg
-tables stored in HMS via the standard `metadata_location` table parameter.
+front door. Status: **experimental**; table writes (create, commit, drop,
+rename, register) are supported, but **only when the target namespace
+resolves to `routing.default-catalog`**. Iceberg clients (PyIceberg, Spark
+`iceberg-rest`, Trino `iceberg-rest`) can discover and load Iceberg tables
+stored in HMS via the standard `metadata_location` table parameter.
 View routes now return real data instead of an empty `204`, since
-`HiveCatalog` is a `ViewCatalog` as of Iceberg `1.7`; writes, commits, and
-view mutations (create/drop/rename) are still NOT supported in this
-iteration.
+`HiveCatalog` is a `ViewCatalog` as of Iceberg `1.7`; view mutations
+(create/drop/rename), namespace mutations and multi-table transaction
+commits are still NOT supported in this iteration, on any catalog.
+
+**Why writes are default-catalog only:** only the default catalog's tables
+are backed by a real HMS lock (see [ZooKeeper storage for synthetic read
+locks](#zookeeper-storage-for-synthetic-read-locks)); every other
+catalog is served by the synthetic lock shim, which grants an `EXCLUSIVE`
+lock unconditionally with no conflict checking. A commit routed there would
+believe it owns the table while silently racing - and possibly losing to - a
+concurrent writer, corrupting `metadata.json` without ever reporting a
+conflict. `WriteRouteGate` enforces this on the **resolved** catalog, not on
+the request's own URL prefix: the default catalog's own prefix also exposes
+every other catalog's databases as federated `<catalog><separator><db>`
+names (see [Supported endpoints](#supported-endpoints) below), so a create
+under `/v1/{default-prefix}/namespaces/apache__default/tables` is refused
+exactly like a direct create under `/v1/apache/namespaces/default/tables` -
+both resolve to the `apache` catalog and get the same `403`
+(`ForbiddenException`) with a message naming the resolved catalog. `GET
+/v1/config` and `GET /v1/{prefix}/config` advertise this asymmetry
+directly: the default catalog's `endpoints` list carries the five write
+routes below, every other catalog's carries only the nine read routes, so a
+spec-compliant client discovers the restriction instead of learning about it
+from a failed request.
 
 Enable it via:
 
@@ -1023,7 +1046,12 @@ Requests to this listener are covered by the Prometheus metrics described in
 | `HEAD /v1/{prefix}/namespaces/{ns}`                    | supported (204 if exists, 404 if not) |
 | `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | supported (204 if exists, 404 if not) |
 | `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | supported (204 if exists, 404 if not) |
-| `POST`, `DELETE`, commits (including view mutations)  | unsupported                     |
+| `POST /v1/{prefix}/namespaces/{ns}/tables`             | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported for the default catalog only (commit/update); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/tables/rename`                      | supported for the default catalog only (rename); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/register`           | supported for the default catalog only (register); `403` elsewhere |
+| Namespace/view mutations, multi-table transaction commits | unsupported on every catalog |
 
 `{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
 exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
@@ -1032,14 +1060,23 @@ warehouse discovery: pass `?warehouse=<catalog>` and the response's
 right prefix without hardcoding it (see the client examples below). Without
 `warehouse`, `/v1/config` advertises `routing.default-catalog`, matching
 phase-1 behavior; an unknown `warehouse` value returns HTTP 400
-(`BadRequestException`). The response's `endpoints` field lists exactly the
-nine read routes above (list/load namespace + namespace-exists, list/load
-table + table-exists, list/load view + view-exists), so a modern client knows
-not to attempt a write; older clients that don't look at the field are
-unaffected. `GET /v1/{prefix}/config` answers the same way from the proxy's
-own handler — `overrides.prefix` names the catalog from the path segment
-instead of the `warehouse` query param — and an unknown prefix there is still
-a 404.
+(`BadRequestException`). The response's `endpoints` field lists the nine
+read routes above for every catalog (list/load namespace + namespace-exists,
+list/load table + table-exists, list/load view + view-exists); the default
+catalog's `endpoints` additionally carry the five table-write routes above,
+so a modern client can discover the write/read asymmetry between catalogs
+instead of learning about it from a failed request. `GET /v1/{prefix}/config`
+answers the same way from the proxy's own handler — `overrides.prefix` names
+the catalog from the path segment instead of the `warehouse` query param —
+and an unknown prefix there is still a 404.
+
+A refused write answers `403` (`ForbiddenException`) with a message naming
+the resolved catalog, for example: `Writes are only supported in the
+default catalog 'hdp'; namespace 'apache__default' belongs to catalog
+'apache', which is served by the synthetic lock shim and provides no writer
+isolation.` This is enforced on the namespace the request **resolves** to,
+not on the URL prefix it arrived under - see [Why writes are default-catalog
+only](#iceberg-rest-catalog-frontend) above.
 
 Error responses carry the mapped HTTP status, `type` and `message` but never
 a server stack trace, since this listener can be reached without
@@ -1048,7 +1085,11 @@ authentication. A request body that fails to parse answers 400
 every route that takes a body. A `HEAD` response never writes a body, per RFC
 9110 — including on an error status — so an exists-check against a missing
 namespace, table or view returns a plain 404 with no body, not a 404 with a
-JSON payload.
+JSON payload. The request dispatcher catches `Throwable`, not just
+`Exception`: any `Error` that escapes handling (for example a dependency-
+version `NoSuchMethodError` surfacing deep inside a write) is mapped to the
+usual error response instead of unwinding past the handler and leaving the
+client's connection to hang forever with no response at all.
 
 The default catalog's prefix keeps the phase-1 federated view: its own
 databases plus every other catalog's databases under their
@@ -1110,6 +1151,18 @@ spark.sql.catalog.sales_catalog.warehouse=sales
 - `RoutingHiveCatalog` uses reflection on Iceberg's private `HiveCatalog.clients`
   field, pinned to Iceberg `1.9.2`. Bumping the Iceberg version requires
   running `RoutingHiveCatalogTest` to confirm the inject still works.
+- A table write opens an HDFS output stream (`metadata.json`) from inside the
+  proxy's own JVM - the first code path in the proxy to do so; reads use a
+  different, unaffected class path. This requires `hadoop-hdfs` and
+  `hadoop-common` to be the same version in the dependency tree. Maven's
+  mediation never compared them (they are different artifact IDs), so
+  `orc-core` (pulled in transitively by `hive-standalone-metastore`) was
+  dragging a stale `hadoop-hdfs:2.2.0` alongside `hadoop-common:2.6.0`
+  elsewhere in the tree, and every write failed with `NoSuchMethodError:
+  FSOutputSummer.<init>` deep inside `DFSOutputStream`. `pom.xml` now
+  excludes that transitive `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0`
+  directly, to match `hadoop-common`. Keep the two aligned if you ever
+  override either version.
 
 ## Security
 

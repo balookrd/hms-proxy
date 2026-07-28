@@ -6,6 +6,66 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-07-28
+
+### Добавлено
+
+- Iceberg REST front door теперь поддерживает write-запросы к таблицам —
+  create, commit (update), drop, rename, register — когда namespace запроса
+  резолвится в `routing.default-catalog`. `RoutingMetaStoreClient` теперь
+  реализует `createTable`, `dropTable`, `alter_table_with_environmentContext`
+  и commit-lock RPC (`lock`, `checkLock`, `unlock`, `heartbeat`,
+  `showLocks`) вместо того, чтобы кидать `UnsupportedOperationException` на
+  все они; любой другой метод `IMetaStoreClient`, который для этого не
+  нужен, по-прежнему не поддержан.
+- Любой write-роут Iceberg REST отказывается с `403` (`ForbiddenException`),
+  если его namespace резолвится в любой каталог, кроме дефолтного: только
+  таблицы дефолтного каталога подкреплены реальным HMS-локом, а любой
+  другой каталог обслуживается синтетическим lock shim, который выдаёт
+  `EXCLUSIVE`-лок безусловно, без проверки конфликтов — commit, направленный
+  туда, гонялся бы наперегонки с конкурентным writer'ом и молча терял
+  апдейт. Новый `WriteRouteGate` проверяет **резолвленный** каталог, а не
+  prefix из URL запроса, так что federated-имя `<catalog><separator><db>`,
+  достигнутое через дефолтный prefix, отказывается точно так же, как прямой
+  запрос к non-default prefix; gate покрывает каждый write-роут, который
+  выставляет `RESTCatalogAdapter` (table и view CRUD, namespace CRUD,
+  rename, multi-table transaction commit), а не только пять table-write
+  роутов, которые эта фаза реально реализует.
+- `GET /v1/config` и `GET /v1/{prefix}/config` теперь объявляют
+  write/read-асимметрию между каталогами: в `endpoints` дефолтного каталога
+  дополнительно к девяти read-роутам предыдущей фазы перечислены пять
+  table-write роутов; у любого другого каталога — только девять read-роутов.
+  Спецификация-совместимый клиент может обнаружить это ограничение через
+  discovery, а не из проваленного запроса.
+- `--scenario rest` в smoke-раннерах гоняет write round trip таблицы —
+  create (проверка `200`), load (проверка, что вернулся `metadata-location`),
+  drop (проверка `2xx`) — и два негативных случая: прямой create под
+  non-default prefix и create под federated-именем этого prefix, достигнутым
+  через дефолтный prefix, — оба с ожиданием `403`. Настраивается новой
+  `HMS_SMOKE_REST_WRITE_TABLE`; пропускается, если не задана. Раннер также
+  теперь проверяет write/read-асимметрию в config, описанную выше, — и для
+  дефолтного каталога, и для настроенного второго каталога.
+
+### Исправлено
+
+- Любая запись в HDFS изнутри JVM прокси падала с `NoSuchMethodError:
+  FSOutputSummer.<init>` глубоко внутри `DFSOutputStream` — write таблицы
+  оказался первым путём в прокси, который сам открывает output stream в
+  HDFS; чтение идёт по другому, незатронутому classpath. `orc-core`
+  (приходит транзитивно через `hive-standalone-metastore`) тянул устаревший
+  `hadoop-hdfs:2.2.0` рядом с `hadoop-common:2.6.0` в другом месте дерева, и
+  мавеновская медиация никогда их не сравнивала (это разные artifact ID).
+  `pom.xml` теперь исключает этот транзитивный `hadoop-hdfs` и напрямую
+  зависит от `hadoop-hdfs:2.6.0`, чтобы совпасть с `hadoop-common`.
+- Диспетчер запросов Iceberg REST (`IcebergHttpHandler`) ловил только
+  `Exception`, поэтому `NoSuchMethodError` (или любой другой
+  `java.lang.Error`), ускользнувший из обработки запроса, улетал мимо обоих
+  catch-блоков без единого ответа — JDK HTTP server логировал stack trace в
+  stderr и бросал exchange, оставляя соединение клиента висеть бесконечно,
+  без тайм-аута даже на стороне сервера. Catch-all теперь ловит `Throwable`,
+  так что такие сбои маппятся в обычный error-ответ как любой другой сбой,
+  вместо того чтобы вешать вызывающую сторону.
+
 ## 2026-07-27
 
 ### Добавлено

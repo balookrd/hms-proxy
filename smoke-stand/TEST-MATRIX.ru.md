@@ -93,7 +93,7 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G4 | Load таблицы возвращает `metadata-location` и полные метаданные, прочитанные из HDFS самим прокси | ✅ | n/a |
 | G5 | Неизвестный prefix → чистый 404 `NoSuchCatalogException` | ✅ | n/a |
 | G6 | Неизвестная таблица → чистый 404 | ✅ | n/a |
-| G7 | Write-роут (`DELETE` таблицы) отклонён, не-2xx | ✅ | n/a |
+| G7 | `DELETE` несуществующей таблицы отвечает чистым 404, а не тихим 2xx | ✅ | n/a |
 | G8 | `GET /v1/config?warehouse=apache` объявляет `prefix=apache` | ✅ | n/a |
 | G9 | Неизвестный warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → чистый 400 | ✅ | n/a |
 | G10 | Чистое представление namespace под prefix `apache` показывает `default` без утечки внешних имён вида `apache__*` | ✅ | n/a |
@@ -107,7 +107,11 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | G18 | `HEAD` на namespace/таблицу отвечает `204`, если объект существует, и `404`, если нет — в том числе под не-default prefix `apache` и для обычной Hive-таблицы (`smoke_read_hdp`) | ✅ | n/a |
 | G19 | Error-ответ на отсутствующий namespace несёт смапленные `404`, `type` и `message`, но без `"stack":[...]` server trace | ✅ | n/a |
 | G20 | Нераспарсиваемое тело `POST .../metrics` отвечает `400` (`BadRequestException`), а не `500` | ✅ | n/a |
-| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` оба объявляют read-роут `GET /v1/{prefix}/namespaces` и не несут ни одного write-роута (ни `POST /v1/{prefix}/namespaces`, ни записи `DELETE`) | ✅ | n/a |
+| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` (оба резолвятся в default-каталог) объявляют write-роуты create и drop таблицы поверх read-роута namespaces | ✅ | n/a |
+| G22 | `GET /v1/{second-prefix}/config` (non-default каталог) объявляет read-роут namespaces и не несёт ни одного write-роута — доказывает, что discovery объявляет write/read-асимметрию, а не только default-сторону | ✅ | n/a |
+| G23 | Write round trip таблицы на default-каталоге: `POST` create (`200`), `GET` load (`metadata-location` присутствует), `DELETE` drop (`2xx`) | ✅ | n/a |
+| G24 | Прямой `POST` create под non-default prefix `apache` отклонён с `403` (`ForbiddenException`) | ✅ | n/a |
+| G25 | `POST` create под federated-namespace `apache__default`, достигнутым через default-prefix, отклонён с `403` — доказывает, что write gate проверяется на *резолвленном* каталоге, а не на prefix запроса | ✅ | n/a |
 
 ## F. Что не покрыто и почему
 
@@ -165,6 +169,23 @@ HDP-клиент не может пользоваться Apache-listener — Th
   пересобранном jar'е; то, что укреплённая проверка действительно различает случаи, подтверждено
   временной подменой ожидаемого имени роута на несуществующее — раннер упал с сообщением
   "config does not advertise the namespaces read route", после чего подмена была отменена.
+  Ещё позже jar `1.0.41-931b78d4` (phase 5a: write-запросы к таблицам для default-каталога,
+  write gate и асимметричное объявление endpoint'ов; поверх легли фикс выравнивания версий
+  `hadoop-hdfs`/`hadoop-common` и расширенный catch-all `Throwable` в `IcebergHttpHandler`)
+  добавил строки G22-G25 и обновил G7, G21. `--scenario rest` и `--scenario all` оба
+  перепрогнаны зелёными: подтверждено, что `GET /v1/config` и `GET /v1/{prefix}/config`
+  (default-каталог) несут write-роуты create и drop таблицы; подтверждено, что
+  `GET /v1/apache/config` не несёт ни одного. Таблица, созданная через
+  `POST /v1/hdp/namespaces/default/tables`, загрузилась обратно с `metadata-location` и
+  удалилась `204`; прямой create под `/v1/apache/namespaces/default/tables` и create под
+  `/v1/hdp/namespaces/apache__default/tables` оба ответили `403`. SQL-слой (разделы B и C,
+  оба HiveServer2) перепрогнан как регрессионная проверка на изменение Hadoop-зависимостей,
+  раз write-запросы к таблицам и собственные ACID-коммиты Hive теперь идут по одному и тому же
+  lock-пути; прошёл, при этом `stand-hs2-hdp` пришлось сначала перезапустить (его сессия
+  HiveServer2 протухла после пересборки стенда — свежая сессия открылась штатно против того же,
+  иначе не тронутого состояния HDFS), а для прохода через Hortonworks понадобился
+  `HMS_SMOKE_SQL_HDP_SESSION_INIT=set hive.execution.engine=mr;`, как документировано в
+  `smoke-stand/env/simple.env`.
 
 ## Две оговорки честности
 

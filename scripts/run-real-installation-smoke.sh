@@ -86,6 +86,16 @@ Optional Iceberg REST env vars:
   HMS_SMOKE_REST_METRICS_URL             management /metrics endpoint; when set, the REST smoke
                                          checks it carries hms_proxy_rest_requests_total and
                                          hms_proxy_rest_listener_info series
+  HMS_SMOKE_REST_WRITE_TABLE             table name to create/load/drop through the REST write
+                                         routes; skipped when unset. Writes only work when the
+                                         advertised default-prefix catalog resolves to the real
+                                         backend (non-default catalogs are served by the synthetic
+                                         lock shim and refuse writes with 403). Requires
+                                         HMS_SMOKE_REST_SECOND_PREFIX to also exercise the two
+                                         negative checks (a direct create under that prefix and a
+                                         create under its federated name under the default prefix,
+                                         both expected 403); use a name distinct from every other
+                                         table already on the stand so a rerun cannot collide
 EOF
 
   cat <<'EOF'
@@ -974,9 +984,11 @@ run_rest_smoke() {
   [[ "${code}" == "404" ]] \
     || fail "unknown REST table expected HTTP 404, got ${code}: $(cat "${body}")"
 
-  # Writes are out of scope for this phase; the route must refuse, not half-apply.
+  # Dropping a table that was never created must not silently succeed with a 2xx - true for
+  # every catalog, independent of whether that catalog's writes are gated (see the write round
+  # trip and its negatives further below, guarded by HMS_SMOKE_REST_WRITE_TABLE).
   code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/no_such_table_smoke" "${body}")"
-  [[ "${code}" =~ ^2 ]] && fail "REST write route unexpectedly succeeded with HTTP ${code}: $(cat "${body}")"
+  [[ "${code}" =~ ^2 ]] && fail "dropping a non-existent table unexpectedly succeeded with HTTP ${code}: $(cat "${body}")"
 
   # Error responses keep the mapped status, type and message but must not leak the server
   # stack trace: this listener may be unauthenticated, so a trace would expose internal
@@ -997,32 +1009,29 @@ run_rest_smoke() {
     log "skipping REST unparseable-body check because HMS_SMOKE_REST_ICEBERG_TABLE is not set"
   fi
 
-  # GET /v1/config must advertise the read routes this phase actually serves and none of the
-  # write routes it refuses: at least one concrete read entry (the namespaces listing route),
-  # no POST namespaces-create entry and no DELETE entry at all. Checked against both the
+  # GET /v1/config resolves to the default catalog (no warehouse override), which since phase 5a
+  # is also this proxy's only write-capable catalog: it must advertise the namespaces read route
+  # AND its write routes (table create, commit, drop, rename, register). Checked against both the
   # unprefixed /v1/config and the prefixed /v1/{prefix}/config, which clients pin to via the
-  # "prefix" override and use identically for discovery.
+  # "prefix" override and use identically for discovery. The matching non-default-catalog check,
+  # proving the write routes stay absent there, lives below in the optional second-prefix block.
   code="$(rest_request GET "/v1/config" "${body}")"
   [[ "${code}" == "200" ]] || fail "GET /v1/config returned HTTP ${code}: $(cat "${body}")"
   grep -qF '"GET /v1/{prefix}/namespaces"' "${body}" \
     || fail "config does not advertise the namespaces read route: $(cat "${body}")"
-  if grep -qF 'POST /v1/{prefix}/namespaces"' "${body}"; then
-    fail "config unexpectedly advertises a namespaces write route: $(cat "${body}")"
-  fi
-  if grep -qF 'DELETE ' "${body}"; then
-    fail "config unexpectedly advertises a write (DELETE) route: $(cat "${body}")"
-  fi
+  grep -qF '"POST /v1/{prefix}/namespaces/{namespace}/tables"' "${body}" \
+    || fail "default-catalog config does not advertise the table-create write route: $(cat "${body}")"
+  grep -qF '"DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"' "${body}" \
+    || fail "default-catalog config does not advertise the table-drop write route: $(cat "${body}")"
 
   code="$(rest_request GET "/v1/${prefix}/config" "${body}")"
   [[ "${code}" == "200" ]] || fail "GET /v1/${prefix}/config returned HTTP ${code}: $(cat "${body}")"
   grep -qF '"GET /v1/{prefix}/namespaces"' "${body}" \
     || fail "prefixed config does not advertise the namespaces read route: $(cat "${body}")"
-  if grep -qF 'POST /v1/{prefix}/namespaces"' "${body}"; then
-    fail "prefixed config unexpectedly advertises a namespaces write route: $(cat "${body}")"
-  fi
-  if grep -qF 'DELETE ' "${body}"; then
-    fail "prefixed config unexpectedly advertises a write (DELETE) route: $(cat "${body}")"
-  fi
+  grep -qF '"POST /v1/{prefix}/namespaces/{namespace}/tables"' "${body}" \
+    || fail "prefixed default-catalog config does not advertise the table-create write route: $(cat "${body}")"
+  grep -qF '"DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"' "${body}" \
+    || fail "prefixed default-catalog config does not advertise the table-drop write route: $(cat "${body}")"
 
   # Optional second prefix: proves warehouse discovery and the clean view work for a
   # non-default catalog too, not only for the one /v1/config already advertised.
@@ -1041,6 +1050,20 @@ run_rest_smoke() {
 
     code="$(rest_request GET "/v1/config?warehouse=no_such_warehouse_smoke" "${body}")"
     [[ "${code}" == "400" ]] || fail "unknown warehouse expected HTTP 400, got ${code}: $(cat "${body}")"
+
+    # Discovery must advertise the write asymmetry: the non-default catalog's own config carries
+    # the namespaces read route but none of the write routes the default catalog's config asserted
+    # above, since only the default catalog's writes reach a real backend lock.
+    code="$(rest_request GET "/v1/${second_prefix}/config" "${body}")"
+    [[ "${code}" == "200" ]] || fail "GET /v1/${second_prefix}/config returned HTTP ${code}: $(cat "${body}")"
+    grep -qF '"GET /v1/{prefix}/namespaces"' "${body}" \
+      || fail "non-default-catalog config does not advertise the namespaces read route: $(cat "${body}")"
+    if grep -qF 'POST /v1/{prefix}/namespaces/{namespace}/tables"' "${body}"; then
+      fail "non-default-catalog config unexpectedly advertises the table-create write route: $(cat "${body}")"
+    fi
+    if grep -qF 'DELETE ' "${body}"; then
+      fail "non-default-catalog config unexpectedly advertises a write (DELETE) route: $(cat "${body}")"
+    fi
 
     code="$(rest_request GET "/v1/${second_prefix}/namespaces" "${body}")"
     [[ "${code}" == "200" ]] || fail "GET /v1/${second_prefix}/namespaces returned HTTP ${code}: $(cat "${body}")"
@@ -1092,6 +1115,49 @@ run_rest_smoke() {
       grep -q '"metadata-location"' "${body}" \
         || fail "federated load carries no metadata-location: $(cat "${body}")"
     fi
+  fi
+
+  # Table writes: supported only where the request resolves to the default catalog, because
+  # only that catalog's commit path reaches the real backend's Hive lock; every other catalog is
+  # served by the synthetic lock shim, which grants locks without conflict checking, so a commit
+  # there would race concurrent writers into silently lost updates. Guarded by
+  # HMS_SMOKE_REST_WRITE_TABLE so the check stays off unless a stand is known to support it. The
+  # create/load/drop round trip proves the default catalog actually commits; the two negatives
+  # prove the gate is enforced on the *resolved* catalog, not just the request's own prefix - a
+  # federated name under the default prefix is refused exactly like a direct request against the
+  # non-default prefix.
+  local write_table="${HMS_SMOKE_REST_WRITE_TABLE:-}"
+  if [[ -n "${write_table}" ]]; then
+    local create_body='{"name":"'"${write_table}"'","schema":{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"}]}}'
+
+    code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      --data "${create_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${namespace}/tables")"
+    [[ "${code}" == "200" ]] || fail "REST create of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    code="$(rest_request GET "/v1/${prefix}/namespaces/${namespace}/tables/${write_table}" "${body}")"
+    [[ "${code}" == "200" ]] || fail "REST load of freshly-created '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+    grep -q '"metadata-location"' "${body}" \
+      || fail "REST load of '${write_table}' carries no metadata-location: $(cat "${body}")"
+
+    code="$(rest_request DELETE "/v1/${prefix}/namespaces/${namespace}/tables/${write_table}" "${body}")"
+    [[ "${code}" =~ ^2 ]] || fail "REST drop of '${write_table}' returned HTTP ${code}: $(cat "${body}")"
+
+    if [[ -n "${second_prefix}" ]]; then
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data "${create_body}" "${HMS_SMOKE_REST_URL}/v1/${second_prefix}/namespaces/${namespace}/tables")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST create under non-default prefix '${second_prefix}' expected HTTP 403, got ${code}: $(cat "${body}")"
+
+      local write_fed_ns="${second_prefix}${separator}${namespace}"
+      code="$(curl -sS -o "${body}" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        --data "${create_body}" "${HMS_SMOKE_REST_URL}/v1/${prefix}/namespaces/${write_fed_ns}/tables")"
+      [[ "${code}" == "403" ]] \
+        || fail "REST create under federated namespace '${write_fed_ns}' expected HTTP 403, got ${code}: $(cat "${body}")"
+    else
+      log "skipping REST write-gate negative checks because HMS_SMOKE_REST_SECOND_PREFIX is not set"
+    fi
+  else
+    log "skipping REST write round trip because HMS_SMOKE_REST_WRITE_TABLE is not set"
   fi
 
   local metrics_url="${HMS_SMOKE_REST_METRICS_URL:-}"

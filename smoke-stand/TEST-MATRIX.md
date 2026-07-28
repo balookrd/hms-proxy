@@ -93,7 +93,7 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | n/a |
 | G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | n/a |
 | G6 | Unknown table → clean 404 | ✅ | n/a |
-| G7 | Write route (`DELETE` table) refused, non-2xx | ✅ | n/a |
+| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | ✅ | n/a |
 | G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | n/a |
 | G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | n/a |
 | G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | n/a |
@@ -107,7 +107,11 @@ table is the hand-registered `smoke_iceberg_tbl` (see the stand README).
 | G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
 | G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | n/a |
 | G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
-| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` both advertise the `GET /v1/{prefix}/namespaces` read route and carry no write route (no `POST /v1/{prefix}/namespaces`, no `DELETE` entry) | ✅ | n/a |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | n/a |
+| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | n/a |
+| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | n/a |
+| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | n/a |
+| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | n/a |
 
 ## F. Not covered, and why
 
@@ -163,6 +167,26 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   the rebuilt jar; the strengthened assertion was proven to discriminate by temporarily pointing
   it at a route name the server does not serve and confirming the runner failed with
   "config does not advertise the namespaces read route" before restoring it.
+  Later still, jar `1.0.41-931b78d4` (phase 5a: table writes for the default
+  catalog, the write gate, and asymmetric endpoint advertising; a Hadoop
+  `hadoop-hdfs`/`hadoop-common` version-alignment fix and the widened
+  `Throwable` catch-all in `IcebergHttpHandler` landed on top of it) added
+  rows G22-G25 and updated G7, G21. `--scenario rest` and `--scenario all`
+  both re-ran green: `GET /v1/config` and `GET /v1/{prefix}/config` (default
+  catalog) were confirmed to carry the table-create and table-drop write
+  routes; `GET /v1/apache/config` was confirmed to carry neither. A table
+  created through `POST /v1/hdp/namespaces/default/tables` loaded back with a
+  `metadata-location` and dropped with `204`; a direct create under
+  `/v1/apache/namespaces/default/tables` and a create under
+  `/v1/hdp/namespaces/apache__default/tables` both answered `403`. The SQL
+  layer (sections B and C, both HiveServer2 instances) was re-run as the
+  regression check for the Hadoop dependency change, since table writes and
+  Hive's own ACID commits now share the same lock path; it passed, with
+  `stand-hs2-hdp` restarted first (its HiveServer2 session had gone stale
+  after the stand rebuild - a fresh session opened cleanly against the same,
+  otherwise-untouched HDFS state) and `HMS_SMOKE_SQL_HDP_SESSION_INIT=set
+  hive.execution.engine=mr;` supplied for the Hortonworks pass, as documented
+  in `smoke-stand/env/simple.env`.
 
 ## Two caveats on faithfulness
 

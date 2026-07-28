@@ -6,6 +6,67 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-07-28
+
+### Added
+
+- The Iceberg REST front door now supports table writes - create, commit
+  (update), drop, rename, register - when the request's namespace resolves
+  to `routing.default-catalog`. `RoutingMetaStoreClient` now implements
+  `createTable`, `dropTable`, `alter_table_with_environmentContext` and the
+  commit-lock RPCs (`lock`, `checkLock`, `unlock`, `heartbeat`, `showLocks`)
+  instead of throwing `UnsupportedOperationException` for all of them; every
+  other `IMetaStoreClient` method it does not need for this stays
+  unsupported.
+- Every Iceberg REST write route is refused with `403`
+  (`ForbiddenException`) whenever its namespace resolves to any catalog
+  other than the default one: only the default catalog's tables are backed
+  by a real HMS lock, and every other catalog is served by the synthetic
+  lock shim, which grants an `EXCLUSIVE` lock unconditionally with no
+  conflict checking - a commit routed there would race a concurrent writer
+  into a silently lost update. The new `WriteRouteGate` checks the
+  **resolved** catalog, not the request's own URL prefix, so a federated
+  `<catalog><separator><db>` name reached through the default prefix is
+  refused exactly like a direct request against the non-default prefix; the
+  gate covers every write route `RESTCatalogAdapter` exposes (table and view
+  CRUD, namespace CRUD, rename, multi-table transaction commit), not only
+  the five table-write routes this phase actually implements.
+- `GET /v1/config` and `GET /v1/{prefix}/config` now advertise the write/read
+  asymmetry between catalogs: the default catalog's `endpoints` field
+  carries the five table-write routes on top of the nine read routes from
+  the previous phase; every other catalog's carries only the nine read
+  routes. A spec-compliant client can discover the restriction instead of
+  learning about it from a failed request.
+- `--scenario rest` in the smoke runners drives the table write round trip -
+  create (asserting `200`), load (asserting `metadata-location` comes back),
+  drop (asserting a `2xx`) - and the two negative cases: a direct create
+  under a non-default prefix, and a create under that prefix's federated
+  namespace name reached through the default prefix, both asserting `403`.
+  Guarded by the new `HMS_SMOKE_REST_WRITE_TABLE`; skipped when unset. The
+  runner also now asserts the config write/read asymmetry above, for both
+  the default catalog and a configured second catalog.
+
+### Fixed
+
+- Every HDFS write from inside the proxy's own JVM failed with
+  `NoSuchMethodError: FSOutputSummer.<init>`, deep inside
+  `DFSOutputStream` - table writes are the first proxy code path to open an
+  HDFS output stream itself; reads use a different, unaffected class path.
+  `orc-core` (pulled in transitively by `hive-standalone-metastore`) was
+  dragging a stale `hadoop-hdfs:2.2.0` alongside `hadoop-common:2.6.0`
+  elsewhere in the tree, and Maven's mediation never compared them (they are
+  different artifact IDs). `pom.xml` now excludes that transitive
+  `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0` directly, to match
+  `hadoop-common`.
+- The Iceberg REST request dispatcher (`IcebergHttpHandler`) only caught
+  `Exception`, so a `NoSuchMethodError` (or any other `java.lang.Error`)
+  escaping request handling unwound past both catch blocks with no response
+  ever sent - the JDK HTTP server logged the stack trace to stderr and
+  abandoned the exchange, leaving the client's connection hanging
+  indefinitely with no timeout on the server side. The catch-all is now
+  `Throwable`, so such failures map to the usual error response like any
+  other failure instead of hanging the caller.
+
 ## 2026-07-27
 
 ### Added
