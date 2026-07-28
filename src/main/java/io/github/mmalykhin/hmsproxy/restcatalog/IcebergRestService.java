@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
@@ -21,18 +22,21 @@ import org.apache.iceberg.rest.responses.ConfigResponse;
  * service exposes the federated view as-is, with no name translation; every
  * other catalog's service is given a CatalogNameTranslation so REST clients
  * see that catalog's internal database names instead of the federated ones.
+ * Only the default catalog's service advertises (and, via {@link WriteRouteGate},
+ * actually allows) table writes - every other catalog is discovery-only, matching
+ * the synthetic lock shim that backs its writes with no real conflict checking.
  */
 public final class IcebergRestService implements AutoCloseable {
   private static final String UNUSED_URI = "thrift://hms-proxy-loopback:0";
 
   /**
-   * Routes this read-only front door actually serves. Kept in sync by hand with the
+   * Read routes every catalog's front door serves. Kept in sync by hand with the
    * dispatch table in {@link IcebergHttpHandler}: every entry here must answer for
    * real, and every route the handler serves must be listed here so REST clients
-   * (which use this list for discovery) do not learn about write support we don't
-   * have, or fail to learn about a read route we do have, one request at a time.
+   * (which use this list for discovery) do not fail to learn about a read route we
+   * do have, one request at a time.
    */
-  private static final List<Endpoint> SERVED_ENDPOINTS = List.of(
+  private static final List<Endpoint> READ_ENDPOINTS = List.of(
       Endpoint.V1_LIST_NAMESPACES,
       Endpoint.V1_LOAD_NAMESPACE,
       Endpoint.V1_NAMESPACE_EXISTS,
@@ -43,10 +47,28 @@ public final class IcebergRestService implements AutoCloseable {
       Endpoint.V1_LOAD_VIEW,
       Endpoint.V1_VIEW_EXISTS);
 
+  /**
+   * Table write routes phase 5a actually implements: only the default catalog's tables are
+   * backed by a real HMS lock, so only the default catalog's service advertises these. {@link
+   * WriteRouteGate} additionally gates view, namespace and transaction-commit writes for safety,
+   * but this phase does not implement any of those as working features, so they must stay off
+   * this list - advertising them would promise a capability the proxy does not deliver.
+   */
+  private static final List<Endpoint> WRITE_ENDPOINTS = List.of(
+      Endpoint.V1_CREATE_TABLE,
+      Endpoint.V1_UPDATE_TABLE,
+      Endpoint.V1_DELETE_TABLE,
+      Endpoint.V1_RENAME_TABLE,
+      Endpoint.V1_REGISTER_TABLE);
+
+  private static final List<Endpoint> DEFAULT_CATALOG_ENDPOINTS =
+      Stream.concat(READ_ENDPOINTS.stream(), WRITE_ENDPOINTS.stream()).toList();
+
   private final String catalogName;
   private final RoutingHiveCatalog catalog;
   private final RESTCatalogAdapter adapter;
   private final WriteRouteGate writeGate;
+  private final List<Endpoint> servedEndpoints;
 
   public IcebergRestService(
       String catalogName,
@@ -72,6 +94,7 @@ public final class IcebergRestService implements AutoCloseable {
         ? catalogForExternalDb
         : localDb -> catalogForExternalDb.apply(translationOrNull.toExternal(localDb));
     this.writeGate = new WriteRouteGate(defaultCatalogName, catalogForNamespace);
+    this.servedEndpoints = catalogName.equals(defaultCatalogName) ? DEFAULT_CATALOG_ENDPOINTS : READ_ENDPOINTS;
   }
 
   public String catalogName() {
@@ -90,7 +113,7 @@ public final class IcebergRestService implements AutoCloseable {
   public ConfigResponse loadConfig() {
     return ConfigResponse.builder()
         .withOverride("prefix", catalogName)
-        .withEndpoints(SERVED_ENDPOINTS)
+        .withEndpoints(servedEndpoints)
         .build();
   }
 

@@ -339,15 +339,39 @@ public class IcebergRestEndpointIntegrationTest {
 
   @Test
   public void configAdvertisesOnlyServedEndpoints() throws Exception {
+    // /v1/config with no warehouse resolves to the default catalog (catalog1 in this fixture),
+    // which now serves table writes (phase 5a). Other write kinds (view, namespace,
+    // transaction-commit) are gated by WriteRouteGate for safety but are not implemented
+    // features of this phase, so they must never be advertised, even for the default catalog.
     HttpResponse<String> response = get("/v1/config");
     Assert.assertEquals(200, response.statusCode());
     String body = response.body();
     Assert.assertTrue(body, body.contains("GET /v1/{prefix}/namespaces"));
     Assert.assertTrue(body, body.contains("HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
-    Assert.assertFalse("read-only endpoint must not advertise writes: " + body,
+    Assert.assertTrue("default catalog must advertise table writes: " + body,
         body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
-    Assert.assertFalse("read-only endpoint must not advertise deletes: " + body,
+    Assert.assertTrue("default catalog must advertise table deletes: " + body,
         body.contains("DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
+    Assert.assertFalse(
+        "view writes are gated but not implemented in this phase, must not be advertised: " + body,
+        body.contains("POST /v1/{prefix}/namespaces/{namespace}/views"));
+    Assert.assertFalse(
+        "namespace/transaction writes are gated but not implemented in this phase, "
+            + "must not be advertised: " + body,
+        body.contains("POST /v1/{prefix}/transactions/commit"));
+  }
+
+  @Test
+  public void defaultCatalogConfigAdvertisesWrites() throws Exception {
+    String body = get("/v1/" + CATALOG_NAME + "/config").body();
+    Assert.assertTrue(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+  }
+
+  @Test
+  public void nonDefaultCatalogConfigStillAdvertisesReadsOnly() throws Exception {
+    String body = get("/v1/" + CATALOG2_NAME + "/config").body();
+    Assert.assertFalse(body, body.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
+    Assert.assertTrue(body, body.contains("GET /v1/{prefix}/namespaces"));
   }
 
   @Test
