@@ -13,13 +13,19 @@ import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import org.junit.Test;
 
 public class IcebergRestServicesTest {
   @Test
   public void registryServesEveryConfiguredCatalog() throws Exception {
     RecordingThriftIface recording = new RecordingThriftIface();
-    try (IcebergRestServices services = IcebergRestServices.open(buildTwoCatalogConfig(), recording.iface)) {
+    // Registry wiring only; the write gate itself is covered by WriteRouteGateTest and
+    // IcebergRestEndpointIntegrationTest, so any resolver matching this fixture's separator works.
+    Function<String, String> catalogForExternalDb =
+        externalDbName -> externalDbName != null && externalDbName.startsWith("apache.") ? "apache" : "hdp";
+    try (IcebergRestServices services =
+        IcebergRestServices.open(buildTwoCatalogConfig(), recording.iface, catalogForExternalDb)) {
       assertEquals("hdp", services.defaultPrefix());
       assertNotNull(services.serviceFor("hdp"));
       assertNotNull(services.serviceFor("apache"));

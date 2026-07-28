@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.Function;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 /**
@@ -21,13 +22,23 @@ public final class IcebergRestServices implements AutoCloseable {
     this.defaultPrefix = defaultPrefix;
   }
 
-  public static IcebergRestServices open(ProxyConfig config, ThriftHiveMetastore.Iface delegate) {
+  /**
+   * @param catalogForExternalDb resolves an external database name (federated form, e.g.
+   *     "apache__default") to the name of the catalog that actually owns it - the same
+   *     resolution {@code CatalogRouter.resolveDatabase(...).catalogName()} performs. Consulted
+   *     by each service's {@link WriteRouteGate} so a write is refused whenever the namespace it
+   *     targets resolves to any catalog other than {@code config.defaultCatalog()}, regardless of
+   *     which prefix the request arrived under.
+   */
+  public static IcebergRestServices open(
+      ProxyConfig config, ThriftHiveMetastore.Iface delegate, Function<String, String> catalogForExternalDb) {
     Map<String, IcebergRestService> services = new LinkedHashMap<>();
     for (String catalog : config.catalogNames()) {
       CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
           ? null
           : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
-      services.put(catalog, new IcebergRestService(catalog, delegate, translation));
+      services.put(catalog,
+          new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
   }

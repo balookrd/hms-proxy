@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
@@ -45,21 +46,40 @@ public final class IcebergRestService implements AutoCloseable {
   private final String catalogName;
   private final RoutingHiveCatalog catalog;
   private final RESTCatalogAdapter adapter;
+  private final WriteRouteGate writeGate;
 
   public IcebergRestService(
       String catalogName,
       ThriftHiveMetastore.Iface delegate,
-      CatalogNameTranslation translationOrNull) {
+      CatalogNameTranslation translationOrNull,
+      String defaultCatalogName,
+      Function<String, String> catalogForExternalDb) {
     this.catalogName = Objects.requireNonNull(catalogName, "catalogName");
     Objects.requireNonNull(delegate, "delegate");
+    Objects.requireNonNull(defaultCatalogName, "defaultCatalogName");
+    Objects.requireNonNull(catalogForExternalDb, "catalogForExternalDb");
     IMetaStoreClient client = RoutingMetaStoreClient.create(delegate, translationOrNull);
     this.catalog = new RoutingHiveCatalog(client, new Configuration());
     this.catalog.initialize(catalogName, Map.of(CatalogProperties.URI, UNUSED_URI));
     this.adapter = new RESTCatalogAdapter(catalog);
+    // A name-translated (non-default) service only ever exposes its own databases, so its own
+    // local namespace values must be mapped back to this catalog's federated external name
+    // before going through the shared resolver - which then always answers with this same
+    // (non-default) catalog, and the gate below refuses every write for it. The default
+    // catalog's own service has no translation, so its namespace values are already federated
+    // external names and go through the shared resolver unchanged.
+    Function<String, String> catalogForNamespace = translationOrNull == null
+        ? catalogForExternalDb
+        : localDb -> catalogForExternalDb.apply(translationOrNull.toExternal(localDb));
+    this.writeGate = new WriteRouteGate(defaultCatalogName, catalogForNamespace);
   }
 
   public String catalogName() {
     return catalogName;
+  }
+
+  WriteRouteGate writeGate() {
+    return writeGate;
   }
 
   /**

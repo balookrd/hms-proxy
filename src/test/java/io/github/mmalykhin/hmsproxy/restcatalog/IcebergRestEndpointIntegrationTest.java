@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -79,7 +80,15 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.tables.put("catalog2__default.events", events);
 
     ProxyConfig config = buildConfig();
-    services = IcebergRestServices.open(config, delegate.iface);
+    // Resolves the way CatalogRouter.resolveDatabase would for this fixture (default catalog1,
+    // other catalog2, separator "__"), without needing a real CatalogRouter: CatalogRouter.open
+    // eagerly connects to each catalog's hive.metastore.uris, which the fake URIs below cannot
+    // satisfy.
+    Function<String, String> catalogForExternalDb = externalDbName ->
+        externalDbName != null && externalDbName.startsWith(CATALOG2_NAME + "__")
+            ? CATALOG2_NAME
+            : CATALOG_NAME;
+    services = IcebergRestServices.open(config, delegate.iface, catalogForExternalDb);
     metrics = new PrometheusMetrics();
     server = RestCatalogServer.open(config, services, metrics);
     Assert.assertNotNull("server must start", server);
@@ -233,6 +242,32 @@ public class IcebergRestEndpointIntegrationTest {
         "/v1/catalog1/namespaces/default/tables/t1/metrics", "not json at all");
     Assert.assertEquals(400, response.statusCode());
     Assert.assertTrue(response.body().contains("BadRequestException"));
+  }
+
+  // Body used by the two refusal tests below: a minimal but genuinely parseable
+  // CreateTableRequest. An empty "schema":{} (as a bare write-route smoke check might use)
+  // fails Iceberg's own SchemaParser before the request ever reaches the write gate, which
+  // would make these tests report a body-parsing 400 instead of exercising the gate.
+  private static final String MINIMAL_CREATE_TABLE_BODY =
+      "{\"name\":\"t9\",\"schema\":{\"type\":\"struct\",\"schema-id\":0,\"fields\":[]}}";
+
+  @Test
+  public void createTableUnderNonDefaultPrefixIsRefused() throws Exception {
+    HttpResponse<String> response = post(
+        "/v1/catalog2/namespaces/default/tables", MINIMAL_CREATE_TABLE_BODY);
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+  }
+
+  @Test
+  public void createTableUnderFederatedNamespaceIsRefused() throws Exception {
+    // The whole point of this test: prefix catalog1 IS the default catalog, so a gate that keys
+    // on the URL prefix instead of the catalog the namespace resolves to would wrongly allow
+    // this. "catalog2__default" is catalog2's database, exposed under catalog1's federated view.
+    HttpResponse<String> response = post(
+        "/v1/catalog1/namespaces/catalog2__default/tables", MINIMAL_CREATE_TABLE_BODY);
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
   }
 
   @Test

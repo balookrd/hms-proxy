@@ -164,6 +164,12 @@ final class IcebergHttpHandler implements HttpHandler {
         vars.put(PAGE_TOKEN_PARAM, "");
       }
 
+      String writeRefusal = service.writeGate().check(route, vars, body);
+      if (writeRefusal != null) {
+        writeError(exchange, outcome, 403, "ForbiddenException", writeRefusal);
+        return;
+      }
+
       RESTResponse response;
       Class<? extends RESTResponse> effectiveResponseType =
           responseType == null ? RESTResponse.class : responseType;
