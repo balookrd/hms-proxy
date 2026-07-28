@@ -23,6 +23,13 @@ import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 final class RecordingThriftIface {
   static final long LOCK_ID = 42L;
 
+  // Magic database name that makes get_database throw an Error instead of a checked
+  // Thrift exception. Proxy.newProxyInstance() passes Error/RuntimeException through the
+  // invocation handler unwrapped (only checked exceptions get boxed in
+  // UndeclaredThrowableException), so this reaches IcebergHttpHandler's catch-all exactly
+  // like the real NoSuchMethodError this proxy phase needed to stop from hanging the client.
+  static final String THROWS_ERROR_PROBE_DB = "throws_error_probe";
+
   final List<String> calls = new ArrayList<>();
   final Map<String, Database> databases = new HashMap<>();
   final Map<String, Table> tables = new HashMap<>();
@@ -67,6 +74,9 @@ final class RecordingThriftIface {
       case "get_database": {
         String db = (String) args[0];
         calls.add("get_database:" + db);
+        if (THROWS_ERROR_PROBE_DB.equals(db)) {
+          throw new Error("simulated classpath-mismatch failure (e.g. NoSuchMethodError)");
+        }
         Database value = databases.get(db);
         if (value == null) {
           throw new NoSuchObjectException("no database " + db);

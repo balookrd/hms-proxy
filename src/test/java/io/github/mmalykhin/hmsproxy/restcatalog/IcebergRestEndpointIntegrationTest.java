@@ -149,6 +149,21 @@ public class IcebergRestEndpointIntegrationTest {
   }
 
   @Test
+  public void unhandledErrorFromDispatchYieldsResponseInsteadOfHang() throws Exception {
+    // Regression test for IcebergHttpHandler.doHandle's catch-all: it used to catch only
+    // Exception, so an Error thrown below the REST adapter (like the real
+    // NoSuchMethodError from a classpath mismatch this phase hit) would escape doHandle and
+    // handle() entirely, leaving the JDK HTTP server to abandon the exchange with no
+    // response - the client would hang until its own timeout instead of seeing a 5xx. If
+    // that regressed, this get() call would throw (timeout or connection reset) rather than
+    // returning a response, so this test fails loudly instead of asserting a wrong status.
+    HttpResponse<String> response =
+        get("/v1/" + CATALOG_NAME + "/namespaces/" + RecordingThriftIface.THROWS_ERROR_PROBE_DB);
+    Assert.assertEquals("body: " + response.body(), 500, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("\"type\":\"Error\""));
+  }
+
+  @Test
   public void listTablesReturnsTableNames() throws Exception {
     HttpResponse<String> response = get("/v1/" + CATALOG_NAME + "/namespaces/sales/tables");
     Assert.assertEquals("body: " + response.body(), 200, response.statusCode());

@@ -193,11 +193,15 @@ final class IcebergHttpHandler implements HttpHandler {
         return;
       }
       writeJson(exchange, outcome, 200, IcebergRestMapper.mapper().writeValueAsString(response));
-    } catch (Exception e) {
+    } catch (Throwable t) {
+      // Catches Throwable, not just Exception: a backend classpath mismatch (e.g. a
+      // NoSuchMethodError from a stale transitive Hadoop jar) is an Error, and letting
+      // it escape here would leave the JDK HTTP server abandoning the exchange with no
+      // response at all - the client hangs instead of getting a 5xx.
       LOG.warn("Unhandled error serving {} {}",
-          exchange.getRequestMethod(), exchange.getRequestURI(), e);
-      writeError(exchange, outcome, 500, e.getClass().getSimpleName(),
-          e.getMessage() == null ? "internal error" : e.getMessage());
+          exchange.getRequestMethod(), exchange.getRequestURI(), t);
+      writeError(exchange, outcome, 500, t.getClass().getSimpleName(),
+          t.getMessage() == null ? "internal error" : t.getMessage());
     }
   }
 

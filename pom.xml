@@ -96,6 +96,37 @@
           <groupId>org.apache.logging.log4j</groupId>
           <artifactId>log4j-1.2-api</artifactId>
         </exclusion>
+        <!-- orc-core (pulled in transitively by hive-standalone-metastore) drags
+             hadoop-hdfs 2.2.0, while hadoop-common resolves to 2.6.0 elsewhere in
+             this tree. hadoop-hdfs 2.2.0's DFSOutputStream calls the Hadoop-2.2-era
+             FSOutputSummer(Checksum,int,int) constructor, which hadoop-common 2.6.0
+             no longer has (it only kept FSOutputSummer(DataChecksum)) - so any HDFS
+             write from this JVM fails with NoSuchMethodError. Exclude the stale
+             transitive version and pin hadoop-hdfs explicitly below at 2.6.0 to
+             match hadoop-common. -->
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-hdfs</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-hdfs</artifactId>
+      <version>2.6.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>jdk.tools</groupId>
+          <artifactId>jdk.tools</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>log4j</groupId>
+          <artifactId>log4j</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>
