@@ -2,12 +2,13 @@
 # Iceberg interop smoke: one table crosses every engine and every front-door dialect over
 # whichever metastore the stand currently has as its default catalog.
 #
-#   1. REST creates the table and writes real rows (iceberg-rest-writer inside stand-proxy).
-#   2. The vendor HDP HiveServer2 (Hortonworks front door, 9084) reads them and appends its own.
-#   3. The Apache HiveServer2 (Apache front door, 9083) appends and reads everything.
-#   4. The Hive 4 HiveServer2 (Hive 4 front door, 9085 - the APACHE_4_1_0 dialect) reads all of
-#      the above and appends its own row through its native Iceberg support.
-#   5. REST sees every SQL commit (client-side scan), then drops the table.
+# Four participants take part - the REST front door and the three SQL dialects (Hortonworks
+# 9084, Apache 9083, Hive 4 9085). --origin picks which one creates the table and writes the
+# first rows; the other three then change it in turn, each reading the running total before its
+# own append, so every hand-off is proven to be visible across the front-door boundary. REST
+# drops the table at the end. With --origin rest the table is born in the Iceberg catalog and
+# SQL takes it over; with a SQL origin it is born as a Hive table (STORED BY iceberg) and REST
+# has to resolve and commit onto something it did not create.
 #
 # The backend under test is whichever catalog the running proxy config makes default - writes
 # are gated to it - so --prefix has to name that catalog and match the config the stand was
@@ -22,6 +23,7 @@
 #
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos
+#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp --origin apache
 #
 # Every profile needs the SQL clients too, so bring the stand up with the hdp and hive4fe
 # compose profiles on top of the backend's own, e.g.:
@@ -33,14 +35,45 @@ STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTH=plain
 PREFIX=${INTEROP_PREFIX:-hive4}
 NAMENODE=${INTEROP_NAMENODE:-}
+ORIGIN=${INTEROP_ORIGIN:-rest}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --kerberos) AUTH=kerberos; shift ;;
     --prefix) [[ $# -ge 2 ]] || { echo "missing value for --prefix" >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
     --namenode) [[ $# -ge 2 ]] || { echo "missing value for --namenode" >&2; exit 1; }; NAMENODE="$2"; shift 2 ;;
+    --origin) [[ $# -ge 2 ]] || { echo "missing value for --origin" >&2; exit 1; }; ORIGIN="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# Participation order: the origin creates the table and writes first, the rest take it in turn.
+PARTICIPANTS=(rest hdp apache hive4)
+OTHERS=()
+for candidate in "${PARTICIPANTS[@]}"; do
+  [[ "${candidate}" == "${ORIGIN}" ]] || OTHERS+=("${candidate}")
+done
+[[ ${#OTHERS[@]} -eq $((${#PARTICIPANTS[@]} - 1)) ]] \
+  || { echo "unknown --origin '${ORIGIN}'; expected one of: ${PARTICIPANTS[*]}" >&2; exit 1; }
+
+# A Hive 4-created Iceberg table cannot be read by the 3.1 line, and no proxy behaviour is
+# involved: `STORED BY ICEBERG` leaves the StorageDescriptor's inputFormat as the abstract
+# org.apache.hadoop.mapred.FileInputFormat (naming the handler class explicitly leaves it null
+# outright), because Hive 4 resolves the real format through the storage handler at plan time.
+# Hive 3.1 instead instantiates whatever the descriptor names and dies with "Cannot create an
+# instance of InputFormat class org.apache.hadoop.mapred.FileInputFormat". Tables written by
+# Iceberg's own HiveTableOperations - the REST path, and the 3.1 storage handler itself - carry
+# the concrete HiveIcebergInputFormat, which is why every other origin is readable everywhere.
+SKIPPED=()
+if [[ "${ORIGIN}" == "hive4" ]]; then
+  REMAINING=()
+  for candidate in "${OTHERS[@]}"; do
+    case "${candidate}" in
+      hdp|apache) SKIPPED+=("${candidate}") ;;
+      *) REMAINING+=("${candidate}") ;;
+    esac
+  done
+  OTHERS=("${REMAINING[@]}")
+fi
 
 # The apache catalog is the only one on the second HDFS cluster; everything else lives on the
 # first. Only used to delete the table's files after a (non-purge) drop.
@@ -165,6 +198,99 @@ expect_rows() {
   log "${label}: count=${expected} confirmed"
 }
 
+# --- participants ----------------------------------------------------------------------------
+#
+# Four front doors can each play any role. Every participant knows how to create the table,
+# append rows to it and count them; the scenario below picks one as the origin and hands the
+# table to the other three.
+
+participant_label() {
+  case "$1" in
+    rest) printf 'REST front door' ;;
+    hdp) printf 'HDP HiveServer2 (Hortonworks front door)' ;;
+    apache) printf 'Apache HiveServer2 (Apache front door)' ;;
+    hive4) printf 'Hive 4 HiveServer2 (Hive 4 front door)' ;;
+    *) fail "unknown participant: $1" ;;
+  esac
+}
+
+sql_container() {
+  case "$1" in
+    hdp) printf 'stand-hs2-hdp' ;;
+    apache) printf 'stand-hs2' ;;
+    hive4) printf 'stand-hs2-hive4' ;;
+    *) fail "not a SQL participant: $1" ;;
+  esac
+}
+
+sql_url() {
+  case "$1" in
+    hdp) hdp_jdbc_url ;;
+    apache) apache_jdbc_url ;;
+    hive4) hive4_jdbc_url ;;
+    *) fail "not a SQL participant: $1" ;;
+  esac
+}
+
+# Hive 4 has no MapReduce engine at all (the `set` would be refused) and its native Iceberg
+# reader needs no vectorization switch, so it runs on the image's Tez local-mode defaults.
+sql_init() {
+  case "$1" in
+    hive4) printf '' ;;
+    *) printf '%s' "${SQL_INIT}" ;;
+  esac
+}
+
+# The DDL that makes an Iceberg table. Hive 4 has first-class syntax; the 3.1 line names the
+# storage handler that iceberg-hive-runtime brings.
+sql_create_ddl() {
+  case "$1" in
+    hive4) printf 'create table %s (id int, src string) stored by iceberg;' "${TABLE}" ;;
+    *) printf "create table %s (id int, src string) stored by 'org.apache.iceberg.mr.hive.HiveIcebergStorageHandler';" "${TABLE}" ;;
+  esac
+}
+
+# --- participant operations ------------------------------------------------------------------
+
+participant_create() {
+  local who="$1"
+  if [[ "${who}" == "rest" ]]; then
+    writer create
+    return
+  fi
+  beeline_run "$(sql_container "${who}")" "$(sql_url "${who}")" \
+    "$(sql_init "${who}") $(sql_create_ddl "${who}")" >/dev/null
+}
+
+participant_append() {
+  local who="$1"
+  local rows="$2"
+  local id="$3"
+  if [[ "${who}" == "rest" ]]; then
+    writer append --rows "${rows}" --marker rest
+    return
+  fi
+  local values=""
+  local i
+  for ((i = 0; i < rows; i++)); do
+    [[ -n "${values}" ]] && values+=", "
+    values+="($((id + i)), '${who}')"
+  done
+  beeline_run "$(sql_container "${who}")" "$(sql_url "${who}")" \
+    "$(sql_init "${who}") insert into ${TABLE} values ${values};" >/dev/null
+}
+
+# Echoes the row count this participant sees, as a bare number.
+participant_count() {
+  local who="$1"
+  if [[ "${who}" == "rest" ]]; then
+    writer count | sed -n 's/^rows=\([0-9]*\)$/\1/p'
+    return
+  fi
+  beeline_run "$(sql_container "${who}")" "$(sql_url "${who}")" \
+    "$(sql_init "${who}") select count(*) from ${TABLE};"
+}
+
 # --- the scenario ----------------------------------------------------------------------------
 
 interop_kinit
@@ -175,54 +301,45 @@ interop_kinit
 log "defensive drop of a possible leftover '${NS}.${TABLE}'"
 writer drop >/dev/null 2>&1 || true
 
-log "step 1: REST creates '${NS}.${TABLE}' and writes 2 rows (src=rest)"
-writer create
-writer append --rows 2 --marker rest
-out="$(writer count)"
-grep -q '^rows=2$' <<< "${out}" || fail "REST-side count after the REST append expected rows=2, got: ${out}"
+for skipped in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
+  log "skipping ${skipped}: a Hive 4-created Iceberg table names no concrete inputFormat, which the 3.1 line cannot plan against (see the comment at the top of this script)"
+done
 
+log "origin: ${ORIGIN} ($(participant_label "${ORIGIN}")) creates '${NS}.${TABLE}' and writes 2 rows"
+participant_create "${ORIGIN}"
+participant_append "${ORIGIN}" 2 1
+count="$(participant_count "${ORIGIN}")"
+expect_rows "$(participant_label "${ORIGIN}") read of its own rows" 2 "${count}"
+
+# Whoever created the table, its metadata has to be loadable through REST: a SQL-created Iceberg
+# table is only interoperable if the REST catalog can resolve it too.
 code="$(rest_curl -o /dev/null -w '%{http_code}' "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}")"
 [[ "${code}" == "200" ]] || fail "REST load of '${TABLE}' returned HTTP ${code}"
 log "REST metadata load answers 200"
 
-log "step 2: HDP HiveServer2 (Hortonworks front door) reads and appends"
-out="$(beeline_run stand-hs2-hdp "$(hdp_jdbc_url)" \
-  "${SQL_INIT} select count(*) from ${TABLE};")"
-expect_rows "HDP read of the REST-written rows" 2 "${out}"
+# Everyone else changes the table in turn, each reading the running total first - that read is
+# what proves the previous participant's commit is visible across the front-door boundary.
+expected=2
+next_id=100
+for who in "${OTHERS[@]}"; do
+  log "${who} ($(participant_label "${who}")) reads what the others wrote, then appends"
+  count="$(participant_count "${who}")"
+  expect_rows "$(participant_label "${who}") read before its own append" "${expected}" "${count}"
 
-beeline_run stand-hs2-hdp "$(hdp_jdbc_url)" \
-  "${SQL_INIT} insert into ${TABLE} values (100, 'hdp');" >/dev/null
-out="$(beeline_run stand-hs2-hdp "$(hdp_jdbc_url)" \
-  "${SQL_INIT} select count(*) from ${TABLE};")"
-expect_rows "HDP read after its own append" 3 "${out}"
+  participant_append "${who}" 1 "${next_id}"
+  expected=$((expected + 1))
+  next_id=$((next_id + 100))
+  count="$(participant_count "${who}")"
+  expect_rows "$(participant_label "${who}") read after its own append" "${expected}" "${count}"
+done
 
-log "step 3: Apache HiveServer2 (Apache front door) appends and reads"
-beeline_run stand-hs2 "$(apache_jdbc_url)" \
-  "${SQL_INIT} insert into ${TABLE} values (200, 'apache');" >/dev/null
-out="$(beeline_run stand-hs2 "$(apache_jdbc_url)" \
-  "${SQL_INIT} select count(*) from ${TABLE};")"
-expect_rows "Apache read after both SQL appends" 4 "${out}"
+log "final: every front door sees all ${expected} rows"
+for who in "${ORIGIN}" "${OTHERS[@]}"; do
+  count="$(participant_count "${who}")"
+  expect_rows "$(participant_label "${who}") final read" "${expected}" "${count}"
+done
 
-log "step 4: Hive 4 HiveServer2 (Hive 4 front door) reads and appends"
-# No SQL_INIT here: Hive 4 has no MapReduce engine at all (`set hive.execution.engine=mr` would
-# be refused), and its native Iceberg reader needs no vectorization switch - the image's Tez
-# local mode defaults are exactly what this server should run with.
-out="$(beeline_run stand-hs2-hive4 "$(hive4_jdbc_url)" \
-  "select count(*) from ${TABLE};")"
-expect_rows "Hive 4 read of the 3.1-era appends" 4 "${out}"
-
-beeline_run stand-hs2-hive4 "$(hive4_jdbc_url)" \
-  "insert into ${TABLE} values (300, 'hive4');" >/dev/null
-out="$(beeline_run stand-hs2-hive4 "$(hive4_jdbc_url)" \
-  "select count(*) from ${TABLE};")"
-expect_rows "Hive 4 read after its own append" 5 "${out}"
-
-log "step 5: REST sees every SQL commit and drops the table"
-out="$(writer count)"
-grep -q '^rows=5$' <<< "${out}" \
-  || fail "REST-side scan after the SQL appends expected rows=5, got: ${out}"
-log "REST-side scan confirms all 5 rows (2 rest + 1 hdp + 1 apache + 1 hive4)"
-
+log "REST drops the table"
 code="$(rest_curl -o /dev/null -w '%{http_code}' -X DELETE \
   "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}")"
 [[ "${code}" =~ ^2 ]] || fail "REST drop of '${TABLE}' returned HTTP ${code}"
@@ -239,4 +356,4 @@ if grep -q "${TABLE}" <<< "${out}"; then
   fail "SQL still lists '${TABLE}' after the REST drop: ${out}"
 fi
 
-log "iceberg interop smoke passed (auth=${AUTH}, table '${NS}.${TABLE}', backend catalog '${PREFIX}')"
+log "iceberg interop smoke passed (auth=${AUTH}, origin ${ORIGIN}, table '${NS}.${TABLE}', backend catalog '${PREFIX}')"

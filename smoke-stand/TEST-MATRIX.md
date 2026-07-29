@@ -176,6 +176,34 @@ Every cell below was observed on all three backends unless the row says otherwis
 | H7 | Kerberos end to end: the writer authenticates REST with per-request SPNEGO tokens (custom Iceberg `AuthManager`) and writes HDFS as `smoke-user` from its keytab; all three HS2 passes run over SASL | n/a | ✅ |
 | H8 | The same table is written through a 3.1-line backend on the second HDFS cluster (`--prefix apache`), which is what puts `APACHE_3_1_3` on the REST write path - the runtime profile no other layout can reach, since writes only go to the default catalog | ✅ | ✅ |
 
+### H9-H12. Which front door creates the table (`--origin`)
+
+The rows above have REST create the table and SQL take it over. `--origin` rotates that role, so
+each front door in turn is the one that creates and writes first while the other three modify
+what it made. Run on the `hive4` backend:
+
+| # | Origin (creates + writes 2 rows) | Modified afterwards by | plain | kerberos |
+| --- | --- | --- | --- | --- |
+| H9 | REST front door (Iceberg catalog `createTable`) | HDP, Apache, Hive 4 → 5 rows | ✅ | ✅ |
+| H10 | HDP HiveServer2 (`STORED BY 'HiveIcebergStorageHandler'`) | REST, Apache, Hive 4 → 5 rows | ✅ | ✅ |
+| H11 | Apache HiveServer2 (same DDL) | REST, HDP, Hive 4 → 5 rows | ✅ | ✅ |
+| H12 | Hive 4 HiveServer2 (`STORED BY ICEBERG`) | REST only → 3 rows; the 3.1-line engines **cannot** read it, see below | ✅ | ✅ |
+
+Every participant reads the running total *before* its own append, so each hand-off across the
+front-door boundary is proven rather than assumed, and a final round has all participants
+confirm the same count.
+
+**The one asymmetry, and it is Hive's, not the proxy's.** A Hive 4-created Iceberg table is
+unreadable by the 3.1 line: `STORED BY ICEBERG` leaves the StorageDescriptor's `inputFormat` as
+the abstract `org.apache.hadoop.mapred.FileInputFormat` (spelling the handler class out
+explicitly leaves it `null` instead), because Hive 4 resolves the real format through the
+storage handler at plan time. Hive 3.1 instantiates whatever the descriptor names and fails with
+`Cannot create an instance of InputFormat class org.apache.hadoop.mapred.FileInputFormat`.
+Tables written by Iceberg's own `HiveTableOperations` - the REST path, and the 3.1 storage
+handler itself - carry the concrete `HiveIcebergInputFormat`, which is why every other origin is
+readable everywhere, Hive 4 included. The proxy passes the descriptor through unchanged in both
+directions; nothing here is a routing or compatibility decision it could make differently.
+
 What building this surfaced (all found by the scenario, not by review):
 
 - The `APACHE_4_1_0` backend runtime could not open a live Thrift connection at all - its client
@@ -451,6 +479,17 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   proxy defect surfaced: the EXCL_WRITE downgrade found earlier is what already made the Hive 4
   dialect work over a 3.1 backend, which is the `hive4_frontdoor_to_apache_backend_downgrade`
   capability being driven by a real Hive 4 client for the first time.
+
+- **2026-07-29** (fifth entry), `--origin` was added so each front door in turn creates the table
+  while the other three modify it (rows H9-H12), and the scenario grew a read *before* every
+  append plus a final all-participants round, so each hand-off is proven rather than assumed.
+  Eight runs on the `hive4` backend, plain and Kerberos for each of the four origins, all green.
+  The Hive 4 origin is the one that does not reach the 3.1 line, for a reason outside the proxy:
+  `STORED BY ICEBERG` writes no concrete `inputFormat` into the StorageDescriptor. That was
+  confirmed by hand before being written down - the descriptor the proxy relayed carried
+  `org.apache.hadoop.mapred.FileInputFormat`, and naming the handler class explicitly in the DDL
+  produced `inputFormat: null` instead. The reverse direction works: tables created by the 3.1
+  storage handler carry `HiveIcebergInputFormat` and Hive 4 reads and appends to them happily.
 
 ## Two caveats on faithfulness
 

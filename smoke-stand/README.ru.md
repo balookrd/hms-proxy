@@ -367,6 +367,21 @@ smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos   # SPNEGO + 
 `apache` живёт на втором HDFS-кластере, поэтому с `--prefix apache` таблица и её файлы ложатся на
 `namenode-b` — сценарий убирает за собой именно там.
 
+`--origin` выбирает, какой из четырёх front door создаёт таблицу и пишет первым; остальные три
+затем меняют созданное, каждый читая текущий итог до своей записи:
+
+```bash
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin hdp      # создаёт SQL, меняет REST
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin rest     # по умолчанию
+```
+
+С `--origin hive4` два движка 3.1-линии пропускают круг, и прогон об этом сообщает: у таблицы,
+созданной через `STORED BY ICEBERG`, в StorageDescriptor нет конкретного `inputFormat` (Hive 4
+резолвит его через storage handler на этапе плана), а Hive 3.1 не умеет строить план на таком
+дескрипторе. Таблицы, созданные REST-ом или storage handler'ом 3.1-линии, несут конкретный
+`HiveIcebergInputFormat` и читаются всеми движками, включая Hive 4, — см. H9-H12 в
+`TEST-MATRIX.ru.md`.
+
 Под Kerberos writer аутентифицирует REST одноразовыми SPNEGO-токенами на каждый запрос
 (кастомный Iceberg `AuthManager` внутри writer-jar) и логинится в HDFS из keytab smoke-user.
 HiveServer2 Hive 4 каждые несколько секунд пишет в лог отказ `scheduled_query_poll` — это

@@ -365,6 +365,21 @@ Append `--profile kerberos` and the matching `-kerberos` env file for the SASL v
 `apache` catalog lives on the second HDFS cluster, so with `--prefix apache` the table and its
 files land on `namenode-b` — the scenario cleans up there on its own.
 
+`--origin` picks which of the four front doors creates the table and writes first; the other
+three then modify what it made, each reading the running total before its own append:
+
+```bash
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin hdp      # SQL creates, REST modifies
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin rest     # the default
+```
+
+With `--origin hive4` the two 3.1-line engines sit the round out, and the run says so: a table
+created by `STORED BY ICEBERG` carries no concrete `inputFormat` in its StorageDescriptor
+(Hive 4 resolves it through the storage handler at plan time), and Hive 3.1 cannot plan against
+that. Tables created by REST or by the 3.1 storage handler carry the concrete
+`HiveIcebergInputFormat` and are readable by every engine, Hive 4 included — see
+`TEST-MATRIX.md` H9-H12.
+
 Under Kerberos the writer authenticates REST with per-request SPNEGO tokens (a custom Iceberg
 `AuthManager` inside the writer jar) and logs into HDFS from the smoke-user keytab. The Hive 4
 HiveServer2 logs `scheduled_query_poll` refusals every few seconds — a Hive 4-only feature with
