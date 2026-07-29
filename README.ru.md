@@ -1056,7 +1056,7 @@ rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 | `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | поддержан (204, если существует, 404 — если нет) |
 | `POST /v1/{prefix}/namespaces/{ns}/tables`             | поддержан только для дефолтного каталога (create); иначе `403` |
 | `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
-| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | поддержан только для дефолтного каталога (drop, включая `?purgeRequested=true`); иначе `403` |
 | `POST /v1/{prefix}/tables/rename`                      | поддержан только для дефолтного каталога (rename); иначе `403` |
 | `POST /v1/{prefix}/namespaces/{ns}/register`           | поддержан только для дефолтного каталога (register); иначе `403` |
 | `POST /v1/{prefix}/namespaces/{ns}/views`               | поддержан только для дефолтного каталога (create); иначе `403` |
@@ -1094,6 +1094,18 @@ which is served by the synthetic lock shim and provides no writer
 isolation.` Это проверяется на namespace, в который запрос **резолвится**, а
 не на prefix из URL — см. [Почему writes работают только в
 default-каталоге](#iceberg-rest-catalog-frontend) выше.
+
+`DELETE .../tables/{tbl}?purgeRequested=true` обслуживается как настоящий
+purge — так же, как его обслуживает собственный REST-каталог Iceberg: прокси
+дропает таблицу в metastore, а затем сам удаляет её data- и metadata-файлы,
+обходя манифесты таблицы, чтобы их найти. Удаление идёт внутри JVM прокси под
+его собственными credentials и завершается до отправки `204`. В отличие от
+purge внешних таблиц на Thrift-листенере, здесь нет ни allowlist, ни
+переключателя `BEST_EFFORT` — клиент запросил это явным параметром самой
+спецификации, — поэтому write-гейт остаётся единственным, что удерживает purge
+внутри дефолтного каталога: purge, чей namespace резолвится в другой каталог,
+отказывается тем же `403`, что и любой другой write, до того как будет тронут
+хоть один файл.
 
 Error-ответы несут смапленный HTTP-статус, `type` и `message`, но никогда —
 server stack trace, потому что этот listener может быть доступен без
@@ -1181,6 +1193,16 @@ spark.sql.catalog.sales_catalog.warehouse=sales
   исключает этот транзитивный `hadoop-hdfs` и напрямую зависит от
   `hadoop-hdfs:2.6.0`, чтобы совпасть с `hadoop-common`. Держите обе версии
   согласованными, если переопределяете любую из них.
+- Purge читает манифесты таблицы через Avro. `iceberg-core:1.9.2` собран
+  против `avro:1.12.0`, а `hadoop-mapreduce-client-core:2.6.5` тянет
+  `avro:1.7.4` на той же глубине дерева — Maven выбирал 1.7.4 по порядку
+  объявления, и любой purge падал с `NoClassDefFoundError:
+  org/apache/avro/LogicalTypes`. `pom.xml` пинит `avro:1.12.0`; больше никто на
+  этом classpath не вызывает Avro API. Кодеки snappy, xz и zstd объявлены в
+  Avro как optional и в fat jar не попадают, поэтому манифест, записанный с
+  недефолтным `write.avro.compression-codec`, прочитать не получится —
+  дефолтный для Iceberg `gzip` это встроенный в Avro deflate, которому ничего
+  дополнительного не нужно.
 
 ## Безопасность
 

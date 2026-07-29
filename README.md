@@ -1058,7 +1058,7 @@ Requests to this listener are covered by the Prometheus metrics described in
 | `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | supported (204 if exists, 404 if not) |
 | `POST /v1/{prefix}/namespaces/{ns}/tables`             | supported for the default catalog only (create); `403` elsewhere |
 | `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported for the default catalog only (commit/update); `403` elsewhere |
-| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop, including `?purgeRequested=true`); `403` elsewhere |
 | `POST /v1/{prefix}/tables/rename`                      | supported for the default catalog only (rename); `403` elsewhere |
 | `POST /v1/{prefix}/namespaces/{ns}/register`           | supported for the default catalog only (register); `403` elsewhere |
 | `POST /v1/{prefix}/namespaces/{ns}/views`               | supported for the default catalog only (create); `403` elsewhere |
@@ -1095,6 +1095,17 @@ default catalog 'hdp'; namespace 'apache__default' belongs to catalog
 isolation.` This is enforced on the namespace the request **resolves** to,
 not on the URL prefix it arrived under - see [Why writes are default-catalog
 only](#iceberg-rest-catalog-frontend) above.
+
+`DELETE .../tables/{tbl}?purgeRequested=true` is served as a real purge, the
+way Iceberg's own REST catalog serves it: the proxy drops the table in the
+metastore and then deletes the table's data and metadata files itself, walking
+the table's manifests to find them. That deletion runs inside the proxy's JVM
+under the proxy's own credentials and finishes before the `204` is sent. Unlike
+the Thrift listener's external-table purge it has no allowlist and no
+`BEST_EFFORT` switch — the client asked for it through the spec's own
+parameter — so the write gate is the only thing keeping it inside the default
+catalog: a purge whose namespace resolves elsewhere is refused with the same
+`403` as any other write, before any file is touched.
 
 Error responses carry the mapped HTTP status, `type` and `message` but never
 a server stack trace, since this listener can be reached without
@@ -1181,6 +1192,15 @@ spark.sql.catalog.sales_catalog.warehouse=sales
   excludes that transitive `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0`
   directly, to match `hadoop-common`. Keep the two aligned if you ever
   override either version.
+- A purge reads the table's manifests through Avro. `iceberg-core:1.9.2` is
+  compiled against `avro:1.12.0`, while `hadoop-mapreduce-client-core:2.6.5`
+  drags `avro:1.7.4` in at the same depth of the tree - Maven picked 1.7.4 by
+  declaration order and every purge died with `NoClassDefFoundError:
+  org/apache/avro/LogicalTypes`. `pom.xml` pins `avro:1.12.0`; nothing else on
+  this classpath calls the Avro API. Avro's snappy, xz and zstd codecs are
+  optional dependencies and stay out of the fat jar, so a manifest written with
+  a non-default `write.avro.compression-codec` cannot be read - Iceberg's
+  default, `gzip`, is Avro's built-in deflate codec and needs nothing extra.
 
 ## Security
 

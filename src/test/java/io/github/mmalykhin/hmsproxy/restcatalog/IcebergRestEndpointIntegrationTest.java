@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -21,11 +22,15 @@ import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.hadoop.HadoopOutputFile;
+import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.types.Types;
 import org.apache.log4j.Appender;
 import org.apache.log4j.AppenderSkeleton;
@@ -486,6 +491,51 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertEquals(204, head("/v1/catalog2/namespaces/default/tables/events").statusCode());
   }
 
+  @Test
+  public void dropTableWithPurgeDeletesDataFiles() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("purge_me");
+
+    HttpResponse<String> response =
+        delete("/v1/" + CATALOG_NAME + "/namespaces/default/tables/purge_me?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertTrue(delegate.calls.toString(),
+        delegate.calls.contains("drop_table:default.purge_me"));
+    Assert.assertFalse("purge must delete the table's data files, but " + dataFile
+        + " is still there", dataFile.exists());
+  }
+
+  @Test
+  public void dropTableWithoutPurgeKeepsDataFiles() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("keep_me");
+
+    HttpResponse<String> response =
+        delete("/v1/" + CATALOG_NAME + "/namespaces/default/tables/keep_me");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertTrue("a drop without purge must leave the data files alone, but " + dataFile
+        + " is gone", dataFile.exists());
+  }
+
+  @Test
+  public void dropTableWithPurgeUnderFederatedNamespaceDeletesNothing() throws Exception {
+    // The write gate has always refused this route, but until purge worked the refusal was
+    // belt-and-braces: the request died on Avro before it could touch a file either way. Now
+    // that a purge really deletes data, the gate is the only thing standing between a client
+    // and another catalog's files, so pin both halves - the 403 and the untouched data file.
+    File dataFile = registerTableWithCommittedDataFile("federated_purge_me");
+    delegate.tables.put(
+        "catalog2__default.federated_purge_me", delegate.tables.get("default.federated_purge_me"));
+
+    HttpResponse<String> response = delete("/v1/" + CATALOG_NAME
+        + "/namespaces/catalog2__default/tables/federated_purge_me?purgeRequested=true");
+
+    Assert.assertEquals(403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+    Assert.assertTrue("a refused purge must not delete anything, but " + dataFile + " is gone",
+        dataFile.exists());
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
@@ -511,6 +561,36 @@ public class IcebergRestEndpointIntegrationTest {
         metadata,
         HadoopOutputFile.fromPath(new Path(metadataFile.getAbsolutePath()), new Configuration()));
     return metadataFile.getAbsolutePath();
+  }
+
+  // Creates a real Iceberg table on local disk, commits one data file into it and registers it
+  // in the fake metastore under "default", returning that data file. Unlike
+  // writeIcebergTableMetadata above, the committed snapshot gives the table a manifest list and
+  // a manifest - the only shape that makes a purge actually walk the manifests (which is what
+  // reads Avro) rather than just unlinking metadata JSON.
+  private File registerTableWithCommittedDataFile(String tableName) throws Exception {
+    File tableDir = tempFolder.newFolder(tableName);
+    File dataFile = new File(tableDir, "data/data.parquet");
+    dataFile.getParentFile().mkdirs();
+    Files.write(dataFile.toPath(), new byte[] {1, 2, 3});
+
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+    org.apache.iceberg.Table table = new HadoopTables(new Configuration()).create(
+        schema, PartitionSpec.unpartitioned(), Map.of(), "file://" + tableDir.getAbsolutePath());
+    table.newAppend()
+        .appendFile(DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("file://" + dataFile.getAbsolutePath())
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(dataFile.length())
+            .withRecordCount(1)
+            .build())
+        .commit();
+
+    Table hiveTable = RecordingThriftIface.table("default", tableName);
+    hiveTable.getParameters().put(
+        "metadata_location", ((HasTableOperations) table).operations().current().metadataFileLocation());
+    delegate.tables.put("default." + tableName, hiveTable);
+    return dataFile;
   }
 
   private HttpResponse<String> head(String path) throws Exception {

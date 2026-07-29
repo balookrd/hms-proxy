@@ -55,6 +55,23 @@
         <artifactId>jackson-databind</artifactId>
         <version>2.18.3</version>
       </dependency>
+      <!-- Same shape as the Jackson pin above, for the other library Iceberg 1.9.2 needs a
+           newer version of: it reads manifests through Avro (the DELETE ?purgeRequested=true
+           path) using post-1.8 APIs - LogicalTypes, Conversion. hadoop-mapreduce-client-core
+           2.6.5 (avro 1.7.4) and iceberg-core (avro 1.12.0) sit at the same depth of the tree,
+           so Maven picks 1.7.4 by declaration order and every manifest read dies with
+           NoClassDefFoundError. Pin the version Iceberg is compiled against: nothing else here
+           calls the Avro API - only hadoop-common (io.serializer.avro, AvroFSInput, the
+           hadoop fs -text viewer, and the @Stringable/@Nullable annotations on
+           Path/Text/DelegationKey) and hadoop-mapreduce-client-core's generated jobhistory
+           events reference it, none of them on a proxy runtime path, and the standalone
+           metastore jars in hive-metastore/ do not reference Avro at all. Check with
+           mvn -o dependency:tree | grep -i avro when touching this. -->
+      <dependency>
+        <groupId>org.apache.avro</groupId>
+        <artifactId>avro</artifactId>
+        <version>1.12.0</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
