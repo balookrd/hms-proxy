@@ -116,7 +116,13 @@ final class RecordingThriftIface {
         if (value == null) {
           throw new NoSuchObjectException("no table " + db + "." + tbl);
         }
-        return value;
+        // A copy, never the stored object: a real metastore is on the other side of a Thrift
+        // wire, so every reply is freshly deserialized. Iceberg's HiveTableOperations mutates
+        // the Table it read (new metadata_location) BEFORE calling alter_table, so handing out
+        // the stored object would apply that write here even when alter_table is refused - and
+        // the commit-status check Iceberg runs after a refusal would read its own uncommitted
+        // write back and report the failed commit as a success.
+        return new Table(value);
       }
       case "get_table_objects_by_name": {
         String db = (String) args[0];
@@ -127,7 +133,7 @@ final class RecordingThriftIface {
         for (String t : tableNames) {
           Table value = tables.get(db + "." + t);
           if (value != null) {
-            result.add(value);
+            result.add(new Table(value));
           }
         }
         return result;

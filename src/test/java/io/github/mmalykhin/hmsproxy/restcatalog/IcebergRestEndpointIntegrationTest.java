@@ -600,27 +600,29 @@ public class IcebergRestEndpointIntegrationTest {
   }
 
   /**
-   * Reproduction of a defect, kept disabled so it does not fail the build: when the first table
-   * of a multi-table transaction commits and the second one's {@code alter_table} is rejected by
-   * the metastore, the request answers 204 - and a following loadTable serves the second table's
-   * UNCOMMITTED metadata, while the metastore still points at the old metadata file.
+   * A multi-table transaction whose second table is refused by the metastore itself (not by a
+   * requirement): the request must not answer success, and the refused table must keep serving
+   * the metadata the metastore still points at.
    *
-   * <p>Observed with the injected failure below: the fake recorded
-   * {@code alter_table_injected_failure:default.txn_d}, its {@code metadata_location} stayed on
-   * the original {@code 00000-*.metadata.json}, and yet the response body carried
-   * {@code "properties":{...,"txn":"applied"}} with a 204 status. A client is therefore told a
-   * transaction succeeded and then reads back state the metastore never accepted.
+   * <p>The first table stays committed - the transaction route is not atomic, as
+   * RESTCatalogAdapter's own javadoc says: it validates every requirement up front, then commits
+   * the tables one by one with no rollback. That half is pinned here too, so a future Iceberg
+   * that changes it is noticed rather than silently trusted.
    *
-   * <p>Not yet reproduced against a real metastore, so the production reachability is unproven -
-   * that is the first thing to settle before fixing. Enable this test as part of the fix.
+   * <p>Confirmed against the smoke stand's real Apache Hive 4.1.0 metastore (profile hive4,
+   * Kerberos) by starving the ddl rate-limit class so one alter_table in a multi-table commit was
+   * refused: the response was 500 CommitStateUnknownException, the refused table kept its old
+   * metadata_location and served no uncommitted properties, and the tables committed before it
+   * stayed committed - exactly what this test asserts.
    */
-  @org.junit.Ignore("reproduces an open defect: 204 and uncommitted metadata after a failed second commit")
   @Test
   public void multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails() throws Exception {
     registerTableWithCommittedDataFile("txn_c");
     registerTableWithCommittedDataFile("txn_d");
     String uuidC = tableUuid("txn_c");
     String uuidD = tableUuid("txn_d");
+    String locationBefore =
+        delegate.tables.get("default.txn_d").getParameters().get("metadata_location");
     delegate.alterTableFailures.add("txn_d");
 
     String body = "{\"table-changes\":["
@@ -633,10 +635,19 @@ public class IcebergRestEndpointIntegrationTest {
 
     HttpResponse<String> response = post("/v1/" + CATALOG_NAME + "/transactions/commit", body);
 
+    // The refusal has to come from alter_table, not from a requirement check: otherwise every
+    // assertion below would hold for the wrong reason.
+    Assert.assertTrue(delegate.calls.toString(),
+        delegate.calls.contains("alter_table_injected_failure:default.txn_d"));
     Assert.assertNotEquals("the second table's commit was rejected by the metastore, so the"
         + " request must not report success", 204, response.statusCode());
+    Assert.assertEquals("the refused alter_table must leave metadata_location untouched",
+        locationBefore, delegate.tables.get("default.txn_d").getParameters().get("metadata_location"));
     Assert.assertFalse("the rejected table must not be served with its uncommitted metadata",
         get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_d").body().contains("\"txn\":\"applied\""));
+    Assert.assertTrue("the transaction route is not atomic: the table committed before the"
+        + " failure stays committed - " + get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_c").body(),
+        get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_c").body().contains("\"txn\":\"applied\""));
   }
 
   private String tableUuid(String tableName) throws Exception {
