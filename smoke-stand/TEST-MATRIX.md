@@ -234,6 +234,28 @@ What building this surfaced (all found by the scenario, not by review):
   trigger it, because that recreates the whole depends_on chain including HDFS - same class of
   stale-session issue the 2026-07-27 rerun already hit.
 
+## I. Writer isolation
+
+The write gate lets writes into the default catalog only, on the argument that just that
+catalog's commits take a real Hive lock while the rest are served by a shim that grants locks
+without checking conflicts. Both halves of that argument are now pinned.
+
+| # | Check | plain | kerberos |
+| --- | --- | --- | --- |
+| I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
+| I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
+| I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
+
+Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
+and requires the row count to match them exactly. A writer that fails loudly is correct
+behaviour and does not fail the run; a writer that reports success while its rows are missing
+does.
+
+What the run does **not** show: no `check_lock` and no `WAITING` appeared in the proxy log, so
+what rejected the stale writer was Iceberg's own requirement check on the branch's snapshot id,
+not a lock wait. The Hive lock still matters - it is what makes the read-verify-then-`alter_table`
+window atomic - but this run did not have to exercise the blocking path to protect the data.
+
 ## F. Not covered, and why
 
 | Area | Reason |
@@ -242,7 +264,7 @@ What building this surfaced (all found by the scenario, not by review):
 | YARN / Tez, distributed execution | The stand runs local MapReduce only; nothing here says how the proxy behaves under a real cluster's concurrency |
 | Ranger, Atlas, HA | Out of the stand's scope |
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
-| Concurrency / load | Every scenario is single-client. The synthetic lock shim in particular grants locks without checking conflicts, so nothing here validates writer isolation |
+| Load, and concurrency beyond one table | Section I covers concurrent REST commits to a single table. Everything else is single-client: no concurrent SQL writers, no multi-table transactions under contention, and no sustained load |
 
 ## Revalidation log
 

@@ -390,6 +390,23 @@ here and nowhere else. If HiveServer2 answers "File does not exist" for files th
 stand rebuild, restart the HS2 containers — their JVMs cache a stale DNS resolution of the
 namenodes. See `TEST-MATRIX.md` section H for what has been run.
 
+## Writer isolation (`run-iceberg-concurrency-smoke.sh`)
+
+The Iceberg REST front door allows writes into the default catalog only, because only there does
+a commit take a real Hive lock; every other catalog is served by the synthetic shim, which grants
+locks without checking conflicts. This scenario tests the half of that argument a stand can test:
+
+```bash
+smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 8
+```
+
+It creates a table with one baseline row, fires N concurrent appends at it through the REST front
+door, counts the writers that exited 0 and requires the table to hold exactly that many rows plus
+the baseline. A writer that fails loudly (`CommitFailedException`) is correct behaviour under
+contention and does not fail the run — a writer that reports success while its rows are gone
+does. At eight writers the stand reliably produces both outcomes at once: seven commits and one
+refusal, with every committed row present. See `TEST-MATRIX.md` section I.
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

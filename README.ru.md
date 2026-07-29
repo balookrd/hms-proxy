@@ -1199,10 +1199,13 @@ spark.sql.catalog.sales_catalog.warehouse=sales
   объявления, и любой purge падал с `NoClassDefFoundError:
   org/apache/avro/LogicalTypes`. `pom.xml` пинит `avro:1.12.0`; больше никто на
   этом classpath не вызывает Avro API. Кодеки snappy, xz и zstd объявлены в
-  Avro как optional и в fat jar не попадают, поэтому манифест, записанный с
-  недефолтным `write.avro.compression-codec`, прочитать не получится —
-  дефолтный для Iceberg `gzip` это встроенный в Avro deflate, которому ничего
-  дополнительного не нужно.
+  Avro как optional и в fat jar намеренно не попадают: манифест всегда пишется
+  с deflate, который Avro сжимает штатным JDK-шным Deflater. Свойство
+  `write.avro.compression-codec` этого не меняет — оно управляет data-файлами и
+  delete-файлами, которые прокси не читает, а `ManifestWriter` в Iceberg вообще
+  не передаёт свойства таблицы в writer манифеста. Это закреплено тестом
+  (`dropTableWithPurgeReadsManifestsOfATableAskingForSnappy`): если будущий
+  Iceberg начнёт учитывать свойство для манифестов, упадёт тест, а не прод.
 
 ## Безопасность
 

@@ -318,6 +318,70 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
         () -> handler.invoke(null, checkLockMethod, new Object[] {new CheckLockRequest(lock.getLockid())}));
   }
 
+  /**
+   * The shim grants every lock it is asked for, conflicting ones included: two EXCLUSIVE locks
+   * on the same partition of the same table are both ACQUIRED at the same time. That is the
+   * documented contract, not an oversight - the shim exists so that reads and Hive's own
+   * bookkeeping keep working for catalogs whose backend owns no TxnHandler, and it has no
+   * conflict state to check against.
+   *
+   * <p>It is also the entire reason the Iceberg REST front door refuses writes outside the
+   * default catalog ({@code WriteRouteGate}): a commit here would be granted a lock that
+   * excludes nobody, so two writers would silently lose each other's updates. This test pins
+   * the unsafety in place, so that anyone who makes the shim conflict-aware has to delete it
+   * deliberately - and can then revisit the write gate with evidence.
+   */
+  @Test
+  public void syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    LockResponse first = (LockResponse) handler.invoke(null, lockMethod, new Object[] {
+        syntheticNoTxnExclusivePartitionLockRequest("catalog2__sales", "events", "p=1", 61L)});
+    LockResponse second = (LockResponse) handler.invoke(null, lockMethod, new Object[] {
+        syntheticNoTxnExclusivePartitionLockRequest("catalog2__sales", "events", "p=1", 62L)});
+
+    Assert.assertEquals(LockState.ACQUIRED, first.getState());
+    Assert.assertEquals("the shim checks no conflicts - the second EXCLUSIVE lock is granted too",
+        LockState.ACQUIRED, second.getState());
+    Assert.assertNotEquals(first.getLockid(), second.getLockid());
+  }
+
   @Test
   public void syntheticNoTxnExclusivePartitionLockForNonDefaultCatalogUsesShim() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()

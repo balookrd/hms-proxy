@@ -536,6 +536,31 @@ public class IcebergRestEndpointIntegrationTest {
         dataFile.exists());
   }
 
+  /**
+   * A canary for the Avro codecs the fat jar does NOT carry. Avro's snappy, xz and zstd codecs
+   * are optional dependencies, so the purge can only read manifests written with deflate - and
+   * it gets away with that because {@code ManifestWriter} never applies table properties to the
+   * manifest appender: whatever `write.avro.compression-codec` says (it drives data files and
+   * delete files, which this proxy never reads), the manifest itself is always deflate, which
+   * Avro compresses with the JDK's own Deflater.
+   *
+   * <p>Should a future Iceberg start honouring that property for manifests, this test fails
+   * with a missing codec instead of the purge silently breaking in production - and that is the
+   * moment to add {@code org.xerial.snappy:snappy-java} and friends, not before.
+   */
+  @Test
+  public void dropTableWithPurgeReadsManifestsOfATableAskingForSnappy() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile(
+        "snappy_purge_me", Map.of("write.avro.compression-codec", "snappy"));
+
+    HttpResponse<String> response = delete(
+        "/v1/" + CATALOG_NAME + "/namespaces/default/tables/snappy_purge_me?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertFalse("purge must delete the table's data files, but " + dataFile
+        + " is still there", dataFile.exists());
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
@@ -569,6 +594,11 @@ public class IcebergRestEndpointIntegrationTest {
   // a manifest - the only shape that makes a purge actually walk the manifests (which is what
   // reads Avro) rather than just unlinking metadata JSON.
   private File registerTableWithCommittedDataFile(String tableName) throws Exception {
+    return registerTableWithCommittedDataFile(tableName, Map.of());
+  }
+
+  private File registerTableWithCommittedDataFile(String tableName, Map<String, String> properties)
+      throws Exception {
     File tableDir = tempFolder.newFolder(tableName);
     File dataFile = new File(tableDir, "data/data.parquet");
     dataFile.getParentFile().mkdirs();
@@ -576,7 +606,7 @@ public class IcebergRestEndpointIntegrationTest {
 
     Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
     org.apache.iceberg.Table table = new HadoopTables(new Configuration()).create(
-        schema, PartitionSpec.unpartitioned(), Map.of(), "file://" + tableDir.getAbsolutePath());
+        schema, PartitionSpec.unpartitioned(), properties, "file://" + tableDir.getAbsolutePath());
     table.newAppend()
         .appendFile(DataFiles.builder(PartitionSpec.unpartitioned())
             .withPath("file://" + dataFile.getAbsolutePath())
