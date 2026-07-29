@@ -37,6 +37,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   private final ProxyObservability observability;
   private final RoutingSupport support;
   private final ExternalTableLocationRewriter externalTableLocationRewriter;
+  private final IcebergTablePointerGuard icebergTablePointerGuard;
   private final DropTableHandler dropTableHandler;
   private final Map<String, SpecialCaseHandler> specialCaseHandlers;
 
@@ -77,6 +78,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     this.support = new RoutingSupport(
         config, router, federationLayer, observability, dispatcher, impersonationResolver);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
+    this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);
     this.specialCaseHandlers = buildSpecialCaseHandlers(dropTableHandler);
   }
@@ -209,6 +211,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = support.federationLayer.internalizeObjectArguments(args, extractedNamespace);
     externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
+    icebergTablePointerGuard.protectPointer(routedArgs, extractedNamespace, methodName);
     Object result = support.invokeDirect(extractedNamespace.backend(), method, routedArgs);
     result = filterReadResult(methodName, extractedNamespace, result);
     return support.federationLayer.externalizeResult(result, extractedNamespace);

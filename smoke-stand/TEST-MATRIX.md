@@ -245,7 +245,7 @@ without checking conflicts. Both halves of that argument are now pinned.
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
 | I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
 | I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
-| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ❌ **loses data** |
+| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ⚠️ **narrowed, not closed** |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -292,6 +292,24 @@ smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 4 --sql-wr
 
 Not seen on plain yet, but nothing about the mechanism looks auth-specific; the Kerberos runs are
 simply slower, which widens the window.
+
+**The cause, and how far the fix goes.** A HiveServer2 `INSERT` opens with an
+`alter_table_with_environment_context` carrying `alterTableOpType=DROPPROPS` and the `Table` it
+snapshotted when the query was compiled. The metastore applies those parameters wholesale,
+`metadata_location` included, so a REST commit that landed in between is erased - and the call
+travels outside the Iceberg lock, so nothing serializes it. `IcebergTablePointerGuard` now
+stitches the pointer the metastore currently holds back into such an alter, telling a genuine
+commit apart by its `previous_metadata_location` (a request whose base is the current pointer is
+moving forward; anything else carries a stale copy).
+
+That closes the compile-time window but not the whole race: the guard reads the current pointer
+and the backend applies the alter as two separate calls, so a commit landing between them is
+still overwritten. Measured over eight runs after the fix, one lost a row (before it was about
+one in two), and one run showed the opposite - a writer told its commit had failed whose rows
+landed anyway, which a retry would duplicate. **Do not read this row as fixed.** Closing it
+properly needs the alter to be conditional: either the proxy holds the same table lock Iceberg
+takes across read-and-write, or it sends HMS's `expected_parameter_key`/`expected_parameter_value`
+so a pointer that moved makes the alter fail loudly instead of overwriting.
 
 ## F. Not covered, and why
 
