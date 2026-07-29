@@ -222,13 +222,17 @@ What building this surfaced (all found by the scenario, not by review):
 - `scheduled_query_poll` is refused with a clean `UNKNOWN_METHOD` every few seconds: the Hive 4
   HiveServer2 polls for scheduled queries, a Hive 4-only feature with no Apache 3.1.3 mapping.
   Log noise by design, not a scenario failure.
-- `DELETE .../tables/{table}?purgeRequested=true` answers 500: the server-side purge reads
-  manifests through Avro, and the fat jar's avro 1.7 lacks `org.apache.avro.Conversion`. Open
-  gap, tracked separately; the scenario uses a plain `DELETE` and removes the files explicitly.
-- After a stand rebuild the HiveServer2 JVMs can keep a stale DNS resolution and talk to the
-  wrong namenode ("File does not exist" for files that exist); restarting the HS2 containers
-  after the network settles is the cure - same class of stale-session issue the 2026-07-27
-  rerun already hit.
+- `DELETE .../tables/{table}?purgeRequested=true` answered 500: the purge walks the table's
+  manifests through Avro, and Maven had resolved avro 1.7.4 (from `hadoop-mapreduce-client-core`,
+  same tree depth, earlier declaration) over the 1.12.0 `iceberg-core` is compiled against.
+  Fixed by pinning avro; the scenario now ends with a real purge and asserts no data, manifest or
+  metadata file survives it.
+- After a stand rebuild the JVMs can keep a stale DNS resolution and talk to the wrong namenode
+  ("File does not exist" for files that exist, or a failed HDFS write straight after start);
+  restarting the affected container once the network settles is the cure. It bites the proxy and
+  all three HiveServer2 instances alike, and `docker compose up --build <service>` is enough to
+  trigger it, because that recreates the whole depends_on chain including HDFS - same class of
+  stale-session issue the 2026-07-27 rerun already hit.
 
 ## F. Not covered, and why
 
@@ -490,6 +494,15 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `org.apache.hadoop.mapred.FileInputFormat`, and naming the handler class explicitly in the DDL
   produced `inputFormat: null` instead. The reverse direction works: tables created by the 3.1
   storage handler carry `HiveIcebergInputFormat` and Hive 4 reads and appends to them happily.
+
+- **2026-07-29** (sixth entry), the purge fix landed and the scenario stopped working around it.
+  `DELETE ...?purgeRequested=true` had answered 500 because Maven resolved avro 1.7.4 over the
+  1.12.0 `iceberg-core` is compiled against; with the pin in place the purge was driven by hand
+  against the stand first - a table with two rows, five files under it (parquet, manifest,
+  manifest list, two metadata JSONs), `204` back, zero files left and a `404` on reload - and the
+  interop scenario now ends with that same purge plus an assertion that nothing survives it. The
+  proxy turned out to cache stale namenode DNS the same way the HiveServer2 JVMs do: the first
+  create after an HDFS recreation failed its write until the proxy container was restarted.
 
 ## Two caveats on faithfulness
 

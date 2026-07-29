@@ -76,7 +76,7 @@ if [[ "${ORIGIN}" == "hive4" ]]; then
 fi
 
 # The apache catalog is the only one on the second HDFS cluster; everything else lives on the
-# first. Only used to delete the table's files after a (non-purge) drop.
+# first. Only used to verify and clean up the table directory after the purge-drop.
 if [[ -z "${NAMENODE}" ]]; then
   NAMENODE=$([[ "${PREFIX}" == "apache" ]] && echo stand-namenode-b || echo stand-namenode)
 fi
@@ -295,11 +295,9 @@ participant_count() {
 
 interop_kinit
 
-# A rerun on a dirty stand must not half-fail on a leftover table; neither drop is asserted.
-# No purge anywhere in this scenario: DELETE with purgeRequested=true currently dies server-side
-# on a missing Avro class (tracked separately); the data files are removed explicitly below.
+# A rerun on a dirty stand must not half-fail on a leftover table; the drop is not asserted.
 log "defensive drop of a possible leftover '${NS}.${TABLE}'"
-writer drop >/dev/null 2>&1 || true
+writer drop --purge >/dev/null 2>&1 || true
 
 for skipped in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
   log "skipping ${skipped}: a Hive 4-created Iceberg table names no concrete inputFormat, which the 3.1 line cannot plan against (see the comment at the top of this script)"
@@ -339,16 +337,23 @@ for who in "${ORIGIN}" "${OTHERS[@]}"; do
   expect_rows "$(participant_label "${who}") final read" "${expected}" "${count}"
 done
 
-log "REST drops the table"
+log "REST drops the table with purge"
 code="$(rest_curl -o /dev/null -w '%{http_code}' -X DELETE \
-  "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}")"
-[[ "${code}" =~ ^2 ]] || fail "REST drop of '${TABLE}' returned HTTP ${code}"
+  "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}?purgeRequested=true")"
+[[ "${code}" =~ ^2 ]] || fail "REST purge-drop of '${TABLE}' returned HTTP ${code}"
 
 code="$(rest_curl -o /dev/null -w '%{http_code}' "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}")"
 [[ "${code}" == "404" ]] || fail "REST load of dropped '${TABLE}' expected HTTP 404, got ${code}"
 
-# The non-purge drop leaves the data and metadata files behind; remove them explicitly so a
-# rerun starts from a genuinely clean location.
+# A purge must leave no data, manifest or metadata file behind - that walk over the manifests is
+# the one REST path that reads Avro, so a broken dependency shows up here and nowhere else.
+leftovers="$(docker exec "${NAMENODE}" hdfs dfs -ls -R "/warehouse/${PREFIX}/${TABLE}" 2>/dev/null \
+  | grep -cE 'parquet|avro|metadata.json' || true)"
+[[ "${leftovers}" == "0" ]] \
+  || fail "purge left ${leftovers} file(s) under /warehouse/${PREFIX}/${TABLE}"
+log "purge left no data, manifest or metadata files behind"
+
+# The emptied directory itself is not removed by a purge; drop it so a rerun starts clean.
 docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
 
 out="$(beeline_run stand-hs2 "$(apache_jdbc_url)" "show tables like '${TABLE}';")"

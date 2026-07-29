@@ -223,12 +223,16 @@ InputFormat class org.apache.hadoop.mapred.FileInputFormat`. Таблицы, з�
 - `scheduled_query_poll` отклоняется чистым `UNKNOWN_METHOD` каждые несколько секунд: HiveServer2
   Hive 4 опрашивает scheduled queries — Hive 4-only фичу без соответствия в Apache 3.1.3. Шум в
   логе by design, не падение сценария.
-- `DELETE .../tables/{table}?purgeRequested=true` отвечает 500: серверный purge читает манифесты
-  через Avro, а avro 1.7 в fat jar не имеет `org.apache.avro.Conversion`. Открытый пробел,
-  отслеживается отдельно; сценарий использует обычный `DELETE` и удаляет файлы явно.
-- После пересборки стенда JVM HiveServer2 могут держать устаревший DNS-резолв и ходить не на тот
-  namenode («File does not exist» для существующих файлов); лечится перезапуском HS2-контейнеров
-  после стабилизации сети — тот же класс stale-session проблем, что уже ловил перепрогон
+- `DELETE .../tables/{table}?purgeRequested=true` отвечал 500: purge обходит манифесты таблицы
+  через Avro, а Maven выбирал avro 1.7.4 (из `hadoop-mapreduce-client-core`, та же глубина
+  дерева, объявлен раньше) вместо 1.12.0, против которой собран `iceberg-core`. Починено пином
+  avro; сценарий теперь заканчивается настоящим purge и проверяет, что ни один data-, manifest-
+  или metadata-файл его не пережил.
+- После пересборки стенда JVM могут держать устаревший DNS-резолв и ходить не на тот namenode
+  («File does not exist» для существующих файлов или упавшая запись в HDFS сразу после старта);
+  лечится перезапуском затронутого контейнера после стабилизации сети. Задевает и прокси, и все
+  три HiveServer2, а достаточно `docker compose up --build <service>` — он пересоздаёт всю
+  цепочку depends_on вместе с HDFS. Тот же класс stale-session проблем, что уже ловил перепрогон
   2026-07-27.
 
 ## F. Что не покрыто и почему
@@ -494,6 +498,15 @@ InputFormat class org.apache.hadoop.mapred.FileInputFormat`. Таблицы, з�
   `org.apache.hadoop.mapred.FileInputFormat`, а явное указание класса обработчика в DDL дало
   вместо него `inputFormat: null`. Обратное направление работает: таблицы, созданные storage
   handler'ом 3.1-линии, несут `HiveIcebergInputFormat`, и Hive 4 их спокойно читает и дописывает.
+
+- **2026-07-29** (шестая запись), фикс purge влит, и сценарий перестал его обходить.
+  `DELETE ...?purgeRequested=true` отвечал 500, потому что Maven выбирал avro 1.7.4 вместо
+  1.12.0, против которой собран `iceberg-core`; с пином purge сначала прогнали руками против
+  стенда — таблица с двумя строками, пять файлов под ней (parquet, manifest, manifest list, два
+  metadata JSON), в ответ `204`, ноль оставшихся файлов и `404` при перезагрузке, — а
+  interop-сценарий теперь заканчивается тем же purge плюс проверкой, что его ничего не пережило.
+  Выяснилось, что прокси кэширует устаревший DNS namenode так же, как JVM HiveServer2: первый
+  create после пересоздания HDFS падал на записи, пока контейнер прокси не перезапустили.
 
 ## Две оговорки честности
 

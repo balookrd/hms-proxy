@@ -383,10 +383,10 @@ that. Tables created by REST or by the 3.1 storage handler carry the concrete
 Under Kerberos the writer authenticates REST with per-request SPNEGO tokens (a custom Iceberg
 `AuthManager` inside the writer jar) and logs into HDFS from the smoke-user keytab. The Hive 4
 HiveServer2 logs `scheduled_query_poll` refusals every few seconds — a Hive 4-only feature with
-no Apache 3.1.3 mapping, refused cleanly as `UNKNOWN_METHOD`; noise by design. Known gap:
-`DELETE ... ?purgeRequested=true` answers 500 (the server-side purge needs an Avro class the
-fat jar does not carry), so the scenario uses a plain `DELETE` and removes the data files
-explicitly. If HiveServer2 answers "File does not exist" for files that exist right after a
+no Apache 3.1.3 mapping, refused cleanly as `UNKNOWN_METHOD`; noise by design. The scenario ends with a real
+`DELETE ... ?purgeRequested=true` and asserts no data, manifest or metadata file survives it -
+that manifest walk is the one REST path that reads Avro, so a broken Avro dependency shows up
+here and nowhere else. If HiveServer2 answers "File does not exist" for files that exist right after a
 stand rebuild, restart the HS2 containers — their JVMs cache a stale DNS resolution of the
 namenodes. See `TEST-MATRIX.md` section H for what has been run.
 

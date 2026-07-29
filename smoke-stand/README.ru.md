@@ -386,9 +386,11 @@ smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin rest     # по
 (кастомный Iceberg `AuthManager` внутри writer-jar) и логинится в HDFS из keytab smoke-user.
 HiveServer2 Hive 4 каждые несколько секунд пишет в лог отказ `scheduled_query_poll` — это
 Hive 4-only фича без соответствия в Apache 3.1.3, отклоняется чисто как `UNKNOWN_METHOD`; шум по
-design. Известный пробел: `DELETE ... ?purgeRequested=true` отвечает 500 (серверному purge нужен
-Avro-класс, которого нет в fat jar), поэтому сценарий использует обычный `DELETE` и удаляет
-data-файлы явно. Если сразу после пересборки стенда HiveServer2 отвечает «File does not exist»
+design. Сценарий заканчивается настоящим
+`DELETE ... ?purgeRequested=true` и проверяет, что его не пережил ни один data-, manifest- или
+metadata-файл: этот обход манифестов — единственный путь REST-фронта, который читает Avro, так
+что сломанная Avro-зависимость видна только здесь. Если сразу после пересборки стенда
+HiveServer2 отвечает «File does not exist»
 на существующие файлы — перезапусти HS2-контейнеры: их JVM кэшируют устаревший DNS-резолв
 namenode. Что именно прогонялось — раздел H в `TEST-MATRIX.ru.md`.
 
