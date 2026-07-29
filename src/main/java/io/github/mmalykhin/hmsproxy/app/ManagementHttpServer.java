@@ -9,9 +9,9 @@ import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.util.HttpResponseWriter;
 import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -148,10 +148,7 @@ public final class ManagementHttpServer implements AutoCloseable {
   private static void respond(HttpExchange exchange, int status, String contentType, String body) throws IOException {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", contentType);
-    exchange.sendResponseHeaders(status, bytes.length);
-    try (OutputStream output = exchange.getResponseBody()) {
-      output.write(bytes);
-    }
+    HttpResponseWriter.sendBody(exchange, status, bytes);
   }
 
   private static final class ReadinessHandler implements HttpHandler {

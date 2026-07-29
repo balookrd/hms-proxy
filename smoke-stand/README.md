@@ -181,6 +181,85 @@ The reason is in the proxy log:
 docker logs stand-proxy 2>&1 | grep 'requires a Hortonworks backend runtime'
 ```
 
+## Iceberg REST catalog front door
+
+The plain profile also enables the proxy's Iceberg REST listener (`rest-catalog.*` in
+`proxy/hms-proxy.properties`, host port 19183). Every write route — table, view and namespace
+DDL, plus multi-table transaction commit — is served, but only for the default catalog (`hdp`):
+its tables are backed by a real HMS lock, while every other catalog is served by the synthetic
+lock shim and refuses writes with `403`. `--scenario rest` (or the REST step of `--scenario all`)
+drives it with curl from the host: config discovery, namespace and table listings, a table load,
+the full write round trips, and the negative shapes — unknown prefix, unknown table, and a write
+route on a non-default catalog, all of which must fail cleanly.
+
+The load-table check needs a real Iceberg table. The stand registers a minimal one by hand —
+a hand-written `metadata.json` in HDFS plus a Hive table shell that points at it:
+
+```bash
+# 1. Put a minimal Iceberg table metadata file onto the hdp catalog's cluster
+docker cp <metadata.json> stand-namenode:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode bash -c \
+  'hdfs dfs -mkdir -p /warehouse/hdp/smoke_iceberg_tbl/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/hdp/smoke_iceberg_tbl/metadata/'
+
+# 2. Register the table in the hdp catalog with the two properties HiveCatalog keys on
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists hdp__default.smoke_iceberg_tbl (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode:8020/warehouse/hdp/smoke_iceberg_tbl/metadata/00000-smoke.metadata.json');\""
+```
+
+The proxy reads the metadata file from HDFS itself (HadoopFileIO with a bare `Configuration`),
+so a passing load proves the whole chain: REST route → HiveCatalog → the proxy's own routing
+layer → HMS → HDFS. Plain Hive tables of the same database (`smoke_read_hdp`,
+`smoke_txn_tbl`) must stay invisible through REST — the smoke asserts that too.
+
+### A second table, on the second catalog
+
+`HMS_SMOKE_REST_SECOND_PREFIX` (see `smoke-stand/env/simple.env`) points the REST smoke at the
+`apache` catalog too, which proves warehouse discovery and the clean view also work for a
+non-default prefix. It needs a second Iceberg table, registered the same way but on the
+`apache` catalog's own cluster (`namenode-b`):
+
+```bash
+# 1. Put a minimal Iceberg table metadata file onto the apache catalog's cluster
+docker cp <metadata.json> stand-namenode-b:/tmp/00000-smoke.metadata.json
+docker exec stand-namenode-b bash -c \
+  'hdfs dfs -mkdir -p /warehouse/apache/smoke_iceberg_tbl_ap/metadata &&
+   hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/'
+
+# 2. Register the table in the apache catalog
+docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+  -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
+  -e \"create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');\""
+```
+
+The `metadata.json` is a copy of the first table's, with `location` pointed at the
+`smoke_iceberg_tbl_ap` path above and a fresh `table-uuid`.
+
+The Kerberos profile runs the REST listener too, on the same port (19183) as the plain profile.
+It answers SPNEGO: the KDC issues an `HTTP/proxy@SMOKE.LOCAL` principal into the same keytab the
+Thrift front door uses, and `hms-proxy-kerberos.properties` points `rest-catalog.kerberos.*` at
+it. The handshake itself is also covered end-to-end by `SpnegoIntegrationTest` on hadoop-minikdc;
+the stand additionally exercises it with `curl --negotiate` run *inside* `stand-proxy` (the KDC
+and the `proxy` hostname only resolve in-network):
+
+```bash
+docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
+docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
+```
+
+See `TEST-MATRIX.md` section G for exactly which checks have been run against this profile.
+
 ## Hortonworks HiveServer2 (`--profile hdp`)
 
 A real HDP HiveServer2 that connects to the Hortonworks front door, so that listener is driven by

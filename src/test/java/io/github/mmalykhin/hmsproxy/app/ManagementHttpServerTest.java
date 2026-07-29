@@ -46,6 +46,29 @@ public class ManagementHttpServerTest {
   }
 
   @Test
+  public void headRequestsMatchGetStatusOnEveryEndpoint() throws Exception {
+    int port = freePort();
+    ProxyConfig config = config(port, ManagementConfig.DEFAULT_READINESS_CACHE_MS);
+    try (CatalogRouter router = CatalogRouter.open(config);
+         ManagementHttpServer server = ManagementHttpServer.open(
+             config, router, new ProxyObservability(config))) {
+      Assert.assertNotNull(server);
+
+      // This is an end-to-end sanity check that a health checker's actual HEAD request gets a
+      // response with no exception, not the regression guard for the HEAD "stream closed" bug:
+      // the client-visible status here is identical whether or not the shared
+      // HttpResponseWriter's HEAD guard exists, so this test cannot fail if that guard is
+      // removed. HttpResponseWriterTest asserts the (status, contentLength) pair and body bytes
+      // the helper actually sends and is the test that fails in that case.
+      for (String path : new String[] {"/healthz", "/metrics", "/readyz"}) {
+        int getStatus = statusOf(port, path, "GET");
+        int headStatus = statusOf(port, path, "HEAD");
+        Assert.assertEquals("HEAD status must match GET status for " + path, getStatus, headStatus);
+      }
+    }
+  }
+
+  @Test
   public void readinessProbesAreReusedBetweenScrapes() throws Exception {
     int port = freePort();
     ProxyConfig config = config(port, 60_000L);
@@ -85,6 +108,19 @@ public class ManagementHttpServerTest {
     Assert.assertTrue(readyz, start >= 0);
     int from = start + field.length();
     return Long.parseLong(readyz.substring(from, readyz.indexOf(',', from)));
+  }
+
+  private static int statusOf(int port, String path, String method) throws Exception {
+    HttpURLConnection connection =
+        (HttpURLConnection) URI.create("http://127.0.0.1:" + port + path).toURL().openConnection();
+    connection.setRequestMethod(method);
+    connection.setConnectTimeout(5_000);
+    connection.setReadTimeout(10_000);
+    try {
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
   }
 
   private static String get(int port, String path) throws Exception {

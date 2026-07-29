@@ -79,6 +79,60 @@ only path that covers the Hortonworks front door with a real client.
 | E2 | Readiness probe does not disturb SASL (15 × `/readyz`, then a Kerberos smoke run) | ✅ |
 | E3 | `hms_proxy_lock_request_split_total{catalog}` counts lock-request splits | ✅ |
 
+## G. Iceberg REST catalog front door (host port 19183)
+
+Driven by `--scenario rest` with curl from the host (plain) or curl `--negotiate` from inside
+`stand-proxy` (kerberos - the KDC and the `proxy` hostname only resolve in-network, and the
+container's curl is GSS-capable). The loaded table is the hand-registered `smoke_iceberg_tbl`
+(see the stand README). The Kerberos profile carried the listener disabled through phase 5a
+because SPNEGO needed a GSS-capable curl inside the network; once that stopped being true the
+listener was turned on there too (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`,
+same keytab as the Thrift front door) and the write round trip, the write gate and an
+unauthenticated-request check were run against it - see the 2026-07-28 kerberos entry below.
+The read-only rows (G2-G22, G27-G30, G35-G38) have not yet been re-run against the Kerberos
+profile and stay `n/a` until they are.
+
+| # | Check | plain | kerberos |
+| --- | --- | --- | --- |
+| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | ✅ |
+| G2 | Namespace list and load (`default`) | ✅ | n/a |
+| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | n/a |
+| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | n/a |
+| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | n/a |
+| G6 | Unknown table → clean 404 | ✅ | n/a |
+| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | ✅ | n/a |
+| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | n/a |
+| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | n/a |
+| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | n/a |
+| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | n/a |
+| G12 | Federated namespace `apache__default` stays visible under the default prefix | ✅ | n/a |
+| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | ✅ | n/a |
+| G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | n/a |
+| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | n/a |
+| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
+| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | n/a |
+| G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
+| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | n/a |
+| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | n/a |
+| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | n/a |
+| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | ✅ |
+| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | ✅ |
+| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | ✅ |
+| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | ✅ |
+| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | n/a |
+| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | n/a |
+| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
+| G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
+| G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | ✅ | ✅ |
+| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `POST .../views/{view}` update (`assert-view-uuid` requirement + `set-properties`) answers `200` with a follow-up `GET` confirming the property is actually present, `POST /v1/{prefix}/views/rename` answers `204` and the view loads back `200` under the new name while the old name answers `404` - the pair that proves the rename moved it rather than copying it, `DELETE` answers `204` | ✅ | ✅ |
+| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | n/a |
+| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | ✅ | n/a |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+
 ## F. Not covered, and why
 
 | Area | Reason |
@@ -105,6 +159,152 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `show functions like` matching a bare name that Hive 3.1.3 registers qualified, and the
   runner's cleanup `RETURN` trap re-fired in the enclosing function after a two-pass run and
   killed it under `set -u` after every assertion had already passed.
+  Later the same day the branch's Iceberg REST listener was enabled on the plain profile and
+  section G was run for the first time (`--scenario rest`, and again as the REST step of a
+  full green `--scenario all`).
+  The same day, after the `apache` catalog's second Iceberg table (`smoke_iceberg_tbl_ap`) was
+  registered on its own cluster (`namenode-b`), the new multi-catalog REST rows (G8-G11) were
+  run too, in the same `--scenario rest` and `--scenario all` passes. A follow-up run the same
+  day added and passed the federation/isolation rows G12-G16: the federated name under the
+  default prefix (listing and load included) and clean 404s for every cross-catalog shape.
+  Later still, jar `1.0.20-eec20f1a` added row G17: with `HMS_SMOKE_REST_METRICS_URL` set to the
+  stand's management endpoint, both `--scenario rest` and `--scenario all` fetched it with curl
+  and confirmed the `hms_proxy_rest_requests_total` and `hms_proxy_rest_listener_info` series were
+  present and populated after the REST checks ran.
+  Later still, jar `1.0.23-613b7a1e` (the Iceberg 1.9.2 upgrade, Jackson pinned to `2.18.3`)
+  re-ran sections A-D and G green, including the SQL layer through both HiveServer2 instances as
+  the Jackson-regression detector for the pin.
+  Later still, jar `1.0.33-01704804` (the stack-free error, 400-on-unparseable-body and
+  endpoint-advertising hardening) added rows G19-G21 and re-ran `--scenario rest` and
+  `--scenario all` green; `GET /v1/config` and `GET /v1/apache/config` were fetched with curl and
+  both carried the nine-route `endpoints` list, and `docker logs stand-proxy` showed no
+  `stream closed` WARN noise from the HEAD checks in G18.
+  Later still, jar `1.0.34-5397bb81` strengthened the G21 assertion: the runner used to only
+  `grep` for the `"endpoints"` key's presence, which cannot distinguish a read-only listing from
+  one that also advertised a write route. It now checks both `GET /v1/config` and
+  `GET /v1/{prefix}/config` for the `GET /v1/{prefix}/namespaces` read entry and for the absence
+  of any `POST /v1/{prefix}/namespaces` or `DELETE` entry. `--scenario rest` re-ran green against
+  the rebuilt jar; the strengthened assertion was proven to discriminate by temporarily pointing
+  it at a route name the server does not serve and confirming the runner failed with
+  "config does not advertise the namespaces read route" before restoring it.
+  Later still, jar `1.0.41-931b78d4` (phase 5a: table writes for the default
+  catalog, the write gate, and asymmetric endpoint advertising; a Hadoop
+  `hadoop-hdfs`/`hadoop-common` version-alignment fix and the widened
+  `Throwable` catch-all in `IcebergHttpHandler` landed on top of it) added
+  rows G22-G25 and updated G7, G21. `--scenario rest` and `--scenario all`
+  both re-ran green: `GET /v1/config` and `GET /v1/{prefix}/config` (default
+  catalog) were confirmed to carry the table-create and table-drop write
+  routes; `GET /v1/apache/config` was confirmed to carry neither. A table
+  created through `POST /v1/hdp/namespaces/default/tables` loaded back with a
+  `metadata-location` and dropped with `204`; a direct create under
+  `/v1/apache/namespaces/default/tables` and a create under
+  `/v1/hdp/namespaces/apache__default/tables` both answered `403`. The SQL
+  layer (sections B and C, both HiveServer2 instances) was re-run as the
+  regression check for the Hadoop dependency change, since table writes and
+  Hive's own ACID commits now share the same lock path; it passed, with
+  `stand-hs2-hdp` restarted first (its HiveServer2 session had gone stale
+  after the stand rebuild - a fresh session opened cleanly against the same,
+  otherwise-untouched HDFS state) and `HMS_SMOKE_SQL_HDP_SESSION_INIT=set
+  hive.execution.engine=mr;` supplied for the Hortonworks pass, as documented
+  in `smoke-stand/env/simple.env`.
+
+- **2026-07-28**, jar `1.0.43-c4685ef7` (unchanged on the stand; only the smoke script grew new
+  checks against it). Added rows G26-G30: the write round trip now includes a REAL commit against
+  the just-created table and a rename round trip, not just create/load/drop, and the gate
+  negatives now cover COMMIT_TRANSACTION, CREATE_NAMESPACE and rename-with-federated-destination
+  on top of the existing CREATE_TABLE pair - COMMIT_TRANSACTION in particular was a critical
+  bypass found during phase 5a and had until now only been pinned down by unit tests. `--scenario
+  rest` and `--scenario all` both re-ran green: the create response's `metadata-location` (ending
+  `00000-...`) differed from the commit response's (`00001-...`), the renamed table loaded back
+  with `200`, and all three new negatives answered `403`. The G26 assertion was proven to
+  discriminate by temporarily requiring the commit's `metadata-location` to equal create's
+  (i.e. asserting a no-op commit); the runner failed with "did not write a new metadata file",
+  confirming the check would catch a silently no-opped commit; the assertion was restored and
+  both scenarios re-ran green.
+
+- **2026-07-28** (second entry), the Iceberg REST listener was turned on for the first time in
+  the Kerberos profile: the KDC gained an `HTTP/proxy@SMOKE.LOCAL` principal in the same keytab
+  the Thrift front door already uses, and `hms-proxy-kerberos.properties` gained a
+  `rest-catalog.*` block pointing at it, on the same port 19183 the plain profile uses. Bringing
+  the stand up this way surfaced a real bug, not just a missing config row: `IcebergRestService`
+  built its own bare `Configuration` instead of reusing the catalog's Kerberos-aware `HiveConf`,
+  so every REST write failed with "Failed to specify server's Kerberos principal name" once the
+  NameNode RPC was reached; fixed by threading `CatalogBackend.hiveConf()` through
+  `IcebergRestServices.open(...)`. A second, stand-only gap followed once the NameNode RPC
+  itself worked: the per-catalog Hadoop conf was missing `dfs.data.transfer.protection`, so a
+  create's actual block write to the datanode reset the connection ("could only be written to 0
+  of the 1 minReplication nodes") even though a plain NameNode-only RPC (the existing purge-path
+  delete) had never needed it; added `catalog.hdp.conf.dfs.data.transfer.protection=authentication`
+  and the same key for `catalog.apache` to `hms-proxy-kerberos.properties`, matching what
+  `hdfs/hadoop-kerberos*.env` already requires of the datanodes. With both fixed, first
+  `docker exec stand-proxy /opt/hms-proxy/scripts/run-real-installation-smoke-kerberos.sh
+  --scenario all` was re-run to confirm the Hadoop dependency bump the REST feature travelled in
+  on (`hadoop-hdfs` 2.2.0 -> 2.6.0) had not regressed the existing kerberized Thrift/lock paths -
+  it completed with `scenario 'all' completed successfully` (the notification-negative check's
+  `TApplicationException` is the documented libthrift 0.9.3 behavior for exception-less RPCs, not
+  a failure). Then, from inside `stand-proxy` after `kinit -kt smoke-user.keytab`, curl
+  `--negotiate` drove rows G1, G23-G26 and the new G31 (below): an unauthenticated request got a
+  clean `401`/`WWW-Authenticate: Negotiate`; `GET /v1/config` advertised `prefix=hdp` with the
+  write routes; a table was created (`200`), loaded back (`200`), committed for real (`200`,
+  `metadata-location` moved from a `00000-...` file to a `00001-...` one), refused with `403`
+  both directly under the `apache` prefix and via the federated `apache__default` namespace
+  under the default prefix, and dropped (`204`). `docker logs stand-proxy` traced the create's
+  and commit's `lock`/`unlock` to `catalog=hdp, backend=hdp` with small sequential lock IDs (387,
+  388 - the real backend's scheme, not the synthetic shim's), and
+  `logs/hms-proxy-audit.log` carried `"authenticatedUser":"smoke-user@SMOKE.LOCAL"` on every one
+  of those entries. The remaining Kerberos-column read-only rows (G2-G22, G27-G30) were not
+  re-run and stay `n/a`.
+
+- **2026-07-28** (third entry), jar `1.0.49-2b778592` (phase 5b: namespace DDL in
+  `RoutingMetaStoreClient` and the full-write-surface `GET /v1/config` advertising). Before this
+  run the stand was still on a pre-phase jar, and probing it directly showed `POST
+  /v1/{prefix}/namespaces` answering `406` ("does not support `IMetaStoreClient.createDatabase`")
+  - namespace DDL had never actually been validated against a real metastore. Added rows G32-G34
+  for the three new round trips (namespace DDL, view writes, transaction commit via
+  `POST /v1/{prefix}/transactions/commit`); the per-table commit route (G26) was already covered
+  and stayed green, unaffected by this phase's changes.
+  After rebuilding the fat jar and restaging (`./prepare.sh && docker compose up -d --build`,
+  plain profile), `--scenario rest` and `--scenario all` both re-ran green, this time actually
+  exercising namespace DDL for the first time: `POST /v1/hdp/namespaces` created
+  `smoke_rest_ns` (`200`), `GET` loaded it back, `POST .../properties` set `smoke=yes` (`200`)
+  and a follow-up `GET` confirmed the property was actually present, `DELETE` answered `204` and
+  a final `GET` answered `404`. The view round trip created `smoke_rest_view` (`200`, a real
+  `metadata-location`), listed it, and dropped it (`204`). The transaction round trip created a
+  table, committed it through `POST /v1/hdp/transactions/commit` (`204`), and confirmed the
+  table's `metadata-location` moved from a `00000-...` file to a `00001-...` one on reload -
+  manual curl round trips against the running stand captured the same verbatim responses outside
+  the smoke script, for the record.
+  Step 4 of the task proved the new transaction assertion actually discriminates: the check was
+  temporarily inverted to demand the `metadata-location` stay unchanged, `--scenario rest` was
+  rerun and failed with "did not write a new metadata file: metadata-location is still
+  '...00001-...'" as expected, then the assertion was restored and both `--scenario rest` and
+  `--scenario all` re-ran green.
+  The stand was then switched to the Kerberos profile
+  (`docker compose --env-file .env.kerberos --profile kerberos up -d --build`) and, from inside
+  `stand-proxy` after `kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL`, curl
+  `--negotiate` drove G32 (namespace DDL) and G33 (view writes) by hand per the task brief, which
+  scoped the Kerberos re-run to those two round trips only. Both passed identically to the plain
+  profile - same status codes, same effects - and `hms-proxy-audit.log` showed genuine
+  `create_database`/`alter_database`/`drop_database` entries with
+  `"authenticatedUser":"smoke-user@SMOKE.LOCAL"`, confirming namespace DDL reached the real HDP
+  backend under Kerberos too. G34 (transaction commit) was not re-run under Kerberos and stays
+  `n/a`, matching the task's scope.
+  Later still (same jar, script-only change, back on the plain profile): the view round trip
+  (G33) was extended to drive the two advertised view routes it had never exercised - update
+  (`assert-view-uuid` requirement, `POST .../views/{view}`) and rename (`POST
+  /v1/{prefix}/views/rename`) - and four more `WriteRouteGate` negatives were added (G35-G38:
+  CREATE_VIEW, DROP_VIEW, DROP_NAMESPACE and UPDATE_NAMESPACE, all against the federated
+  `apache__default` namespace under the default prefix). `--scenario rest` and `--scenario all`
+  both re-ran green: the view update's property reload confirmed `"smoke":"updated"` actually
+  stuck, the rename answered `204` and the view loaded back `200` under the new name while the
+  old name answered `404`, and all four new negatives answered `403` (the CREATE_VIEW one with
+  the full valid view body, since a stub body had earlier answered `400` before the gate was even
+  reached). The new rename-effect assertion was proven to discriminate by temporarily flipping its
+  expected status from `404` to `200` (i.e. asserting the old view name is still reachable after
+  the rename); the rerun failed - the pre-rename name still answered its real `404`, which the
+  inverted assertion now rejected - confirming the check would catch a rename that copies the view
+  instead of moving it; the assertion was restored and both `--scenario rest` and `--scenario all`
+  re-ran green.
 
 ## Two caveats on faithfulness
 

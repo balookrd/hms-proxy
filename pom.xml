@@ -15,6 +15,7 @@
     <curator.version>2.12.0</curator.version>
     <hive.version>3.1.3</hive.version>
     <hadoop.mapreduce.version>2.6.5</hadoop.mapreduce.version>
+    <iceberg.version>1.9.2</iceberg.version>
     <junit.version>4.13.2</junit.version>
     <!-- API and binding must stay on one version. The binding is slf4j-reload4j: reload4j is a
          drop-in fork of the EOL log4j 1.2.17 with the known CVEs removed, and it owns the same
@@ -40,6 +41,19 @@
         <groupId>org.apache.curator</groupId>
         <artifactId>curator-recipes</artifactId>
         <version>${curator.version}</version>
+      </dependency>
+      <!-- Iceberg 1.9.2 is compiled against Jackson 2.18; Hive 3.1.3 drags databind 2.12.
+           Without this pin the tree resolves core 2.18.3 next to databind 2.12.0 and
+           TableMetadataParser - the path that reads metadata.json - breaks. -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.18.3</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.18.3</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -81,6 +95,52 @@
         <exclusion>
           <groupId>org.apache.logging.log4j</groupId>
           <artifactId>log4j-1.2-api</artifactId>
+        </exclusion>
+        <!-- orc-core (pulled in transitively by hive-standalone-metastore) drags
+             hadoop-hdfs 2.2.0, while hadoop-common resolves to 2.6.0 elsewhere in
+             this tree. hadoop-hdfs 2.2.0's DFSOutputStream calls the Hadoop-2.2-era
+             FSOutputSummer(Checksum,int,int) constructor, which hadoop-common 2.6.0
+             no longer has (it only kept FSOutputSummer(DataChecksum)) - so any HDFS
+             write from this JVM fails with NoSuchMethodError. Exclude the stale
+             transitive version and pin hadoop-hdfs explicitly below at 2.6.0 to
+             match hadoop-common. -->
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-hdfs</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-hdfs</artifactId>
+      <version>2.6.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>jdk.tools</groupId>
+          <artifactId>jdk.tools</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>log4j</groupId>
+          <artifactId>log4j</artifactId>
+        </exclusion>
+        <!-- xerces:xercesImpl is pulled in only for hadoop-hdfs's offline image/edits viewer,
+             never for the DFSClient runtime path this proxy uses. xercesImpl ships
+             META-INF/services/javax.xml.parsers.* entries, which in a shaded fat jar make this
+             2007-vintage parser (with known CVEs) the JVM-wide JAXP provider for every
+             DocumentBuilderFactory/SAXParserFactory lookup in the process, including Hadoop
+             Configuration and hive-site parsing - silently displacing the JDK's own parser.
+             Exclude it and its xml-apis dependency. -->
+        <exclusion>
+          <groupId>xerces</groupId>
+          <artifactId>xercesImpl</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -168,6 +228,86 @@
       <version>${slf4j.version}</version>
     </dependency>
     <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-core</artifactId>
+      <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- iceberg-bundled-guava (shaded Guava under org.apache.iceberg.relocated.*) is a
+         runtime-scope transitive dep of iceberg-core, but the vendored RESTCatalogAdapter
+         references those types at compile time. Pin to compile scope so javac sees them. -->
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-bundled-guava</artifactId>
+      <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-hive-metastore</artifactId>
+      <version>${iceberg.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hive</groupId>
+          <artifactId>hive-metastore</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hive</groupId>
+          <artifactId>hive-serde</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.avro</groupId>
+          <artifactId>avro</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.google.code.findbugs</groupId>
+          <artifactId>jsr305</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.pentaho</groupId>
+          <artifactId>pentaho-aggdesigner-algorithm</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.mortbay.jetty</groupId>
+          <artifactId>jetty</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.mortbay.jetty</groupId>
+          <artifactId>jetty-util</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.sun.jersey</groupId>
+          <artifactId>jersey-server</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.sun.jersey</groupId>
+          <artifactId>jersey-core</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
       <groupId>org.apache.curator</groupId>
       <artifactId>curator-framework</artifactId>
     </dependency>
@@ -204,6 +344,12 @@
       <groupId>org.yaml</groupId>
       <artifactId>snakeyaml</artifactId>
       <version>2.3</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-minikdc</artifactId>
+      <version>3.3.6</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

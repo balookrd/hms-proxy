@@ -6,6 +6,89 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-07-28
+
+### Added
+
+- The Iceberg REST front door now supports table writes - create, commit
+  (update), drop, rename, register - when the request's namespace resolves
+  to `routing.default-catalog`. `RoutingMetaStoreClient` now implements
+  `createTable`, `dropTable`, `alter_table_with_environmentContext` and the
+  commit-lock RPCs (`lock`, `checkLock`, `unlock`, `heartbeat`, `showLocks`)
+  instead of throwing `UnsupportedOperationException` for all of them; every
+  other `IMetaStoreClient` method it does not need for this stays
+  unsupported.
+- Every Iceberg REST write route is refused with `403`
+  (`ForbiddenException`) whenever its namespace resolves to any catalog
+  other than the default one: only the default catalog's tables are backed
+  by a real HMS lock, and every other catalog is served by the synthetic
+  lock shim, which grants an `EXCLUSIVE` lock unconditionally with no
+  conflict checking - a commit routed there would race a concurrent writer
+  into a silently lost update. The new `WriteRouteGate` checks the
+  **resolved** catalog, not the request's own URL prefix, so a federated
+  `<catalog><separator><db>` name reached through the default prefix is
+  refused exactly like a direct request against the non-default prefix; the
+  gate covers every write route `RESTCatalogAdapter` exposes (table and view
+  CRUD, namespace CRUD, rename, multi-table transaction commit), not only
+  the five table-write routes this phase actually implements.
+- `GET /v1/config` and `GET /v1/{prefix}/config` now advertise the write/read
+  asymmetry between catalogs: the default catalog's `endpoints` field
+  carries the five table-write routes on top of the nine read routes from
+  the previous phase; every other catalog's carries only the nine read
+  routes. A spec-compliant client can discover the restriction instead of
+  learning about it from a failed request.
+- `--scenario rest` in the smoke runners drives the table write round trip -
+  create (asserting `200`), load (asserting `metadata-location` comes back),
+  drop (asserting a `2xx`) - and the two negative cases: a direct create
+  under a non-default prefix, and a create under that prefix's federated
+  namespace name reached through the default prefix, both asserting `403`.
+  Guarded by the new `HMS_SMOKE_REST_WRITE_TABLE`; skipped when unset. The
+  runner also now asserts the config write/read asymmetry above, for both
+  the default catalog and a configured second catalog.
+- `RoutingMetaStoreClient` now implements `createDatabase`,
+  `dropDatabase(String, boolean, boolean, boolean)` and `alterDatabase`
+  instead of throwing `UnsupportedOperationException` - genuinely new: until
+  now every namespace-DDL Iceberg REST route answered unsupported regardless
+  of catalog. Names are translated through the existing
+  `CatalogNameTranslation`, and the `Database` payload passed to
+  create/alter is translated on a copy, never by mutating the caller's
+  object.
+- `GET /v1/config` and `GET /v1/{prefix}/config` now advertise the full
+  served write surface: view CRUD/rename and namespace CRUD were already
+  reachable through the same generic dispatch path table writes use, and
+  `WriteRouteGate` already gated all thirteen write routes - only discovery
+  and smoke lagged behind. The default catalog's `endpoints` now carry all
+  thirteen write routes (table, view and namespace DDL, transaction
+  commit); every other catalog still advertises the nine read routes only.
+- `--scenario rest` now also drives a namespace DDL round trip
+  (create/load/update-property/drop), a view round trip
+  (create/list/drop, asserting a real `metadata-location`) and a
+  multi-table transaction-commit round trip via
+  `POST /v1/{prefix}/transactions/commit`, asserting the table's
+  `metadata-location` actually changed rather than trusting the `204`
+  alone. All three are guarded by the existing `HMS_SMOKE_REST_WRITE_TABLE`.
+
+### Fixed
+
+- Every HDFS write from inside the proxy's own JVM failed with
+  `NoSuchMethodError: FSOutputSummer.<init>`, deep inside
+  `DFSOutputStream` - table writes are the first proxy code path to open an
+  HDFS output stream itself; reads use a different, unaffected class path.
+  `orc-core` (pulled in transitively by `hive-standalone-metastore`) was
+  dragging a stale `hadoop-hdfs:2.2.0` alongside `hadoop-common:2.6.0`
+  elsewhere in the tree, and Maven's mediation never compared them (they are
+  different artifact IDs). `pom.xml` now excludes that transitive
+  `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0` directly, to match
+  `hadoop-common`.
+- The Iceberg REST request dispatcher (`IcebergHttpHandler`) only caught
+  `Exception`, so a `NoSuchMethodError` (or any other `java.lang.Error`)
+  escaping request handling unwound past both catch blocks with no response
+  ever sent - the JDK HTTP server logged the stack trace to stderr and
+  abandoned the exchange, leaving the client's connection hanging
+  indefinitely with no timeout on the server side. The catch-all is now
+  `Throwable`, so such failures map to the usual error response like any
+  other failure instead of hanging the caller.
+
 ## 2026-07-27
 
 ### Added
@@ -26,6 +109,42 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   statement never reaches: `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default
   `true`, read-only) and `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default
   `false`, since it creates a database).
+- `--scenario rest` in the smoke runners drives the Iceberg REST catalog
+  front door with curl: config discovery, namespace and table listings, a
+  table load (asserting `metadata-location` comes back), the invisibility of
+  plain Hive tables, and clean failures for an unknown prefix, an unknown
+  table and a write route. Configured via `HMS_SMOKE_REST_*`; skipped in
+  `--scenario all` when `HMS_SMOKE_REST_URL` is unset. The local stand enables
+  the listener on its plain profile (host port 19183) and registers a minimal
+  Iceberg table for the load check.
+- The Iceberg REST frontend now exposes every configured catalog as its own
+  prefix, `/v1/<catalog>/...`, instead of only `routing.default-catalog`.
+  `GET /v1/config?warehouse=<catalog>` returns `overrides.prefix=<catalog>`
+  for warehouse discovery; an unknown warehouse is a 400
+  (`BadRequestException`), and an unknown prefix is still a 404
+  (`NoSuchCatalogException`). The default catalog's prefix keeps the phase-1
+  federated view (its own databases plus every other catalog's databases
+  under `<catalog><separator><db>` names) for compatibility; every other
+  prefix is a clean, per-catalog view where those federated names never leak.
+- The Iceberg REST frontend is now covered by Prometheus metrics:
+  `hms_proxy_rest_requests_total{prefix,route,status}`,
+  `hms_proxy_rest_request_duration_seconds{prefix,route}`, and
+  `hms_proxy_rest_listener_info{bind_host,port}`. `--scenario rest` in the
+  smoke runners checks the management `/metrics` endpoint carries the first
+  and third series when `HMS_SMOKE_REST_METRICS_URL` is set. The bundled
+  Grafana dashboard gains an Iceberg REST row: rate/error-ratio/latency
+  stats, quantiles, and breakdowns by HTTP status, catalog prefix and route.
+- `GET /v1/config` now advertises, in the `endpoints` field Iceberg 1.9.2
+  added, exactly the nine read routes this front door serves: list/load
+  namespace + namespace-exists, list/load table + table-exists, list/load
+  view + view-exists. Modern clients use it to know not to attempt writes;
+  older clients ignore the field. `GET /v1/{prefix}/config` now answers from
+  the proxy's own handler with `overrides.prefix` for the catalog named in
+  the path, instead of falling through to the vendored adapter and
+  advertising every route including writes; an unknown catalog there is
+  still a 404. The config endpoint now answers only to `GET`, in both the
+  plain (`/v1/config`) and prefixed (`/v1/{prefix}/config`) form; any other
+  method gets the same 404 an unknown route gets.
 
 ### Fixed
 
@@ -35,6 +154,59 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   an Apache one; backticks are now stripped before comparing. The cross-catalog
   join assertions looked for a column alias, which cannot appear because the
   runner passes `--showHeader=false`; the marker moved into the selected data.
+- Error responses from the Iceberg REST front door no longer carry the
+  server stack trace. They keep the mapped status code, `type` and
+  `message`; only the `stack` field is gone. This listener may be
+  unauthenticated, so the trace was leaking internal package structure, file
+  names and line numbers. A request body that fails to parse now answers 400
+  (`BadRequestException`) instead of falling through to a 500; this applies
+  to every route that takes a body, and a valid metrics report still answers
+  204 as before. `HEAD` responses no longer write a body: previously every
+  `HEAD` that produced an error hit `IOException: stream closed` inside the
+  JDK HTTP server and logged a WARN with a full stack trace on each request —
+  the status the client saw was already correct, so this was pure log noise,
+  and a client polling exists-checks for missing objects flooded the log.
+  The same defect was fixed on the management listener (`/healthz`,
+  `/readyz`, `/metrics`), where it was silent because that server has no
+  catch-all logger.
+
+### Changed
+
+- The Iceberg REST front door moved from Iceberg `1.5.2` to `1.9.2`.
+  `jackson-core` and `jackson-databind` are now pinned to `2.18.3` in
+  `dependencyManagement`: `1.9.2` is compiled against Jackson `2.18` while
+  Hive `3.1.3` brings databind `2.12`, and without the pin the tree resolved
+  `core 2.18.3` next to `databind 2.12.0`, which would have broken
+  `TableMetadataParser` — the path that reads `metadata.json`. The vendored
+  `RESTCatalogAdapter` was re-taken from the `1.9.2` upstream tag; dispatch
+  moved from the removed `execute(...)` overload to
+  `handleRequest(route, vars, body, responseType)`, and error reporting
+  moved from a captured-callback scheme to catching exceptions and mapping
+  them with `RESTCatalogAdapter.configureResponseFromException`.
+- View routes (`GET .../views`, `GET .../views/{view}`) now return real data
+  — an empty `{"identifiers":[],"next-page-token":null}` listing rather than
+  the previous empty `204` — because `HiveCatalog` became a `ViewCatalog`
+  from Iceberg `1.7` on. `NAMESPACE_EXISTS`/`TABLE_EXISTS`/`VIEW_EXISTS` now
+  answer per the REST spec across every catalog prefix: a `HEAD` on an
+  existing namespace or table returns `204`, and `404` when it does not
+  exist — the handler forwards any route `Route.from(...)` resolves with
+  no allowlist, so these routes went live with the upgrade. `VIEW_EXISTS`
+  is served by the same unconditional dispatch and answers `404` for a
+  view that does not exist; the existing-view `204` case was not
+  exercised because the stand has no views. Iceberg `1.5.2` shipped no
+  `HEAD` routes at all, so a `HEAD` on an existing table used to return
+  `404`, and clients such as PyIceberg reported
+  `table_exists()` as `false` for tables that were really there; that is
+  now fixed. Client compatibility is unaffected: the REST
+  endpoint is a wire protocol, so a client's own Iceberg version is
+  independent of the proxy's, and a `format-version: 2` table still loads as
+  v2 (verified on the stand: format-version 2, 21 metadata fields). Stand
+  validation (`--scenario rest`, `--scenario all`, and the SQL layer through
+  both HiveServer2 instances) all completed successfully on the upgraded
+  jar — the SQL layer is what proves the Jackson pin did not break the Hive
+  paths. Listings also gained real pagination: `pageSize`/`pageToken` are now
+  honored and a response can carry `next-page-token`, which Iceberg `1.5.2`
+  did not support at all.
 
 ## 2026-07-26
 
@@ -275,6 +447,22 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 - `APACHE_4_1_0` enum value in `FrontendProfile` and `MetastoreRuntimeProfile`.
   The latter rejects being used as a backend (`BackendAdapterFactory` throws)
   — Hive 4 is supported as a front-door profile only.
+- Iceberg REST Catalog frontend (experimental, read-only). A parallel HTTP
+  listener configured via `rest-catalog.*` properties exposes a subset of the
+  Iceberg REST Catalog spec — `GET /v1/config`, namespace list/load, and table
+  list/load — backed by the same routing/federation pipeline as the Thrift HMS
+  front door via an in-process `IMetaStoreClient` proxy. Only the proxy's
+  `routing.default-catalog` is exposed (multi-catalog REST is planned).
+- SPNEGO/Kerberos protection for the REST endpoint. The listener uses a
+  separate `HTTP/<host>@REALM` principal (`rest-catalog.kerberos.principal` +
+  `.keytab`); the authenticated principal is propagated into
+  `ClientRequestContext.remoteUser` so audit logs match the user. Requires
+  `security.mode=KERBEROS` on the front door.
+
+### Tests
+
+- `hadoop-minikdc` test dependency was added so the SPNEGO handshake can be
+  validated end-to-end inside a single JVM (`SpnegoIntegrationTest`).
 
 ## 2026-05-19
 

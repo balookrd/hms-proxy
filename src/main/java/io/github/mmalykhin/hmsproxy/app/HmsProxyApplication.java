@@ -6,6 +6,8 @@ import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
+import io.github.mmalykhin.hmsproxy.restcatalog.IcebergRestServices;
+import io.github.mmalykhin.hmsproxy.restcatalog.RestCatalogServer;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
@@ -13,7 +15,9 @@ import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,8 +57,30 @@ public final class HmsProxyApplication {
                 ThriftHiveMetastore.Iface.class,
                 handler,
                 HortonworksFrontendExtension.class);
+        // The Iceberg REST write gate needs to know which catalog a namespace actually belongs
+        // to, not just which URL prefix a request arrived under (see WriteRouteGate). router is
+        // already open at this point purely for routing, so resolveDatabase(...) here is a pure,
+        // in-memory lookup - no extra connection is made. MetaException is declared but not
+        // actually thrown by resolveDatabase's current implementation; if a future change makes
+        // it throw for a genuinely unresolvable name, treat that the same as "unresolved" and let
+        // normal dispatch produce its usual 404 rather than fail closed on writes.
+        Function<String, String> catalogForExternalDb = externalDbName -> {
+          try {
+            return router.resolveDatabase(externalDbName).catalogName();
+          } catch (MetaException e) {
+            return null;
+          }
+        };
         try (AdditionalFrontendThriftServers extras =
-            AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity)) {
+            AdditionalFrontendThriftServers.open(config, proxy, frontDoorSecurity);
+             // Reuses each catalog's own HiveConf (fs.defaultFS, Kerberos namenode principal, ...)
+             // instead of building REST a second, independent Configuration: see
+             // IcebergRestServices.open javadoc for why that would break HDFS writes under Kerberos.
+             IcebergRestServices restServices = config.restCatalog().enabled()
+                 ? IcebergRestServices.open(config, proxy, catalogForExternalDb,
+                     catalog -> router.requireBackend(catalog).hiveConf())
+                 : null;
+             RestCatalogServer restServer = RestCatalogServer.open(config, restServices, observability.metrics())) {
         MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
         installShutdownHook(server, teardownComplete, config.server().shutdownTimeoutSeconds());
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),

@@ -13,6 +13,7 @@ import io.github.mmalykhin.hmsproxy.config.federation.FederationConfig;
 import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
@@ -30,6 +31,7 @@ public record ProxyConfig(
     FederationConfig federation,
     TransactionalDdlGuardConfig transactionalDdlGuard,
     ManagementConfig management,
+    RestCatalogConfig restCatalog,
     SyntheticReadLockStoreConfig syntheticReadLockStore,
     RateLimitConfig rateLimit,
     LatencyRoutingConfig latencyRouting,
@@ -50,6 +52,7 @@ public record ProxyConfig(
     management = management == null
         ? new ManagementConfig(false, server.bindHost(), server.port() + 1000)
         : management;
+    restCatalog = restCatalog == null ? RestCatalogConfig.disabled() : restCatalog;
     Objects.requireNonNull(syntheticReadLockStore,
         "syntheticReadLockStore must be set explicitly: use SyntheticReadLockStoreConfig.inMemory() "
             + "for single-instance deployments or a ZOOKEEPER-backed config for HA.");
@@ -73,6 +76,7 @@ public record ProxyConfig(
     private FederationConfig federation;
     private TransactionalDdlGuardConfig transactionalDdlGuard;
     private ManagementConfig management;
+    private RestCatalogConfig restCatalog;
     private SyntheticReadLockStoreConfig syntheticReadLockStore;
     private RateLimitConfig rateLimit;
     private LatencyRoutingConfig latencyRouting;
@@ -88,6 +92,7 @@ public record ProxyConfig(
     public Builder federation(FederationConfig federation) { this.federation = federation; return this; }
     public Builder transactionalDdlGuard(TransactionalDdlGuardConfig guard) { this.transactionalDdlGuard = guard; return this; }
     public Builder management(ManagementConfig management) { this.management = management; return this; }
+    public Builder restCatalog(RestCatalogConfig restCatalog) { this.restCatalog = restCatalog; return this; }
     public Builder syntheticReadLockStore(SyntheticReadLockStoreConfig store) { this.syntheticReadLockStore = store; return this; }
     public Builder rateLimit(RateLimitConfig rateLimit) { this.rateLimit = rateLimit; return this; }
     public Builder latencyRouting(LatencyRoutingConfig latencyRouting) { this.latencyRouting = latencyRouting; return this; }
@@ -98,7 +103,7 @@ public record ProxyConfig(
 
     public ProxyConfig build() {
       return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
-          backend, compatibility, federation, transactionalDdlGuard, management,
+          backend, compatibility, federation, transactionalDdlGuard, management, restCatalog,
           syntheticReadLockStore, rateLimit, latencyRouting, additionalFrontends);
     }
   }

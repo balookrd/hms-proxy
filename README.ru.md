@@ -444,6 +444,9 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_rest_requests_total{prefix,route,status}`
+- `hms_proxy_rest_request_duration_seconds{prefix,route}`
+- `hms_proxy_rest_listener_info{bind_host,port}`
 
 Пример Prometheus scrape config:
 
@@ -474,6 +477,9 @@ scrape_configs:
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
 - `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
+- `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
+- `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
+- `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default
@@ -512,7 +518,9 @@ Proxy также пишет один structured audit log на каждый за
 
 Готовый Grafana dashboard лежит в
 `monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
-backend failures, fallbacks, default-catalog routing и ambiguous routing.
+backend failures, fallbacks, default-catalog routing и ambiguous routing, а также ряд Iceberg
+REST: request rate, error ratio и квантили латентности REST-listener'а, разбивки по HTTP-статусу,
+catalog prefix и route, и stat «listener up».
 
 ### Selective federation exposure
 
@@ -970,6 +978,209 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 держит Thrift worker всё время удаления. Значит, успешный `DROP TABLE` ещё не гарантирует, что
 данные уже удалены — результат purge смотри в логе proxy. При остановке proxy запущенные purge
 дожидаются завершения; оставшиеся в очереди логируются и пропускаются.
+
+## Iceberg REST Catalog frontend
+
+Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
+Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
+Thrift HMS front door. Статус: **экспериментально**; вся write-поверхность,
+которую выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
+rename, register), write view (create, commit, drop, rename) и namespace DDL
+(create, update properties, drop), а также multi-table transaction commit —
+поддержана, но **только когда целевой namespace резолвится в
+`routing.default-catalog`**. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
+Trino `iceberg-rest`) могут discover и load Iceberg-таблицы, хранящиеся в HMS
+через стандартный параметр `metadata_location`.
+
+Write таблиц и gate «только default-каталог» появились первыми; write view и
+multi-table transaction commit к этому моменту уже были достижимы — их
+REST-путь идёт через тот же общий `RoutingHiveCatalog`/`RoutingMetaStoreClient`,
+которым пользуется write таблиц, и `WriteRouteGate` уже классифицировал все
+тринадцать роутов как write — их просто ещё не объявляли в `GET /v1/config` и
+не покрывали smoke. Namespace DDL — по-настоящему новое: `RoutingMetaStoreClient`
+не реализовывал `createDatabase`, `alterDatabase` и `dropDatabase` до сих пор,
+поэтому `POST /v1/{prefix}/namespaces` и соседние роуты отвечали
+`UnsupportedOperationException` независимо от каталога.
+
+**Почему writes работают только в default-каталоге:** реальным HMS-локом
+подкреплены только таблицы дефолтного каталога (см. [ZooKeeper storage для
+synthetic read locks](#zookeeper-storage-для-synthetic-read-locks));
+любой другой каталог обслуживается синтетическим lock shim, который выдаёт
+`EXCLUSIVE`-лок безусловно, без проверки конфликтов. Commit, направленный
+туда, решил бы, что владеет таблицей, молча гоняясь наперегонки с — и,
+возможно, проигрывая — конкурентным writer'ом, что портит `metadata.json` без
+единого сообщения о конфликте. `WriteRouteGate` проверяет это на
+**резолвленном** каталоге, а не на prefix из URL запроса: prefix дефолтного
+каталога тоже выставляет базы всех остальных каталогов под federated-именами
+`<catalog><separator><db>` (см. [Поддерживаемые endpoint'ы](#поддерживаемые-endpointы)
+ниже), так что create по
+`/v1/{default-prefix}/namespaces/apache__default/tables` отказывается точно
+так же, как прямой create по `/v1/apache/namespaces/default/tables` — оба
+резолвятся в каталог `apache` и получают один и тот же `403`
+(`ForbiddenException`). Это касается всех тринадцати write-роутов из таблицы
+ниже одинаково — write таблиц, view и namespace DDL, transaction commit.
+`GET /v1/config` и `GET /v1/{prefix}/config` объявляют эту асимметрию
+напрямую: в `endpoints` дефолтного каталога перечислены все тринадцать
+write-роутов из таблицы ниже, у любого другого каталога — только девять
+read-роутов, так что спецификация-совместимый клиент узнаёт об ограничении
+из discovery, а не из проваленного запроса.
+
+Включается так:
+
+```properties
+rest-catalog.enabled=true
+rest-catalog.port=9183
+# Опционально, но рекомендуется для прода: SPNEGO. Требует security.mode=KERBEROS.
+rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
+rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
+```
+
+Запросы к этому listener'у покрыты Prometheus-метриками из раздела
+[Prometheus-метрики](#prometheus-метрики): `hms_proxy_rest_requests_total`,
+`hms_proxy_rest_request_duration_seconds` и `hms_proxy_rest_listener_info`.
+
+### Поддерживаемые endpoint'ы
+
+| Endpoint                                              | Статус                                  |
+| ----------------------------------------------------- | --------------------------------------- |
+| `GET /v1/config`                                      | поддержан                               |
+| `GET /v1/{prefix}/config`                             | поддержан                               |
+| `GET /v1/{prefix}/namespaces`                         | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}`                    | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}/tables`             | поддержан (только Iceberg-таблицы)      |
+| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан (только Iceberg-таблицы)      |
+| `GET /v1/{prefix}/namespaces/{ns}/views`              | поддержан (реальный листинг; пустой, если Iceberg-view нет) |
+| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан (только Iceberg-view)          |
+| `HEAD /v1/{prefix}/namespaces/{ns}`                    | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | поддержан (204, если существует, 404 — если нет) |
+| `POST /v1/{prefix}/namespaces/{ns}/tables`             | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/tables/rename`                      | поддержан только для дефолтного каталога (rename); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/register`           | поддержан только для дефолтного каталога (register); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/views`               | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/views/rename`                        | поддержан только для дефолтного каталога (rename); иначе `403` |
+| `POST /v1/{prefix}/namespaces`                          | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/properties`          | поддержан только для дефолтного каталога (update properties); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}`                   | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/transactions/commit`                 | поддержан только для дефолтного каталога (multi-table commit); иначе `403` |
+
+`{prefix}` — любой каталог, перечисленный в `catalogs=`: каждый настроенный
+каталог получает собственный REST prefix, `/v1/<catalog>/...`. `GET
+/v1/config` поддерживает warehouse discovery: передайте `?warehouse=<catalog>`,
+и в ответе `overrides.prefix` назовёт этот каталог, так что клиент может
+привязаться к нужному prefix, не зашивая его в конфигурацию (см. примеры
+клиентов ниже). Без `warehouse` `/v1/config` объявляет `routing.default-catalog`
+— как и в phase 1; неизвестное значение `warehouse` возвращает HTTP 400
+(`BadRequestException`). Поле `endpoints` в ответе перечисляет девять
+read-роутов из таблицы выше для любого каталога (list/load namespace +
+namespace-exists, list/load table + table-exists, list/load view +
+view-exists); у дефолтного каталога `endpoints` дополнительно несёт все
+тринадцать write-роутов из таблицы выше (write таблиц, view и namespace DDL,
+transaction commit), так что современный клиент может обнаружить
+write/read-асимметрию между каталогами через discovery, а не из
+провалившегося запроса. `GET /v1/{prefix}/config` отвечает так же, но из
+собственного handler'а прокси — `overrides.prefix` называет каталог из
+сегмента пути, а не из query-параметра `warehouse`, — и неизвестный prefix
+здесь по-прежнему даёт 404.
+
+Отказ в write отвечает `403` (`ForbiddenException`) с сообщением, называющим
+резолвленный каталог, например: `Writes are only supported in the default
+catalog 'hdp'; namespace 'apache__default' belongs to catalog 'apache',
+which is served by the synthetic lock shim and provides no writer
+isolation.` Это проверяется на namespace, в который запрос **резолвится**, а
+не на prefix из URL — см. [Почему writes работают только в
+default-каталоге](#iceberg-rest-catalog-frontend) выше.
+
+Error-ответы несут смапленный HTTP-статус, `type` и `message`, но никогда —
+server stack trace, потому что этот listener может быть доступен без
+аутентификации. Тело запроса, которое не удаётся распарсить, отвечает 400
+(`BadRequestException`) вместо падения в 500; это касается любого роута,
+принимающего тело. `HEAD`-ответ никогда не пишет тело, как того требует RFC
+9110, — включая error-статусы, — так что exists-check на отсутствующий
+namespace, таблицу или view возвращает обычный 404 без тела, а не 404 с
+JSON-телом. Диспетчер запросов ловит `Throwable`, а не только `Exception`:
+любой `Error`, который ускользнул бы из обработки (например,
+`NoSuchMethodError` от несовпадения версий зависимостей, всплывший глубоко
+внутри write), теперь маппится в обычный error-ответ, а не улетает мимо
+handler'а, оставляя соединение клиента висеть без ответа навсегда.
+
+Prefix дефолтного каталога сохраняет federated-представление из phase 1: его
+собственные базы плюс базы всех остальных каталогов под именами
+`<catalog><separator><db>` (см. [HiveServer2](#hiveserver2) выше). Любой
+другой prefix — чистое представление: только собственные базы этого
+каталога, под их внутренними именами — federated-имена
+`<catalog><separator><db>` в non-default prefix не просачиваются. На
+неизвестный prefix по-прежнему отвечает 404 (`NoSuchCatalogException`).
+
+### Настройка SPNEGO
+
+SPNEGO по RFC требует principal вида `HTTP/<host>@REALM`. Это **отдельный**
+principal от `security.server-principal` (обычно `hms/<host>@REALM` для
+Thrift listener). Оба могут лежать в одном keytab или в двух разных. REST
+listener делает `UserGroupInformation.loginUserFromKeytabAndReturnUGI`, чтобы
+получить отдельный UGI и не перезаписать Thrift'овый — оба сосуществуют в
+одном JVM.
+
+### Примеры клиентов
+
+PyIceberg:
+
+```python
+from pyiceberg.catalog.rest import RestCatalog
+catalog = RestCatalog("my-catalog", **{
+    "uri": "http://hms-proxy:9183",
+})
+```
+
+Spark:
+
+```properties
+spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
+spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
+```
+
+Чтобы обратиться к non-default каталогу, передайте `warehouse=<catalog>`:
+клиент отправит его в `GET /v1/config` при discovery и привяжется к prefix
+этого каталога для всех последующих запросов:
+
+```python
+catalog = RestCatalog("sales-catalog", **{
+    "uri": "http://hms-proxy:9183",
+    "warehouse": "sales",
+})
+```
+
+```properties
+spark.sql.catalog.sales_catalog.warehouse=sales
+```
+
+### Особенности и ограничения
+
+- Iceberg REST по дизайну работает **только с Iceberg-таблицами**. Native
+  Hive-таблицы (parquet/orc/text без `metadata_location`) HiveCatalog
+  отфильтровывает, и через REST их не видно. Для native Hive продолжайте
+  использовать Thrift listener.
+- `RoutingHiveCatalog` использует reflection на private поле
+  `HiveCatalog.clients`, привязанное к Iceberg `1.9.2`. При апгрейде Iceberg
+  обязательно прогнать `RoutingHiveCatalogTest`, чтобы убедиться, что inject
+  ещё работает.
+- Write таблицы открывает output stream в HDFS (`metadata.json`) прямо из
+  JVM прокси — это первый путь в прокси, который так делает; чтение идёт по
+  другому, незатронутому classpath. Это требует, чтобы `hadoop-hdfs` и
+  `hadoop-common` были одной версии в дереве зависимостей. Мавеновская
+  медиация никогда их не сравнивала (это разные artifact ID), поэтому
+  `orc-core` (приходит транзитивно через `hive-standalone-metastore`) тянул
+  устаревший `hadoop-hdfs:2.2.0` рядом с `hadoop-common:2.6.0` в другом месте
+  дерева, и каждый write падал с `NoSuchMethodError:
+  FSOutputSummer.<init>` глубоко внутри `DFSOutputStream`. `pom.xml` теперь
+  исключает этот транзитивный `hadoop-hdfs` и напрямую зависит от
+  `hadoop-hdfs:2.6.0`, чтобы совпасть с `hadoop-common`. Держите обе версии
+  согласованными, если переопределяете любую из них.
 
 ## Безопасность
 

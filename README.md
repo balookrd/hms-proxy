@@ -442,6 +442,9 @@ Current Prometheus metrics:
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_rest_requests_total{prefix,route,status}`
+- `hms_proxy_rest_request_duration_seconds{prefix,route}`
+- `hms_proxy_rest_listener_info{bind_host,port}`
 
 Example Prometheus scrape config:
 
@@ -472,6 +475,9 @@ Metric semantics:
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 - `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
+- `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
+- `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
+- `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.
@@ -509,7 +515,9 @@ computed for output nobody reads.
 
 A ready-to-import Grafana dashboard is included in
 `monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
-fallbacks, default-catalog routing, and ambiguous routing events.
+fallbacks, default-catalog routing, and ambiguous routing events, plus an Iceberg REST row:
+request rate, error ratio and latency quantiles of the REST listener, breakdowns by HTTP status,
+catalog prefix and route, and a listener-up stat.
 
 ### Selective federation exposure
 
@@ -973,6 +981,206 @@ SELECT * FROM `catalog2__sales`.orders LIMIT 10;
 
 If you keep the default separator `.`, older Hive SQL clients can treat `catalog.db.table`
 ambiguously, so `__` is usually the safer choice.
+
+## Iceberg REST Catalog frontend
+
+The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
+Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
+front door. Status: **experimental**; the full write surface `RESTCatalogAdapter`
+exposes - table writes (create, commit, drop, rename, register), view writes
+(create, commit, drop, rename) and namespace DDL (create, update properties,
+drop), plus multi-table transaction commit - is supported, but **only when the
+target namespace resolves to `routing.default-catalog`**. Iceberg clients
+(PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load
+Iceberg tables stored in HMS via the standard `metadata_location` table
+parameter.
+
+Table writes and the default-catalog-only gate landed first; view writes and
+multi-table transaction commit were already reachable at that point too - the
+REST dispatch path for them shares the same generic `RoutingHiveCatalog`/
+`RoutingMetaStoreClient` plumbing table writes use, and `WriteRouteGate`
+already classified all thirteen routes as writes - they were simply not yet
+advertised in `GET /v1/config` or covered by smoke. Namespace DDL is genuinely
+new: `RoutingMetaStoreClient` did not implement `createDatabase`,
+`alterDatabase` or `dropDatabase` until now, so `POST /v1/{prefix}/namespaces`
+and friends answered `UnsupportedOperationException` regardless of catalog.
+
+**Why writes are default-catalog only:** only the default catalog's tables
+are backed by a real HMS lock (see [ZooKeeper storage for synthetic read
+locks](#zookeeper-storage-for-synthetic-read-locks)); every other
+catalog is served by the synthetic lock shim, which grants an `EXCLUSIVE`
+lock unconditionally with no conflict checking. A commit routed there would
+believe it owns the table while silently racing - and possibly losing to - a
+concurrent writer, corrupting `metadata.json` without ever reporting a
+conflict. `WriteRouteGate` enforces this on the **resolved** catalog, not on
+the request's own URL prefix: the default catalog's own prefix also exposes
+every other catalog's databases as federated `<catalog><separator><db>`
+names (see [Supported endpoints](#supported-endpoints) below), so a create
+under `/v1/{default-prefix}/namespaces/apache__default/tables` is refused
+exactly like a direct create under `/v1/apache/namespaces/default/tables` -
+both resolve to the `apache` catalog and get the same `403`
+(`ForbiddenException`) with a message naming the resolved catalog. This
+applies uniformly to every one of the thirteen write routes below - table,
+view and namespace DDL, and transaction commit alike. `GET /v1/config` and
+`GET /v1/{prefix}/config` advertise this asymmetry directly: the default
+catalog's `endpoints` list carries all thirteen write routes below, every
+other catalog's carries only the nine read routes, so a spec-compliant client
+discovers the restriction instead of learning about it from a failed request.
+
+Enable it via:
+
+```properties
+rest-catalog.enabled=true
+rest-catalog.port=9183
+# Optional but recommended for production: SPNEGO. Requires security.mode=KERBEROS.
+rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
+rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
+```
+
+Requests to this listener are covered by the Prometheus metrics described in
+[Prometheus metrics](#prometheus-metrics): `hms_proxy_rest_requests_total`,
+`hms_proxy_rest_request_duration_seconds`, and `hms_proxy_rest_listener_info`.
+
+### Supported endpoints
+
+| Endpoint                                              | Status                          |
+| ----------------------------------------------------- | ------------------------------- |
+| `GET /v1/config`                                      | supported                       |
+| `GET /v1/{prefix}/config`                             | supported                       |
+| `GET /v1/{prefix}/namespaces`                         | supported                       |
+| `GET /v1/{prefix}/namespaces/{ns}`                    | supported                       |
+| `GET /v1/{prefix}/namespaces/{ns}/tables`             | supported (Iceberg tables only) |
+| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
+| `GET /v1/{prefix}/namespaces/{ns}/views`              | supported (real listing, empty unless Iceberg views exist) |
+| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported (Iceberg views only)  |
+| `HEAD /v1/{prefix}/namespaces/{ns}`                    | supported (204 if exists, 404 if not) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | supported (204 if exists, 404 if not) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | supported (204 if exists, 404 if not) |
+| `POST /v1/{prefix}/namespaces/{ns}/tables`             | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported for the default catalog only (commit/update); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/tables/rename`                      | supported for the default catalog only (rename); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/register`           | supported for the default catalog only (register); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/views`               | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported for the default catalog only (commit/update); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/views/rename`                        | supported for the default catalog only (rename); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces`                          | supported for the default catalog only (create); `403` elsewhere |
+| `POST /v1/{prefix}/namespaces/{ns}/properties`          | supported for the default catalog only (update properties); `403` elsewhere |
+| `DELETE /v1/{prefix}/namespaces/{ns}`                   | supported for the default catalog only (drop); `403` elsewhere |
+| `POST /v1/{prefix}/transactions/commit`                 | supported for the default catalog only (multi-table commit); `403` elsewhere |
+
+`{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
+exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
+warehouse discovery: pass `?warehouse=<catalog>` and the response's
+`overrides.prefix` names that catalog, so a client can bind itself to the
+right prefix without hardcoding it (see the client examples below). Without
+`warehouse`, `/v1/config` advertises `routing.default-catalog`, matching
+phase-1 behavior; an unknown `warehouse` value returns HTTP 400
+(`BadRequestException`). The response's `endpoints` field lists the nine
+read routes above for every catalog (list/load namespace + namespace-exists,
+list/load table + table-exists, list/load view + view-exists); the default
+catalog's `endpoints` additionally carry all thirteen write routes above
+(table, view and namespace DDL, transaction commit), so a modern client can
+discover the write/read asymmetry between catalogs instead of learning about
+it from a failed request. `GET /v1/{prefix}/config`
+answers the same way from the proxy's own handler — `overrides.prefix` names
+the catalog from the path segment instead of the `warehouse` query param —
+and an unknown prefix there is still a 404.
+
+A refused write answers `403` (`ForbiddenException`) with a message naming
+the resolved catalog, for example: `Writes are only supported in the
+default catalog 'hdp'; namespace 'apache__default' belongs to catalog
+'apache', which is served by the synthetic lock shim and provides no writer
+isolation.` This is enforced on the namespace the request **resolves** to,
+not on the URL prefix it arrived under - see [Why writes are default-catalog
+only](#iceberg-rest-catalog-frontend) above.
+
+Error responses carry the mapped HTTP status, `type` and `message` but never
+a server stack trace, since this listener can be reached without
+authentication. A request body that fails to parse answers 400
+(`BadRequestException`) instead of falling through to a 500; this applies to
+every route that takes a body. A `HEAD` response never writes a body, per RFC
+9110 — including on an error status — so an exists-check against a missing
+namespace, table or view returns a plain 404 with no body, not a 404 with a
+JSON payload. The request dispatcher catches `Throwable`, not just
+`Exception`: any `Error` that escapes handling (for example a dependency-
+version `NoSuchMethodError` surfacing deep inside a write) is mapped to the
+usual error response instead of unwinding past the handler and leaving the
+client's connection to hang forever with no response at all.
+
+The default catalog's prefix keeps the phase-1 federated view: its own
+databases plus every other catalog's databases under their
+`<catalog><separator><db>` names (see [HiveServer2](#hiveserver2) above).
+Every other prefix is a clean view: only that catalog's own databases, under
+their internal names — the federated `<catalog><separator><db>` names never
+leak into a non-default prefix. An unknown prefix still returns 404
+(`NoSuchCatalogException`).
+
+### SPNEGO setup
+
+SPNEGO is an HTTP RFC requirement: the principal must be `HTTP/<host>@REALM`.
+This is a **separate** principal from `security.server-principal` (which is
+usually `hms/<host>@REALM` for the Thrift listener). Both can live in the same
+keytab file or in two separate keytabs. The REST listener calls
+`UserGroupInformation.loginUserFromKeytabAndReturnUGI` to acquire its own UGI
+without overwriting the Thrift one, so they coexist in the same JVM.
+
+### Client examples
+
+PyIceberg:
+
+```python
+from pyiceberg.catalog.rest import RestCatalog
+catalog = RestCatalog("my-catalog", **{
+    "uri": "http://hms-proxy:9183",
+})
+```
+
+Spark:
+
+```properties
+spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
+spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
+```
+
+To target a non-default catalog, pass `warehouse=<catalog>`; the client sends
+it to `GET /v1/config` during discovery and binds itself to that catalog's
+prefix for every following request:
+
+```python
+catalog = RestCatalog("sales-catalog", **{
+    "uri": "http://hms-proxy:9183",
+    "warehouse": "sales",
+})
+```
+
+```properties
+spark.sql.catalog.sales_catalog.warehouse=sales
+```
+
+### Caveats
+
+- Iceberg REST is **Iceberg-spec only** by design. Non-Iceberg Hive tables
+  (parquet/orc/text without `metadata_location`) are filtered out by HiveCatalog
+  and stay invisible through REST. Continue to use the Thrift listener for
+  native Hive tables.
+- `RoutingHiveCatalog` uses reflection on Iceberg's private `HiveCatalog.clients`
+  field, pinned to Iceberg `1.9.2`. Bumping the Iceberg version requires
+  running `RoutingHiveCatalogTest` to confirm the inject still works.
+- A table write opens an HDFS output stream (`metadata.json`) from inside the
+  proxy's own JVM - the first code path in the proxy to do so; reads use a
+  different, unaffected class path. This requires `hadoop-hdfs` and
+  `hadoop-common` to be the same version in the dependency tree. Maven's
+  mediation never compared them (they are different artifact IDs), so
+  `orc-core` (pulled in transitively by `hive-standalone-metastore`) was
+  dragging a stale `hadoop-hdfs:2.2.0` alongside `hadoop-common:2.6.0`
+  elsewhere in the tree, and every write failed with `NoSuchMethodError:
+  FSOutputSummer.<init>` deep inside `DFSOutputStream`. `pom.xml` now
+  excludes that transitive `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0`
+  directly, to match `hadoop-common`. Keep the two aligned if you ever
+  override either version.
 
 ## Security
 

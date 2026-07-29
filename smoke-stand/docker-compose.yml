@@ -224,6 +224,7 @@ services:
       - "19085:9083"
       - "19086:9084"
       - "19090:9090"
+      - "19183:9183"
     volumes:
       - ./proxy/hms-proxy.properties:/opt/hms-proxy/hms-proxy.properties:ro
       - ./proxy/hms-proxy-kerberos.properties:/opt/hms-proxy/hms-proxy-kerberos.properties:ro
