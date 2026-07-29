@@ -347,9 +347,23 @@ HiveServer2 reads all of it and appends through the Hive 4 front door; REST then
 commit and drops the table:
 
 ```bash
-smoke-stand/run-iceberg-interop-smoke.sh              # plain
-smoke-stand/run-iceberg-interop-smoke.sh --kerberos   # SPNEGO + SASL end to end
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4              # plain
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos   # SPNEGO + SASL end to end
 ```
+
+The scenario is not tied to the Hive 4 backend: `--prefix` names whichever catalog the running
+proxy config makes default, because REST writes are gated to it. All three backends the stand
+carries can take that role, and each is a different runtime profile on the write path:
+
+| Backend under test | Runtime profile | Compose call | Scenario |
+| --- | --- | --- | --- |
+| Hortonworks `3.1.0` (`hms-hdp`) | `HORTONWORKS_3_1_0_3_1_0_78` | `docker compose --profile hdp --profile hive4fe up -d --build` | `--prefix hdp` |
+| Apache `3.1.3` (`hms-apache`) | `APACHE_3_1_3` | `docker compose --env-file .env.apache --profile hdp --profile hive4fe up -d --build` | `--prefix apache` |
+| Apache Hive `4.1.0` (`hms-hive4`) | `APACHE_4_1_0` | `docker compose --env-file .env.hive4 --profile hive4 --profile hive4fe --profile hdp up -d --build` | `--prefix hive4` |
+
+Append `--profile kerberos` and the matching `-kerberos` env file for the SASL variant. The
+`apache` catalog lives on the second HDFS cluster, so with `--prefix apache` the table and its
+files land on `namenode-b` — the scenario cleans up there on its own.
 
 Under Kerberos the writer authenticates REST with per-request SPNEGO tokens (a custom Iceberg
 `AuthManager` inside the writer jar) and logs into HDFS from the smoke-user keytab. The Hive 4

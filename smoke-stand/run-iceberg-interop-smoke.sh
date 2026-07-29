@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Iceberg interop smoke for the hive4 profile of the stand: one table crosses every engine and
-# every front-door dialect over a Hive 4.1.0 backend.
+# Iceberg interop smoke: one table crosses every engine and every front-door dialect over
+# whichever metastore the stand currently has as its default catalog.
 #
 #   1. REST creates the table and writes real rows (iceberg-rest-writer inside stand-proxy).
 #   2. The vendor HDP HiveServer2 (Hortonworks front door, 9084) reads them and appends its own.
@@ -9,30 +9,48 @@
 #      the above and appends its own row through its native Iceberg support.
 #   5. REST sees every SQL commit (client-side scan), then drops the table.
 #
+# The backend under test is whichever catalog the running proxy config makes default - writes
+# are gated to it - so --prefix has to name that catalog and match the config the stand was
+# brought up with:
+#
+#   default profile          -> --prefix hdp     (Hortonworks 3.1.0 metastore)
+#   .env.apache              -> --prefix apache  (Apache 3.1.3 metastore, second HDFS cluster)
+#   .env.hive4               -> --prefix hive4   (Apache Hive 4.1.0 metastore)
+#
 # Stand-local on purpose: every step is a docker exec into the container that owns the engine,
 # which has no meaning on a real installation. Run it from anywhere:
 #
-#   smoke-stand/run-iceberg-interop-smoke.sh                # plain profile
-#   smoke-stand/run-iceberg-interop-smoke.sh --kerberos     # kerberos profile
+#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp
+#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos
 #
-# The stand must already be up with the hive4 profile:
-#   docker compose --env-file .env.hive4 --profile hive4 --profile hdp up -d --build
+# Every profile needs the SQL clients too, so bring the stand up with the hdp and hive4fe
+# compose profiles on top of the backend's own, e.g.:
+#   docker compose --env-file .env.hive4 --profile hive4 --profile hive4fe --profile hdp up -d --build
 set -euo pipefail
 
 STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 AUTH=plain
+PREFIX=${INTEROP_PREFIX:-hive4}
+NAMENODE=${INTEROP_NAMENODE:-}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --kerberos) AUTH=kerberos; shift ;;
+    --prefix) [[ $# -ge 2 ]] || { echo "missing value for --prefix" >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
+    --namenode) [[ $# -ge 2 ]] || { echo "missing value for --namenode" >&2; exit 1; }; NAMENODE="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
-NS=${HIVE4_INTEROP_NAMESPACE:-default}
-TABLE=${HIVE4_INTEROP_TABLE:-smoke_iceberg_interop}
-PREFIX=${HIVE4_INTEROP_PREFIX:-hive4}
-REST_HOST_URL=${HIVE4_INTEROP_REST_URL:-http://localhost:19183}
+# The apache catalog is the only one on the second HDFS cluster; everything else lives on the
+# first. Only used to delete the table's files after a (non-purge) drop.
+if [[ -z "${NAMENODE}" ]]; then
+  NAMENODE=$([[ "${PREFIX}" == "apache" ]] && echo stand-namenode-b || echo stand-namenode)
+fi
+
+NS=${INTEROP_NAMESPACE:-default}
+TABLE=${INTEROP_TABLE:-smoke_iceberg_interop}
+REST_HOST_URL=${INTEROP_REST_URL:-http://localhost:19183}
 # In-network REST URL, used by the writer and by kerberos curl (SPNEGO only resolves in-network).
 REST_NET_URL=http://proxy:9183
 WRITER_JAR=/opt/hms-proxy/iceberg-rest-writer.jar
@@ -214,11 +232,11 @@ code="$(rest_curl -o /dev/null -w '%{http_code}' "$(rest_url)/v1/${PREFIX}/names
 
 # The non-purge drop leaves the data and metadata files behind; remove them explicitly so a
 # rerun starts from a genuinely clean location.
-docker exec stand-namenode hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
+docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
 
 out="$(beeline_run stand-hs2 "$(apache_jdbc_url)" "show tables like '${TABLE}';")"
 if grep -q "${TABLE}" <<< "${out}"; then
   fail "SQL still lists '${TABLE}' after the REST drop: ${out}"
 fi
 
-log "iceberg interop smoke passed (auth=${AUTH}, table '${NS}.${TABLE}', backend hive4)"
+log "iceberg interop smoke passed (auth=${AUTH}, table '${NS}.${TABLE}', backend catalog '${PREFIX}')"

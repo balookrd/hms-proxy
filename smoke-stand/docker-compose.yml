@@ -242,15 +242,17 @@ services:
       retries: 30
       start_period: 90s
 
-  # Hive 4.1.0 HiveServer2, only with --profile hive4: the client the proxy's APACHE_4_1_0
-  # front door (9085) exists for. Queries run in Tez local mode, Iceberg support is built in.
+  # Hive 4.1.0 HiveServer2: the client the proxy's APACHE_4_1_0 front door (9085) exists for.
+  # Queries run in Tez local mode, Iceberg support is built in. Its own profile, separate from
+  # the hive4 backend one, so the Hive 4 dialect can be driven against any backend the stand
+  # makes default - Hortonworks 3.1.0 and Apache 3.1.3 included.
   hs2-hive4:
     build:
       context: ./hs2-hive4
     image: hms-stand/hs2:hive4-4.1.0
     container_name: stand-hs2-hive4
     hostname: hs2-hive4
-    profiles: ["hive4"]
+    profiles: ["hive4fe"]
     depends_on:
       proxy:
         condition: service_healthy
@@ -304,6 +306,8 @@ services:
       - ./proxy/hms-proxy-kerberos.properties:/opt/hms-proxy/hms-proxy-kerberos.properties:ro
       - ./proxy/hms-proxy-hive4.properties:/opt/hms-proxy/hms-proxy-hive4.properties:ro
       - ./proxy/hms-proxy-hive4-kerberos.properties:/opt/hms-proxy/hms-proxy-hive4-kerberos.properties:ro
+      - ./proxy/hms-proxy-apache.properties:/opt/hms-proxy/hms-proxy-apache.properties:ro
+      - ./proxy/hms-proxy-apache-kerberos.properties:/opt/hms-proxy/hms-proxy-apache-kerberos.properties:ro
       # The Iceberg REST writer runs inside this container: data-file writes need the
       # datanodes, which only resolve in-network. Built by prepare.sh before compose up.
       - ./iceberg-rest-writer/target/iceberg-rest-writer.jar:/opt/hms-proxy/iceberg-rest-writer.jar:ro

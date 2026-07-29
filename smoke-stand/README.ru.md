@@ -349,9 +349,23 @@ Hive 4 читает всё это и дописывает через Hive 4 fron
 удаляет таблицу:
 
 ```bash
-smoke-stand/run-iceberg-interop-smoke.sh              # plain
-smoke-stand/run-iceberg-interop-smoke.sh --kerberos   # SPNEGO + SASL сквозняком
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4              # plain
+smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos   # SPNEGO + SASL сквозняком
 ```
+
+Сценарий не привязан к Hive 4-бэкенду: `--prefix` называет тот каталог, который текущий конфиг
+прокси делает default-ным, — REST-записи разрешены только туда. Эту роль может занять любой из
+трёх бэкендов стенда, и каждый даёт свой runtime-профиль на пути записи:
+
+| Бэкенд под тестом | Runtime-профиль | Вызов compose | Сценарий |
+| --- | --- | --- | --- |
+| Hortonworks `3.1.0` (`hms-hdp`) | `HORTONWORKS_3_1_0_3_1_0_78` | `docker compose --profile hdp --profile hive4fe up -d --build` | `--prefix hdp` |
+| Apache `3.1.3` (`hms-apache`) | `APACHE_3_1_3` | `docker compose --env-file .env.apache --profile hdp --profile hive4fe up -d --build` | `--prefix apache` |
+| Apache Hive `4.1.0` (`hms-hive4`) | `APACHE_4_1_0` | `docker compose --env-file .env.hive4 --profile hive4 --profile hive4fe --profile hdp up -d --build` | `--prefix hive4` |
+
+Для SASL-варианта добавьте `--profile kerberos` и соответствующий `-kerberos` env-файл. Каталог
+`apache` живёт на втором HDFS-кластере, поэтому с `--prefix apache` таблица и её файлы ложатся на
+`namenode-b` — сценарий убирает за собой именно там.
 
 Под Kerberos writer аутентифицирует REST одноразовыми SPNEGO-токенами на каждый запрос
 (кастомный Iceberg `AuthManager` внутри writer-jar) и логинится в HDFS из keytab smoke-user.

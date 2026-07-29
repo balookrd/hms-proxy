@@ -7,12 +7,14 @@ configuration described here — not inferred from a similar case passing.
 
 | Component | Version / role |
 | --- | --- |
-| Proxy | the fat jar from `target/`, two front doors: 9083 `APACHE_3_1_3`, 9084 `HORTONWORKS_3_1_0_3_1_0_78` |
-| `hms-hdp` | Hortonworks standalone metastore `3.1.0.3.1.0.0-78` — default catalog, owns ACID/txn state |
-| `hms-apache` | Apache standalone metastore `3.1.3` — non-default catalog |
+| Proxy | the fat jar from `target/`, three front doors: 9083 `APACHE_3_1_3`, 9084 `HORTONWORKS_3_1_0_3_1_0_78`, 9085 `APACHE_4_1_0` (the last one only where a config declares it) |
+| `hms-hdp` | Hortonworks standalone metastore `3.1.0.3.1.0.0-78` — default catalog in the base config, owns ACID/txn state |
+| `hms-apache` | Apache standalone metastore `3.1.3` — non-default catalog, and the default one under `.env.apache` |
+| `hms-hive4` | Apache Hive standalone metastore `4.1.0` (official image) — default catalog under `.env.hive4`, compose profile `hive4` |
 | `hs2` | Apache HiveServer2 `3.1.3` → Apache front door |
 | `hs2-hdp` | vendor HDP HiveServer2 `3.1.0.3.1.0.0-78` → Hortonworks front door |
-| Storage | **two** Apache Hadoop `3.1.3` clusters: `namenode` (catalog `hdp`), `namenode-b` (catalog `apache`) |
+| `hs2-hive4` | Apache HiveServer2 `4.1.0` (official image, Tez local mode) → Hive 4 front door, compose profile `hive4fe` |
+| Storage | **two** Apache Hadoop `3.1.3` clusters: `namenode` (catalogs `hdp` and `hive4`), `namenode-b` (catalog `apache`) |
 | Auth | profile `plain` (no SASL) and profile `kerberos` (realm `SMOKE.LOCAL`, one realm for both clusters) |
 
 Legend: ✅ passed · ❌ fails by design · — not run · n/a not applicable.
@@ -143,17 +145,25 @@ With G39-G44 every one of the thirteen `WriteRouteGate` write routes now has bot
 round trip (where the route is genuinely served) and a gate negative against a federated
 namespace.
 
-## H. Iceberg interop over a Hive 4 backend (profile `hive4`)
+## H. Iceberg interop across every backend and front-door dialect
 
 Driven by `smoke-stand/run-iceberg-interop-smoke.sh` (stand-local: every step is a docker exec
-into the engine's own container). Layout under test: the default catalog is an Apache Hive
-4.1.0 metastore (`hms-hive4`, official `apache/hive:4.1.0` image), reached through the isolated
-`APACHE_4_1_0` client runtime; the Iceberg REST writer (`smoke-stand/iceberg-rest-writer`, the
-client half of the REST protocol curl cannot play) runs inside `stand-proxy`; both 3.1-dialect
-HiveServer2 instances carry `iceberg-hive-runtime` 1.6.1 - the last release with a Hive 3
-runtime, Iceberg 1.7 dropped it - while the Hive 4 HiveServer2 (`hs2-hive4`, official image,
-Tez local mode) has Iceberg built in. One table crosses **all three front-door dialects** and
-every engine:
+into the engine's own container). One Iceberg table crosses **all three front-door dialects plus
+REST**, and the whole scenario is repeated with each of the stand's three metastores as the
+default catalog — writes are gated to it, so the default catalog *is* the backend under test:
+
+| Backend under test | Runtime profile | Storage | How |
+| --- | --- | --- | --- |
+| Hortonworks `3.1.0.3.1.0.0-78` (`hms-hdp`) | `HORTONWORKS_3_1_0_3_1_0_78` | `namenode` | default config, `--prefix hdp` |
+| Apache `3.1.3` (`hms-apache`) | `APACHE_3_1_3` | `namenode-b` | `.env.apache`, `--prefix apache` |
+| Apache Hive `4.1.0` (`hms-hive4`) | `APACHE_4_1_0` | `namenode` | `.env.hive4`, `--prefix hive4` |
+
+The Iceberg REST writer (`smoke-stand/iceberg-rest-writer`, the client half of the REST protocol
+curl cannot play) runs inside `stand-proxy`; both 3.1-dialect HiveServer2 instances carry
+`iceberg-hive-runtime` 1.6.1 - the last release with a Hive 3 runtime, Iceberg 1.7 dropped it -
+while the Hive 4 HiveServer2 (`hs2-hive4`, official image, Tez local mode) has Iceberg built in.
+
+Every cell below was observed on all three backends unless the row says otherwise.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
@@ -164,6 +174,7 @@ every engine:
 | H5 | A REST-side full scan sees every SQL engine's commit (`rows=5`) - metadata and data round-trip through all four access paths | ✅ | ✅ |
 | H6 | REST `DELETE` drops the table: `GET` answers `404`, `show tables` through SQL no longer lists it | ✅ | ✅ |
 | H7 | Kerberos end to end: the writer authenticates REST with per-request SPNEGO tokens (custom Iceberg `AuthManager`) and writes HDFS as `smoke-user` from its keytab; all three HS2 passes run over SASL | n/a | ✅ |
+| H8 | The same table is written through a 3.1-line backend on the second HDFS cluster (`--prefix apache`), which is what puts `APACHE_3_1_3` on the REST write path - the runtime profile no other layout can reach, since writes only go to the default catalog | ✅ | ✅ |
 
 What building this surfaced (all found by the scenario, not by review):
 
@@ -425,6 +436,21 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   smoke runs inside it. The stale-DNS trap bit twice more: `docker compose up --build <service>`
   recreates the whole depends_on chain including HDFS, after which the 3.1 HiveServer2 pair must
   be restarted (and a run started during that recreation fails its HDFS write outright).
+
+- **2026-07-29** (fourth entry), the interop scenario stopped being hive4-only: `--prefix` now
+  names whichever catalog the running config makes default, `hs2-hive4` moved to its own compose
+  profile (`hive4fe`) so the Hive 4 dialect can be driven against any backend, the Hive 4 front
+  door was added to `hms-proxy.properties`/`hms-proxy-kerberos.properties`, and a new
+  `hms-proxy-apache[-kerberos].properties` pair (plus `.env.apache[-kerberos]`) swaps the roles
+  of the two 3.1-line metastores so the Apache 3.1.3 one becomes default. That last layout is
+  the only way to put `APACHE_3_1_3` on the REST write path at all - writes are gated to the
+  default catalog - and it also moves the whole scenario onto the second HDFS cluster. Section H
+  was then run green six times, once per backend and profile: `hdp` plain and kerberos, `apache`
+  plain and kerberos, `hive4` plain and kerberos (the last two re-run after the refactor, so no
+  cell rests on the pre-refactor script). Each run ended with `rows=5` and the table gone. No new
+  proxy defect surfaced: the EXCL_WRITE downgrade found earlier is what already made the Hive 4
+  dialect work over a 3.1 backend, which is the `hive4_frontdoor_to_apache_backend_downgrade`
+  capability being driven by a real Hive 4 client for the first time.
 
 ## Two caveats on faithfulness
 

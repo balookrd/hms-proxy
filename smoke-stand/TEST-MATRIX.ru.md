@@ -7,12 +7,14 @@
 
 | Компонент | Версия / роль |
 | --- | --- |
-| Прокси | fat jar из `target/`, два front door: 9083 `APACHE_3_1_3`, 9084 `HORTONWORKS_3_1_0_3_1_0_78` |
-| `hms-hdp` | standalone-метастор Hortonworks `3.1.0.3.1.0.0-78` — default catalog, владеет ACID/txn-состоянием |
-| `hms-apache` | standalone-метастор Apache `3.1.3` — non-default catalog |
+| Прокси | fat jar из `target/`, три front door: 9083 `APACHE_3_1_3`, 9084 `HORTONWORKS_3_1_0_3_1_0_78`, 9085 `APACHE_4_1_0` (последний — только там, где его объявляет конфиг) |
+| `hms-hdp` | standalone-метастор Hortonworks `3.1.0.3.1.0.0-78` — default catalog в базовом конфиге, владеет ACID/txn-состоянием |
+| `hms-apache` | standalone-метастор Apache `3.1.3` — non-default catalog, а под `.env.apache` — default |
+| `hms-hive4` | standalone-метастор Apache Hive `4.1.0` (официальный образ) — default catalog под `.env.hive4`, compose-профиль `hive4` |
 | `hs2` | Apache HiveServer2 `3.1.3` → Apache front door |
 | `hs2-hdp` | вендорский HDP HiveServer2 `3.1.0.3.1.0.0-78` → Hortonworks front door |
-| Хранилище | **два** кластера Apache Hadoop `3.1.3`: `namenode` (каталог `hdp`), `namenode-b` (каталог `apache`) |
+| `hs2-hive4` | Apache HiveServer2 `4.1.0` (официальный образ, Tez local mode) → Hive 4 front door, compose-профиль `hive4fe` |
+| Хранилище | **два** кластера Apache Hadoop `3.1.3`: `namenode` (каталоги `hdp` и `hive4`), `namenode-b` (каталог `apache`) |
 | Аутентификация | профиль `plain` (без SASL) и профиль `kerberos` (realm `SMOKE.LOCAL`, один на оба кластера) |
 
 Обозначения: ✅ пройдено · ❌ падает по design · — не прогонялось · n/a неприменимо.
@@ -142,17 +144,26 @@ G18 (HEAD-запросы, которых в скрипте никогда не �
 С G39-G44 у каждого из тринадцати write-роутов `WriteRouteGate` теперь есть и позитивный round
 trip (там, где роут действительно обслуживается), и gate-негатив против federated-namespace.
 
-## H. Iceberg interop поверх Hive 4-бэкенда (профиль `hive4`)
+## H. Iceberg interop через все бэкенды и диалекты front door
 
 Гоняется через `smoke-stand/run-iceberg-interop-smoke.sh` (стенд-локальный: каждый шаг — docker
-exec в контейнер соответствующего движка). Конфигурация под тестом: default-каталог — метастор
-Apache Hive 4.1.0 (`hms-hive4`, официальный образ `apache/hive:4.1.0`), доступный через
-изолированный клиентский рантайм `APACHE_4_1_0`; Iceberg REST writer
-(`smoke-stand/iceberg-rest-writer` — клиентская половина REST-протокола, которую curl сыграть не
-может) работает внутри `stand-proxy`; оба HiveServer2 3.1-диалектов несут `iceberg-hive-runtime`
-1.6.1 — последний релиз с Hive 3-рантаймом, в Iceberg 1.7 он удалён, — а у HiveServer2 Hive 4
-(`hs2-hive4`, официальный образ, Tez local mode) поддержка Iceberg встроена. Одна таблица проходит
-через **все три диалекта front door** и все движки:
+exec в контейнер соответствующего движка). Одна Iceberg-таблица проходит через **все три диалекта
+front door плюс REST**, и весь сценарий повторяется с каждым из трёх метасторов стенда в роли
+default-каталога — записи разрешены только туда, поэтому default-каталог и **есть** бэкенд под
+тестом:
+
+| Бэкенд под тестом | Runtime-профиль | Хранилище | Как |
+| --- | --- | --- | --- |
+| Hortonworks `3.1.0.3.1.0.0-78` (`hms-hdp`) | `HORTONWORKS_3_1_0_3_1_0_78` | `namenode` | конфиг по умолчанию, `--prefix hdp` |
+| Apache `3.1.3` (`hms-apache`) | `APACHE_3_1_3` | `namenode-b` | `.env.apache`, `--prefix apache` |
+| Apache Hive `4.1.0` (`hms-hive4`) | `APACHE_4_1_0` | `namenode` | `.env.hive4`, `--prefix hive4` |
+
+Iceberg REST writer (`smoke-stand/iceberg-rest-writer` — клиентская половина REST-протокола,
+которую curl сыграть не может) работает внутри `stand-proxy`; оба HiveServer2 3.1-диалектов несут
+`iceberg-hive-runtime` 1.6.1 — последний релиз с Hive 3-рантаймом, в Iceberg 1.7 он удалён, — а у
+HiveServer2 Hive 4 (`hs2-hive4`, официальный образ, Tez local mode) поддержка Iceberg встроена.
+
+Каждая ячейка ниже наблюдалась на всех трёх бэкендах, если в строке не сказано иначе.
 
 | # | Проверка | plain | kerberos |
 | --- | --- | --- | --- |
@@ -163,6 +174,7 @@ Apache Hive 4.1.0 (`hms-hive4`, официальный образ `apache/hive:4
 | H5 | Полный REST-скан видит коммиты всех SQL-движков (`rows=5`) — и метаданные, и данные проходят через все четыре пути доступа | ✅ | ✅ |
 | H6 | REST `DELETE` удаляет таблицу: `GET` отвечает `404`, `show tables` через SQL её больше не показывает | ✅ | ✅ |
 | H7 | Kerberos сквозняком: writer аутентифицирует REST одноразовыми SPNEGO-токенами на каждый запрос (кастомный Iceberg `AuthManager`) и пишет в HDFS как `smoke-user` из keytab; все три SQL-прохода — по SASL | n/a | ✅ |
+| H8 | Та же таблица пишется через бэкенд 3.1-линии на втором HDFS-кластере (`--prefix apache`) — именно это ставит `APACHE_3_1_3` на путь REST-записи: до этого runtime-профиля не дотягивается никакая другая раскладка, потому что записи идут только в default-каталог | ✅ | ✅ |
 
 Что вскрыла постройка сценария (всё найдено самим сценарием, не ревью):
 
@@ -427,6 +439,22 @@ Apache Hive 4.1.0 (`hms-hive4`, официальный образ `apache/hive:4
   дважды: `docker compose up --build <service>` пересоздаёт всю цепочку depends_on вместе с HDFS,
   после чего пару HiveServer2 3.1 нужно перезапустить (а прогон, стартовавший во время
   пересоздания, падает прямо на записи в HDFS).
+
+- **2026-07-29** (четвёртая запись), interop-сценарий перестал быть hive4-only: `--prefix` теперь
+  называет тот каталог, который текущий конфиг делает default-ным, `hs2-hive4` вынесен в
+  собственный compose-профиль (`hive4fe`), чтобы диалект Hive 4 можно было гонять против любого
+  бэкенда, Hive 4 front door добавлен в `hms-proxy.properties`/`hms-proxy-kerberos.properties`, а
+  новая пара `hms-proxy-apache[-kerberos].properties` (плюс `.env.apache[-kerberos]`) меняет роли
+  двух метасторов 3.1-линии местами, делая default-ным Apache 3.1.3. Эта раскладка — единственный
+  способ вообще поставить `APACHE_3_1_3` на путь REST-записи (записи разрешены только в
+  default-каталог), и она же переносит весь сценарий на второй HDFS-кластер. После этого секция H
+  прогнана зелёной шесть раз — по разу на каждый бэкенд и профиль: `hdp` plain и kerberos,
+  `apache` plain и kerberos, `hive4` plain и kerberos (последние два перепрогнаны уже после
+  рефакторинга, так что ни одна ячейка не опирается на дорефакторинговый скрипт). Каждый прогон
+  завершался `rows=5` и удалённой таблицей. Новых дефектов прокси не всплыло: найденное ранее
+  понижение EXCL_WRITE — ровно то, что заставило диалект Hive 4 работать поверх 3.1-бэкенда, то
+  есть capability `hive4_frontdoor_to_apache_backend_downgrade` впервые прогнана настоящим
+  Hive 4-клиентом.
 
 ## Две оговорки честности
 
