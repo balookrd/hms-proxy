@@ -33,6 +33,12 @@ final class RecordingThriftIface {
   final List<String> calls = new ArrayList<>();
   final Map<String, Database> databases = new HashMap<>();
   final Map<String, Table> tables = new HashMap<>();
+  /**
+   * Table names (unqualified) whose {@code alter_table} must fail, so a test can make a commit
+   * break at the metastore rather than at Iceberg's requirement check - the two failure points
+   * behave differently in a multi-table transaction.
+   */
+  final List<String> alterTableFailures = new ArrayList<>();
   final Map<String, List<String>> tablesByDatabase = new HashMap<>();
   List<String> allDatabases = Collections.emptyList();
   ShowLocksResponse lastShowLocksResponse;
@@ -168,6 +174,11 @@ final class RecordingThriftIface {
         String tbl = (String) args[1];
         Table table = (Table) args[2];
         calls.add("alter_table:" + db + "." + tbl + ":table=" + table.getDbName());
+        if (alterTableFailures.contains(tbl)) {
+          calls.add("alter_table_injected_failure:" + db + "." + tbl);
+          throw new org.apache.hadoop.hive.metastore.api.MetaException(
+              "injected alter_table failure for " + db + "." + tbl);
+        }
         tables.put(db + "." + tbl, table);
         return null;
       }

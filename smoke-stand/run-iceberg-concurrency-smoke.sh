@@ -118,6 +118,20 @@ sql_init() {
   fi
 }
 
+beeline_query() {
+  local sql="$1"
+  local container
+  container="$(sql_container)"
+  if [[ "${container}" == "stand-hs2" ]]; then
+    docker exec "${container}" bash -c \
+      "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine -u '$(sql_url)' -n hive \
+        --silent=true --showHeader=false --outputformat=tsv2 -e \"$(sql_init) ${sql}\"" 2>/dev/null
+  else
+    docker exec "${container}" beeline -u "$(sql_url)" -n hive \
+      --silent=true --showHeader=false --outputformat=tsv2 -e "$(sql_init) ${sql}" 2>/dev/null
+  fi
+}
+
 sql_insert() {
   local id="$1"
   local container
@@ -135,8 +149,14 @@ sql_insert() {
 }
 
 if [[ "${AUTH}" == "kerberos" ]]; then
-  docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL \
-    || fail "kinit failed in stand-proxy"
+  # Every container that opens a connection needs its own TGT: the REST writer runs in
+  # stand-proxy, and beeline runs inside whichever HiveServer2 the SQL side uses.
+  kinit_targets=(stand-proxy)
+  [[ "${SQL_WRITERS}" -gt 0 ]] && kinit_targets+=("$(sql_container)")
+  for target in "${kinit_targets[@]}"; do
+    docker exec "${target}" kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL \
+      || fail "kinit failed in ${target}"
+  done
 fi
 
 log "preparing '${NS}.${TABLE}' on catalog '${PREFIX}' with one baseline row"
@@ -222,8 +242,15 @@ fi
 expected=$((succeeded + 1))
 count="$(writer count | sed -n 's/^rows=\([0-9]*\)$/\1/p')"
 [[ -n "${count}" ]] || fail "could not read the row count back"
-[[ "${count}" == "${expected}" ]] \
-  || fail "lost update: ${succeeded} writer(s) committed successfully on top of 1 baseline row, so the table must hold ${expected} rows, but it holds ${count}"
+if [[ "${count}" != "${expected}" ]]; then
+  # Name the writer whose row is missing: every writer tags its rows with its own marker, so a
+  # group-by says immediately whether the REST side or the SQL side lost one.
+  if [[ "${SQL_WRITERS}" -gt 0 ]]; then
+    log "rows present, by writer marker:"
+    beeline_query "select src, count(*) from ${TABLE} group by src;" | sed 's/^/    /' || true
+  fi
+  fail "lost update: ${succeeded} writer(s) committed successfully on top of 1 baseline row, so the table must hold ${expected} rows, but it holds ${count}"
+fi
 log "no lost update: ${count} rows for 1 baseline + ${succeeded} successful writer(s)"
 
 [[ "${succeeded}" -ge 2 ]] \

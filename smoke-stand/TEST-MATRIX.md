@@ -245,7 +245,7 @@ without checking conflicts. Both halves of that argument are now pinned.
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
 | I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
 | I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
-| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows - 13 of 14 writers commit, one REST writer is refused, and the table holds exactly 14 rows. Two Iceberg implementations that never share a JVM (the proxy's 1.9.2 and `iceberg-hive-runtime` 1.6.1 inside HiveServer2) serialize against each other through the metastore | ✅ | — |
+| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ❌ **loses data** |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -265,6 +265,33 @@ What the run does **not** show: no `check_lock` and no `WAITING` appeared in the
 what rejected the stale writer was Iceberg's own requirement check on the branch's snapshot id,
 not a lock wait. The Hive lock still matters - it is what makes the read-verify-then-`alter_table`
 window atomic - but this run did not have to exercise the blocking path to protect the data.
+
+### I4 in detail: mixing REST and SQL writers loses rows
+
+On the plain profile the cross-path run passed repeatedly (13 of 14 writers commit, one REST
+writer refused with "branch main has changed", 14 rows - exactly right). On the Kerberos profile
+the same scenario **loses a committed row about half the time**, and the loss is on the REST
+side: with 4 REST writers per round against 2 Hive `INSERT`s, a run ended with 14 writers
+reporting success and 14 rows instead of 15, and the per-marker breakdown named the victim -
+`baseline, sql901, sql902, w1..w7, w9..w12`, with **w8 missing**.
+
+That writer's process exited 0, which means `newAppend().commit()` returned normally: Iceberg
+told it the commit had landed. A commit that returns success and then vanishes is data loss, not
+contention - a stale writer is supposed to be refused with `CommitFailedException`, which is
+exactly what happens to the writers that *do* fail here.
+
+REST-only runs (5 and 8 concurrent writers, both profiles) have never lost a row, so the
+suspicion is the mix: the proxy commits through Iceberg 1.9.2 while HiveServer2 commits through
+`iceberg-hive-runtime` 1.6.1 inside its own JVM, and the two only meet at the metastore lock.
+Whether the fault is a lock the Hive side does not take, one the proxy does not hold long
+enough, or something else is unproven - that is the first thing to settle. Reproduce with:
+
+```bash
+smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 4 --sql-writers 2 --sql-engine hdp --kerberos
+```
+
+Not seen on plain yet, but nothing about the mechanism looks auth-specific; the Kerberos runs are
+simply slower, which widens the window.
 
 ## F. Not covered, and why
 

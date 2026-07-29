@@ -561,6 +561,92 @@ public class IcebergRestEndpointIntegrationTest {
         + " is still there", dataFile.exists());
   }
 
+  /**
+   * A multi-table transaction whose second table's requirement cannot hold. The REST spec calls
+   * this route a transaction, so a client may well assume all-or-nothing; this pins what the
+   * proxy actually does with the first table's changes when the second one is rejected.
+   */
+  @Test
+  public void multiTableTransactionWithOneFailingRequirementLeavesNothingApplied() throws Exception {
+    registerTableWithCommittedDataFile("txn_a");
+    registerTableWithCommittedDataFile("txn_b");
+    String uuidA = tableUuid("txn_a");
+    String uuidB = tableUuid("txn_b");
+
+    // Table A's requirement holds; table B's names a uuid the table does not have, so its own
+    // commit must be refused.
+    String body = "{\"table-changes\":["
+        + "{\"identifier\":{\"namespace\":[\"default\"],\"name\":\"txn_a\"},"
+        + "\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuidA + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"txn\":\"applied\"}}]},"
+        + "{\"identifier\":{\"namespace\":[\"default\"],\"name\":\"txn_b\"},"
+        + "\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"00000000-0000-0000-0000-000000000000\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"txn\":\"applied\"}}]}]}";
+
+    HttpResponse<String> response = post("/v1/" + CATALOG_NAME + "/transactions/commit", body);
+
+    // The refusal has to come from the requirement check itself. A 400 here would mean the body
+    // never reached the tables, and every assertion below would hold vacuously.
+    Assert.assertEquals("expected a requirement failure, got " + response.statusCode()
+        + ": " + response.body(), 409, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("Requirement failed"));
+    Assert.assertFalse("table B's uuid did not match, so its change must not be applied: "
+        + get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_b").body(),
+        get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_b").body().contains("\"txn\":\"applied\""));
+    Assert.assertFalse("the transaction failed, so table A must not keep its change either: "
+        + get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_a").body(),
+        get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_a").body().contains("\"txn\":\"applied\""));
+    Assert.assertNotNull(uuidB);
+  }
+
+  /**
+   * Reproduction of a defect, kept disabled so it does not fail the build: when the first table
+   * of a multi-table transaction commits and the second one's {@code alter_table} is rejected by
+   * the metastore, the request answers 204 - and a following loadTable serves the second table's
+   * UNCOMMITTED metadata, while the metastore still points at the old metadata file.
+   *
+   * <p>Observed with the injected failure below: the fake recorded
+   * {@code alter_table_injected_failure:default.txn_d}, its {@code metadata_location} stayed on
+   * the original {@code 00000-*.metadata.json}, and yet the response body carried
+   * {@code "properties":{...,"txn":"applied"}} with a 204 status. A client is therefore told a
+   * transaction succeeded and then reads back state the metastore never accepted.
+   *
+   * <p>Not yet reproduced against a real metastore, so the production reachability is unproven -
+   * that is the first thing to settle before fixing. Enable this test as part of the fix.
+   */
+  @org.junit.Ignore("reproduces an open defect: 204 and uncommitted metadata after a failed second commit")
+  @Test
+  public void multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails() throws Exception {
+    registerTableWithCommittedDataFile("txn_c");
+    registerTableWithCommittedDataFile("txn_d");
+    String uuidC = tableUuid("txn_c");
+    String uuidD = tableUuid("txn_d");
+    delegate.alterTableFailures.add("txn_d");
+
+    String body = "{\"table-changes\":["
+        + "{\"identifier\":{\"namespace\":[\"default\"],\"name\":\"txn_c\"},"
+        + "\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuidC + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"txn\":\"applied\"}}]},"
+        + "{\"identifier\":{\"namespace\":[\"default\"],\"name\":\"txn_d\"},"
+        + "\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuidD + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"txn\":\"applied\"}}]}]}";
+
+    HttpResponse<String> response = post("/v1/" + CATALOG_NAME + "/transactions/commit", body);
+
+    Assert.assertNotEquals("the second table's commit was rejected by the metastore, so the"
+        + " request must not report success", 204, response.statusCode());
+    Assert.assertFalse("the rejected table must not be served with its uncommitted metadata",
+        get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_d").body().contains("\"txn\":\"applied\""));
+  }
+
+  private String tableUuid(String tableName) throws Exception {
+    String body = get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/" + tableName).body();
+    java.util.regex.Matcher matcher =
+        java.util.regex.Pattern.compile("\"table-uuid\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+    Assert.assertTrue("no table-uuid in " + body, matcher.find());
+    return matcher.group(1);
+  }
+
   private HttpResponse<String> get(String path) throws Exception {
     HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     HttpRequest request = HttpRequest.newBuilder()
