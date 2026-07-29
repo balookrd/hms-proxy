@@ -81,57 +81,67 @@ only path that covers the Hortonworks front door with a real client.
 
 ## G. Iceberg REST catalog front door (host port 19183)
 
-Driven by `--scenario rest` with curl from the host (plain) or curl `--negotiate` from inside
-`stand-proxy` (kerberos - the KDC and the `proxy` hostname only resolve in-network, and the
-container's curl is GSS-capable). The loaded table is the hand-registered `smoke_iceberg_tbl`
-(see the stand README). The Kerberos profile carried the listener disabled through phase 5a
-because SPNEGO needed a GSS-capable curl inside the network; once that stopped being true the
-listener was turned on there too (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`,
-same keytab as the Thrift front door) and the write round trip, the write gate and an
-unauthenticated-request check were run against it - see the 2026-07-28 kerberos entry below.
-The read-only rows (G2-G22, G27-G30, G35-G38) have not yet been re-run against the Kerberos
-profile and stay `n/a` until they are.
+Driven by `--scenario rest` with curl from the host (plain) or from inside `stand-proxy`
+(kerberos - the KDC and the `proxy` hostname only resolve in-network, and the container's curl
+is GSS-capable). The loaded table is the hand-registered `smoke_iceberg_tbl` (see the stand
+README). The Kerberos profile carried the listener disabled through phase 5a because SPNEGO
+needed a GSS-capable curl inside the network; once that stopped being true the listener was
+turned on there too (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`, same keytab as
+the Thrift front door). Since 2026-07-29 the kerberos column is driven by the smoke script
+itself (`HMS_SMOKE_REST_CURL_OPTS=--negotiate -u :` in `env/kerberos.env`, after a kinit inside
+the container), so both columns run the identical check set; only G18 (HEAD requests, never part
+of the script) stays hand-driven.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
 | G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | ✅ |
-| G2 | Namespace list and load (`default`) | ✅ | n/a |
-| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | n/a |
-| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | n/a |
-| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | n/a |
-| G6 | Unknown table → clean 404 | ✅ | n/a |
-| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | ✅ | n/a |
-| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | n/a |
-| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | n/a |
-| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | n/a |
-| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | n/a |
-| G12 | Federated namespace `apache__default` stays visible under the default prefix | ✅ | n/a |
-| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | ✅ | n/a |
-| G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | n/a |
-| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | n/a |
-| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | n/a |
-| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | n/a |
+| G2 | Namespace list and load (`default`) | ✅ | ✅ |
+| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | ✅ |
+| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | ✅ |
+| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | ✅ |
+| G6 | Unknown table → clean 404 | ✅ | ✅ |
+| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | ✅ | ✅ |
+| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | ✅ |
+| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | ✅ |
+| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | ✅ |
+| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | ✅ |
+| G12 | Federated namespace `apache__default` stays visible under the default prefix | ✅ | ✅ |
+| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | ✅ | ✅ |
+| G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | ✅ |
+| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | ✅ |
+| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | ✅ |
+| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | ✅ |
 | G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
-| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | n/a |
-| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | n/a |
-| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | n/a |
-| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | n/a |
+| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | ✅ |
+| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | ✅ |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | ✅ |
+| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | ✅ |
 | G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | ✅ |
 | G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | ✅ |
 | G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | ✅ |
 | G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | ✅ |
-| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | n/a |
-| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | n/a |
-| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | n/a |
-| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | n/a |
+| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | ✅ |
+| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | ✅ |
+| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | ✅ |
 | G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
 | G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | ✅ | ✅ |
 | G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `POST .../views/{view}` update (`assert-view-uuid` requirement + `set-properties`) answers `200` with a follow-up `GET` confirming the property is actually present, `POST /v1/{prefix}/views/rename` answers `204` and the view loads back `200` under the new name while the old name answers `404` - the pair that proves the rename moved it rather than copying it, `DELETE` answers `204` | ✅ | ✅ |
-| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | n/a |
-| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | ✅ | n/a |
-| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | n/a |
-| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
-| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | n/a |
+| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | ✅ |
+| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | ✅ | ✅ |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G39 | REGISTER_TABLE round trip: create a table, `DELETE` it WITHOUT purge (the metadata file survives on HDFS, and a `GET` confirms `404`), `POST .../register` re-registers it from that metadata file (`200`, `metadata-location` present), `GET` loads it back (`200`), `DELETE` drops it - the last advertised write route without a positive proof | ✅ | ✅ |
+| G40 | `POST .../tables/{table}` (UPDATE_TABLE, per-table commit) under the federated `apache__default` namespace refused with `403` - the table named need not exist, proving the gate answers before the lookup | ✅ | ✅ |
+| G41 | `DELETE .../tables/{table}` (DROP_TABLE) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G42 | `POST .../register` (REGISTER_TABLE, deliberately bogus `metadata-location`) under the federated `apache__default` namespace refused with `403` before anything tries to read the metadata file | ✅ | ✅ |
+| G43 | `POST .../views/{view}` (UPDATE_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
+| G44 | `POST /v1/{prefix}/views/rename` (RENAME_VIEW) with a federated *destination* namespace refused with `403` - the view-side counterpart of G30 | ✅ | ✅ |
+
+With G39-G44 every one of the thirteen `WriteRouteGate` write routes now has both a positive
+round trip (where the route is genuinely served) and a gate negative against a federated
+namespace.
 
 ## F. Not covered, and why
 
@@ -305,6 +315,36 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   inverted assertion now rejected - confirming the check would catch a rename that copies the view
   instead of moving it; the assertion was restored and both `--scenario rest` and `--scenario all`
   re-ran green.
+
+- **2026-07-29**, jar `1.0.4-14af4def` (post-merge `main`; includes the fail-closed unresolved-
+  namespace gate hardening of `5f84d4e`). The smoke script grew the six checks that completed the
+  write-surface coverage - a REGISTER_TABLE round trip (G39: create, non-purge drop, re-register
+  from the surviving metadata file, load back, drop) and one gate negative per still-uncovered
+  write route (G40-G44: UPDATE_TABLE, DROP_TABLE, REGISTER_TABLE, UPDATE_VIEW and RENAME_VIEW
+  with a federated destination) - so every one of the thirteen gated write routes now has both a
+  positive and a negative. On the plain profile `--scenario all` ran green twice (before and
+  after the SPNEGO refactor below) and `--scenario rest` green in between; the register assertion
+  was proven to discriminate by temporarily expecting `403` instead of `200` - the run failed
+  with "REST register ... returned HTTP 200" and a full metadata body read back from HDFS,
+  confirming both that the check bites and that register genuinely works; the assertion was
+  restored and the scenario re-ran green.
+  The same day the REST smoke gained `HMS_SMOKE_REST_CURL_OPTS` (extra curl options for every
+  REST request, e.g. `--negotiate -u :`) plus an automated version of G31: when the options are
+  set, a request WITHOUT them must be rejected `401` with a `WWW-Authenticate: Negotiate`
+  challenge and an empty body. `env/kerberos.env` gained the full REST block (in-network URL
+  `http://proxy:9183`, both prefixes, the write table/namespace/view and the management metrics
+  URL `http://proxy:9090/metrics`), so the Kerberos REST column is now driven by the script
+  itself instead of hand-typed curl. The stand was then switched to the Kerberos profile and
+  `docker exec stand-proxy /opt/hms-proxy/scripts/run-real-installation-smoke-kerberos.sh
+  --env-file /opt/hms-proxy/smoke-env/kerberos.env --scenario all` (after a kinit and a
+  `docker cp` of the updated `scripts/` and env file) completed with `scenario 'all' completed
+  successfully` - the first scripted full REST pass under Kerberos. That run turned the kerberos
+  column of G2-G17, G19-G22, G27-G30 and G34-G38 from `n/a` to observed-green and covered the
+  new G39-G44 on both profiles; G18 (HEAD requests) remains hand-driven and stays `n/a` under
+  Kerberos. Sections B-D (SQL/HDFS layers) were not re-run - the changes are REST-smoke-only,
+  the jar's Java-side delta since the last full SQL pass is the write-gate hardening, and the
+  A-section CLI scenarios (txn, locks, notification) re-ran green on both profiles as part of
+  the two `--scenario all` passes.
 
 ## Two caveats on faithfulness
 

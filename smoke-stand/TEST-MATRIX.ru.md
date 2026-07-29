@@ -81,56 +81,66 @@ HDP-клиент не может пользоваться Apache-listener — Th
 
 ## G. Iceberg REST catalog front door (host-порт 19183)
 
-Гоняется через `--scenario rest` curl'ом с хоста (plain) либо curl'ом с `--negotiate` изнутри
-`stand-proxy` (kerberos — KDC и hostname `proxy` резолвятся только внутри сети, а curl в
-контейнере собран с GSS). Загружаемая таблица — зарегистрированная вручную `smoke_iceberg_tbl`
-(см. README стенда). Kerberos-профиль всю фазу 5a держал listener выключенным, потому что SPNEGO
-требовал GSS-способный curl внутри сети; как только это перестало быть верным, listener включили
-и там тоже (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`, тот же keytab, что и у
-Thrift front door), и против него прогнали write round trip, write gate и проверку
-неаутентифицированного запроса — см. вторую запись за 2026-07-28 в журнале ниже. Read-only строки
-(G2-G22, G27-G30, G35-G38) на Kerberos-профиле пока не перепрогонялись и остаются `n/a`.
+Гоняется через `--scenario rest` curl'ом с хоста (plain) либо изнутри `stand-proxy`
+(kerberos — KDC и hostname `proxy` резолвятся только внутри сети, а curl в контейнере собран с
+GSS). Загружаемая таблица — зарегистрированная вручную `smoke_iceberg_tbl` (см. README стенда).
+Kerberos-профиль всю фазу 5a держал listener выключенным, потому что SPNEGO требовал
+GSS-способный curl внутри сети; как только это перестало быть верным, listener включили и там
+тоже (`rest-catalog.kerberos.principal=HTTP/proxy@SMOKE.LOCAL`, тот же keytab, что и у Thrift
+front door). С 2026-07-29 kerberos-колонку гоняет сам smoke-скрипт
+(`HMS_SMOKE_REST_CURL_OPTS=--negotiate -u :` в `env/kerberos.env`, после kinit внутри
+контейнера), так что обе колонки проходят один и тот же набор проверок; вручную остаётся только
+G18 (HEAD-запросы, которых в скрипте никогда не было).
 
 | # | Проверка | plain | kerberos |
 | --- | --- | --- | --- |
 | G1 | `GET /v1/config` объявляет `prefix=hdp` (default-каталог) | ✅ | ✅ |
-| G2 | Листинг и load namespace (`default`) | ✅ | n/a |
-| G3 | Листинг таблиц показывает Iceberg-таблицу и прячет обычные Hive-таблицы той же базы | ✅ | n/a |
-| G4 | Load таблицы возвращает `metadata-location` и полные метаданные, прочитанные из HDFS самим прокси | ✅ | n/a |
-| G5 | Неизвестный prefix → чистый 404 `NoSuchCatalogException` | ✅ | n/a |
-| G6 | Неизвестная таблица → чистый 404 | ✅ | n/a |
-| G7 | `DELETE` несуществующей таблицы отвечает чистым 404, а не тихим 2xx | ✅ | n/a |
-| G8 | `GET /v1/config?warehouse=apache` объявляет `prefix=apache` | ✅ | n/a |
-| G9 | Неизвестный warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → чистый 400 | ✅ | n/a |
-| G10 | Чистое представление namespace под prefix `apache` показывает `default` без утечки внешних имён вида `apache__*` | ✅ | n/a |
-| G11 | Load таблицы под prefix `apache` (`smoke_iceberg_tbl_ap`, второй HDFS-кластер) возвращает `metadata-location` | ✅ | n/a |
-| G12 | Federated namespace `apache__default` остаётся виден под default-prefix | ✅ | n/a |
-| G13 | Листинг и load `smoke_iceberg_tbl_ap` через federated-имя `apache__default` под default-prefix | ✅ | n/a |
-| G14 | Таблица default-каталога под prefix `apache` → чистый 404 | ✅ | n/a |
-| G15 | Внешнее имя `apache__default`, использованное как namespace под prefix `apache` → чистый 404 | ✅ | n/a |
-| G16 | Обычная Hive-таблица второго каталога (`smoke_read_ap`) не видна в листинге под prefix `apache` | ✅ | n/a |
-| G17 | REST-метрики (`requests_total`, `listener_info`) видны на management-endpoint `/metrics` | ✅ | n/a |
+| G2 | Листинг и load namespace (`default`) | ✅ | ✅ |
+| G3 | Листинг таблиц показывает Iceberg-таблицу и прячет обычные Hive-таблицы той же базы | ✅ | ✅ |
+| G4 | Load таблицы возвращает `metadata-location` и полные метаданные, прочитанные из HDFS самим прокси | ✅ | ✅ |
+| G5 | Неизвестный prefix → чистый 404 `NoSuchCatalogException` | ✅ | ✅ |
+| G6 | Неизвестная таблица → чистый 404 | ✅ | ✅ |
+| G7 | `DELETE` несуществующей таблицы отвечает чистым 404, а не тихим 2xx | ✅ | ✅ |
+| G8 | `GET /v1/config?warehouse=apache` объявляет `prefix=apache` | ✅ | ✅ |
+| G9 | Неизвестный warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → чистый 400 | ✅ | ✅ |
+| G10 | Чистое представление namespace под prefix `apache` показывает `default` без утечки внешних имён вида `apache__*` | ✅ | ✅ |
+| G11 | Load таблицы под prefix `apache` (`smoke_iceberg_tbl_ap`, второй HDFS-кластер) возвращает `metadata-location` | ✅ | ✅ |
+| G12 | Federated namespace `apache__default` остаётся виден под default-prefix | ✅ | ✅ |
+| G13 | Листинг и load `smoke_iceberg_tbl_ap` через federated-имя `apache__default` под default-prefix | ✅ | ✅ |
+| G14 | Таблица default-каталога под prefix `apache` → чистый 404 | ✅ | ✅ |
+| G15 | Внешнее имя `apache__default`, использованное как namespace под prefix `apache` → чистый 404 | ✅ | ✅ |
+| G16 | Обычная Hive-таблица второго каталога (`smoke_read_ap`) не видна в листинге под prefix `apache` | ✅ | ✅ |
+| G17 | REST-метрики (`requests_total`, `listener_info`) видны на management-endpoint `/metrics` | ✅ | ✅ |
 | G18 | `HEAD` на namespace/таблицу отвечает `204`, если объект существует, и `404`, если нет — в том числе под не-default prefix `apache` и для обычной Hive-таблицы (`smoke_read_hdp`) | ✅ | n/a |
-| G19 | Error-ответ на отсутствующий namespace несёт смапленные `404`, `type` и `message`, но без `"stack":[...]` server trace | ✅ | n/a |
-| G20 | Нераспарсиваемое тело `POST .../metrics` отвечает `400` (`BadRequestException`), а не `500` | ✅ | n/a |
-| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` (оба резолвятся в default-каталог) объявляют write-роуты create и drop таблицы поверх read-роута namespaces | ✅ | n/a |
-| G22 | `GET /v1/{second-prefix}/config` (non-default каталог) объявляет read-роут namespaces и не несёт ни одного write-роута — доказывает, что discovery объявляет write/read-асимметрию, а не только default-сторону | ✅ | n/a |
+| G19 | Error-ответ на отсутствующий namespace несёт смапленные `404`, `type` и `message`, но без `"stack":[...]` server trace | ✅ | ✅ |
+| G20 | Нераспарсиваемое тело `POST .../metrics` отвечает `400` (`BadRequestException`), а не `500` | ✅ | ✅ |
+| G21 | `GET /v1/config` и `GET /v1/{prefix}/config` (оба резолвятся в default-каталог) объявляют write-роуты create и drop таблицы поверх read-роута namespaces | ✅ | ✅ |
+| G22 | `GET /v1/{second-prefix}/config` (non-default каталог) объявляет read-роут namespaces и не несёт ни одного write-роута — доказывает, что discovery объявляет write/read-асимметрию, а не только default-сторону | ✅ | ✅ |
 | G23 | Write round trip таблицы на default-каталоге: `POST` create (`200`), `GET` load (`metadata-location` присутствует), `DELETE` drop (`2xx`) | ✅ | ✅ |
 | G24 | Прямой `POST` create под non-default prefix `apache` отклонён с `403` (`ForbiddenException`) | ✅ | ✅ |
 | G25 | `POST` create под federated-namespace `apache__default`, достигнутым через default-prefix, отклонён с `403` — доказывает, что write gate проверяется на *резолвленном* каталоге, а не на prefix запроса | ✅ | ✅ |
 | G26 | Настоящий `POST` commit против только что созданной таблицы (requirement `assert-table-uuid` + update `set-properties`) отвечает `200`, и возвращённый `metadata-location` отличается от того, что дал create — доказательство, что новый metadata-файл действительно записан через `HiveTableOperations.commit`, а не тихий no-op | ✅ | ✅ |
-| G27 | `POST /v1/{prefix}/tables/rename` отвечает `204`, а `GET` по новому имени отвечает `200` | ✅ | n/a |
-| G28 | `POST /v1/{prefix}/transactions/commit`, называющий таблицу в federated-namespace `apache__default`, отклонён с `403` | ✅ | n/a |
-| G29 | `POST /v1/{prefix}/namespaces` с federated-именем (`apache__zzz_smoke`) отклонён с `403` | ✅ | n/a |
-| G30 | `POST /v1/{prefix}/tables/rename` с federated destination-namespace (source-таблица ещё под текущим именем) отклонён с `403` — доказывает проверку именно destination-стороны gate, а не только source | ✅ | n/a |
+| G27 | `POST /v1/{prefix}/tables/rename` отвечает `204`, а `GET` по новому имени отвечает `200` | ✅ | ✅ |
+| G28 | `POST /v1/{prefix}/transactions/commit`, называющий таблицу в federated-namespace `apache__default`, отклонён с `403` | ✅ | ✅ |
+| G29 | `POST /v1/{prefix}/namespaces` с federated-именем (`apache__zzz_smoke`) отклонён с `403` | ✅ | ✅ |
+| G30 | `POST /v1/{prefix}/tables/rename` с federated destination-namespace (source-таблица ещё под текущим именем) отклонён с `403` — доказывает проверку именно destination-стороны gate, а не только source | ✅ | ✅ |
 | G31 | Запрос без `--negotiate` отклоняется `401` с вызовом `WWW-Authenticate: Negotiate` и пустым телом | n/a | ✅ |
 | G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) с последующим `GET`, подтверждающим, что property реально появилось, `DELETE` (`204`), `GET` после этого (`404`) — по-настоящему новое: `RoutingMetaStoreClient` не реализовывал `createDatabase`/`alterDatabase`/`dropDatabase` до этой фазы, так что namespace DDL впервые дошёл до реального metastore | ✅ | ✅ |
 | G33 | View write round trip: `POST .../views` create отвечает `200` с реальным `metadata-location`, `GET .../views` листит новый view, `POST .../views/{view}` update (requirement `assert-view-uuid` + `set-properties`) отвечает `200`, и последующий `GET` подтверждает, что property реально появилось, `POST /v1/{prefix}/views/rename` отвечает `204`, view загружается обратно `200` под новым именем, а под старым именем отвечает `404` — именно эта пара доказывает, что rename переместил view, а не скопировал его, `DELETE` отвечает `204` | ✅ | ✅ |
-| G34 | `POST /v1/{prefix}/transactions/commit` против только что созданной таблицы: отвечает `204`, и `metadata-location` таблицы после этого отличается от того, что дал create — доказательство, что multi-table commit реально записал новый metadata-файл, а не тихий no-op | ✅ | n/a |
-| G35 | `POST .../views` (CREATE_VIEW, полное валидное тело view) в federated-namespace `apache__default` отклонён с `403` — минимальное тело вместо этого получает `400`, потому что не парсится ещё до того, как gate вообще проверяется, так что `400` здесь означал бы, что тело запроса некорректно, а не что gate пропустил write | ✅ | n/a |
-| G36 | `DELETE .../views/{view}` (DROP_VIEW) под federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
-| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
-| G38 | `POST .../properties` (UPDATE_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | n/a |
+| G34 | `POST /v1/{prefix}/transactions/commit` против только что созданной таблицы: отвечает `204`, и `metadata-location` таблицы после этого отличается от того, что дал create — доказательство, что multi-table commit реально записал новый metadata-файл, а не тихий no-op | ✅ | ✅ |
+| G35 | `POST .../views` (CREATE_VIEW, полное валидное тело view) в federated-namespace `apache__default` отклонён с `403` — минимальное тело вместо этого получает `400`, потому что не парсится ещё до того, как gate вообще проверяется, так что `400` здесь означал бы, что тело запроса некорректно, а не что gate пропустил write | ✅ | ✅ |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) под federated-namespace `apache__default` отклонён с `403` | ✅ | ✅ |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | ✅ |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) federated-namespace `apache__default` отклонён с `403` | ✅ | ✅ |
+| G39 | REGISTER_TABLE round trip: создать таблицу, `DELETE` БЕЗ purge (metadata-файл переживает drop на HDFS, `GET` подтверждает `404`), `POST .../register` регистрирует её заново из этого metadata-файла (`200`, `metadata-location` присутствует), `GET` загружает обратно (`200`), `DELETE` удаляет — последний объявленный write-роут без позитивного доказательства | ✅ | ✅ |
+| G40 | `POST .../tables/{table}` (UPDATE_TABLE, per-table commit) под federated-namespace `apache__default` отклонён с `403` — названная таблица не обязана существовать, что доказывает: gate отвечает до lookup | ✅ | ✅ |
+| G41 | `DELETE .../tables/{table}` (DROP_TABLE) под federated-namespace `apache__default` отклонён с `403` | ✅ | ✅ |
+| G42 | `POST .../register` (REGISTER_TABLE, заведомо фиктивный `metadata-location`) под federated-namespace `apache__default` отклонён с `403` до любой попытки прочитать metadata-файл | ✅ | ✅ |
+| G43 | `POST .../views/{view}` (UPDATE_VIEW) под federated-namespace `apache__default` отклонён с `403` | ✅ | ✅ |
+| G44 | `POST /v1/{prefix}/views/rename` (RENAME_VIEW) с federated destination-namespace отклонён с `403` — view-аналог G30 | ✅ | ✅ |
+
+С G39-G44 у каждого из тринадцати write-роутов `WriteRouteGate` теперь есть и позитивный round
+trip (там, где роут действительно обслуживается), и gate-негатив против federated-namespace.
 
 ## F. Что не покрыто и почему
 
@@ -304,6 +314,36 @@ Thrift front door), и против него прогнали write round trip, 
   отвечало `404`, что инвертированная проверка теперь отвергала, — подтвердив, что проверка
   поймает rename, который копирует view вместо того, чтобы его переместить; проверка
   восстановлена, оба сценария (`rest` и `all`) перепрогнаны зелёными.
+
+- **2026-07-29**, jar `1.0.4-14af4def` (`main` после мержа; включает fail-closed-ужесточение
+  gate для нерезолвящихся namespace из `5f84d4e`). Smoke-скрипт получил шесть проверок,
+  замкнувших покрытие write-поверхности: REGISTER_TABLE round trip (G39: create, drop без purge,
+  повторная регистрация из пережившего drop metadata-файла, load обратно, drop) и по одному
+  gate-негативу на каждый ещё не покрытый write-роут (G40-G44: UPDATE_TABLE, DROP_TABLE,
+  REGISTER_TABLE, UPDATE_VIEW и RENAME_VIEW с federated destination) — теперь у каждого из
+  тринадцати гейтуемых write-роутов есть и позитив, и негатив. На plain-профиле `--scenario all`
+  прошёл зелёным дважды (до и после SPNEGO-рефакторинга ниже), `--scenario rest` — зелёным между
+  ними; проверка register доказала свою различающую способность: ожидаемый статус временно
+  заменён с `200` на `403` — прогон упал с "REST register ... returned HTTP 200" и полным телом
+  метаданных, прочитанным обратно из HDFS, что подтвердило и что проверка кусается, и что
+  register действительно работает; проверка восстановлена, сценарий перепрогнан зелёным.
+  В тот же день REST-смоук получил `HMS_SMOKE_REST_CURL_OPTS` (дополнительные опции curl для
+  каждого REST-запроса, например `--negotiate -u :`) плюс автоматизированную версию G31: когда
+  опции заданы, запрос БЕЗ них обязан быть отклонён `401` с вызовом `WWW-Authenticate:
+  Negotiate` и пустым телом. `env/kerberos.env` получил полный REST-блок (внутрисетевой URL
+  `http://proxy:9183`, оба prefix, write-таблица/namespace/view и management-метрики
+  `http://proxy:9090/metrics`), так что Kerberos-колонку REST теперь гоняет сам скрипт, а не
+  набранный вручную curl. Затем стенд переключён на Kerberos-профиль, и
+  `docker exec stand-proxy /opt/hms-proxy/scripts/run-real-installation-smoke-kerberos.sh
+  --env-file /opt/hms-proxy/smoke-env/kerberos.env --scenario all` (после kinit и `docker cp`
+  обновлённых `scripts/` и env-файла) завершился `scenario 'all' completed successfully` —
+  первый скриптовый полный REST-проход под Kerberos. Этот прогон перевёл kerberos-колонку
+  G2-G17, G19-G22, G27-G30 и G34-G38 из `n/a` в наблюдённо-зелёную и покрыл новые G39-G44 на
+  обоих профилях; G18 (HEAD-запросы) остаётся ручной и под Kerberos сохраняет `n/a`. Разделы
+  B-D (SQL/HDFS-слои) не перепрогонялись — изменения касаются только REST-смоука, Java-дельта
+  jar'а с последнего полного SQL-прохода — ужесточение write gate, а CLI-сценарии раздела A
+  (txn, локи, notification) перепрогнаны зелёными на обоих профилях в составе двух проходов
+  `--scenario all`.
 
 ## Две оговорки честности
 

@@ -258,6 +258,12 @@ docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LO
 docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
 ```
 
+The full REST check set runs through the smoke script itself: `env/kerberos.env` carries the REST
+block with `HMS_SMOKE_REST_CURL_OPTS=--negotiate -u :`, so after the kinit above (and a
+`docker cp` of `scripts/` and the env file into `stand-proxy`) the `--scenario all` / `--scenario
+rest` runner drives every REST check under SPNEGO, including the 401-challenge assertion for a
+request without `--negotiate`.
+
 See `TEST-MATRIX.md` section G for exactly which checks have been run against this profile.
 
 ## Hortonworks HiveServer2 (`--profile hdp`)

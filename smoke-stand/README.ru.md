@@ -258,6 +258,12 @@ docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LO
 docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
 ```
 
+Полный набор REST-проверок гоняет сам smoke-скрипт: в `env/kerberos.env` есть REST-блок с
+`HMS_SMOKE_REST_CURL_OPTS=--negotiate -u :`, поэтому после kinit выше (и `docker cp` каталога
+`scripts/` с env-файлом внутрь `stand-proxy`) runner `--scenario all` / `--scenario rest`
+прогоняет все REST-проверки под SPNEGO, включая проверку 401-вызова для запроса без
+`--negotiate`.
+
 Какие именно проверки прогонялись на этом профиле — раздел G в `TEST-MATRIX.ru.md`.
 
 ## Hortonworks HiveServer2 (`--profile hdp`)
