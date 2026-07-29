@@ -245,11 +245,21 @@ without checking conflicts. Both halves of that argument are now pinned.
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
 | I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
 | I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
+| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows - 13 of 14 writers commit, one REST writer is refused, and the table holds exactly 14 rows. Two Iceberg implementations that never share a JVM (the proxy's 1.9.2 and `iceberg-hive-runtime` 1.6.1 inside HiveServer2) serialize against each other through the metastore | ✅ | — |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
 behaviour and does not fail the run; a writer that reports success while its rows are missing
 does.
+
+For I4 the row count alone would prove nothing: a beeline `INSERT` spends tens of seconds in
+MapReduce before it commits, while a REST append commits a second after it starts, so firing
+both at once just runs them in sequence. The scenario therefore keeps issuing REST appends in
+rounds for as long as any SQL writer is alive, and then **asserts the overlap**: each Iceberg
+commit ends in an `alter_table` the proxy logs with its thread, REST requests on
+`hms-proxy-rest-*` and Thrift ones on `pool-*-thread-*`, and the two windows have to intersect.
+The detector was checked against a run that did *not* overlap (REST finished 4 s before the
+first SQL commit) and reports it as such, so a vacuous pass fails the run instead.
 
 What the run does **not** show: no `check_lock` and no `WAITING` appeared in the proxy log, so
 what rejected the stale writer was Iceberg's own requirement check on the branch's snapshot id,
@@ -525,6 +535,16 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   interop scenario now ends with that same purge plus an assertion that nothing survives it. The
   proxy turned out to cache stale namenode DNS the same way the HiveServer2 JVMs do: the first
   create after an HDFS recreation failed its write until the proxy container was restarted.
+
+- **2026-07-29** (seventh entry), section I - writer isolation - was added and then extended
+  across front doors. The stand runs: 5 REST writers (all commit, 6 rows), 8 REST writers (7
+  commit, 1 refused with "branch main has changed", 8 rows), and REST against Hive `INSERT`s on
+  the Hortonworks front door (13 of 14 commit, 14 rows). The cross-path row count was worthless
+  at first - the REST side finished four seconds before the first SQL commit, which the proxy log
+  showed plainly - so the scenario was rebuilt to issue REST appends in rounds while the SQL side
+  runs, and to assert the commit windows intersect. That detector was then checked against the
+  original non-overlapping log and correctly calls it a non-overlap, so the assertion cannot pass
+  vacuously.
 
 ## Two caveats on faithfulness
 

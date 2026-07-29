@@ -405,7 +405,20 @@ door, counts the writers that exited 0 and requires the table to hold exactly th
 the baseline. A writer that fails loudly (`CommitFailedException`) is correct behaviour under
 contention and does not fail the run — a writer that reports success while its rows are gone
 does. At eight writers the stand reliably produces both outcomes at once: seven commits and one
-refusal, with every committed row present. See `TEST-MATRIX.md` section I.
+refusal, with every committed row present.
+
+`--sql-writers N` adds Hive `INSERT`s to the same table, so the contention crosses front doors:
+
+```bash
+smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 6 --sql-writers 2 --sql-engine hdp
+```
+
+A beeline `INSERT` spends tens of seconds in MapReduce before committing while a REST append
+commits immediately, so firing both at once would just run them in sequence and prove nothing.
+The scenario instead keeps issuing REST appends in rounds while any SQL writer is alive, and then
+asserts that the two sides' commit windows actually intersect — it reads the `alter_table`
+timestamps back out of the proxy log, where the thread name tells the paths apart. See
+`TEST-MATRIX.md` section I.
 
 ## MapReduce under Kerberos
 
