@@ -302,6 +302,15 @@ stitches the pointer the metastore currently holds back into such an alter, tell
 commit apart by its `previous_metadata_location` (a request whose base is the current pointer is
 moving forward; anything else carries a stale copy).
 
+**The guard does not yet fire on the shape the stand actually sends.** Verified on the wire: the
+`alter_table` HiveServer2 sends carries `params={EXTERNAL, numFiles, numRows, totalSize,
+transient_lastDdlTime}` and **no `metadata_location` at all**, so the guard - which keys off a
+stale pointer *in the request* - returns immediately. Six clean runs after the change prove
+nothing: the WARN it logs when it repairs a pointer never appeared once, and at the observed
+one-in-eight loss rate a six-run clean streak happens about 45% of the time anyway. The guard must
+instead key off what the metastore currently holds (is this table Iceberg?) rather than off what
+the client sent - at the cost of a read on every `alter_table`, which needs a bound.
+
 That closes the compile-time window but not the whole race: the guard reads the current pointer
 and the backend applies the alter as two separate calls, so a commit landing between them is
 still overwritten. Measured over eight runs after the fix, one lost a row (before it was about

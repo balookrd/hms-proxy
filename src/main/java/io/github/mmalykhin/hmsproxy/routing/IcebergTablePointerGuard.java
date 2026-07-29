@@ -1,7 +1,9 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 
+import java.util.HashMap;
 import java.util.Map;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +31,8 @@ final class IcebergTablePointerGuard {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergTablePointerGuard.class);
   private static final String METADATA_LOCATION = "metadata_location";
   private static final String PREVIOUS_METADATA_LOCATION = "previous_metadata_location";
+  private static final String EXPECTED_PARAMETER_KEY = "expected_parameter_key";
+  private static final String EXPECTED_PARAMETER_VALUE = "expected_parameter_value";
 
   private final RoutingSupport support;
 
@@ -71,6 +75,7 @@ final class IcebergTablePointerGuard {
       return;
     }
 
+    attachCompareAndSwap(routedArgs, namespace, currentLocation);
     incoming.getParameters().put(METADATA_LOCATION, currentLocation);
     String currentPrevious = parameter(current, PREVIOUS_METADATA_LOCATION);
     if (currentPrevious == null) {
@@ -89,6 +94,40 @@ final class IcebergTablePointerGuard {
         methodName,
         incomingLocation,
         currentLocation);
+  }
+
+  /**
+   * Makes the repaired alter conditional where the metastore can check the condition: with
+   * {@code expected_parameter_key}/{@code expected_parameter_value} set, it applies the alter
+   * only while {@code metadata_location} still holds the value that was just read, so a commit
+   * that lands between this guard's read and the backend's write fails the alter loudly instead
+   * of being silently discarded. Without it the repair narrows that window but cannot close it.
+   *
+   * <p>Only Hive 4 metastores implement the check - the 3.1 line ignores both keys - so they are
+   * sent only to a Hive 4 backend. Sending them to a metastore that drops them would buy nothing
+   * but the false impression that the window is closed.
+   */
+  private void attachCompareAndSwap(
+      Object[] routedArgs,
+      CatalogRouter.ResolvedNamespace namespace,
+      String expectedLocation
+  ) {
+    if (!namespace.backend().runtimeProfile().isHive4()) {
+      return;
+    }
+    for (Object arg : routedArgs) {
+      if (!(arg instanceof EnvironmentContext context)) {
+        continue;
+      }
+      Map<String, String> properties = context.getProperties();
+      if (properties == null) {
+        properties = new HashMap<>();
+        context.setProperties(properties);
+      }
+      properties.put(EXPECTED_PARAMETER_KEY, METADATA_LOCATION);
+      properties.put(EXPECTED_PARAMETER_VALUE, expectedLocation);
+      return;
+    }
   }
 
   private Table readCurrentTable(
