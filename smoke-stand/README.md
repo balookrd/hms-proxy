@@ -48,7 +48,7 @@ A fresh HDFS needs its directories once:
 
 ```bash
 docker exec stand-namenode bash -c \
-  'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /external && hdfs dfs -chmod -R 1777 /warehouse /external'
+  'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external'
 ```
 
 The notification scenario needs its table to exist on the HDP backend — `add_write_notification_log`
@@ -310,6 +310,56 @@ Two things this profile does not reproduce faithfully:
   execution differs from a real HDP cluster.
 - **Emulation.** The distribution's native libraries are x86_64 only, so on Apple Silicon the whole
   service runs under `linux/amd64` and is noticeably slow to start (allow a couple of minutes).
+
+## Hive 4 backend and the Iceberg interop scenario (`--profile hive4`)
+
+The `hive4` profile swaps the default catalog for an Apache Hive 4.1.0 standalone metastore
+(`hms-hive4`, a thin wrapper over the official `apache/hive:4.1.0` image in `hms-hive4/`; the
+wrapper writes hive-site/core-site itself because the image has no `find` and its own
+conf-symlink mechanism silently does nothing). The proxy reaches it through the isolated
+`APACHE_4_1_0` client runtime — the Hive 4 client jar plus its companion jars
+(`libthrift-0.16.0`, `libfb303-0.9.3`, `hive-storage-api-4.1.0`) from `hive-metastore/`, loaded
+child-first. The `apache` catalog stays as the non-default one.
+
+The profile also adds the **third front door**: `additional-frontends.hive4fe` on 9085 (host
+19088) advertises the `APACHE_4_1_0` dialect, and `hs2-hive4` — a Hive 4.1.0 HiveServer2 from
+the same official image, Tez local mode, Iceberg built in — connects to it. Thrift has no
+version negotiation, so a Hive 4 client can use no other listener; the two 3.1-dialect
+HiveServer2 instances keep their own front doors on top of the same Hive 4 backend.
+
+```bash
+./prepare.sh
+docker compose --env-file .env.hive4 --profile hive4 --profile hdp up -d --build
+# Kerberos variant:
+docker compose --env-file .env.hive4-kerberos --profile hive4 --profile hdp --profile kerberos up -d --build
+```
+
+A fresh HDFS needs `/warehouse/hive4` (see the directory init above) — the REST create path
+does not mkdir it.
+
+On top of this profile, `run-iceberg-interop-smoke.sh` drives one Iceberg table through every
+engine and every dialect: the REST writer (`iceberg-rest-writer/`, built by `prepare.sh`, runs
+inside `stand-proxy` because data-file writes need the datanodes) creates the table and commits
+real Parquet rows through REST; the vendor HDP HiveServer2 reads and appends through the
+Hortonworks front door; the Apache HiveServer2 appends and reads through the Apache one (both
+carry `iceberg-hive-runtime` 1.6.1 — the last Iceberg release with a Hive 3 runtime); the Hive 4
+HiveServer2 reads all of it and appends through the Hive 4 front door; REST then sees every SQL
+commit and drops the table:
+
+```bash
+smoke-stand/run-iceberg-interop-smoke.sh              # plain
+smoke-stand/run-iceberg-interop-smoke.sh --kerberos   # SPNEGO + SASL end to end
+```
+
+Under Kerberos the writer authenticates REST with per-request SPNEGO tokens (a custom Iceberg
+`AuthManager` inside the writer jar) and logs into HDFS from the smoke-user keytab. The Hive 4
+HiveServer2 logs `scheduled_query_poll` refusals every few seconds — a Hive 4-only feature with
+no Apache 3.1.3 mapping, refused cleanly as `UNKNOWN_METHOD`; noise by design. Known gap:
+`DELETE ... ?purgeRequested=true` answers 500 (the server-side purge needs an Avro class the
+fat jar does not carry), so the scenario uses a plain `DELETE` and removes the data files
+explicitly. If HiveServer2 answers "File does not exist" for files that exist right after a
+stand rebuild, restart the HS2 containers — their JVMs cache a stale DNS resolution of the
+namenodes. See `TEST-MATRIX.md` section H for what has been run.
 
 ## MapReduce under Kerberos
 

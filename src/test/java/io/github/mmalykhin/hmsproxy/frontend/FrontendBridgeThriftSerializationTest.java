@@ -20,6 +20,10 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.LockState;
+import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest;
 import org.apache.hadoop.hive.metastore.api.PartitionsByExprResult;
@@ -234,6 +238,76 @@ public class FrontendBridgeThriftSerializationTest {
     Assert.assertEquals(2, databases.size());
     Assert.assertEquals("sales", get(databases.get(0), "getName"));
     Assert.assertEquals("file:///warehouse/marketing", get(databases.get(1), "getLocationUri"));
+  }
+
+  /**
+   * A Hive 4 client locking for an INSERT asks for EXCL_WRITE, a constant Apache 3.1.3 - the
+   * shape the bridge converts every request into - does not have. Unhandled, the value vanishes
+   * in conversion and the required field fails validation, which reaches the client as a bare
+   * "Internal error processing lock"; the stand's Hive 4 HiveServer2 retried it forever. The
+   * downgrade must land on EXCLUSIVE: SHARED_WRITE would grant concurrency the client asked to
+   * be excluded.
+   */
+  @Test
+  public void hive4ExclWriteLockDowngradesToExclusive() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<LockRequest> captured = new AtomicReference<>();
+    Hive4FrontendBridge.BridgeBundle bridge = hive4Bridge((proxy, method, args) -> {
+      if ("lock".equals(method.getName())) {
+        captured.set((LockRequest) args[0]);
+        return new LockResponse(7L, LockState.ACQUIRED);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    ClassLoader classLoader = bridge.classLoader();
+    Class<?> lockTypeClass = classLoader.loadClass(API_PACKAGE + "LockType");
+    Class<?> lockLevelClass = classLoader.loadClass(API_PACKAGE + "LockLevel");
+    Object component = classLoader.loadClass(API_PACKAGE + "LockComponent")
+        .getConstructor(lockTypeClass, lockLevelClass, String.class)
+        .newInstance(hive4Enum(lockTypeClass, "EXCL_WRITE"), hive4Enum(lockLevelClass, "TABLE"), "sales");
+    set(component, "setTablename", String.class, "events");
+    Object request = classLoader.loadClass(API_PACKAGE + "LockRequest")
+        .getConstructor(List.class, String.class, String.class)
+        .newInstance(List.of(component), "smoke-user", "localhost");
+
+    Object response = roundTrip(bridge.processor(), classLoader, "lock", request);
+
+    Assert.assertNotNull("the lock never reached the Apache handler", captured.get());
+    Assert.assertEquals(LockType.EXCLUSIVE, captured.get().getComponent().get(0).getType());
+    Assert.assertEquals("events", captured.get().getComponent().get(0).getTablename());
+    Assert.assertEquals(7L, ((Number) get(response, "getLockid")).longValue());
+  }
+
+  /** Values of the 3.1.3-only constants pass through untouched. */
+  @Test
+  public void hive4SharedReadLockIsNotRewritten() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<LockRequest> captured = new AtomicReference<>();
+    Hive4FrontendBridge.BridgeBundle bridge = hive4Bridge((proxy, method, args) -> {
+      if ("lock".equals(method.getName())) {
+        captured.set((LockRequest) args[0]);
+        return new LockResponse(9L, LockState.ACQUIRED);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    ClassLoader classLoader = bridge.classLoader();
+    Class<?> lockTypeClass = classLoader.loadClass(API_PACKAGE + "LockType");
+    Class<?> lockLevelClass = classLoader.loadClass(API_PACKAGE + "LockLevel");
+    Object component = classLoader.loadClass(API_PACKAGE + "LockComponent")
+        .getConstructor(lockTypeClass, lockLevelClass, String.class)
+        .newInstance(hive4Enum(lockTypeClass, "SHARED_READ"), hive4Enum(lockLevelClass, "DB"), "sales");
+    Object request = classLoader.loadClass(API_PACKAGE + "LockRequest")
+        .getConstructor(List.class, String.class, String.class)
+        .newInstance(List.of(component), "smoke-user", "localhost");
+
+    roundTrip(bridge.processor(), classLoader, "lock", request);
+
+    Assert.assertEquals(LockType.SHARED_READ, captured.get().getComponent().get(0).getType());
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object hive4Enum(Class<?> enumClass, String constant) {
+    return Enum.valueOf((Class<? extends Enum>) enumClass.asSubclass(Enum.class), constant);
   }
 
   @Test

@@ -49,7 +49,7 @@ docker compose --env-file .env.kerberos --profile kerberos up -d --build
 ```bash
 for n in stand-namenode stand-namenode-b; do
   docker exec $n bash -c \
-    'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /external && hdfs dfs -chmod -R 1777 /warehouse /external'
+    'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external'
 done
 ```
 
@@ -312,6 +312,56 @@ docker exec stand-hs2-hdp beeline -u jdbc:hive2://localhost:10000/default -n hiv
 - **Эмуляция.** Нативные библиотеки дистрибутива собраны только под x86_64, поэтому на Apple
   Silicon сервис целиком идёт под `linux/amd64` и стартует заметно медленно (закладывайте пару
   минут).
+
+## Hive 4-бэкенд и Iceberg interop-сценарий (`--profile hive4`)
+
+Профиль `hive4` подменяет default-каталог на standalone-метастор Apache Hive 4.1.0
+(`hms-hive4` — тонкая обёртка над официальным образом `apache/hive:4.1.0` в `hms-hive4/`;
+обёртка пишет hive-site/core-site сама, потому что в образе нет `find` и его собственный
+conf-symlink-механизм молча не работает). Прокси достигает его через изолированный клиентский
+рантайм `APACHE_4_1_0` — клиентский jar Hive 4 плюс его спутник-jar'ы (`libthrift-0.16.0`,
+`libfb303-0.9.3`, `hive-storage-api-4.1.0`) из `hive-metastore/`, загружаемые child-first.
+Каталог `apache` остаётся non-default.
+
+Профиль добавляет и **третий front door**: `additional-frontends.hive4fe` на 9085 (хост 19088)
+объявляет диалект `APACHE_4_1_0`, и к нему подключается `hs2-hive4` — HiveServer2 Hive 4.1.0 из
+того же официального образа (Tez local mode, Iceberg встроен). У Thrift нет согласования версий,
+поэтому Hive 4-клиент не может пользоваться никаким другим listener; два HiveServer2 3.1-диалектов
+сохраняют свои front door поверх того же Hive 4-бэкенда.
+
+```bash
+./prepare.sh
+docker compose --env-file .env.hive4 --profile hive4 --profile hdp up -d --build
+# Kerberos-вариант:
+docker compose --env-file .env.hive4-kerberos --profile hive4 --profile hdp --profile kerberos up -d --build
+```
+
+Свежему HDFS нужен `/warehouse/hive4` (см. инициализацию каталогов выше) — REST-путь create его
+не создаёт.
+
+Поверх этого профиля `run-iceberg-interop-smoke.sh` проводит одну Iceberg-таблицу через все
+движки и диалекты: REST writer (`iceberg-rest-writer/`, собирается `prepare.sh`, работает внутри
+`stand-proxy`, потому что запись data-файлов требует датанод) создаёт таблицу и коммитит
+настоящие Parquet-строки через REST; вендорский HDP HiveServer2 читает и дописывает через
+Hortonworks front door; Apache HiveServer2 дописывает и читает через Apache front door (оба
+несут `iceberg-hive-runtime` 1.6.1 — последний релиз Iceberg с Hive 3-рантаймом); HiveServer2
+Hive 4 читает всё это и дописывает через Hive 4 front door; затем REST видит все SQL-коммиты и
+удаляет таблицу:
+
+```bash
+smoke-stand/run-iceberg-interop-smoke.sh              # plain
+smoke-stand/run-iceberg-interop-smoke.sh --kerberos   # SPNEGO + SASL сквозняком
+```
+
+Под Kerberos writer аутентифицирует REST одноразовыми SPNEGO-токенами на каждый запрос
+(кастомный Iceberg `AuthManager` внутри writer-jar) и логинится в HDFS из keytab smoke-user.
+HiveServer2 Hive 4 каждые несколько секунд пишет в лог отказ `scheduled_query_poll` — это
+Hive 4-only фича без соответствия в Apache 3.1.3, отклоняется чисто как `UNKNOWN_METHOD`; шум по
+design. Известный пробел: `DELETE ... ?purgeRequested=true` отвечает 500 (серверному purge нужен
+Avro-класс, которого нет в fat jar), поэтому сценарий использует обычный `DELETE` и удаляет
+data-файлы явно. Если сразу после пересборки стенда HiveServer2 отвечает «File does not exist»
+на существующие файлы — перезапусти HS2-контейнеры: их JVM кэшируют устаревший DNS-резолв
+namenode. Что именно прогонялось — раздел H в `TEST-MATRIX.ru.md`.
 
 ## MapReduce под Kerberos
 

@@ -206,6 +206,78 @@ services:
       retries: 30
       start_period: 60s
 
+  # Apache Hive 4.1.0 metastore, only with --profile hive4: the default catalog of the
+  # hms-proxy-hive4.properties config, sharing the first HDFS cluster with a warehouse of its
+  # own. The proxy has no depends_on edge to it (compose cannot make one conditional on a
+  # profile); backend sessions open lazily, so start order does not matter.
+  hms-hive4:
+    build:
+      context: ./hms-hive4
+    image: hms-stand/metastore:apache-4.1.0
+    container_name: stand-hms-hive4
+    hostname: hms-hive4
+    profiles: ["hive4"]
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      METASTORE_PORT: 9083
+      DERBY_DIR: /opt/hms/db/metastore_db
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hive4"
+      SERVICE_PRINCIPAL: "hive/hms-hive4@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hms-hive4.keytab
+    ports:
+      - "19087:9083"
+    volumes:
+      - hive4-db:/opt/hms/db
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      # The official image carries no nc/curl; bash's /dev/tcp is always there.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  # Hive 4.1.0 HiveServer2, only with --profile hive4: the client the proxy's APACHE_4_1_0
+  # front door (9085) exists for. Queries run in Tez local mode, Iceberg support is built in.
+  hs2-hive4:
+    build:
+      context: ./hs2-hive4
+    image: hms-stand/hs2:hive4-4.1.0
+    container_name: stand-hs2-hive4
+    hostname: hs2-hive4
+    profiles: ["hive4"]
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      METASTORE_URI: thrift://proxy:9085
+      HDFS_DEFAULT_FS: "hdfs://namenode:8020"
+      # Both clusters: a kerberized job only collects delegation tokens for the filesystems it
+      # is told about, and a federated query may read either one.
+      HDFS_SERVERS: "hdfs://namenode:8020,hdfs://namenode-b:8020"
+      WAREHOUSE_URI: "hdfs://namenode:8020/warehouse/hive4"
+      KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      SERVICE_PRINCIPAL: "hive/hs2-hive4@SMOKE.LOCAL"
+      KEYTAB: /keytabs/hs2-hive4.keytab
+    ports:
+      - "10020:10000"
+      - "10022:10002"
+    volumes:
+      - keytabs:/keytabs:ro
+      - ./kdc/krb5.conf:/etc/krb5.conf:ro
+    healthcheck:
+      # The official image carries no nc/curl; bash's /dev/tcp is always there.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
   proxy:
     build:
       context: ./proxy
@@ -223,11 +295,18 @@ services:
     ports:
       - "19085:9083"
       - "19086:9084"
+      # Hive 4-dialect front door (additional-frontends.hive4fe, profile hive4 configs only).
+      - "19088:9085"
       - "19090:9090"
       - "19183:9183"
     volumes:
       - ./proxy/hms-proxy.properties:/opt/hms-proxy/hms-proxy.properties:ro
       - ./proxy/hms-proxy-kerberos.properties:/opt/hms-proxy/hms-proxy-kerberos.properties:ro
+      - ./proxy/hms-proxy-hive4.properties:/opt/hms-proxy/hms-proxy-hive4.properties:ro
+      - ./proxy/hms-proxy-hive4-kerberos.properties:/opt/hms-proxy/hms-proxy-hive4-kerberos.properties:ro
+      # The Iceberg REST writer runs inside this container: data-file writes need the
+      # datanodes, which only resolve in-network. Built by prepare.sh before compose up.
+      - ./iceberg-rest-writer/target/iceberg-rest-writer.jar:/opt/hms-proxy/iceberg-rest-writer.jar:ro
       - keytabs:/keytabs:ro
       - ./kdc/krb5.conf:/etc/krb5.conf:ro
     healthcheck:
@@ -359,4 +438,5 @@ volumes:
   apache-warehouse:
   hdp-db:
   hdp-warehouse:
+  hive4-db:
   keytabs:

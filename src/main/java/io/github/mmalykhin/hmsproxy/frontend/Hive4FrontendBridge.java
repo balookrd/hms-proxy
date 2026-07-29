@@ -137,6 +137,7 @@ public final class Hive4FrontendBridge {
             "Hive 4 method has no Apache 3.1.3 backend mapping: " + method.getName());
       }
 
+      downgradeHive4OnlyEnumValues(method.getName(), args);
       Object[] convertedArgs = convertArguments(args, apacheMethod.getParameterTypes());
       try {
         Object result = apacheMethod.invoke(apacheHandler, convertedArgs);
@@ -440,6 +441,43 @@ public final class Hive4FrontendBridge {
 
     private Method findApacheMethod(String methodName, int argumentCount) {
       return ApacheIfaceMethods.find(methodName, argumentCount);
+    }
+
+    /**
+     * Rewrites, in place, the Hive 4-only enum constants that Apache 3.1.3 - the shape every
+     * request is converted into before it reaches routing - cannot express. Conversion goes
+     * through the binary protocol, where an unknown enum code makes {@code findByValue} return
+     * null and the field silently vanish; on a required field the struct then fails validation
+     * with "Required field 'type' is unset" long before routing sees it, and the client only
+     * learns "Internal error processing lock".
+     *
+     * <p>Only {@code LockType} needs this today: Hive 4 added {@code EXCL_WRITE} between
+     * SHARED_WRITE and EXCLUSIVE. It maps to EXCLUSIVE, never to SHARED_WRITE - a downgrade must
+     * never grant more concurrency than the client asked for, and of the two constants 3.1.3 does
+     * have, EXCLUSIVE is the strictly stronger one. A Hive 4 backend therefore also sees
+     * EXCLUSIVE: the request is squeezed through the proxy's 3.1.3 representation on the way, so
+     * the extra strictness is the price of the front door, not a routing decision.
+     */
+    private void downgradeHive4OnlyEnumValues(String methodName, Object[] args) throws Exception {
+      if (!"lock".equals(methodName) || args == null || args.length == 0 || args[0] == null) {
+        return;
+      }
+      Object lockRequest = args[0];
+      Object components = lockRequest.getClass().getMethod("getComponent").invoke(lockRequest);
+      if (!(components instanceof List<?> componentList)) {
+        return;
+      }
+      for (Object component : componentList) {
+        Method getType = component.getClass().getMethod("getType");
+        Object type = getType.invoke(component);
+        if (!(type instanceof Enum<?> lockType) || !"EXCL_WRITE".equals(lockType.name())) {
+          continue;
+        }
+        Class<?> lockTypeClass = getType.getReturnType();
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        Object exclusive = Enum.valueOf((Class<? extends Enum>) lockTypeClass.asSubclass(Enum.class), "EXCLUSIVE");
+        component.getClass().getMethod("setType", lockTypeClass).invoke(component, exclusive);
+      }
     }
 
     private Object[] convertArguments(Object[] args, Class<?>[] parameterTypes) throws Exception {

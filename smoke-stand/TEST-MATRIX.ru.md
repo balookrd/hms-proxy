@@ -142,6 +142,55 @@ G18 (HEAD-запросы, которых в скрипте никогда не �
 С G39-G44 у каждого из тринадцати write-роутов `WriteRouteGate` теперь есть и позитивный round
 trip (там, где роут действительно обслуживается), и gate-негатив против federated-namespace.
 
+## H. Iceberg interop поверх Hive 4-бэкенда (профиль `hive4`)
+
+Гоняется через `smoke-stand/run-iceberg-interop-smoke.sh` (стенд-локальный: каждый шаг — docker
+exec в контейнер соответствующего движка). Конфигурация под тестом: default-каталог — метастор
+Apache Hive 4.1.0 (`hms-hive4`, официальный образ `apache/hive:4.1.0`), доступный через
+изолированный клиентский рантайм `APACHE_4_1_0`; Iceberg REST writer
+(`smoke-stand/iceberg-rest-writer` — клиентская половина REST-протокола, которую curl сыграть не
+может) работает внутри `stand-proxy`; оба HiveServer2 3.1-диалектов несут `iceberg-hive-runtime`
+1.6.1 — последний релиз с Hive 3-рантаймом, в Iceberg 1.7 он удалён, — а у HiveServer2 Hive 4
+(`hs2-hive4`, официальный образ, Tez local mode) поддержка Iceberg встроена. Одна таблица проходит
+через **все три диалекта front door** и все движки:
+
+| # | Проверка | plain | kerberos |
+| --- | --- | --- | --- |
+| H1 | REST пишет настоящие данные: writer создаёт таблицу через REST front door, пишет Parquet-файлы в HDFS и коммитит их снапшотом через REST; его собственный скан читает 2 строки обратно | ✅ | ✅ |
+| H2 | Вендорский HDP HiveServer2 (Hortonworks front door, 9084) читает REST-строки (`count=2`), дописывает одну `INSERT`-ом, читает обратно `count=3` | ✅ | ✅ |
+| H3 | Apache HiveServer2 (Apache front door, 9083) дописывает ещё одну и читает обратно `count=4` | ✅ | ✅ |
+| H4 | HiveServer2 Hive 4 (**Hive 4 front door, 9085** — диалект `APACHE_4_1_0`, единственный listener, которым может пользоваться Hive 4-клиент) читает всё, что записали два 3.1-движка (`count=4`), дописывает свою строку и читает обратно `count=5` | ✅ | ✅ |
+| H5 | Полный REST-скан видит коммиты всех SQL-движков (`rows=5`) — и метаданные, и данные проходят через все четыре пути доступа | ✅ | ✅ |
+| H6 | REST `DELETE` удаляет таблицу: `GET` отвечает `404`, `show tables` через SQL её больше не показывает | ✅ | ✅ |
+| H7 | Kerberos сквозняком: writer аутентифицирует REST одноразовыми SPNEGO-токенами на каждый запрос (кастомный Iceberg `AuthManager`) и пишет в HDFS как `smoke-user` из keytab; все три SQL-прохода — по SASL | n/a | ✅ |
+
+Что вскрыла постройка сценария (всё найдено самим сценарием, не ревью):
+
+- Бэкенд-рантайм `APACHE_4_1_0` вообще не мог открыть живое Thrift-соединение: его клиент
+  сгенерирован против libthrift 0.16, а fat jar несёт 0.9.3, и юнит-тесты мокали invocation-слой.
+  Починено в прокси: изолированный Hive 4-рантайм теперь загружает спутник-jar'ы
+  (`libthrift-0.16.0`, `libfb303-0.9.3`, `hive-storage-api-4.1.0`, вендорены в
+  `hive-metastore/`) child-first, а `ThriftValueConverter` конвертирует структуры и
+  инфраструктурные исключения thrift через границу загрузчиков; закреплено тестом
+  `Hive4IsolatedRuntimeTest`.
+- **Front door** `APACHE_4_1_0` тоже не мог обслужить запись: Hive 4 добавил четвёртую константу
+  `LockType` — `EXCL_WRITE`, которой нет в Apache 3.1.3, внутреннем представлении прокси. При
+  конвертации значение исчезало, required-поле не проходило валидацию, и `INSERT` Hive 4-клиента
+  получал голое «Internal error processing lock», после чего повторял запрос бесконечно. Починено
+  в `Hive4FrontendBridge`: EXCL_WRITE понижается до EXCLUSIVE (никогда до SHARED_WRITE — понижение
+  не должно давать больше параллелизма, чем просил клиент); закреплено двумя round-trip тестами в
+  `FrontendBridgeThriftSerializationTest`.
+- `scheduled_query_poll` отклоняется чистым `UNKNOWN_METHOD` каждые несколько секунд: HiveServer2
+  Hive 4 опрашивает scheduled queries — Hive 4-only фичу без соответствия в Apache 3.1.3. Шум в
+  логе by design, не падение сценария.
+- `DELETE .../tables/{table}?purgeRequested=true` отвечает 500: серверный purge читает манифесты
+  через Avro, а avro 1.7 в fat jar не имеет `org.apache.avro.Conversion`. Открытый пробел,
+  отслеживается отдельно; сценарий использует обычный `DELETE` и удаляет файлы явно.
+- После пересборки стенда JVM HiveServer2 могут держать устаревший DNS-резолв и ходить не на тот
+  namenode («File does not exist» для существующих файлов); лечится перезапуском HS2-контейнеров
+  после стабилизации сети — тот же класс stale-session проблем, что уже ловил перепрогон
+  2026-07-27.
+
 ## F. Что не покрыто и почему
 
 | Область | Причина |
@@ -344,6 +393,40 @@ trip (там, где роут действительно обслуживает�
   jar'а с последнего полного SQL-прохода — ужесточение write gate, а CLI-сценарии раздела A
   (txn, локи, notification) перепрогнаны зелёными на обоих профилях в составе двух проходов
   `--scenario all`.
+
+- **2026-07-29** (вторая запись), добавлена секция H: Iceberg interop-сценарий поверх бэкенда
+  Hive 4.1.0, прогнан зелёным на обоих профилях в день постройки. Новые части стенда: контейнер
+  `hms-hive4` (официальный `apache/hive:4.1.0`, тонкая обёртка в `smoke-stand/hms-hive4/` —
+  собственный conf-symlink-механизм официального образа молча не работает, потому что в образе
+  нет `find`, так что обёртка пишет конфиги напрямую), конфиги
+  `hms-proxy-hive4[-kerberos].properties` (default-каталог `hive4`,
+  `runtime-profile=APACHE_4_1_0`), клиент `iceberg-rest-writer` (Iceberg 1.9.2, Parquet в HDFS +
+  REST-коммиты, SPNEGO на каждый запрос через кастомный `AuthManager` под Kerberos),
+  `iceberg-hive-runtime` 1.6.1 в обоих образах HiveServer2 и принципал
+  `hive/hms-hive4@SMOKE.LOCAL` в KDC. Фикс прокси, который вынудил сценарий (спутник-jar'ы +
+  child-first thrift для изолированного Hive 4-рантайма, кросс-loader `ThriftValueConverter`),
+  перепрогнал весь юнит-набор зелёным (641 тест). Свежему HDFS нужен каталог `/warehouse/hive4`
+  рядом с остальными warehouse-каталогами — REST-путь create его не создаёт. 500 на purge-drop
+  (заметки секции H) остаётся открытым.
+
+- **2026-07-29** (третья запись), в тот же профиль добавлен **front door** Hive 4, и секция H
+  получила строку H4: `additional-frontends.hive4fe` на 9085 (`APACHE_4_1_0`) плюс `hs2-hive4` —
+  HiveServer2 Hive 4.1.0 из официального образа (Tez local mode, Iceberg встроен) — и принципал
+  `hive/hs2-hive4@SMOKE.LOCAL`. Теперь сценарий доказывает, что одна Iceberg-таблица читается и
+  пишется через все три Thrift-диалекта и REST одновременно; оба профиля перепрогнаны зелёными
+  (`rows=5`: 2 rest + 1 hdp + 1 apache + 1 hive4).
+  Включение front door вскрыло баг совместимости из заметок секции H (EXCL_WRITE), а
+  Kerberos-проход потребовал двух стендовых настроек, которые у образов HiveServer2 3.1 в том или
+  ином виде уже были: `yarn.resourcemanager.principal` + `mapreduce.job.hdfs-servers` в
+  *core-site.xml* (без них INSERT падает с «Can't get Master Kerberos principal for use as
+  renewer») и `tez.local.mode.without.network=true` — иначе Tez в local mode общается со своим
+  in-process AM по Hadoop RPC, а тот под Kerberos требует SASL, для которого у него нет принципала
+  («Client cannot authenticate via:[TOKEN, KERBEROS]» → «TezSession has already shutdown»). В
+  официальном образе нет и Kerberos-клиента, поэтому обёртка ставит `krb5-workstation` для
+  beeline, который смоук запускает внутри контейнера. Ловушка с устаревшим DNS сработала ещё
+  дважды: `docker compose up --build <service>` пересоздаёт всю цепочку depends_on вместе с HDFS,
+  после чего пару HiveServer2 3.1 нужно перезапустить (а прогон, стартовавший во время
+  пересоздания, падает прямо на записи в HDFS).
 
 ## Две оговорки честности
 

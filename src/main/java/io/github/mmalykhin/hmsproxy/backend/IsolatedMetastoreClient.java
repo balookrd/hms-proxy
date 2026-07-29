@@ -156,9 +156,8 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile
   ) throws Exception {
     Path jarPath = MetastoreRuntimeJarResolver.resolveBackendJar(config, catalogConfig, runtimeProfile);
-    return new MetastoreApiClassLoader(
-        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(jarPath),
-        IsolatedMetastoreClient.class.getClassLoader());
+    return MetastoreApiClassLoader.forBackendRuntime(
+        jarPath, runtimeProfile, IsolatedMetastoreClient.class.getClassLoader());
   }
 
   static void applyHortonworksCompatibilityWorkarounds(

@@ -143,6 +143,54 @@ With G39-G44 every one of the thirteen `WriteRouteGate` write routes now has bot
 round trip (where the route is genuinely served) and a gate negative against a federated
 namespace.
 
+## H. Iceberg interop over a Hive 4 backend (profile `hive4`)
+
+Driven by `smoke-stand/run-iceberg-interop-smoke.sh` (stand-local: every step is a docker exec
+into the engine's own container). Layout under test: the default catalog is an Apache Hive
+4.1.0 metastore (`hms-hive4`, official `apache/hive:4.1.0` image), reached through the isolated
+`APACHE_4_1_0` client runtime; the Iceberg REST writer (`smoke-stand/iceberg-rest-writer`, the
+client half of the REST protocol curl cannot play) runs inside `stand-proxy`; both 3.1-dialect
+HiveServer2 instances carry `iceberg-hive-runtime` 1.6.1 - the last release with a Hive 3
+runtime, Iceberg 1.7 dropped it - while the Hive 4 HiveServer2 (`hs2-hive4`, official image,
+Tez local mode) has Iceberg built in. One table crosses **all three front-door dialects** and
+every engine:
+
+| # | Check | plain | kerberos |
+| --- | --- | --- | --- |
+| H1 | REST writes real data: the writer creates the table through the REST front door, writes Parquet files into HDFS and commits them as a snapshot through REST; its own scan reads the 2 rows back | ✅ | ✅ |
+| H2 | The vendor HDP HiveServer2 (Hortonworks front door, 9084) reads the REST-written rows (`count=2`), appends one with `INSERT`, reads back `count=3` | ✅ | ✅ |
+| H3 | The Apache HiveServer2 (Apache front door, 9083) appends one more and reads back `count=4` | ✅ | ✅ |
+| H4 | The Hive 4 HiveServer2 (**Hive 4 front door, 9085** - the `APACHE_4_1_0` dialect, the only listener a Hive 4 client can use) reads everything the two 3.1-era engines wrote (`count=4`), appends its own row and reads back `count=5` | ✅ | ✅ |
+| H5 | A REST-side full scan sees every SQL engine's commit (`rows=5`) - metadata and data round-trip through all four access paths | ✅ | ✅ |
+| H6 | REST `DELETE` drops the table: `GET` answers `404`, `show tables` through SQL no longer lists it | ✅ | ✅ |
+| H7 | Kerberos end to end: the writer authenticates REST with per-request SPNEGO tokens (custom Iceberg `AuthManager`) and writes HDFS as `smoke-user` from its keytab; all three HS2 passes run over SASL | n/a | ✅ |
+
+What building this surfaced (all found by the scenario, not by review):
+
+- The `APACHE_4_1_0` backend runtime could not open a live Thrift connection at all - its client
+  is generated against libthrift 0.16 while the fat jar carries 0.9.3, and the unit tests mocked
+  the invocation layer. Fixed in the proxy: the Hive 4 isolated runtime now loads companion jars
+  (`libthrift-0.16.0`, `libfb303-0.9.3`, `hive-storage-api-4.1.0`, vendored in
+  `hive-metastore/`) child-first, and `ThriftValueConverter` converts structs and thrift
+  infrastructure exceptions across the loader boundary; pinned by `Hive4IsolatedRuntimeTest`.
+- The `APACHE_4_1_0` **front door** could not serve a write either: Hive 4 added a fourth
+  `LockType` constant, `EXCL_WRITE`, which Apache 3.1.3 - the shape every request is converted
+  into before routing - does not have. The value vanished in conversion, the required field
+  failed validation, and a Hive 4 client's `INSERT` got a bare "Internal error processing lock"
+  and retried forever. Fixed in `Hive4FrontendBridge`: EXCL_WRITE is downgraded to EXCLUSIVE
+  (never SHARED_WRITE - a downgrade must not grant concurrency the client asked to exclude);
+  pinned by two round-trip tests in `FrontendBridgeThriftSerializationTest`.
+- `scheduled_query_poll` is refused with a clean `UNKNOWN_METHOD` every few seconds: the Hive 4
+  HiveServer2 polls for scheduled queries, a Hive 4-only feature with no Apache 3.1.3 mapping.
+  Log noise by design, not a scenario failure.
+- `DELETE .../tables/{table}?purgeRequested=true` answers 500: the server-side purge reads
+  manifests through Avro, and the fat jar's avro 1.7 lacks `org.apache.avro.Conversion`. Open
+  gap, tracked separately; the scenario uses a plain `DELETE` and removes the files explicitly.
+- After a stand rebuild the HiveServer2 JVMs can keep a stale DNS resolution and talk to the
+  wrong namenode ("File does not exist" for files that exist); restarting the HS2 containers
+  after the network settles is the cure - same class of stale-session issue the 2026-07-27
+  rerun already hit.
+
 ## F. Not covered, and why
 
 | Area | Reason |
@@ -345,6 +393,38 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   the jar's Java-side delta since the last full SQL pass is the write-gate hardening, and the
   A-section CLI scenarios (txn, locks, notification) re-ran green on both profiles as part of
   the two `--scenario all` passes.
+
+- **2026-07-29** (second entry), section H added: the Iceberg interop scenario over a Hive 4.1.0
+  backend, run green on both profiles the same day it was built. New stand pieces: the
+  `hms-hive4` container (official `apache/hive:4.1.0`, thin wrapper in `smoke-stand/hms-hive4/` -
+  the official image's own conf-symlink mechanism silently does nothing because the image lacks
+  `find`, so the wrapper writes conf files directly), the `hms-proxy-hive4[-kerberos].properties`
+  configs (default catalog `hive4`, `runtime-profile=APACHE_4_1_0`), the
+  `iceberg-rest-writer` client (Iceberg 1.9.2, Parquet into HDFS + REST commits, per-request
+  SPNEGO via a custom `AuthManager` under Kerberos), `iceberg-hive-runtime` 1.6.1 in both
+  HiveServer2 images, and the `hive/hms-hive4@SMOKE.LOCAL` principal in the KDC. The proxy fix
+  the scenario forced (companion jars + child-first thrift for the Hive 4 isolated runtime,
+  cross-loader `ThriftValueConverter`) re-ran the full unit suite green (641 tests). A fresh
+  HDFS needs `/warehouse/hive4` created alongside the other warehouse dirs - the REST create
+  path does not mkdir it. The purge-drop 500 (H notes) remains open.
+
+- **2026-07-29** (third entry), the Hive 4 **front door** was added to the same profile and
+  section H grew its H4 row: `additional-frontends.hive4fe` on 9085 (`APACHE_4_1_0`) plus
+  `hs2-hive4`, a Hive 4.1.0 HiveServer2 from the official image (Tez local mode, Iceberg built
+  in), and the `hive/hs2-hive4@SMOKE.LOCAL` principal. The scenario now proves one Iceberg table
+  is readable and writable through all three Thrift dialects and REST at once; both profiles
+  re-ran green (`rows=5`: 2 rest + 1 hdp + 1 apache + 1 hive4).
+  Turning the front door on found the compatibility bug described in the H notes (EXCL_WRITE),
+  and the Kerberos pass needed two stand-side settings the 3.1 HiveServer2 images already had in
+  some form: `yarn.resourcemanager.principal` + `mapreduce.job.hdfs-servers` in *core-site.xml*
+  (without them the INSERT dies with "Can't get Master Kerberos principal for use as renewer"),
+  and `tez.local.mode.without.network=true` - Tez local mode otherwise talks to its in-process AM
+  over Hadoop RPC, which under Kerberos demands SASL it has no principal for ("Client cannot
+  authenticate via:[TOKEN, KERBEROS]" → "TezSession has already shutdown"). The official image
+  also ships no Kerberos client, so the wrapper installs `krb5-workstation` for the beeline the
+  smoke runs inside it. The stale-DNS trap bit twice more: `docker compose up --build <service>`
+  recreates the whole depends_on chain including HDFS, after which the 3.1 HiveServer2 pair must
+  be restarted (and a run started during that recreation fails its HDFS write outright).
 
 ## Two caveats on faithfulness
 

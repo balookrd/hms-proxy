@@ -440,11 +440,11 @@ public final class BackendRuntime implements AutoCloseable {
       return null;
     }
     try {
-      return new MetastoreApiClassLoader(
-          MetastoreApiClassLoader.buildIsolatedRuntimeUrls(
-              MetastoreRuntimeJarResolver.resolveBackendJar(proxyConfig, catalogConfig, runtimeProfile)),
+      return MetastoreApiClassLoader.forBackendRuntime(
+          MetastoreRuntimeJarResolver.resolveBackendJar(proxyConfig, catalogConfig, runtimeProfile),
+          runtimeProfile,
           BackendRuntime.class.getClassLoader());
-    } catch (IllegalArgumentException | MalformedURLException e) {
+    } catch (IllegalArgumentException | IllegalStateException | MalformedURLException e) {
       MetaException me = new MetaException(
           "Unable to initialize isolated backend runtime for catalog " + catalogConfig.name());
       me.initCause(e);

@@ -59,6 +59,17 @@
       <artifactId>hadoop-mapreduce-client-jobclient</artifactId>
       <version>3.1.0</version>
     </dependency>
+    <!--
+      Iceberg storage handler for Hive 3: lets this HiveServer2 read and append the Iceberg
+      table of the interop scenario. 1.6.1 on purpose - Iceberg 1.7 dropped the Hive 2/3
+      runtime entirely (Hive 4 carries its own). A shaded uber jar with no transitive baggage;
+      prepare.sh copies the same jar into the vendor HDP HiveServer2's hive/lib.
+    -->
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-hive-runtime</artifactId>
+      <version>1.6.1</version>
+    </dependency>
     <dependency>
       <groupId>org.apache.derby</groupId>
       <artifactId>derby</artifactId>

@@ -19,6 +19,9 @@ fi
 principals=(
   "hive/hms-apache@${REALM}:hms-apache.keytab"
   "hive/hms-hdp@${REALM}:hms-hdp.keytab"
+  # Hive 4.1.0 metastore and HiveServer2 of the hive4 profile.
+  "hive/hms-hive4@${REALM}:hms-hive4.keytab"
+  "hive/hs2-hive4@${REALM}:hs2-hive4.keytab"
   "hive/proxy@${REALM}:proxy.keytab"
   # SPNEGO for the proxy's Iceberg REST listener; same keytab as the Thrift service principal
   # since both run in the same container under the same hostname.

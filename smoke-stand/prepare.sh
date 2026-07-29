@@ -92,6 +92,18 @@ else
   cp "${STAND_DIR}/hms/acid-apache/"*.jar "${STAND_DIR}/hms/acid-hdp/"
 fi
 
+# The Iceberg storage handler the interop scenario needs in BOTH SQL engines. The Apache
+# HiveServer2 gets it through hs2/pom.xml; the vendor one has no pom, so the same resolved jar
+# is dropped into its staged hive/lib here (skipped when no HDP distribution is staged).
+ICEBERG_RUNTIME_JAR=$(ls "${STAND_DIR}"/hs2/lib/iceberg-hive-runtime-*.jar 2>/dev/null | head -1)
+if [[ -n "${ICEBERG_RUNTIME_JAR}" && -d "${STAND_DIR}/hs2-hdp/dist/hive/lib" ]]; then
+  echo "[prepare] copying $(basename "${ICEBERG_RUNTIME_JAR}") into the HDP HiveServer2 lib"
+  cp "${ICEBERG_RUNTIME_JAR}" "${STAND_DIR}/hs2-hdp/dist/hive/lib/"
+fi
+
+echo "[prepare] building the Iceberg REST writer"
+JAVA_HOME="${JAVA_HOME_17}" mvn -q -f "${STAND_DIR}/iceberg-rest-writer/pom.xml" package
+
 echo "[prepare] copying the proxy fat jar"
 FAT_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1)
 if [[ -z "${FAT_JAR}" ]]; then

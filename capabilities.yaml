@@ -114,9 +114,11 @@ capabilities:
       en:
         - 199 read/write methods shared with Apache 3.1.3 (binary-compatible)
         - selected Hive 4-only `*_req` wrappers downgraded to positional Apache 3.1.3 RPCs
+        - "`lock` with the Hive 4-only `EXCL_WRITE` lock type downgraded to `EXCLUSIVE`"
       ru:
         - 199 read/write методов общих с Apache 3.1.3 (binary-compatible)
         - часть Hive 4-only `*_req` wrappers понижается до позиционных Apache 3.1.3 RPC
+        - "`lock` с Hive 4-only типом `EXCL_WRITE` понижается до `EXCLUSIVE`"
     expected_result:
       en: >-
         Supported with compatibility downgrade for read + standard DDL; Hive 4-only
@@ -131,6 +133,7 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeMapsHive4OnlyGetDatabaseReqToLegacyApacheMethod
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeRejectsHive4OnlyDataConnectorMethod
       - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4GetPartitionsReqSerializesPartitionsResponse
+      - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4ExclWriteLockDowngradesToExclusive
   - id: apache_frontdoor_to_hive4_backend_upgrade
     status: degraded
     client:
