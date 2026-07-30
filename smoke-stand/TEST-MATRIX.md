@@ -295,30 +295,59 @@ simply slower, which widens the window.
 
 **The cause, and how far the fix goes.** A HiveServer2 `INSERT` opens with an
 `alter_table_with_environment_context` carrying `alterTableOpType=DROPPROPS` and the `Table` it
-snapshotted when the query was compiled. The metastore applies those parameters wholesale,
-`metadata_location` included, so a REST commit that landed in between is erased - and the call
-travels outside the Iceberg lock, so nothing serializes it. `IcebergTablePointerGuard` now
-stitches the pointer the metastore currently holds back into such an alter, telling a genuine
-commit apart by its `previous_metadata_location` (a request whose base is the current pointer is
-moving forward; anything else carries a stale copy).
+snapshotted when the query was compiled. The metastore applies those parameters wholesale, so
+every Iceberg key the record holds and the request omits is erased - `metadata_location` first of
+all, but also `table_type`, `storage_handler`, `previous_metadata_location` and the
+`current-snapshot-*` set - and the call travels outside the Iceberg lock, so nothing serializes
+it. `IcebergTablePointerGuard` now merges such an alter over the record the metastore currently
+holds (the record's parameters as the base, the client's on top, both pointers forced back), and
+tells a genuine commit apart by its `previous_metadata_location` (a request whose base is the
+current pointer is moving forward and is passed through untouched; anything else carries a stale
+copy).
 
-**The guard does not yet fire on the shape the stand actually sends.** Verified on the wire: the
-`alter_table` HiveServer2 sends carries `params={EXTERNAL, numFiles, numRows, totalSize,
-transient_lastDdlTime}` and **no `metadata_location` at all**, so the guard - which keys off a
-stale pointer *in the request* - returns immediately. Six clean runs after the change prove
-nothing: the WARN it logs when it repairs a pointer never appeared once, and at the observed
-one-in-eight loss rate a six-run clean streak happens about 45% of the time anyway. The guard must
-instead key off what the metastore currently holds (is this table Iceberg?) rather than off what
-the client sent - at the cost of a read on every `alter_table`, which needs a bound.
+**Keying the guard off the request was a no-op; it is now keyed off the metastore record.**
+Verified on the wire: the `alter_table` HiveServer2 sends carries `params={EXTERNAL, numFiles,
+numRows, totalSize, transient_lastDdlTime}` and **no `metadata_location` at all**, so the first
+version of the guard - which looked for a stale pointer *in the request* - returned on its first
+check. The six clean runs it was credited with proved nothing: the WARN it logs when it repairs a
+pointer never appeared once, and at the observed one-in-eight loss rate a six-run clean streak
+happens about 45% of the time anyway. Whether the target is an Iceberg table is now read from the
+metastore.
 
-That closes the compile-time window but not the whole race: the guard reads the current pointer
-and the backend applies the alter as two separate calls, so a commit landing between them is
-still overwritten. Measured over eight runs after the fix, one lost a row (before it was about
-one in two), and one run showed the opposite - a writer told its commit had failed whose rows
-landed anyway, which a retry would duplicate. **Do not read this row as fixed.** Closing it
-properly needs the alter to be conditional: either the proxy holds the same table lock Iceberg
-takes across read-and-write, or it sends HMS's `expected_parameter_key`/`expected_parameter_value`
-so a pointer that moved makes the alter fail loudly instead of overwriting.
+**Measured, with the counter that makes a green run mean something.** Ten consecutive runs of the
+command above, all green *and* all with `hms_proxy_iceberg_pointer_guard_events_total{outcome=
+"repaired"}` incremented by exactly 2 per run - one per SQL writer, the DROPPROPS alter that
+opens each `INSERT`. Row counts: 11/11, 15/15, 15/15, 10/10, 11/11, 11/11, 11/11, 10/10, 15/15,
+15/15 (rows vs. 1 baseline + successful writers); two of the ten refused one REST writer loudly,
+which is correct behaviour. `outcome="forward_commit"` ran 10-15 per run - the REST commits, recognised
+and left alone. For comparison, the eight runs recorded here earlier were runs with the guard
+silently doing nothing, and one of them lost a row.
+
+The first run also caught a defect the unit tests could not: the guard read the record by raw
+method name, and Hive 4 has no positional `get_table` in its IDL, so all 13 reads of that run
+failed with `NoSuchMethodException` (`outcome="read_failed"`) and nothing was repaired - on
+exactly the backend line whose compare-and-swap the guard depends on. The read now goes through
+the backend adapter, which upgrades it to `get_table_req`.
+
+**What the extra read costs.** Same stand, both HiveServer2 instances, `create table` plus five
+`INSERT`s each - 15 `alter_table` either way, none of them on an Iceberg table:
+
+| `table-cache-ttl-ms` | reads (`not_iceberg`) | no read (`cache_suppressed`) | mean `alter_table` |
+| --- | --- | --- | --- |
+| `30000` (default) | 2 | 13 | 11.1 ms (0.166 s / 15) |
+| `0` (cache off) | 15 | 0 | 12.4 ms (0.185 s / 15) |
+
+So the negative cache removed 87 % of the added round trips, and even with every alter reading,
+the read is about 1.3 ms on an `alter_table` that already costs ~11 ms. Iceberg tables are never
+cached - their pointer must be read fresh - which is why the concurrency runs above show reads on
+every alter of the table under test.
+
+None of this closes the whole race: the guard reads the current pointer and the backend applies
+the alter as two separate calls, so a commit landing between them would still be overwritten.
+**Do not read this row as fixed.** On Hive 4 backends the repaired alter now carries HMS's
+`expected_parameter_key`/`expected_parameter_value`, which turns that into a loud failure instead
+of a silent overwrite; the 3.1 line ignores both keys, so there the window stays open. Closing it
+properly needs the proxy to hold the same table lock Iceberg takes across read-and-write.
 
 ## F. Not covered, and why
 

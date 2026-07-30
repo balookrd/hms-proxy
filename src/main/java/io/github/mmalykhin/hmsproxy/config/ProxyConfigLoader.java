@@ -25,6 +25,8 @@ import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfigParser;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfigParser;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfigParser;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
@@ -65,6 +67,7 @@ public final class ProxyConfigLoader {
     RateLimitConfig rateLimit = RateLimitConfigParser.parse(reader, catalogs);
     LatencyRoutingConfig latencyRouting =
         LatencyRoutingConfigParser.parse(reader, catalogs.size());
+    IcebergPointerGuardConfig icebergPointerGuard = IcebergPointerGuardConfigParser.parse(reader);
     List<AdditionalFrontendConfig> additionalFrontends =
         AdditionalFrontendConfigParser.parse(reader, server, management);
 
@@ -83,6 +86,7 @@ public final class ProxyConfigLoader {
         .syntheticReadLockStore(syntheticReadLockStore)
         .rateLimit(rateLimit)
         .latencyRouting(latencyRouting)
+        .icebergPointerGuard(icebergPointerGuard)
         .additionalFrontends(additionalFrontends)
         .build();
   }

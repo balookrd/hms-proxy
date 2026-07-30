@@ -6,6 +6,59 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-07-30
+
+### Fixed
+
+- The Iceberg pointer guard now fires on the `alter_table` shape HiveServer2
+  actually sends. It used to decide whether a request concerned an Iceberg
+  table by looking for `metadata_location` in the incoming `Table`; verified on
+  the wire, the `alter_table_with_environment_context` that opens an `INSERT`
+  carries exactly `{EXTERNAL, numFiles, numRows, totalSize,
+  transient_lastDdlTime}` and no Iceberg key at all, so the guard returned on
+  its first check and was a no-op for the very shape that loses data.
+  Iceberg-ness is now decided from the metastore's own record, and the stand
+  confirms it: ten cross-front-door concurrency runs
+  (`run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 4 --sql-writers 2
+  --sql-engine hdp --kerberos`) matched row counts to successful writers with
+  the guard's `repaired` counter non-zero in every run - the evidence the
+  previous six clean runs never had.
+- The repair is now a merge rather than a pointer stitch. A metastore applies
+  the parameters of an `alter_table` wholesale, so the request erased every
+  Iceberg key the record held and it omitted - `table_type`,
+  `storage_handler`, `previous_metadata_location` and the `current-snapshot-*`
+  set, not only `metadata_location`. The backend now receives the record's
+  parameters with the client's applied on top and both pointers forced back to
+  the record's values, so everything the client meant to change still goes
+  through and nothing it silently omitted is lost. An honest Iceberg commit,
+  recognised by a `previous_metadata_location` equal to the current pointer, is
+  still passed through untouched.
+- The guard reads the record through the backend adapter instead of by raw
+  method name. Hive 4 dropped the positional `get_table` from its IDL, so the
+  by-name read failed with `NoSuchMethodException` on exactly the backend line
+  whose `expected_parameter_key`/`expected_parameter_value` compare-and-swap
+  the guard relies on; the stand showed 13 `read_failed` events and not one
+  repair before the fix.
+
+### Added
+
+- `routing.iceberg-pointer-guard.enabled` (default `true`),
+  `routing.iceberg-pointer-guard.table-cache-ttl-ms` (default `30000`, `0`
+  disables caching) and
+  `routing.iceberg-pointer-guard.table-cache-max-entries` (default `10000`)
+  bound the cost of deciding Iceberg-ness from the metastore, which is one
+  `get_table` per `alter_table`. A name the metastore answered is not an
+  Iceberg table is remembered for the TTL, so ordinary Hive tables - where the
+  `alter_table` volume is - pay one read and then nothing; Iceberg tables are
+  never cached, because their current pointer has to be read fresh on every
+  alter. A `create_table` or an `alter_table` carrying a pointer drops the
+  remembered answer immediately.
+- `hms_proxy_iceberg_pointer_guard_events_total{catalog,outcome}` counts the
+  guard's decisions - `repaired`, `forward_commit`, `not_iceberg`,
+  `cache_suppressed`, `read_failed`. Everything except `cache_suppressed` cost
+  one backend read, so both the added round trips and the cache hit rate are
+  readable from one metric.
+
 ## 2026-07-28
 
 ### Added

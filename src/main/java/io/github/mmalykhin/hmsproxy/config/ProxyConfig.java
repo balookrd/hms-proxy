@@ -15,6 +15,7 @@ import io.github.mmalykhin.hmsproxy.config.management.ManagementConfig;
 import io.github.mmalykhin.hmsproxy.config.ratelimit.RateLimitConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
@@ -35,6 +36,7 @@ public record ProxyConfig(
     SyntheticReadLockStoreConfig syntheticReadLockStore,
     RateLimitConfig rateLimit,
     LatencyRoutingConfig latencyRouting,
+    IcebergPointerGuardConfig icebergPointerGuard,
     List<AdditionalFrontendConfig> additionalFrontends
 ) {
   public ProxyConfig {
@@ -58,6 +60,8 @@ public record ProxyConfig(
             + "for single-instance deployments or a ZOOKEEPER-backed config for HA.");
     rateLimit = rateLimit == null ? RateLimitConfig.disabled() : rateLimit;
     latencyRouting = latencyRouting == null ? LatencyRoutingConfig.disabled() : latencyRouting;
+    icebergPointerGuard =
+        icebergPointerGuard == null ? IcebergPointerGuardConfig.defaults() : icebergPointerGuard;
     additionalFrontends = additionalFrontends == null ? List.of() : List.copyOf(additionalFrontends);
   }
 
@@ -80,6 +84,7 @@ public record ProxyConfig(
     private SyntheticReadLockStoreConfig syntheticReadLockStore;
     private RateLimitConfig rateLimit;
     private LatencyRoutingConfig latencyRouting;
+    private IcebergPointerGuardConfig icebergPointerGuard;
     private List<AdditionalFrontendConfig> additionalFrontends;
 
     public Builder server(ServerConfig server) { this.server = server; return this; }
@@ -96,6 +101,7 @@ public record ProxyConfig(
     public Builder syntheticReadLockStore(SyntheticReadLockStoreConfig store) { this.syntheticReadLockStore = store; return this; }
     public Builder rateLimit(RateLimitConfig rateLimit) { this.rateLimit = rateLimit; return this; }
     public Builder latencyRouting(LatencyRoutingConfig latencyRouting) { this.latencyRouting = latencyRouting; return this; }
+    public Builder icebergPointerGuard(IcebergPointerGuardConfig guard) { this.icebergPointerGuard = guard; return this; }
     public Builder additionalFrontends(List<AdditionalFrontendConfig> additionalFrontends) {
       this.additionalFrontends = additionalFrontends;
       return this;
@@ -104,7 +110,7 @@ public record ProxyConfig(
     public ProxyConfig build() {
       return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
           backend, compatibility, federation, transactionalDdlGuard, management, restCatalog,
-          syntheticReadLockStore, rateLimit, latencyRouting, additionalFrontends);
+          syntheticReadLockStore, rateLimit, latencyRouting, icebergPointerGuard, additionalFrontends);
     }
   }
 

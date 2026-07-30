@@ -127,6 +127,11 @@ public final class PrometheusMetrics {
       "hms_proxy_synthetic_read_lock_store_info",
       "Configured synthetic read-lock store mode for this proxy instance",
       List.of("store_mode"));
+  private final Counter icebergPointerGuardEventsTotal = new Counter(
+      "hms_proxy_iceberg_pointer_guard_events_total",
+      "Iceberg pointer guard decisions on alter_table grouped by catalog and outcome; everything "
+          + "except cache_suppressed cost one backend read",
+      List.of("catalog", "outcome"));
   private final Counter restRequestsTotal = new Counter(
       "hms_proxy_rest_requests_total",
       "Total Iceberg REST requests by catalog prefix, route, and terminal HTTP status",
@@ -289,6 +294,10 @@ public final class PrometheusMetrics {
     syntheticReadLockStoreInfo.set(labels("store_mode", storeMode), 1.0);
   }
 
+  public void recordIcebergPointerGuardEvent(String catalog, String outcome) {
+    icebergPointerGuardEventsTotal.inc(labels("catalog", catalog, "outcome", outcome));
+  }
+
   public void recordRestRequest(String prefix, String route, int status, double durationSeconds) {
     restRequestsTotal.inc(labels("prefix", prefix, "route", route, "status", String.valueOf(status)));
     restRequestDurationSeconds.observe(labels("prefix", prefix, "route", route), durationSeconds);
@@ -322,6 +331,7 @@ public final class PrometheusMetrics {
       syntheticReadLockHandoffsTotal,
       syntheticReadLocksActive,
       syntheticReadLockStoreInfo,
+      icebergPointerGuardEventsTotal,
       restRequestsTotal,
       restRequestDurationSeconds,
       restListenerInfo);

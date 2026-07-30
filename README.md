@@ -442,6 +442,7 @@ Current Prometheus metrics:
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_iceberg_pointer_guard_events_total{catalog,outcome}`
 - `hms_proxy_rest_requests_total{prefix,route,status}`
 - `hms_proxy_rest_request_duration_seconds{prefix,route}`
 - `hms_proxy_rest_listener_info{bind_host,port}`
@@ -475,6 +476,7 @@ Metric semantics:
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 - `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
+- `hms_proxy_iceberg_pointer_guard_events_total` counts the Iceberg pointer guard's decisions on `alter_table`: `repaired` (the request would have erased the record's Iceberg state and was merged over it), `forward_commit` (an Iceberg commit built on the current pointer, passed through), `not_iceberg` (the record holds no pointer, remembered as such), `cache_suppressed` (answered from that memory, no backend read), `read_failed` (the record could not be read and the alter was passed through). Everything except `cache_suppressed` cost one `get_table`, so the added round trips and the cache hit rate are both readable from this one metric
 - `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
 - `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
 - `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
@@ -1582,6 +1584,32 @@ failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.
+
+**Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
+`alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
+and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the
+request omits is erased - `metadata_location` first of all. The proxy is the only place the Hive
+and Iceberg write paths meet, so it merges such an alter over the record the metastore currently
+holds instead of forwarding it as sent; an honest Iceberg commit, recognised by a
+`previous_metadata_location` equal to the current pointer, is passed through untouched. On Hive 4
+backends the repaired alter also carries `expected_parameter_key`/`expected_parameter_value`, which
+makes the metastore apply it only while the pointer is still the one that was read.
+
+```properties
+routing.iceberg-pointer-guard.enabled=true
+routing.iceberg-pointer-guard.table-cache-ttl-ms=30000
+routing.iceberg-pointer-guard.table-cache-max-entries=10000
+```
+
+Whether a table is an Iceberg table is decided from the metastore's record, not from the request -
+the shape HiveServer2 sends carries no Iceberg key at all - which costs one `get_table` per
+`alter_table`. `table-cache-ttl-ms` bounds that: a name the metastore answered is not an Iceberg
+table is remembered for that long, so ordinary Hive tables (where the `alter_table` volume is) pay
+one read and then nothing. Iceberg tables are never cached, because their current pointer has to be
+read fresh; `0` disables the cache entirely. A table that becomes an Iceberg table outside the
+proxy is unprotected for at most one TTL - a `create_table` or an `alter_table` that carries a
+pointer drops the remembered answer immediately. `hms_proxy_iceberg_pointer_guard_events_total`
+exposes both the repairs and the reads the cache saved.
 
 When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
 connections using `security.client-principal` and `security.client-keytab`. If those are omitted,

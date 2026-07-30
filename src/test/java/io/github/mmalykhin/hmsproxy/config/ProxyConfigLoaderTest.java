@@ -1677,4 +1677,106 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+  @Test
+  public void loadsIcebergPointerGuardDefaultsAndOverrides() throws Exception {
+    Path defaults = Files.createTempFile("hms-proxy", ".properties");
+    Path overrides = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(defaults, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      Files.writeString(overrides, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.enabled=false
+          routing.iceberg-pointer-guard.table-cache-ttl-ms=0
+          routing.iceberg-pointer-guard.table-cache-max-entries=250
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig defaultConfig = ProxyConfigLoader.load(defaults);
+      ProxyConfig overriddenConfig = ProxyConfigLoader.load(overrides);
+
+      Assert.assertTrue("the guard protects Iceberg tables unless it is turned off explicitly",
+          defaultConfig.icebergPointerGuard().enabled());
+      Assert.assertEquals(30_000L, defaultConfig.icebergPointerGuard().tableCacheTtlMs());
+      Assert.assertEquals(10_000, defaultConfig.icebergPointerGuard().tableCacheMaxEntries());
+      Assert.assertFalse(overriddenConfig.icebergPointerGuard().enabled());
+      Assert.assertEquals("zero disables the cache, so every alter reads",
+          0L, overriddenConfig.icebergPointerGuard().tableCacheTtlMs());
+      Assert.assertEquals(250, overriddenConfig.icebergPointerGuard().tableCacheMaxEntries());
+    } finally {
+      Files.deleteIfExists(defaults);
+      Files.deleteIfExists(overrides);
+    }
+  }
+  @Test
+  public void rejectsNegativeIcebergPointerGuardCacheTtl() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.table-cache-ttl-ms=-1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a negative table-cache-ttl-ms");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.table-cache-ttl-ms"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsZeroIcebergPointerGuardCacheMaxEntries() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.table-cache-max-entries=0
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a zero table-cache-max-entries");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.table-cache-max-entries"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsNonBooleanIcebergPointerGuardEnabled() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.enabled=off
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for routing.iceberg-pointer-guard.enabled=off");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.enabled"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

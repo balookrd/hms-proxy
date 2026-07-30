@@ -6,6 +6,58 @@
 
 English version: [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-07-30
+
+### Исправлено
+
+- Iceberg pointer guard теперь срабатывает на той форме `alter_table`, которую
+  HiveServer2 действительно присылает. Раньше он решал, касается ли запрос
+  Iceberg-таблицы, по наличию `metadata_location` в присланном `Table`;
+  проверено по проводу: `alter_table_with_environment_context`, которым
+  открывается `INSERT`, несёт ровно `{EXTERNAL, numFiles, numRows, totalSize,
+  transient_lastDdlTime}` и ни одного Iceberg-ключа, поэтому guard выходил на
+  первой же проверке и был no-op для той самой формы, которая теряет данные.
+  Теперь Iceberg-ность определяется по записи самого метастора, и это
+  подтверждено стендом: десять прогонов конкурентности через оба front door
+  (`run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 4 --sql-writers 2
+  --sql-engine hdp --kerberos`) дали совпадение числа строк с числом успешных
+  писателей при ненулевом счётчике `repaired` в каждом прогоне — доказательство,
+  которого не было у предыдущих шести чистых прогонов.
+- Починка теперь слияние, а не вшивание одного указателя. Метастор применяет
+  параметры `alter_table` целиком, поэтому запрос стирал каждый Iceberg-ключ,
+  который был в записи и отсутствовал в запросе: `table_type`,
+  `storage_handler`, `previous_metadata_location` и набор
+  `current-snapshot-*`, а не только `metadata_location`. Бэкенд теперь получает
+  параметры записи с параметрами клиента поверх и оба указателя принудительно
+  как в записи, так что всё, что клиент действительно менял, проходит, а ничего
+  из молча опущенного не теряется. Честный Iceberg-коммит, опознаваемый по
+  `previous_metadata_location`, равному текущему указателю, по-прежнему
+  проходит без изменений.
+- Guard читает запись через backend adapter, а не по «сырому» имени метода.
+  Hive 4 убрал позиционный `get_table` из своего IDL, поэтому чтение по имени
+  падало с `NoSuchMethodException` именно на той линии бэкендов, чей CAS
+  (`expected_parameter_key`/`expected_parameter_value`) guard и использует; до
+  исправления стенд показывал 13 событий `read_failed` и ни одной починки.
+
+### Добавлено
+
+- `routing.iceberg-pointer-guard.enabled` (по умолчанию `true`),
+  `routing.iceberg-pointer-guard.table-cache-ttl-ms` (по умолчанию `30000`,
+  `0` отключает кэш) и
+  `routing.iceberg-pointer-guard.table-cache-max-entries` (по умолчанию
+  `10000`) ограничивают цену определения Iceberg-ности по метастору — одного
+  `get_table` на каждый `alter_table`. Имя, про которое метастор ответил, что
+  это не Iceberg-таблица, запоминается на время TTL, поэтому обычные
+  Hive-таблицы — где и сосредоточен объём `alter_table` — платят одно чтение и
+  дальше ничего; Iceberg-таблицы не кэшируются никогда, их текущий указатель
+  обязан читаться заново на каждом alter. `create_table` или `alter_table` с
+  указателем сбрасывает запомненный ответ сразу.
+- `hms_proxy_iceberg_pointer_guard_events_total{catalog,outcome}` считает
+  решения guard'а — `repaired`, `forward_commit`, `not_iceberg`,
+  `cache_suppressed`, `read_failed`. Всё, кроме `cache_suppressed`, стоило
+  одного чтения бэкенда, поэтому по одной метрике видны и добавленные round
+  trip, и hit rate кэша.
+
 ## 2026-07-28
 
 ### Добавлено

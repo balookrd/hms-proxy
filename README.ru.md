@@ -444,6 +444,7 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_backend_session_acquire_timeouts_total{catalog,operation}`
 - `hms_proxy_adaptive_timeout_reconnect_total{catalog}`
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total{catalog,reason}`
+- `hms_proxy_iceberg_pointer_guard_events_total{catalog,outcome}`
 - `hms_proxy_rest_requests_total{prefix,route,status}`
 - `hms_proxy_rest_request_duration_seconds{prefix,route}`
 - `hms_proxy_rest_listener_info{bind_host,port}`
@@ -477,6 +478,7 @@ scrape_configs:
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
 - `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
+- `hms_proxy_iceberg_pointer_guard_events_total` считает решения Iceberg pointer guard по `alter_table`: `repaired` (запрос стёр бы Iceberg-состояние записи, поэтому был слит поверх неё), `forward_commit` (Iceberg-коммит, построенный на текущем указателе, пропущен как есть), `not_iceberg` (в записи нет указателя, имя запомнено как не-Iceberg), `cache_suppressed` (ответ из этой памяти, без чтения бэкенда), `read_failed` (запись прочитать не удалось, alter пропущен как есть). Всё, кроме `cache_suppressed`, стоило одного `get_table`, поэтому по одной метрике видно и добавленные round trip, и hit rate кэша
 - `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
 - `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
 - `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
@@ -1520,6 +1522,33 @@ shared backend client и сбросу кэша impersonation-клиентов (K
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
 открывает его.
+
+**Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
+`alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
+метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в
+записи и отсутствует в запросе, — в первую очередь `metadata_location`. Прокси — единственное
+место, где встречаются Hive- и Iceberg-пути записи, поэтому такой alter сливается поверх записи,
+которую метастор держит сейчас, а не пересылается как есть; честный Iceberg-коммит опознаётся по
+`previous_metadata_location`, равному текущему указателю, и пропускается без изменений. На Hive
+4-бэкендах починенный alter дополнительно несёт
+`expected_parameter_key`/`expected_parameter_value` — метастор применит его только пока указатель
+всё ещё тот, который был прочитан.
+
+```properties
+routing.iceberg-pointer-guard.enabled=true
+routing.iceberg-pointer-guard.table-cache-ttl-ms=30000
+routing.iceberg-pointer-guard.table-cache-max-entries=10000
+```
+
+Iceberg-ность таблицы определяется по записи метастора, а не по запросу — в форме, которую
+присылает HiveServer2, нет ни одного Iceberg-ключа, — и это стоит одного `get_table` на каждый
+`alter_table`. `table-cache-ttl-ms` ограничивает цену: имя, про которое метастор ответил, что это
+не Iceberg-таблица, запоминается на это время, поэтому обычные Hive-таблицы (где и сосредоточен
+объём `alter_table`) платят одно чтение и дальше ничего. Iceberg-таблицы не кэшируются никогда —
+их текущий указатель обязан читаться заново; `0` полностью отключает кэш. Таблица, ставшая
+Iceberg-таблицей вне прокси, не защищена не дольше одного TTL: `create_table` или `alter_table` с
+указателем сбрасывает запомненный ответ сразу. `hms_proxy_iceberg_pointer_guard_events_total`
+показывает и починки, и сэкономленные кэшем чтения.
 
 ## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
 
