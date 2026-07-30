@@ -390,6 +390,32 @@ here and nowhere else. If HiveServer2 answers "File does not exist" for files th
 stand rebuild, restart the HS2 containers — their JVMs cache a stale DNS resolution of the
 namenodes. See `TEST-MATRIX.md` section H for what has been run.
 
+## Row-level DML (`run-iceberg-rowlevel-smoke.sh`)
+
+The interop scenario only ever appends, so it never produces an Iceberg delete file. This one
+does. Hive 4 is the only engine on the stand with native row-level DML over Iceberg, so it plays
+the writer: it deletes and updates rows in a format-version 2 table the REST front door created,
+and the other three front doors then read what it left behind.
+
+```bash
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4              # both delete modes
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --kerberos
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --mode merge-on-read
+```
+
+`--mode` picks one of `write.delete.mode`/`write.update.mode`; without it both run. The mode is
+not taken on trust — the REST writer's `files` command reports the planned scan's data- and
+delete-file counts, and the run asserts merge-on-read leaves a delete file behind while
+copy-on-write leaves none. Every read assertion is a full `select id, src` row scan rather than
+`select count(*)`, because Hive can answer a count from the Iceberg summary it holds as table
+stats, which a reader unable to apply delete files would still get right.
+
+The result is the opposite of the `inputFormat` asymmetry above: **both 3.1 engines read
+merge-on-read correctly** — `iceberg-hive-runtime` 1.6.1 applies position deletes — and can even
+`INSERT` on top of a row-level-modified table. What they cannot do is produce row-level changes:
+`DELETE` and `UPDATE` are refused at compile time with `SemanticException [Error 10297] ... that
+is not transactional`. See `TEST-MATRIX.md` H13-H20.
+
 ## Writer isolation (`run-iceberg-concurrency-smoke.sh`)
 
 The Iceberg REST front door allows writes into the default catalog only, because only there does

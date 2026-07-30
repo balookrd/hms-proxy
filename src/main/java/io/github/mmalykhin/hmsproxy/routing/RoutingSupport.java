@@ -54,6 +54,19 @@ final class RoutingSupport {
         true, true);
   }
 
+  /**
+   * Backend call that admission control must not refuse: the lock lifecycle
+   * {@link IcebergTablePointerGuard} runs around a repair. A rate-limit or circuit-breaker
+   * rejection landing between {@code lock} and {@code unlock} would strand an EXCLUSIVE lock on
+   * the table, which blocks every later commit on it - far worse than the two calls it saves.
+   */
+  Object invokeDirectUnmetered(CatalogBackend backend, Method method, Object[] args) throws Throwable {
+    return dispatcher.invokeDirect(
+        backend, method, args,
+        impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId(),
+        false, false);
+  }
+
   Object invokeViaRequest(CatalogBackend backend, Object request, String methodName) throws Throwable {
     return dispatcher.invokeViaRequest(
         backend, request, methodName,

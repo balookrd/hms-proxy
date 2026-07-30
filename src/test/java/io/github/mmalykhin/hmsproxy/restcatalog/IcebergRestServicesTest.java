@@ -8,6 +8,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogPurgeMode;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
@@ -63,7 +64,8 @@ public class IcebergRestServicesTest {
                 null,
                 Map.of("hive.metastore.uris", "thrift://hms-test:9084"))))
         .backend(new BackendConfig(Map.of()))
-        .restCatalog(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null))
+        .restCatalog(new RestCatalogConfig(
+            true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }

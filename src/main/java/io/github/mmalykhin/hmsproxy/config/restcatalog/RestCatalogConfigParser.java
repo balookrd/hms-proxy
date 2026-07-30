@@ -3,6 +3,8 @@ package io.github.mmalykhin.hmsproxy.config.restcatalog;
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.util.PathPrefixAllowlist;
+import java.util.List;
 
 public final class RestCatalogConfigParser {
   private static final int DEFAULT_PORT_OFFSET = 100;
@@ -37,7 +39,26 @@ public final class RestCatalogConfigParser {
     if (enabled && keytab != null) {
       ConfigParsing.requireReadableFile(keytab, "rest-catalog.kerberos.keytab");
     }
+    RestCatalogPurgeMode purgeMode = ConfigParsing.parseEnum(
+        RestCatalogPurgeMode.class,
+        reader.getOrNull("rest-catalog.purge.mode"),
+        "rest-catalog.purge.mode",
+        RestCatalogPurgeMode.ALLOW);
+    List<String> purgeAllowedPrefixes =
+        PathPrefixAllowlist.parse(reader.getOrNull("rest-catalog.purge.allowed-prefixes"));
+    // Contradictions fail the start whether or not the listener is enabled: a typo that only
+    // surfaces once someone turns the listener on in production is what strict parsing prevents.
+    if (purgeMode == RestCatalogPurgeMode.ALLOWLIST && purgeAllowedPrefixes.isEmpty()) {
+      throw new IllegalArgumentException(
+          "rest-catalog.purge.mode=ALLOWLIST requires a non-empty rest-catalog.purge.allowed-prefixes");
+    }
+    if (purgeMode != RestCatalogPurgeMode.ALLOWLIST && !purgeAllowedPrefixes.isEmpty()) {
+      throw new IllegalArgumentException(
+          "rest-catalog.purge.allowed-prefixes is only used with rest-catalog.purge.mode=ALLOWLIST,"
+              + " but the mode is " + purgeMode);
+    }
     return new RestCatalogConfig(
-        enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab);
+        enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab,
+        purgeMode, purgeAllowedPrefixes);
   }
 }

@@ -394,6 +394,32 @@ HiveServer2 отвечает «File does not exist»
 на существующие файлы — перезапусти HS2-контейнеры: их JVM кэшируют устаревший DNS-резолв
 namenode. Что именно прогонялось — раздел H в `TEST-MATRIX.ru.md`.
 
+## Row-level DML (`run-iceberg-rowlevel-smoke.sh`)
+
+Interop-сценарий только дописывает строки, поэтому Iceberg delete-файлов он не порождает никогда.
+Этот — порождает. Hive 4 — единственный движок стенда с нативным row-level DML поверх Iceberg,
+поэтому писателем работает он: удаляет и обновляет строки в таблице format-version 2, созданной
+через REST front door, а остальные три front door затем читают то, что он оставил.
+
+```bash
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4              # оба режима удаления
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --kerberos
+smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --mode merge-on-read
+```
+
+`--mode` выбирает одно значение `write.delete.mode`/`write.update.mode`; без него гоняются оба.
+Режим сценарий не принимает на веру: команда `files` REST-writer'а отдаёт число data- и
+delete-файлов спланированного скана, и прогон проверяет, что merge-on-read оставляет delete-файл,
+а copy-on-write не оставляет. Каждая проверка чтения — полный скан строк `select id, src`, а не
+`select count(*)`: Hive умеет брать count из Iceberg-сводки, которую держит как статистику
+таблицы, и читатель, не умеющий применять delete-файлы, всё равно назвал бы правильное число.
+
+Здесь всё ровно наоборот по сравнению с асимметрией `inputFormat` выше: **оба 3.1-движка
+корректно читают merge-on-read** — `iceberg-hive-runtime` 1.6.1 применяет position-deletes — и
+даже делают `INSERT` поверх построчно изменённой таблицы. Чего они не умеют — порождать
+построчные изменения: `DELETE` и `UPDATE` отклоняются на этапе компиляции с `SemanticException
+[Error 10297] ... that is not transactional`. Подробности — H13-H20 в `TEST-MATRIX.ru.md`.
+
 ## Изоляция писателей (`run-iceberg-concurrency-smoke.sh`)
 
 Iceberg REST front door пускает записи только в default-каталог, потому что лишь там коммит

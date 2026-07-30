@@ -204,6 +204,44 @@ handler itself - carry the concrete `HiveIcebergInputFormat`, which is why every
 readable everywhere, Hive 4 included. The proxy passes the descriptor through unchanged in both
 directions; nothing here is a routing or compatibility decision it could make differently.
 
+### H13-H20. Row-level DML: `DELETE` and `UPDATE`
+
+Everything above only ever appends, so nothing in it produces a delete file. This block does.
+Driven by `smoke-stand/run-iceberg-rowlevel-smoke.sh`: Hive 4 - the only engine on the stand with
+native row-level DML over Iceberg - deletes and updates rows in a v2 table the REST front door
+created, and the other three front doors then have to read what it left behind. Run on the
+`hive4` backend, once per `write.delete.mode`/`write.update.mode` value:
+
+| # | Check | plain | kerberos |
+| --- | --- | --- | --- |
+| H13 | Hive 4 `DELETE FROM ... WHERE` removes rows from a REST-created v2 table, and REST sees it: its own scan drops from 5 rows to 3 and no longer finds the deleted id | ✅ | ✅ |
+| H14 | Hive 4 `UPDATE ... SET` changes a value in place, and REST sees the new one: still 3 rows, `src=updated` matches exactly 1 and `src=rest` the other 2 | ✅ | ✅ |
+| H15 | `merge-on-read` really is merge-on-read: after the delete the planned scan is 1 data file **plus 1 delete file** - the original five-row data file is untouched and the rows come out at read time | ✅ | ✅ |
+| H16 | **Both 3.1 engines read the merge-on-read result correctly** - a full row scan through each returns exactly the surviving rows, so `iceberg-hive-runtime` 1.6.1 does apply position delete files | ✅ | ✅ |
+| H17 | The HDP 3.1 engine still `INSERT`s onto a table Hive 4 has row-level modified, and all four front doors then agree on the 4 rows | ✅ | ✅ |
+| H18 | Neither 3.1 engine can do row-level DML of its own: `DELETE` and `UPDATE` are refused at compile time with `SemanticException [Error 10297]: Attempt to do update or delete on table default.smoke_iceberg_rowlevel that is not transactional`, and the table's contents are unchanged afterwards | ✅ | ✅ |
+| H19 | `copy-on-write` really is copy-on-write: the same delete leaves **0 delete files** because Hive 4 rewrites the data file instead, and every engine reads the same result | ✅ | ✅ |
+| H20 | The purge-drop still cleans up a v2 table that has delete files: no parquet, avro or `metadata.json` survives under the table directory | ✅ | ✅ |
+
+**The boundary is on the write side, not the read side** - the opposite of what the `inputFormat`
+asymmetry above would lead you to expect. A 3.1 HiveServer2 carrying `iceberg-hive-runtime` 1.6.1
+plans a scan of a format-version 2 table with position deletes and applies them; what it cannot
+do is *produce* them, because the Hive 3 storage handler registers no ACID-capable table and the
+semantic analyzer stops the statement before a plan exists. So a Hive 4 writer and a 3.1 reader
+can share a row-level-modified table, and a 3.1 client that tries to modify one fails loudly and
+early instead of half-writing. As with H12, none of this is a proxy decision: the same
+`alter_table` is relayed either way.
+
+Two things the scenario is careful about, because either would make it pass vacuously:
+
+- Every read assertion is a full `select id, src` row scan, never `select count(*)`. Hive can
+  answer a count from the Iceberg summary it keeps as table stats, so a reader that cannot apply
+  delete files would still report the right number.
+- The mode is asserted from the table's file shape rather than trusted as a setting, and the two
+  values are what make each other meaningful: the same assertion sees 1 delete file under
+  `merge-on-read` and 0 under `copy-on-write`, so a Hive 4 that ignored the property would fail
+  one of the two runs.
+
 What building this surfaced (all found by the scenario, not by review):
 
 - The `APACHE_4_1_0` backend runtime could not open a live Thrift connection at all - its client
@@ -245,7 +283,7 @@ without checking conflicts. Both halves of that argument are now pinned.
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
 | I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
 | I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
-| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ⚠️ **narrowed, not closed** |
+| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ✅ 12/12 on the 3.1 backend, against 1 loss in 12 before the repair took the Iceberg table lock |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -342,12 +380,70 @@ the read is about 1.3 ms on an `alter_table` that already costs ~11 ms. Iceberg 
 cached - their pointer must be read fresh - which is why the concurrency runs above show reads on
 every alter of the table under test.
 
-None of this closes the whole race: the guard reads the current pointer and the backend applies
-the alter as two separate calls, so a commit landing between them would still be overwritten.
-**Do not read this row as fixed.** On Hive 4 backends the repaired alter now carries HMS's
-`expected_parameter_key`/`expected_parameter_value`, which turns that into a loud failure instead
-of a silent overwrite; the 3.1 line ignores both keys, so there the window stays open. Closing it
-properly needs the proxy to hold the same table lock Iceberg takes across read-and-write.
+**The rest of the race, and how it was closed.** Reading the pointer and applying the alter were
+two separate calls, so a commit landing between them was still overwritten. On Hive 4 backends the
+repaired alter's `expected_parameter_key`/`expected_parameter_value` turned that into a loud
+failure; the 3.1 line ignores both keys, so there the window stayed open. It is now closed by
+holding the table lock Iceberg itself takes across the repair.
+
+**What the stand showed about the locks, before any code was written.** One SQL `INSERT` into an
+Iceberg table on this profile, from the proxy trace log:
+
+| time | call | lock |
+| --- | --- | --- |
+| `08,045` | Hive locks for its own transaction (txnid 957) | `LockComponent(db=_dummy_database, table=_dummy_table)` and nothing else |
+| `08,249` | the `DROPPROPS` alter the guard repairs | no lock held on the table |
+| `12,982` | HiveServer2's Iceberg commit takes its lock | `LockRequest(txnid=0, components=[LockComponent(db=default, table=<table>)])` |
+| `13,033` | that commit's `alter_table` | **inside** that lock |
+| `13,097` | `unlock` | held for 115 ms |
+
+Two facts decided the design. Hive takes **no** lock on the target table of an `INSERT`, so a lock
+the guard takes while serving that `INSERT`'s alter cannot queue behind the statement it serves.
+And a genuine Iceberg commit sends its `alter_table` from **inside** the table lock, so acquiring
+that lock before deciding what the alter is would block on a lock held by the caller waiting for
+the answer - a self-deadlock on every honest commit. The guard therefore reads unlocked first and
+locks **only to repair**, then re-reads under the lock and merges over what it finds. The request
+shape is copied from `org.apache.iceberg.hive.MetastoreLock`, which is identical in Iceberg 1.6.1
+(inside HiveServer2) and 1.9.2 (the proxy's REST path): one EXCLUSIVE, table-level component with
+the backend database name, no `txnid`.
+
+**Measured, both before and after.** Twelve runs of the command above with `--prefix hdp` (the 3.1
+backend, where the metastore ignores the compare-and-swap), first on the unchanged jar:
+
+| | runs | lost updates | `repaired` | under the lock |
+| --- | --- | --- | --- | --- |
+| before (guard, no lock) | 12 | **1** - run 12 held 10 rows for 10 successful writers, and the missing marker was `sql901` | 2 per run | n/a |
+| after (guard holds the lock) | 12 | **0** - every run matched rows to successful writers | 2 per run | 2 per run |
+
+The loss rate on the 3.1 line had never been measured before this - the earlier figures are all
+from `hive4`, whose compare-and-swap already turns a lost update into a loud failure. Across the
+twelve runs after the change, `repair_locked` equalled `repaired` exactly (24 of each), and
+`repair_lock_timeout`, `repair_lock_failed` and `lock_release_failed` stayed at zero: every repair
+was atomic, and no lock was stranded. That last one matters on this stand in particular - its
+metastore runs with `metastore.compactor.initiator.on=false` and no housekeeping threads, so a
+leaked lock would never be reaped and would block every later commit on the table.
+
+**What the lock costs.** Sections B and C through both HiveServer2 instances, and separately five
+SQL `INSERT`s into one Iceberg table (each one repair plus one forward commit):
+
+| workload | `lock-enabled` | `alter_table` | mean | locks taken |
+| --- | --- | --- | --- | --- |
+| sections B + C | `true` | 14 | 20.7 ms | **0** |
+| sections B + C | `false` | 14 | 13.9 ms | 0 |
+| 5 `INSERT`s, Iceberg table | `true` | 10 | 14.7 ms | 5 (`repair_locked`) |
+| 5 `INSERT`s, Iceberg table | `false` | 10 | 15.7 ms | 0 (`repair_lock_skipped`) |
+
+The SQL sections take **no lock at all** in either configuration - none of their tables is an
+Iceberg table, so no repair fires - which makes the 20.7-vs-13.9 ms gap pure run-to-run variance
+and, incidentally, the resolution limit of this measurement: about 7 ms on 14 samples. On the path
+that does lock, three added RPCs (`lock`, the second `get_table`, `unlock`) land inside that same
+noise - the locked runs came out 1 ms *faster* than the unlocked ones on 5 repairs each.
+
+**What is still open.** A lock that is not granted within `lock-acquire-timeout-ms` (10 s by
+default) leaves the repair unprotected rather than refusing the write, and a backend whose ACID
+housekeeping does reap timed-out locks could reap this one out from under an `alter_table` that
+takes longer than `hive.txn.timeout`. Both are counted (`repair_lock_timeout`, and the WARN that
+goes with it) rather than assumed away; neither occurred in these runs.
 
 ## F. Not covered, and why
 
@@ -358,6 +454,7 @@ properly needs the proxy to hold the same table lock Iceberg takes across read-a
 | Ranger, Atlas, HA | Out of the stand's scope |
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
 | Load, and concurrency beyond one table | Section I covers concurrent REST commits to a single table. Everything else is single-client: no concurrent SQL writers, no multi-table transactions under contention, and no sustained load |
+| Iceberg partitioned tables, schema evolution, `MERGE INTO` | H13-H20 cover row-level `DELETE`/`UPDATE` on an unpartitioned table with a fixed schema. Partition specs (and their evolution), added/renamed/dropped columns and `MERGE INTO` have never been run through the proxy |
 
 ## Revalidation log
 
@@ -628,6 +725,43 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   runs, and to assert the commit windows intersect. That detector was then checked against the
   original non-overlapping log and correctly calls it a non-overlap, so the assertion cannot pass
   vacuously.
+
+- **2026-07-30**, repo at `074526b` on `main`; **no proxy code was under test** - this change is a
+  new runner (`run-iceberg-rowlevel-smoke.sh`) plus three additions to the REST writer
+  (`--properties` on `create`, `--where` on `count`, and a `files` command that reports the
+  planned scan's data- and delete-file counts). The stand ran the fat jar already staged in
+  `smoke-stand/proxy/`, unchanged across all four passes. Section H gained rows H13-H20, which
+  close the row-level gap the interop scenario left: it only ever appends, so until now no delete
+  file had ever existed on the stand.
+  Four runs, all green, all on the `hive4` backend: `--mode merge-on-read` and
+  `--mode copy-on-write`, each on the plain profile (`.env.hive4`, profiles `hive4`+`hive4fe`+
+  `hdp`) and then on Kerberos (`.env.hive4-kerberos`, `--kerberos`). Each pass is the same
+  sequence - REST creates a format-version 2 table and appends 5 rows, all three SQL engines read
+  it as a control, Hive 4 deletes two rows and updates one, the REST client verifies the effect
+  (3 rows, `src=updated` exactly 1, `src=rest` exactly 2), all three engines read the result, the
+  HDP engine appends onto it, both 3.1 engines are refused their own `DELETE`/`UPDATE`, and REST
+  purge-drops the table with the no-leftovers assertion. The writer was then refactored (methods
+  moved, one log line) and the Kerberos merge-on-read pass re-run green against the rebuilt jar,
+  so no green cell rests on a jar that no longer exists.
+  The headline result is a **negative** finding, recorded as such: the 3.1 line reads
+  merge-on-read fine. The expectation going in was that `iceberg-hive-runtime` 1.6.1 would not
+  apply position deletes and that H16 would end up as another "Hive 4 wrote it, 3.1 cannot read
+  it" limitation next to H12. It does apply them - both 3.1 engines returned exactly
+  `1:rest, 3:rest, 5:updated` - so the limitation is only that the 3.1 line cannot *write*
+  row-level changes (H18, refused at compile time with SemanticException 10297).
+  No assertion had to be inverted to prove it discriminates: `merge-on-read` and `copy-on-write`
+  run the identical file-shape check and produced 1 delete file and 0 respectively, so a Hive 4
+  that silently ignored `write.delete.mode` would have failed one of the two runs. The row scans
+  are deliberately `select id, src` and not `select count(*)`, since a count can come from Hive's
+  cached Iceberg stats without reading a delete file at all.
+  Not run: the `hdp` and `apache` backends (`--prefix hdp` / `--prefix apache`) - the row-level
+  rows rest on the `hive4` backend only, since what they exercise is a Hive-side capability and
+  not a backend runtime profile; also untouched were partitioned tables and schema evolution,
+  which stay uncovered (see section F), and `MERGE INTO`. No other section was re-run.
+  Stand notes for a repeat: the runner is host-side, so its `sed` is BSD `sed` - the first
+  version used a `\|` alternation that silently matched nothing and the run failed on an empty
+  file-shape reading. Switching the stand between `.env.hive4` and `.env.hive4-kerberos`
+  recreates the HDFS chain, and the usual stale-DNS restart applies.
 
 ## Two caveats on faithfulness
 

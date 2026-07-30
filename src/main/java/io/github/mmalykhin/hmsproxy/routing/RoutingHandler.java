@@ -211,8 +211,13 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = support.federationLayer.internalizeObjectArguments(args, extractedNamespace);
     externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
-    icebergTablePointerGuard.protectPointer(routedArgs, extractedNamespace, methodName);
-    Object result = support.invokeDirect(extractedNamespace.backend(), method, routedArgs);
+    Object result;
+    // The guard holds the Iceberg table lock across the backend call when it had to repair the
+    // request, so that its read and this write cannot be separated by another writer's commit.
+    try (IcebergTablePointerGuard.Protection protection =
+        icebergTablePointerGuard.protect(routedArgs, extractedNamespace, methodName)) {
+      result = support.invokeDirect(extractedNamespace.backend(), method, routedArgs);
+    }
     result = filterReadResult(methodName, extractedNamespace, result);
     return support.federationLayer.externalizeResult(result, extractedNamespace);
   }

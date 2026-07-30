@@ -3,9 +3,9 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.util.PathPrefixAllowlist;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import org.apache.hadoop.fs.FileSystem;
@@ -54,7 +54,7 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
     }
     Path qualifiedLocation = qualifyLocation(backend, table.getSd().getLocation());
     String location = qualifiedLocation.toString();
-    if (!matchesAllowedPrefixes(location, allowedPrefixes)) {
+    if (!PathPrefixAllowlist.matches(location, allowedPrefixes)) {
       LOG.warn(
           "requestId={} skipping external-table purge for catalog '{}' because location '{}' is outside configured allowlist",
           RequestContext.currentRequestId(), backend.name(), location);
@@ -103,14 +103,7 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
     if (catalogConfig == null) {
       return List.of();
     }
-    String rawPrefixes = catalogConfig.hiveConf().get(ALLOWED_PREFIXES_CONF_KEY);
-    if (rawPrefixes == null || rawPrefixes.isBlank()) {
-      return List.of();
-    }
-    return Arrays.stream(rawPrefixes.split(","))
-        .map(String::trim)
-        .filter(value -> !value.isEmpty())
-        .toList();
+    return PathPrefixAllowlist.parse(catalogConfig.hiveConf().get(ALLOWED_PREFIXES_CONF_KEY));
   }
 
   private static boolean isEligibleExternalTable(Table table) {
@@ -131,24 +124,5 @@ final class FileSystemExternalTableDropPurger implements ExternalTableDropPurger
     Path path = new Path(location);
     FileSystem fileSystem = path.getFileSystem(backend.hiveConf());
     return path.makeQualified(fileSystem.getUri(), fileSystem.getWorkingDirectory());
-  }
-
-  private static boolean matchesAllowedPrefixes(String location, List<String> allowedPrefixes) {
-    for (String prefix : allowedPrefixes) {
-      String normalizedPrefix = prefix.trim();
-      if (normalizedPrefix.isEmpty()) {
-        continue;
-      }
-      if (location.equals(normalizedPrefix)) {
-        return true;
-      }
-      String boundaryPrefix = normalizedPrefix.endsWith("/")
-          ? normalizedPrefix
-          : normalizedPrefix + "/";
-      if (location.startsWith(boundaryPrefix)) {
-        return true;
-      }
-    }
-    return false;
   }
 }

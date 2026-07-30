@@ -1037,7 +1037,14 @@ rest-catalog.port=9183
 # Optional but recommended for production: SPNEGO. Requires security.mode=KERBEROS.
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
+# Optional: bound what a purge may delete (see the purge section below).
+rest-catalog.purge.mode=ALLOWLIST
+rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
 ```
+
+`rest-catalog.purge.allowed-prefixes` is required by `ALLOWLIST` and rejected
+with the other two modes; both contradictions fail the proxy at startup rather
+than being ignored.
 
 Requests to this listener are covered by the Prometheus metrics described in
 [Prometheus metrics](#prometheus-metrics): `hms_proxy_rest_requests_total`,
@@ -1102,12 +1109,32 @@ only](#iceberg-rest-catalog-frontend) above.
 way Iceberg's own REST catalog serves it: the proxy drops the table in the
 metastore and then deletes the table's data and metadata files itself, walking
 the table's manifests to find them. That deletion runs inside the proxy's JVM
-under the proxy's own credentials and finishes before the `204` is sent. Unlike
-the Thrift listener's external-table purge it has no allowlist and no
-`BEST_EFFORT` switch — the client asked for it through the spec's own
-parameter — so the write gate is the only thing keeping it inside the default
-catalog: a purge whose namespace resolves elsewhere is refused with the same
-`403` as any other write, before any file is touched.
+under the proxy's own credentials and finishes before the `204` is sent. The
+write gate keeps it inside the default catalog: a purge whose namespace resolves
+elsewhere is refused with the same `403` as any other write, before any file is
+touched.
+
+What it may delete inside that catalog is bounded by `rest-catalog.purge.mode`:
+
+| Mode | Behaviour |
+| --- | --- |
+| `ALLOW` (default) | Deletes whatever the table's metadata and manifests point at, the way Iceberg REST catalogs do. Unchanged from earlier versions. |
+| `ALLOWLIST` | Purges only under `rest-catalog.purge.allowed-prefixes`. |
+| `REFUSE` | Answers `403` to every purge; a `DELETE` without `purgeRequested` still drops the table and leaves its files. |
+
+A purge the policy does not permit is refused **before the table is dropped**,
+so a refusal leaves both the table and its files intact and the client can retry
+without `purgeRequested`.
+
+`ALLOWLIST` enforces the boundary twice. Before the drop, the table's location
+and its `metadata.json` are matched against the prefixes; either outside them
+answers `403`. During the deletion, every path Iceberg asks to delete — data
+files, delete files, manifests, manifest lists, metadata files — is matched
+again, and a path outside the prefixes is skipped and logged at WARN instead of
+deleted. The second check is the one that matters for untrusted clients: in the
+REST protocol the client writes the manifests, so a commit can point a snapshot
+at files in another tree, and those paths only become known while walking the
+manifests — after the pre-flight check has already passed.
 
 Error responses carry the mapped HTTP status, `type` and `message` but never
 a server stack trace, since this listener can be reached without
@@ -1599,7 +1626,21 @@ makes the metastore apply it only while the pointer is still the one that was re
 routing.iceberg-pointer-guard.enabled=true
 routing.iceberg-pointer-guard.table-cache-ttl-ms=30000
 routing.iceberg-pointer-guard.table-cache-max-entries=10000
+routing.iceberg-pointer-guard.lock-enabled=true
+routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 ```
+
+Reading the record and writing the alter are two calls, so a repair holds the table lock Iceberg
+itself takes (EXCLUSIVE, table level - the request shape of
+`org.apache.iceberg.hive.MetastoreLock`) across the re-read, the merge and the backend's
+`alter_table`. The lock is requested **only when a repair is needed**: an honest Iceberg commit
+sends its `alter_table` from inside that very lock, so asking for it before deciding would wait on
+the caller of the call being served. A lock that is not granted within `lock-acquire-timeout-ms`
+never refuses the write - the alter goes through repaired but unprotected, counted as
+`repair_lock_timeout` - because failing an ordinary Hive write whenever the metastore's lock table
+hiccups is worse than the race being closed. `0` means one attempt and no waiting. Non-default
+catalogs are never locked: their writers are served by the synthetic lock shim, which grants locks
+without checking conflicts, so nothing contends for the object the lock would hold.
 
 Whether a table is an Iceberg table is decided from the metastore's record, not from the request -
 the shape HiveServer2 sends carries no Iceberg key at all - which costs one `get_table` per

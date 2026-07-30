@@ -8,8 +8,76 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ## 2026-07-30
 
+### Added
+
+- `rest-catalog.purge.mode` bounds what `DELETE
+  .../tables/{tbl}?purgeRequested=true` may delete: `ALLOW` (default, today's
+  behaviour - whatever the table's metadata and manifests point at),
+  `ALLOWLIST` (only under `rest-catalog.purge.allowed-prefixes`) and `REFUSE`
+  (`403` to every purge; a drop without the parameter still works). A purge the
+  policy does not permit is refused before the table is dropped, so nothing is
+  destroyed and the client can retry without `purgeRequested`. `ALLOWLIST`
+  checks the boundary twice: the table's location and `metadata.json` before the
+  drop, and every path deleted while walking the manifests, which is skipped and
+  logged rather than deleted when it falls outside the prefixes. The second
+  check exists because in the REST protocol the client writes the manifests, so
+  a commit can point a snapshot at files in another tree - paths a pre-flight
+  check cannot see. `allowed-prefixes` is required by `ALLOWLIST` and rejected
+  with the other modes; both contradictions fail at startup.
+- `smoke-stand/run-iceberg-rowlevel-smoke.sh` covers row-level `DELETE` and
+  `UPDATE` over Iceberg, the one part of the protocol every other scenario
+  misses because they only ever append and so never produce a delete file. Hive
+  4 - the only engine on the stand with native row-level DML - modifies a v2
+  table the REST front door created, and the other three front doors then have to
+  read what it left behind; the run is repeated for each
+  `write.delete.mode`/`write.update.mode` value. It found the boundary to be on
+  the **write** side, not the read side: a 3.1 HiveServer2 carrying
+  `iceberg-hive-runtime` 1.6.1 does apply position delete files and reads a
+  merge-on-read result correctly, but cannot produce one - `DELETE` and `UPDATE`
+  are refused at compile time with `SemanticException [Error 10297] ... not
+  transactional`, before a plan exists, so a 3.1 client fails loudly instead of
+  half-writing. The proxy relays the same `alter_table` either way; no routing
+  decision differs. Two guards keep the scenario from passing vacuously: every
+  read assertion is a full row scan rather than `count(*)`, which Hive can answer
+  from the Iceberg summary it keeps as table stats without touching a delete
+  file, and the mode is asserted from the table's file shape - 1 delete file
+  under `merge-on-read`, 0 under `copy-on-write` - rather than trusted as a
+  setting. Recorded as H13-H20 in
+  [smoke-stand/TEST-MATRIX.md](smoke-stand/TEST-MATRIX.md), green on both the
+  plain and the Kerberos profile. The stand's `IcebergRestWriter` grew
+  `--properties` (to create a table at a chosen format version and write mode)
+  and a `files` command (data- and delete-file counts of the planned scan).
+
 ### Fixed
 
+- The Iceberg pointer guard's repair is now atomic against a concurrent commit.
+  Reading the record and applying the alter were two calls, so a commit landing
+  between them was still overwritten - loudly on Hive 4 backends, where the
+  compare-and-swap catches it, but silently on the 3.1 line, which ignores those
+  keys. A repair now holds the table lock Iceberg itself takes (EXCLUSIVE, table
+  level, the request shape of `MetastoreLock`, identical in Iceberg 1.6.1 inside
+  HiveServer2 and 1.9.2 in the proxy) across a re-read, the merge and the
+  backend's `alter_table`. The lock is requested only when a repair is needed:
+  an honest Iceberg commit sends its `alter_table` from inside that very lock,
+  so acquiring it before deciding would deadlock against the caller being
+  served; Hive's own `INSERT` holds no lock on the target table at all, which the
+  stand log confirms. New keys
+  `routing.iceberg-pointer-guard.lock-enabled` (default `true`) and
+  `routing.iceberg-pointer-guard.lock-acquire-timeout-ms` (default `10000`, `0`
+  = one attempt without waiting). A lock that is not granted never refuses the
+  write - the alter goes through repaired but unprotected, counted as
+  `repair_lock_timeout` - because failing an ordinary Hive write whenever the
+  metastore's lock table hiccups is the worse failure. Non-default catalogs are
+  deliberately not locked: their writers are served by the synthetic lock shim,
+  so nothing contends for the object the lock would hold. Measured on the
+  Kerberos stand with the 3.1 backend as the default catalog
+  (`run-iceberg-concurrency-smoke.sh --prefix hdp --writers 4 --sql-writers 2
+  --sql-engine hdp --kerberos`): twelve runs before the change lost one committed
+  row, twelve runs after it lost none, with `repair_locked` equal to `repaired`
+  in every run and no lock timeout, failure or stranded lock. On the SQL sections
+  B and C no lock is taken at all - none of their tables is an Iceberg table - and
+  on the path that does lock the three added round trips stay inside the
+  measurement's own run-to-run noise.
 - The Iceberg pointer guard now fires on the `alter_table` shape HiveServer2
   actually sends. It used to decide whether a request concerned an Iceberg
   table by looking for `metadata_location` in the incoming `Table`; verified on

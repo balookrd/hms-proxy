@@ -22,13 +22,28 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntConsumer;
+import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.GetTableResult;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
+import org.apache.hadoop.hive.metastore.api.LockLevel;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.LockState;
+import org.apache.hadoop.hive.metastore.api.LockType;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -128,7 +143,9 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
   @Test
   public void theNotAnIcebergTableAnswerIsForgottenWhenItsTtlExpires() throws Throwable {
     Stand stand = newStand(
-        hiveRecord(), MetastoreRuntimeProfile.APACHE_3_1_3, new IcebergPointerGuardConfig(true, 1L, 10_000));
+        hiveRecord(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        new IcebergPointerGuardConfig(true, 1L, 10_000, true, 10_000L));
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
     Assert.assertEquals(1, stand.reads.get());
@@ -151,7 +168,9 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
 
-    Assert.assertEquals(2, stand.reads.get());
+    Assert.assertEquals("two alters, and each repair reads twice - once to decide, once under the"
+            + " lock it takes to make the repair atomic",
+        4, stand.reads.get());
   }
 
   /**
@@ -170,8 +189,9 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     stand.record.set(icebergRecord(CURRENT, PREVIOUS));
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
 
-    Assert.assertEquals("the cached 'not an Iceberg table' answer must not survive the create",
-        2, stand.reads.get());
+    Assert.assertEquals("the cached 'not an Iceberg table' answer must not survive the create; the"
+            + " alter that follows reads once to decide and once under the lock",
+        3, stand.reads.get());
     Assert.assertEquals(CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
   }
 
@@ -180,7 +200,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Stand stand = newStand(
         icebergRecord(CURRENT, PREVIOUS),
         MetastoreRuntimeProfile.APACHE_3_1_3,
-        new IcebergPointerGuardConfig(false, 30_000L, 10_000));
+        new IcebergPointerGuardConfig(false, 30_000L, 10_000, true, 10_000L));
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
 
@@ -203,9 +223,9 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
 
-    Assert.assertEquals("a Hive 4 backend has no positional get_table, and the read must not be"
+    Assert.assertEquals("a Hive 4 backend has no positional get_table, and neither read must be"
             + " lost to that - the guard has to reach the record through the adapter",
-        1, stand.reads.get());
+        2, stand.reads.get());
     Assert.assertEquals(CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
     Assert.assertNotNull("the alter never reached the backend", stand.context.get());
     Map<String, String> properties = stand.context.get().getProperties();
@@ -262,6 +282,274 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
             + "{catalog=\"catalog1\",outcome=\"cache_suppressed\"} 1"));
   }
 
+  // --- The lock the repair holds across read and write ---
+
+  /**
+   * The defect the lock exists for, reproduced end to end: a commit lands after the guard has read
+   * the record and before the backend applies the alter. Reading again under the lock is what
+   * turns it from a lost update into a merge over the pointer that actually committed.
+   */
+  @Test
+  public void aCommitThatLandsBeforeTheLockIsMergedOverInsteadOfBeingOverwritten() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    landCommitDuringRead(stand, 1, next);
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertEquals("the repair must be built on the record read under the lock, not before it",
+        next, stand.forwarded.get().getParameters().get("metadata_location"));
+    Assert.assertEquals("the committed snapshot must still be the one the metastore holds",
+        next, stand.record.get().getParameters().get("metadata_location"));
+    Assert.assertEquals("the client's own change still goes through",
+        "17", stand.forwarded.get().getParameters().get("numRows"));
+  }
+
+  /** The same run without the lock: the commit is overwritten. This is the 3.1 line before this change. */
+  @Test
+  public void withoutTheLockTheSameCommitIsLost() throws Throwable {
+    Stand stand = newStand(
+        icebergRecord(CURRENT, PREVIOUS),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, false, 10_000L));
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    landCommitDuringRead(stand, 1, next);
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertEquals("without the lock the guard repairs from a pointer that is already stale",
+        CURRENT, stand.record.get().getParameters().get("metadata_location"));
+    Assert.assertTrue("no lock was requested at all", stand.lockRequests.isEmpty());
+  }
+
+  /**
+   * Mutual exclusion, not just a pair of RPCs: a commit that starts while a repair holds the lock
+   * has to wait for it, and lands after it.
+   */
+  @Test
+  public void aCommitAttemptedWhileTheRepairHoldsTheLockWaitsForIt() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    CountDownLatch committed = new CountDownLatch(1);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicReference<Thread> competitor = new AtomicReference<>();
+    // The second read is the one under the lock, so the competitor starts while it is held.
+    stand.onRead = read -> {
+      if (read != 2) {
+        return;
+      }
+      Thread thread = new Thread(() -> {
+        try {
+          commitLikeIceberg(stand, next, CURRENT);
+        } catch (Throwable throwable) {
+          failure.set(throwable);
+        } finally {
+          committed.countDown();
+        }
+      }, "competing-commit");
+      competitor.set(thread);
+      thread.start();
+    };
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertTrue("the competing commit never finished", committed.await(5L, TimeUnit.SECONDS));
+    Assert.assertNull(String.valueOf(failure.get()), failure.get());
+    competitor.get().join(5_000L);
+    Assert.assertEquals(
+        "the repair must land inside the lock and the waiting commit after it, not the other way round",
+        List.of("alter:" + CURRENT, "alter:" + next),
+        stand.events.stream().filter(event -> event.startsWith("alter:")).toList());
+    Assert.assertEquals("the commit that waited is the state the metastore ends up with",
+        next, stand.record.get().getParameters().get("metadata_location"));
+    Assert.assertFalse("the guard must not leave the table locked", stand.holdsLock());
+  }
+
+  /**
+   * A genuine Iceberg commit sends its {@code alter_table} from inside the table lock it already
+   * holds. Asking for that lock here would mean waiting for the caller of this very call, so the
+   * guard must not ask for it - this is the regression test for that self-deadlock.
+   */
+  @Test
+  public void aForwardCommitNeverAsksForTheLockItsCallerIsHolding() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+
+    invokeAlter(stand, icebergTable("hdfs://nn/next.json", CURRENT), null);
+
+    Assert.assertTrue("a forward commit must not request the lock its own caller holds",
+        stand.lockRequests.isEmpty());
+  }
+
+  @Test
+  public void anOrdinaryHiveTableIsNeverLocked() throws Throwable {
+    Stand stand = newStand(hiveRecord());
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertTrue("ordinary Hive traffic must not pay for a lock", stand.lockRequests.isEmpty());
+  }
+
+  /**
+   * The lock is only mutual exclusion if it is the same object Iceberg locks. Iceberg 1.6.1 (inside
+   * HiveServer2) and 1.9.2 (the proxy's REST path) both send exactly this request.
+   */
+  @Test
+  public void theLockRequestHasTheShapeIcebergItselfSends() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertEquals(1, stand.lockRequests.size());
+    LockRequest request = stand.lockRequests.get(0);
+    Assert.assertEquals(1, request.getComponent().size());
+    LockComponent component = request.getComponent().get(0);
+    Assert.assertEquals(LockType.EXCLUSIVE, component.getType());
+    Assert.assertEquals(LockLevel.TABLE, component.getLevel());
+    Assert.assertEquals("the backend database name is what both writers' locks name",
+        "sales", component.getDbname());
+    Assert.assertEquals("events", component.getTablename());
+    Assert.assertFalse("Iceberg's lock carries no transaction, and neither may this one",
+        request.isSetTxnid());
+    Assert.assertTrue("a stranded lock has to name what took it", request.isSetAgentInfo());
+  }
+
+  @Test
+  public void theLockIsReleasedWhenTheBackendFailsTheAlter() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    stand.onRead = read -> {
+      if (read == 2) {
+        stand.failNextAlter = true;
+      }
+    };
+
+    try {
+      invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+      Assert.fail("the backend failure must reach the client");
+    } catch (Throwable expected) {
+      // The client sees the metastore's own failure; what matters here is what happens to the lock.
+    }
+
+    Assert.assertFalse("a failed alter must not strand the table lock", stand.holdsLock());
+  }
+
+  /**
+   * A lock that is not granted must never turn into a refused write: an ordinary Hive
+   * {@code INSERT} failing because the metastore's lock table is busy is a worse failure than the
+   * one being prevented. The repair still goes through, unprotected, and says so.
+   */
+  @Test
+  public void aLockThatIsNeverGrantedStillLetsTheRepairedAlterThrough() throws Throwable {
+    Stand stand = newStand(
+        icebergRecord(CURRENT, PREVIOUS),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 120L));
+    stand.lockNeverGranted = true;
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertEquals("the alter must still be repaired and forwarded",
+        CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
+    Assert.assertTrue("the lock that was never granted has to be given back",
+        stand.events.stream().anyMatch(event -> event.startsWith("unlock:"))
+            || !stand.holdsLock());
+    String metrics = stand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
+        + "{catalog=\"catalog1\",outcome=\"repair_lock_timeout\"} 1"));
+  }
+
+  @Test
+  public void aFailingLockCallStillLetsTheRepairedAlterThrough() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    stand.lockCallFails = true;
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+
+    Assert.assertEquals(CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
+    String metrics = stand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
+        + "{catalog=\"catalog1\",outcome=\"repair_lock_failed\"} 1"));
+  }
+
+  /**
+   * A commit lands between the two reads, and the request turns out to be built on exactly what
+   * the table holds now - an honest commit after all. It passes through untouched, and the lock is
+   * given back rather than held over someone else's write.
+   */
+  @Test
+  public void aRequestThatBecomesAForwardCommitUnderTheLockPassesThroughAndUnlocks() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    landCommitDuringRead(stand, 1, next);
+
+    invokeAlter(stand, icebergTable("hdfs://nn/00008.json", next), null);
+
+    Assert.assertEquals("a commit built on what the table now holds must not be rewritten",
+        "hdfs://nn/00008.json", stand.forwarded.get().getParameters().get("metadata_location"));
+    Assert.assertFalse("the lock must not be held over a request the guard decided not to repair",
+        stand.holdsLock());
+  }
+
+  /**
+   * A lock on a non-default catalog's backend would be real and pointless: writers of those
+   * catalogs are served by the synthetic shim, which grants locks without checking conflicts and
+   * never forwards them to the backend, so nothing contends for the object it would hold. The
+   * repair still happens; only the two RPCs for an illusion of mutual exclusion are dropped.
+   */
+  @Test
+  public void aNonDefaultCatalogIsRepairedWithoutALockBecauseItsWritersAreNotLocked() throws Throwable {
+    Stand stand = newStand(
+        icebergRecord(CURRENT, PREVIOUS),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        IcebergPointerGuardConfig.defaults(),
+        true);
+
+    Method alter = ThriftHiveMetastore.Iface.class.getMethod(
+        "alter_table_with_environment_context", String.class, String.class, Table.class, EnvironmentContext.class);
+    Table incoming = hiveInsertAlter();
+    incoming.setDbName("catalog2__sales");
+    invoke(stand.handler, alter, "catalog2__sales", "events", incoming, dropPropsContext());
+
+    Assert.assertEquals("the pointer is still kept on every catalog",
+        CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
+    Assert.assertTrue("a lock nobody else takes must not be requested", stand.lockRequests.isEmpty());
+    String metrics = stand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
+        + "{catalog=\"catalog2\",outcome=\"repair_lock_skipped\"} 1"));
+  }
+
+  /** Iceberg's commit, as the proxy sees it: lock the table, alter, unlock. */
+  private static void commitLikeIceberg(Stand stand, String metadataLocation, String base) throws Throwable {
+    Method lock = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+    Method checkLock = ThriftHiveMetastore.Iface.class.getMethod("check_lock", CheckLockRequest.class);
+    Method unlock = ThriftHiveMetastore.Iface.class.getMethod("unlock", UnlockRequest.class);
+    LockComponent component = new LockComponent(LockType.EXCLUSIVE, LockLevel.TABLE, "sales");
+    component.setTablename("events");
+    LockResponse response = (LockResponse) invoke(
+        stand.handler, lock, new LockRequest(List.of(component), "hive", "host"));
+    long lockId = response.getLockid();
+    while (response.getState() == LockState.WAITING) {
+      Thread.sleep(10L);
+      response = (LockResponse) invoke(stand.handler, checkLock, new CheckLockRequest(lockId));
+    }
+    try {
+      invokeAlter(stand, icebergTable(metadataLocation, base), null);
+    } finally {
+      invoke(stand.handler, unlock, new UnlockRequest(lockId));
+    }
+  }
+
+  /** Lands a committed snapshot while the guard is reading the record for the n-th time. */
+  private static void landCommitDuringRead(Stand stand, int read, String metadataLocation) {
+    stand.onRead = observed -> {
+      if (observed != read) {
+        return;
+      }
+      stand.onRead = ignored -> { };
+      Table committed = icebergRecord(metadataLocation, CURRENT);
+      stand.record.set(committed);
+    };
+  }
+
   private static void invokeAlter(Stand stand, Table table, EnvironmentContext context) throws Throwable {
     Method alter = ThriftHiveMetastore.Iface.class.getMethod(
         "alter_table_with_environment_context", String.class, String.class, Table.class, EnvironmentContext.class);
@@ -273,14 +561,36 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
         .invoke(null, method, args);
   }
 
-  /** The proxy under test with the metastore record it serves and the calls it received. */
+  /**
+   * The proxy under test with the metastore record it serves and the calls it received.
+   *
+   * <p>The fake keeps one EXCLUSIVE table lock, the way a metastore does: a second request for it
+   * is answered WAITING until the holder unlocks. That is what makes the guard's lock more than a
+   * pair of RPCs in these tests - a competing commit really does have to wait for it.
+   */
   private static final class Stand {
     private final AtomicReference<Table> record = new AtomicReference<>();
     private final AtomicReference<Table> forwarded = new AtomicReference<>();
     private final AtomicReference<EnvironmentContext> context = new AtomicReference<>();
     private final AtomicInteger reads = new AtomicInteger();
+    private final AtomicLong nextLockId = new AtomicLong();
+    private final AtomicLong lockHolder = new AtomicLong();
+    private final List<LockRequest> lockRequests = new CopyOnWriteArrayList<>();
+    private final List<String> events = new CopyOnWriteArrayList<>();
+    /** Answers every lock request WAITING, the way a metastore does while someone else holds it. */
+    private volatile boolean lockNeverGranted;
+    /** Fails the lock call itself, the way a metastore without its ACID tables does. */
+    private volatile boolean lockCallFails;
+    /** Run when the guard reads the record for the n-th time; lets a test land a commit mid-repair. */
+    private volatile IntConsumer onRead = read -> { };
+    /** Fails the next alter, to check what happens to a lock held across a failing backend call. */
+    private volatile boolean failNextAlter;
     private ProxyObservability observability;
     private ThriftHiveMetastore.Iface handler;
+
+    private boolean holdsLock() {
+      return lockHolder.get() != 0L;
+    }
   }
 
   private static Stand newStand(Table record) throws Exception {
@@ -296,49 +606,107 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
       MetastoreRuntimeProfile runtimeProfile,
       IcebergPointerGuardConfig guardConfig
   ) throws Exception {
+    return newStand(record, runtimeProfile, guardConfig, false);
+  }
+
+  private static Stand newStand(
+      Table record,
+      MetastoreRuntimeProfile runtimeProfile,
+      IcebergPointerGuardConfig guardConfig,
+      boolean withNonDefaultCatalog
+  ) throws Exception {
     Stand stand = new Stand();
     stand.record.set(record);
+    Map<String, io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig> catalogs = new LinkedHashMap<>();
+    catalogs.put("catalog1",
+        catalogConfig("catalog1", "c1", runtimeProfile, null, Map.of("hive.metastore.uris", "thrift://one")));
+    if (withNonDefaultCatalog) {
+      catalogs.put("catalog2",
+          catalogConfig("catalog2", "c2", runtimeProfile, null, Map.of("hive.metastore.uris", "thrift://two")));
+    }
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1",
-            catalogConfig("catalog1", "c1", runtimeProfile, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .catalogs(catalogs)
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .icebergPointerGuard(guardConfig)
         .build();
 
-    CatalogBackend backend = newBackend(
-        config,
-        config.catalogs().get("catalog1"),
-        adapterFor(runtimeProfile),
-        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((proxy, method, args) -> {
+    java.lang.reflect.InvocationHandler metastore = (proxy, method, args) -> {
           switch (method.getName()) {
-            case "get_table":
+            case "get_table": {
               // Hive 4 dropped the positional read from its IDL; its isolated client answers a
               // call for it exactly like this, so a guard that bypasses the adapter is caught here.
               if (runtimeProfile == MetastoreRuntimeProfile.APACHE_4_1_0) {
                 throw new NoSuchMethodException("get_table");
               }
-              stand.reads.incrementAndGet();
+              int read = stand.reads.incrementAndGet();
               // A real read is a fresh deserialization, never the stored object.
-              return copyOf(stand.record.get());
-            case "get_table_req":
-              stand.reads.incrementAndGet();
-              return new GetTableResult(copyOf(stand.record.get()));
+              Table answer = copyOf(stand.record.get());
+              stand.onRead.accept(read);
+              return answer;
+            }
+            case "get_table_req": {
+              int read = stand.reads.incrementAndGet();
+              Table answer = copyOf(stand.record.get());
+              stand.onRead.accept(read);
+              return new GetTableResult(answer);
+            }
             case "alter_table_with_environment_context":
+              if (stand.failNextAlter) {
+                stand.failNextAlter = false;
+                throw new MetaException("the metastore refused this alter");
+              }
               stand.forwarded.set((Table) args[2]);
               stand.context.set((EnvironmentContext) args[3]);
+              stand.events.add("alter:" + ((Table) args[2]).getParameters().get("metadata_location"));
+              // A metastore applies the alter, so a rolled-back pointer stays visible to the next
+              // reader - which is the whole defect under test.
+              stand.record.set(copyOf((Table) args[2]));
               return null;
             case "create_table":
               return null;
+            case "lock": {
+              if (stand.lockCallFails) {
+                throw new MetaException("no lock tables in this metastore");
+              }
+              stand.lockRequests.add((LockRequest) args[0]);
+              long lockId = stand.nextLockId.incrementAndGet();
+              if (!stand.lockNeverGranted && stand.lockHolder.compareAndSet(0L, lockId)) {
+                stand.events.add("lock:" + lockId);
+                return new LockResponse(lockId, LockState.ACQUIRED);
+              }
+              return new LockResponse(lockId, LockState.WAITING);
+            }
+            case "check_lock": {
+              long lockId = ((CheckLockRequest) args[0]).getLockid();
+              if (!stand.lockNeverGranted && stand.lockHolder.compareAndSet(0L, lockId)) {
+                stand.events.add("lock:" + lockId);
+                return new LockResponse(lockId, LockState.ACQUIRED);
+              }
+              return new LockResponse(lockId, LockState.WAITING);
+            }
+            case "unlock": {
+              long lockId = ((UnlockRequest) args[0]).getLockid();
+              if (stand.lockHolder.compareAndSet(lockId, 0L)) {
+                stand.events.add("unlock:" + lockId);
+              }
+              return null;
+            }
             default:
               throw new UnsupportedOperationException(method.getName());
           }
-        })));
+    };
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
-    backends.put("catalog1", backend);
+    for (String catalog : catalogs.keySet()) {
+      backends.put(catalog, newBackend(
+          config,
+          config.catalogs().get(catalog),
+          adapterFor(runtimeProfile),
+          newBackendRuntime(config, config.catalogs().get(catalog), newSession(metastore))));
+    }
     CatalogRouter router = new CatalogRouter(config, backends);
     stand.observability = new ProxyObservability(config);
     RoutingMetaStoreProxy proxy = new RoutingMetaStoreProxy(

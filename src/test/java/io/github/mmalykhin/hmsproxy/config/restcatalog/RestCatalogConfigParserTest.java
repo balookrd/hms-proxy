@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -93,6 +94,54 @@ public class RestCatalogConfigParserTest {
     RestCatalogConfig config = loadRestConfig(
         "server.port=9083\nrest-catalog.enabled=false\n" + COMMON_PROPS);
     Assert.assertFalse(config.enabled());
+  }
+
+  @Test
+  public void purgeModeDefaultsToAllowWithNoPrefixes() throws Exception {
+    RestCatalogConfig config = loadRestConfig("server.port=9083\n" + COMMON_PROPS);
+    Assert.assertEquals(RestCatalogPurgeMode.ALLOW, config.purgeMode());
+    Assert.assertEquals(List.of(), config.purgeAllowedPrefixes());
+  }
+
+  @Test
+  public void purgeModeIsCaseInsensitiveAndPrefixesAreSplit() throws Exception {
+    RestCatalogConfig config = loadRestConfig("server.port=9083\n" + COMMON_PROPS
+        + "rest-catalog.purge.mode=allowlist\n"
+        + "rest-catalog.purge.allowed-prefixes=hdfs://ns/warehouse/, hdfs://ns/tmp/\n");
+    Assert.assertEquals(RestCatalogPurgeMode.ALLOWLIST, config.purgeMode());
+    Assert.assertEquals(
+        List.of("hdfs://ns/warehouse/", "hdfs://ns/tmp/"), config.purgeAllowedPrefixes());
+  }
+
+  @Test
+  public void unknownPurgeModeIsRejectedWithTheAcceptedValues() {
+    IllegalArgumentException e = Assert.assertThrows(IllegalArgumentException.class,
+        () -> loadRestConfig("server.port=9083\n" + COMMON_PROPS
+            + "rest-catalog.purge.mode=BEST_EFFORT\n"));
+    Assert.assertTrue(e.getMessage(), e.getMessage().contains("rest-catalog.purge.mode"));
+    Assert.assertTrue(e.getMessage(), e.getMessage().contains("ALLOWLIST"));
+  }
+
+  @Test
+  public void allowlistModeWithoutPrefixesIsRejected() {
+    IllegalArgumentException e = Assert.assertThrows(IllegalArgumentException.class,
+        () -> loadRestConfig("server.port=9083\n" + COMMON_PROPS
+            + "rest-catalog.purge.mode=ALLOWLIST\n"));
+    Assert.assertTrue(e.getMessage(),
+        e.getMessage().contains("rest-catalog.purge.allowed-prefixes"));
+  }
+
+  @Test
+  public void prefixesWithoutAllowlistModeAreRejected() {
+    IllegalArgumentException allow = Assert.assertThrows(IllegalArgumentException.class,
+        () -> loadRestConfig("server.port=9083\n" + COMMON_PROPS
+            + "rest-catalog.purge.allowed-prefixes=hdfs://ns/warehouse/\n"));
+    Assert.assertTrue(allow.getMessage(), allow.getMessage().contains("ALLOWLIST"));
+    IllegalArgumentException refuse = Assert.assertThrows(IllegalArgumentException.class,
+        () -> loadRestConfig("server.port=9083\n" + COMMON_PROPS
+            + "rest-catalog.purge.mode=REFUSE\n"
+            + "rest-catalog.purge.allowed-prefixes=hdfs://ns/warehouse/\n"));
+    Assert.assertTrue(refuse.getMessage(), refuse.getMessage().contains("ALLOWLIST"));
   }
 
   private static RestCatalogConfig loadRestConfig(String body) throws Exception {

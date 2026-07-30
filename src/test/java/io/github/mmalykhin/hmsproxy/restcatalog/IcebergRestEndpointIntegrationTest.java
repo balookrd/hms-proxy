@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogPurgeMode;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
@@ -84,7 +85,8 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.tablesByDatabase.put("catalog2__default", List.of("events"));
     delegate.tables.put("catalog2__default.events", events);
 
-    ProxyConfig config = buildConfig();
+    ProxyConfig config = buildConfig(new RestCatalogConfig(
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
     // Resolves the way CatalogRouter.resolveDatabase would for this fixture (default catalog1,
     // other catalog2, separator "__"), without needing a real CatalogRouter: CatalogRouter.open
     // eagerly connects to each catalog's hive.metastore.uris, which the fake URIs below cannot
@@ -536,6 +538,90 @@ public class IcebergRestEndpointIntegrationTest {
         dataFile.exists());
   }
 
+  @Test
+  public void purgeIsRefusedWithForbiddenWhenModeIsRefuse() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("refuse_me");
+    restartWithPurgePolicy(RestCatalogPurgeMode.REFUSE, List.of());
+
+    HttpResponse<String> response =
+        delete("/v1/" + CATALOG_NAME + "/namespaces/default/tables/refuse_me?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+    Assert.assertTrue("a refused purge must keep the data file: " + dataFile, dataFile.exists());
+    Assert.assertFalse("a refused purge must not drop the table: " + delegate.calls,
+        delegate.calls.contains("drop_table:default.refuse_me"));
+  }
+
+  @Test
+  public void dropWithoutPurgeStillWorksWhenModeIsRefuse() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("refuse_mode_plain_drop");
+    restartWithPurgePolicy(RestCatalogPurgeMode.REFUSE, List.of());
+
+    HttpResponse<String> response =
+        delete("/v1/" + CATALOG_NAME + "/namespaces/default/tables/refuse_mode_plain_drop");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertTrue(delegate.calls.toString(),
+        delegate.calls.contains("drop_table:default.refuse_mode_plain_drop"));
+    Assert.assertTrue("a drop without purge must leave the data alone", dataFile.exists());
+  }
+
+  @Test
+  public void purgeInsideTheAllowlistDeletesDataFiles() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("allowed_purge");
+    restartWithPurgePolicy(
+        RestCatalogPurgeMode.ALLOWLIST, List.of("file:" + tempFolder.getRoot().getAbsolutePath()));
+
+    HttpResponse<String> response = delete(
+        "/v1/" + CATALOG_NAME + "/namespaces/default/tables/allowed_purge?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertTrue(delegate.calls.toString(),
+        delegate.calls.contains("drop_table:default.allowed_purge"));
+    Assert.assertFalse("a permitted purge must delete the data file: " + dataFile, dataFile.exists());
+  }
+
+  @Test
+  public void purgeOutsideTheAllowlistIsRefusedAndDropsNothing() throws Exception {
+    File dataFile = registerTableWithCommittedDataFile("outside_purge");
+    restartWithPurgePolicy(RestCatalogPurgeMode.ALLOWLIST, List.of("file:/nowhere/that/exists"));
+
+    HttpResponse<String> response = delete(
+        "/v1/" + CATALOG_NAME + "/namespaces/default/tables/outside_purge?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 403, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("ForbiddenException"));
+    Assert.assertTrue("a refused purge must keep the data file: " + dataFile, dataFile.exists());
+    Assert.assertFalse("a refused purge must not drop the table: " + delegate.calls,
+        delegate.calls.contains("drop_table:default.outside_purge"));
+  }
+
+  /**
+   * The manifest-borne case the pre-flight check cannot see: the table itself sits inside the
+   * allowlist, but its snapshot references a data file in another tree - a shape a client can
+   * produce on purpose, since in the REST protocol the client writes the manifests. The purge must
+   * delete the table's own files and leave the foreign one alone.
+   */
+  @Test
+  public void purgeSkipsAManifestPathOutsideTheAllowlist() throws Exception {
+    File foreignDir = tempFolder.newFolder("foreign");
+    File foreignFile = new File(foreignDir, "someone_elses.parquet");
+    Files.write(foreignFile.toPath(), new byte[] {9});
+    File ownDataFile = registerTableWithCommittedDataFile("mixed_purge", Map.of(), foreignFile);
+    restartWithPurgePolicy(RestCatalogPurgeMode.ALLOWLIST,
+        List.of("file:" + new File(tempFolder.getRoot(), "mixed_purge").getAbsolutePath()));
+
+    HttpResponse<String> response = delete(
+        "/v1/" + CATALOG_NAME + "/namespaces/default/tables/mixed_purge?purgeRequested=true");
+
+    Assert.assertEquals("body: " + response.body(), 204, response.statusCode());
+    Assert.assertFalse("the table's own data file must be purged: " + ownDataFile,
+        ownDataFile.exists());
+    Assert.assertTrue("a manifest path outside the allowlist must survive: " + foreignFile,
+        foreignFile.exists());
+  }
+
   /**
    * A canary for the Avro codecs the fat jar does NOT carry. Avro's snappy, xz and zstd codecs
    * are optional dependencies, so the purge can only read manifests written with deflate - and
@@ -694,6 +780,42 @@ public class IcebergRestEndpointIntegrationTest {
     return registerTableWithCommittedDataFile(tableName, Map.of());
   }
 
+  // Same as registerTableWithCommittedDataFile(name, properties), but the committed snapshot also
+  // references a file outside the table's own directory - what a client can do by writing its own
+  // manifest, and what the FileIO guard exists to bound.
+  private File registerTableWithCommittedDataFile(
+      String tableName, Map<String, String> properties, File extraDataFileOutsideTable)
+      throws Exception {
+    File tableDir = tempFolder.newFolder(tableName);
+    File dataFile = new File(tableDir, "data/data.parquet");
+    dataFile.getParentFile().mkdirs();
+    Files.write(dataFile.toPath(), new byte[] {1, 2, 3});
+
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+    org.apache.iceberg.Table table = new HadoopTables(new Configuration()).create(
+        schema, PartitionSpec.unpartitioned(), properties, "file://" + tableDir.getAbsolutePath());
+    table.newAppend()
+        .appendFile(DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("file://" + dataFile.getAbsolutePath())
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(dataFile.length())
+            .withRecordCount(1)
+            .build())
+        .appendFile(DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath("file://" + extraDataFileOutsideTable.getAbsolutePath())
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(extraDataFileOutsideTable.length())
+            .withRecordCount(1)
+            .build())
+        .commit();
+
+    Table hiveTable = RecordingThriftIface.table("default", tableName);
+    hiveTable.getParameters().put(
+        "metadata_location", ((HasTableOperations) table).operations().current().metadataFileLocation());
+    delegate.tables.put("default." + tableName, hiveTable);
+    return dataFile;
+  }
+
   private File registerTableWithCommittedDataFile(String tableName, Map<String, String> properties)
       throws Exception {
     File tableDir = tempFolder.newFolder(tableName);
@@ -797,7 +919,25 @@ public class IcebergRestEndpointIntegrationTest {
     return client.send(request, HttpResponse.BodyHandlers.ofString());
   }
 
-  private static ProxyConfig buildConfig() {
+  // Restarts the listener under a different purge policy, leaving the @Before fixture (fake
+  // metastore, registered tables) alone: a test registers its tables first and then decides which
+  // policy they are dropped under.
+  private void restartWithPurgePolicy(RestCatalogPurgeMode mode, List<String> allowedPrefixes)
+      throws Exception {
+    server.close();
+    services.close();
+    ProxyConfig config = buildConfig(
+        new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null, mode, allowedPrefixes));
+    Function<String, String> catalogForExternalDb = externalDbName ->
+        externalDbName != null && externalDbName.startsWith(CATALOG2_NAME + "__")
+            ? CATALOG2_NAME
+            : CATALOG_NAME;
+    services = IcebergRestServices.open(config, delegate.iface, catalogForExternalDb);
+    server = RestCatalogServer.open(config, services, metrics);
+    Assert.assertNotNull("server must restart", server);
+  }
+
+  private static ProxyConfig buildConfig(RestCatalogConfig restCatalog) {
     return ProxyConfig.builder()
         .server(new ServerConfig("hms-proxy-test", "127.0.0.1", 9083, 1, 4))
         .catalogDbSeparator("__")
@@ -824,7 +964,7 @@ public class IcebergRestEndpointIntegrationTest {
                 null,
                 Map.of("hive.metastore.uris", "thrift://hms-test:9084"))))
         .backend(new BackendConfig(Map.of()))
-        .restCatalog(new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null))
+        .restCatalog(restCatalog)
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }

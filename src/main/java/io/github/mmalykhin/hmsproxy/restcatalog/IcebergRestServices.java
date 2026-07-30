@@ -48,13 +48,15 @@ public final class IcebergRestServices implements AutoCloseable {
       ProxyConfig config, ThriftHiveMetastore.Iface delegate, Function<String, String> catalogForExternalDb,
       Function<String, Configuration> hadoopConfForCatalog) {
     Map<String, IcebergRestService> services = new LinkedHashMap<>();
+    IcebergPurgePolicy purgePolicy = new IcebergPurgePolicy(
+        config.restCatalog().purgeMode(), config.restCatalog().purgeAllowedPrefixes());
     for (String catalog : config.catalogNames()) {
       CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
           ? null
           : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
       services.put(catalog,
           new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb,
-              hadoopConfForCatalog.apply(catalog)));
+              hadoopConfForCatalog.apply(catalog), purgePolicy));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
   }

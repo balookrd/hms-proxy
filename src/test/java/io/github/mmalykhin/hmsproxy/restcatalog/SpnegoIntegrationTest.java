@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogPurgeMode;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
@@ -157,7 +158,8 @@ public class SpnegoIntegrationTest {
 
   private static ProxyConfig buildProxyConfig() {
     RestCatalogConfig rest = new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, serverPrincipal, serverKeytab.getAbsolutePath());
+        true, "127.0.0.1", 0, 1, 4, serverPrincipal, serverKeytab.getAbsolutePath(),
+        RestCatalogPurgeMode.ALLOW, List.of());
     return ProxyConfig.builder()
         .server(new ServerConfig("hms-proxy-spnego-test", "127.0.0.1", 9083, 1, 4))
         .catalogDbSeparator(".")

@@ -47,6 +47,16 @@ import org.slf4j.LoggerFactory;
  * <p>Keying off the metastore means a {@code get_table} per {@code alter_table}, ordinary Hive
  * tables included. That is bounded by a negative cache of names the metastore answered are not
  * Iceberg tables; Iceberg tables are never cached, because their pointer has to be read fresh.
+ *
+ * <p><b>Reading and writing are made atomic by the lock Iceberg itself takes</b>
+ * ({@link IcebergCommitLock}), held across the re-read, the merge and the backend's
+ * {@code alter_table}. The order matters and is not free to change: the lock is requested
+ * <em>only after</em> an unlocked read has shown that a repair is needed. A genuine Iceberg commit
+ * calls {@code alter_table} from inside that very lock (measured on the stand), so acquiring it
+ * before deciding would block on a lock held by the caller waiting for this call to return - a
+ * self-deadlock on every honest commit. Hive's own {@code INSERT} holds no lock on the target
+ * table at all (its only component is the {@code _dummy_database} placeholder), so the repair path
+ * does not queue behind the statement it is serving.
  */
 final class IcebergTablePointerGuard {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergTablePointerGuard.class);
@@ -59,16 +69,32 @@ final class IcebergTablePointerGuard {
   private static final String OUTCOME_NOT_ICEBERG = "not_iceberg";
   private static final String OUTCOME_CACHE_SUPPRESSED = "cache_suppressed";
   private static final String OUTCOME_READ_FAILED = "read_failed";
+  private static final String OUTCOME_REPAIR_LOCKED = "repair_locked";
+  private static final String OUTCOME_REPAIR_LOCK_TIMEOUT = "repair_lock_timeout";
+  private static final String OUTCOME_REPAIR_LOCK_FAILED = "repair_lock_failed";
+  private static final String OUTCOME_REPAIR_LOCK_SKIPPED = "repair_lock_skipped";
+  private static final String OUTCOME_LOCK_RELEASE_FAILED = "lock_release_failed";
   private static final Method GET_TABLE = getTableMethod();
+
+  /** Releases the table lock held across the backend call, if one was taken. Never throws. */
+  interface Protection extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  private static final Protection UNLOCKED = () -> {
+  };
 
   private final RoutingSupport support;
   private final IcebergPointerGuardConfig config;
+  private final IcebergCommitLock commitLock;
   /** Names known not to be Iceberg tables, each valid until its {@code System.nanoTime} deadline. */
   private final ConcurrentMap<TableKey, Long> notIcebergUntilNanos = new ConcurrentHashMap<>();
 
   IcebergTablePointerGuard(RoutingSupport support) {
     this.support = support;
     this.config = support.config.icebergPointerGuard();
+    this.commitLock = new IcebergCommitLock(support);
   }
 
   static boolean appliesTo(String methodName) {
@@ -81,23 +107,24 @@ final class IcebergTablePointerGuard {
 
   /**
    * Rewrites, in place, the {@code Table} of an {@code alter_table} that would erase the Iceberg
-   * state the metastore currently holds. Never throws: a table that cannot be read back is left to
-   * the backend to judge, because refusing the alter outright would fail an ordinary Hive write
-   * whenever the backend hiccups.
+   * state the metastore currently holds, and returns the protection the caller must close once the
+   * backend has applied the call - it holds the table lock when the request had to be repaired.
+   * Never throws: a table that cannot be read back is left to the backend to judge, because
+   * refusing the alter outright would fail an ordinary Hive write whenever the backend hiccups.
    */
-  void protectPointer(Object[] routedArgs, CatalogRouter.ResolvedNamespace namespace, String methodName) {
+  Protection protect(Object[] routedArgs, CatalogRouter.ResolvedNamespace namespace, String methodName) {
     if (routedArgs == null || !config.enabled()
         || (!appliesTo(methodName) && !createsTable(methodName))) {
-      return;
+      return UNLOCKED;
     }
     Table incoming = tableArgument(routedArgs);
     if (incoming == null) {
-      return;
+      return UNLOCKED;
     }
     String backendDbName = argumentOrTableField(routedArgs, 0, incoming.getDbName());
     String tableName = argumentOrTableField(routedArgs, 1, incoming.getTableName());
     if (backendDbName == null || tableName == null) {
-      return;
+      return UNLOCKED;
     }
     TableKey key = new TableKey(namespace.catalogName(), backendDbName, tableName);
     if (createsTable(methodName)) {
@@ -105,7 +132,7 @@ final class IcebergTablePointerGuard {
       if (parameter(incoming, METADATA_LOCATION) != null) {
         notIcebergUntilNanos.remove(key);
       }
-      return;
+      return UNLOCKED;
     }
 
     String incomingLocation = parameter(incoming, METADATA_LOCATION);
@@ -114,40 +141,155 @@ final class IcebergTablePointerGuard {
       notIcebergUntilNanos.remove(key);
     } else if (knownNotToBeIceberg(key)) {
       record(namespace, OUTCOME_CACHE_SUPPRESSED);
-      return;
+      return UNLOCKED;
     }
 
     Table current = readCurrentTable(namespace, backendDbName, tableName);
     if (current == null) {
       record(namespace, OUTCOME_READ_FAILED);
-      return;
+      return UNLOCKED;
     }
     String currentLocation = parameter(current, METADATA_LOCATION);
     if (currentLocation == null) {
       rememberNotIceberg(key);
       record(namespace, OUTCOME_NOT_ICEBERG);
-      return;
+      return UNLOCKED;
     }
     if (currentLocation.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
-      // A commit built on what the metastore holds now - the table is moving forward.
+      // A commit built on what the metastore holds now - the table is moving forward. Nothing is
+      // locked here: this is the request an Iceberg commit sends from inside the table lock, and
+      // asking for that lock would mean waiting for the caller of this very call.
       record(namespace, OUTCOME_FORWARD_COMMIT);
-      return;
+      return UNLOCKED;
     }
 
-    attachCompareAndSwap(routedArgs, namespace, currentLocation);
-    mergeOverCurrentRecord(incoming, current, currentLocation);
-    record(namespace, OUTCOME_REPAIRED);
+    return repairUnderLock(
+        routedArgs, namespace, methodName, incoming, current, currentLocation, backendDbName, tableName);
+  }
+
+  /**
+   * Takes the lock, re-reads the record under it, and leaves the lock held so that the backend's
+   * {@code alter_table} lands inside it. The second read is the point of the lock: without it the
+   * merge would be built on a record read before the lock and could still overwrite a commit that
+   * landed in between.
+   *
+   * <p>The re-read can also change the verdict - a commit may have landed while we waited, and the
+   * request may turn out to be built on exactly what the table holds now. Then the lock is given
+   * back and the request passes through untouched, like any other forward commit.
+   */
+  private Protection repairUnderLock(
+      Object[] routedArgs,
+      CatalogRouter.ResolvedNamespace namespace,
+      String methodName,
+      Table incoming,
+      Table current,
+      String currentLocation,
+      String backendDbName,
+      String tableName
+  ) {
+    Long heldLockId = acquireLock(namespace, backendDbName, tableName);
+    try {
+      if (heldLockId != null) {
+        Table underLock = readCurrentTable(namespace, backendDbName, tableName);
+        if (underLock != null) {
+          String locationUnderLock = parameter(underLock, METADATA_LOCATION);
+          if (locationUnderLock == null) {
+            // It stopped being an Iceberg table while we waited; there is nothing to keep.
+            record(namespace, OUTCOME_NOT_ICEBERG);
+            return UNLOCKED;
+          }
+          if (locationUnderLock.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
+            record(namespace, OUTCOME_FORWARD_COMMIT);
+            return UNLOCKED;
+          }
+          current = underLock;
+          currentLocation = locationUnderLock;
+        }
+        record(namespace, OUTCOME_REPAIR_LOCKED);
+      }
+
+      attachCompareAndSwap(routedArgs, namespace, currentLocation);
+      mergeOverCurrentRecord(incoming, current, currentLocation);
+      record(namespace, OUTCOME_REPAIRED);
+      LOG.warn(
+          "requestId={} kept the current Iceberg state for catalog '{}' db='{}' table='{}': {} sent"
+              + " metadata_location='{}' while the metastore holds '{}'. Applying it as sent would"
+              + " have discarded a committed snapshot. Table lock: {}.",
+          RequestContext.currentRequestId(),
+          namespace.catalogName(),
+          backendDbName,
+          tableName,
+          methodName,
+          parameter(incoming, METADATA_LOCATION) == null ? "<absent>" : parameter(incoming, METADATA_LOCATION),
+          currentLocation,
+          heldLockId == null ? "not held" : "held (id " + heldLockId + ")");
+
+      if (heldLockId == null) {
+        return UNLOCKED;
+      }
+      Protection protection = releaseAfterBackendCall(namespace, heldLockId);
+      heldLockId = null;
+      return protection;
+    } finally {
+      // Every path that returns without handing the lock to the caller gives it back here,
+      // exceptions included: a lock left behind blocks every later commit on the table.
+      if (heldLockId != null) {
+        releaseLock(namespace, heldLockId);
+      }
+    }
+  }
+
+  private Protection releaseAfterBackendCall(CatalogRouter.ResolvedNamespace namespace, long lockId) {
+    return () -> releaseLock(namespace, lockId);
+  }
+
+  private void releaseLock(CatalogRouter.ResolvedNamespace namespace, long lockId) {
+    if (!commitLock.release(namespace.backend(), lockId)) {
+      record(namespace, OUTCOME_LOCK_RELEASE_FAILED);
+    }
+  }
+
+  /**
+   * Requests the lock for a repair, or answers null when there will be none. A missing lock is
+   * never a reason to refuse the alter - that would fail an ordinary Hive write whenever the lock
+   * table hiccups - so the repair goes ahead unprotected, exactly as it did before this lock
+   * existed, and says so through its counter.
+   *
+   * <p>Non-default catalogs are skipped deliberately: their writers are served by the synthetic
+   * lock shim, which grants locks without checking conflicts and never forwards them to the
+   * backend, so nobody contends for the object this lock would hold. Two RPCs for an illusion of
+   * mutual exclusion are worse than none.
+   */
+  private Long acquireLock(
+      CatalogRouter.ResolvedNamespace namespace,
+      String backendDbName,
+      String tableName
+  ) {
+    if (!config.lockEnabled() || !namespace.catalogName().equals(support.config.defaultCatalog())) {
+      record(namespace, OUTCOME_REPAIR_LOCK_SKIPPED);
+      return null;
+    }
+    IcebergCommitLock.Attempt attempt = commitLock.acquire(
+        namespace.backend(), backendDbName, tableName, config.lockAcquireTimeoutMs());
+    if (attempt.acquired()) {
+      return attempt.lockId();
+    }
+    record(
+        namespace,
+        attempt.outcome() == IcebergCommitLock.Outcome.TIMED_OUT
+            ? OUTCOME_REPAIR_LOCK_TIMEOUT
+            : OUTCOME_REPAIR_LOCK_FAILED);
     LOG.warn(
-        "requestId={} kept the current Iceberg state for catalog '{}' db='{}' table='{}': {} sent"
-            + " metadata_location='{}' while the metastore holds '{}'. Applying it as sent would"
-            + " have discarded a committed snapshot.",
+        "requestId={} repairing '{}.{}' on catalog '{}' without the Iceberg table lock ({}); a"
+            + " commit landing before the backend applies this alter would still be overwritten",
         RequestContext.currentRequestId(),
-        namespace.catalogName(),
         backendDbName,
         tableName,
-        methodName,
-        incomingLocation == null ? "<absent>" : incomingLocation,
-        currentLocation);
+        namespace.catalogName(),
+        attempt.outcome() == IcebergCommitLock.Outcome.TIMED_OUT
+            ? "not granted within " + config.lockAcquireTimeoutMs() + " ms"
+            : "the lock call failed");
+    return null;
   }
 
   /**

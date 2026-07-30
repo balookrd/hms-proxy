@@ -1,5 +1,7 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogPurgeMode;
+import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
@@ -13,7 +15,8 @@ public class RoutingHiveCatalogTest {
   public void reflectionInjectReplacesClientPool() {
     RecordingThriftIface delegate = new RecordingThriftIface();
     IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
-    RoutingHiveCatalog catalog = new RoutingHiveCatalog(client, new Configuration());
+    RoutingHiveCatalog catalog = new RoutingHiveCatalog(
+        client, new Configuration(), new IcebergPurgePolicy(RestCatalogPurgeMode.ALLOW, List.of()));
 
     catalog.initialize("test", Map.of());
 
@@ -28,7 +31,8 @@ public class RoutingHiveCatalogTest {
     RecordingThriftIface delegate = new RecordingThriftIface();
     delegate.databases.put("sales", RecordingThriftIface.database("sales"));
     IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
-    RoutingHiveCatalog catalog = new RoutingHiveCatalog(client, new Configuration());
+    RoutingHiveCatalog catalog = new RoutingHiveCatalog(
+        client, new Configuration(), new IcebergPurgePolicy(RestCatalogPurgeMode.ALLOW, List.of()));
     catalog.initialize("test", Map.of());
 
     boolean exists = catalog.namespaceExists(Namespace.of("sales"));
@@ -43,7 +47,8 @@ public class RoutingHiveCatalogTest {
     RecordingThriftIface delegate = new RecordingThriftIface();
     delegate.databases.put("sales", RecordingThriftIface.database("sales"));
     IMetaStoreClient client = RoutingMetaStoreClient.create(delegate.iface);
-    RoutingHiveCatalog catalog = new RoutingHiveCatalog(client, new Configuration());
+    RoutingHiveCatalog catalog = new RoutingHiveCatalog(
+        client, new Configuration(), new IcebergPurgePolicy(RestCatalogPurgeMode.ALLOW, List.of()));
     catalog.initialize("test", Map.of());
 
     Map<String, String> metadata = catalog.loadNamespaceMetadata(Namespace.of("sales"));

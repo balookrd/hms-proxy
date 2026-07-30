@@ -97,19 +97,21 @@ public final class IcebergRestService implements AutoCloseable {
       CatalogNameTranslation translationOrNull,
       String defaultCatalogName,
       Function<String, String> catalogForExternalDb,
-      Configuration hadoopConf) {
+      Configuration hadoopConf,
+      IcebergPurgePolicy purgePolicy) {
     this.catalogName = Objects.requireNonNull(catalogName, "catalogName");
     Objects.requireNonNull(delegate, "delegate");
     Objects.requireNonNull(defaultCatalogName, "defaultCatalogName");
     Objects.requireNonNull(catalogForExternalDb, "catalogForExternalDb");
     Objects.requireNonNull(hadoopConf, "hadoopConf");
+    Objects.requireNonNull(purgePolicy, "purgePolicy");
     IMetaStoreClient client = RoutingMetaStoreClient.create(delegate, translationOrNull);
     // Must be the same Configuration CatalogBackend.hiveConf() builds for this catalog's Thrift
     // path (fs.defaultFS, dfs.namenode.kerberos.principal, hadoop.security.authentication, ...).
     // A bare `new Configuration()` here writes to HDFS fine unauthenticated, but under Kerberos
     // HadoopFileIO fails with "Failed to specify server's Kerberos principal name" because the
     // namenode's service principal is only known through the catalog's own conf.
-    this.catalog = new RoutingHiveCatalog(client, hadoopConf);
+    this.catalog = new RoutingHiveCatalog(client, hadoopConf, purgePolicy);
     this.catalog.initialize(catalogName, Map.of(CatalogProperties.URI, UNUSED_URI));
     this.adapter = new RESTCatalogAdapter(catalog);
     // A name-translated (non-default) service only ever exposes its own databases, so its own

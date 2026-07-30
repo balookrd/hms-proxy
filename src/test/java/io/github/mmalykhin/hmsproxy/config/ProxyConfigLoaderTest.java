@@ -1693,6 +1693,8 @@ public class ProxyConfigLoaderTest {
           routing.iceberg-pointer-guard.enabled=false
           routing.iceberg-pointer-guard.table-cache-ttl-ms=0
           routing.iceberg-pointer-guard.table-cache-max-entries=250
+          routing.iceberg-pointer-guard.lock-enabled=false
+          routing.iceberg-pointer-guard.lock-acquire-timeout-ms=0
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
 
@@ -1703,10 +1705,16 @@ public class ProxyConfigLoaderTest {
           defaultConfig.icebergPointerGuard().enabled());
       Assert.assertEquals(30_000L, defaultConfig.icebergPointerGuard().tableCacheTtlMs());
       Assert.assertEquals(10_000, defaultConfig.icebergPointerGuard().tableCacheMaxEntries());
+      Assert.assertTrue("a repair holds the Iceberg table lock unless it is turned off explicitly",
+          defaultConfig.icebergPointerGuard().lockEnabled());
+      Assert.assertEquals(10_000L, defaultConfig.icebergPointerGuard().lockAcquireTimeoutMs());
       Assert.assertFalse(overriddenConfig.icebergPointerGuard().enabled());
       Assert.assertEquals("zero disables the cache, so every alter reads",
           0L, overriddenConfig.icebergPointerGuard().tableCacheTtlMs());
       Assert.assertEquals(250, overriddenConfig.icebergPointerGuard().tableCacheMaxEntries());
+      Assert.assertFalse(overriddenConfig.icebergPointerGuard().lockEnabled());
+      Assert.assertEquals("zero means one lock attempt and no waiting",
+          0L, overriddenConfig.icebergPointerGuard().lockAcquireTimeoutMs());
     } finally {
       Files.deleteIfExists(defaults);
       Files.deleteIfExists(overrides);
@@ -1773,6 +1781,51 @@ public class ProxyConfigLoaderTest {
       } catch (IllegalArgumentException e) {
         Assert.assertTrue(e.getMessage(),
             e.getMessage().contains("routing.iceberg-pointer-guard.enabled"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsNegativeIcebergPointerGuardLockAcquireTimeout() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.lock-acquire-timeout-ms=-1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for a negative lock-acquire-timeout-ms");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.lock-acquire-timeout-ms"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+  @Test
+  public void rejectsNonBooleanIcebergPointerGuardLockEnabled() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.lock-enabled=yes
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for routing.iceberg-pointer-guard.lock-enabled=yes");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.lock-enabled"));
         Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
       }
     } finally {
