@@ -281,9 +281,11 @@ without checking conflicts. Both halves of that argument are now pinned.
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
-| I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | — |
-| I3 | 8 concurrent writers: 7 commit, 1 is refused with `CommitFailedException: branch main has changed`, and the table holds exactly 8 rows (1 baseline + 7) - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ | — |
+| I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | ✅ Hive 4 backend |
+| I3 | 8 concurrent writers: the row count equals the writers that reported success plus the baseline, and a writer that is refused is refused with `CommitFailedException: branch main has changed` - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ 7 commit, 1 refused | ✅ Hive 4 backend; how many are refused varies run to run - 7 commits and 1 refusal in one run, 8 and none in another |
 | I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ✅ 12/12 on the 3.1 backend, against 1 loss in 12 before the repair took the Iceberg table lock |
+| I5 | **Multi-table transaction under contention**: a two-table `POST /v1/{prefix}/transactions/commit` whose requirement for the second table was invalidated by a competing writer is refused `409 CommitFailedException: Requirement failed: branch main has changed`, **neither** table is left carrying the update, and the competing writer's rows survive | — | ✅ |
+| I6 | The same route is **not** atomic when a commit fails rather than a requirement: requirements are all validated up front, then the tables are committed one by one with no rollback, so a failure partway leaves the earlier tables committed and the request answers `500 CommitStateUnknownException` (`IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`, confirmed on the stand's real Hive 4 metastore by starving the ddl rate-limit class) | n/a | ✅ |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -298,6 +300,17 @@ commit ends in an `alter_table` the proxy logs with its thread, REST requests on
 `hms-proxy-rest-*` and Thrift ones on `pool-*-thread-*`, and the two windows have to intersect.
 The detector was checked against a run that did *not* overlap (REST finished 4 s before the
 first SQL commit) and reports it as such, so a vacuous pass fails the run instead.
+
+I5 and I6 answer the same question from the two sides a client can hit. Driven by
+`smoke-stand/run-iceberg-txn-contention-smoke.sh`, whose contention is real rather than injected:
+a second writer appends to one of the two tables through the same front door, which advances that
+table's `main` ref, and the transaction then arrives carrying the snapshot id it read before that
+append - the shape a losing racer would have sent, with no timing games needed. The scenario ends
+with a **positive control** - the same transaction with the current snapshot id must be accepted
+and applied to both tables - because without it a malformed body, a wrong prefix or a
+non-writable table would refuse the transaction just as convincingly. Requirement contention is
+therefore all-or-nothing while a mid-transaction commit failure is not, and a client must not read
+"transaction" as "atomic under every failure".
 
 What the run does **not** show: no `check_lock` and no `WAITING` appeared in the proxy log, so
 what rejected the stale writer was Iceberg's own requirement check on the branch's snapshot id,
@@ -453,7 +466,7 @@ goes with it) rather than assumed away; neither occurred in these runs.
 | YARN / Tez, distributed execution | The stand runs local MapReduce only; nothing here says how the proxy behaves under a real cluster's concurrency |
 | Ranger, Atlas, HA | Out of the stand's scope |
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
-| Load, and concurrency beyond one table | Section I covers concurrent REST commits to a single table. Everything else is single-client: no concurrent SQL writers, no multi-table transactions under contention, and no sustained load |
+| Sustained load | Section I covers concurrent REST commits to a single table (I2, I3), REST mixed with SQL writers across front doors (I4) and a two-table transaction under contention (I5, I6). What is still missing is duration: every run is a burst of a handful of writers, never sustained load, and nothing measures throughput or latency under it |
 | Iceberg partitioned tables, schema evolution, `MERGE INTO` | H13-H20 cover row-level `DELETE`/`UPDATE` on an unpartitioned table with a fixed schema. Partition specs (and their evolution), added/renamed/dropped columns and `MERGE INTO` have never been run through the proxy |
 
 ## Revalidation log

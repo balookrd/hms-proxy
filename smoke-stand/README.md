@@ -430,8 +430,11 @@ It creates a table with one baseline row, fires N concurrent appends at it throu
 door, counts the writers that exited 0 and requires the table to hold exactly that many rows plus
 the baseline. A writer that fails loudly (`CommitFailedException`) is correct behaviour under
 contention and does not fail the run — a writer that reports success while its rows are gone
-does. At eight writers the stand reliably produces both outcomes at once: seven commits and one
-refusal, with every committed row present.
+does. At eight writers the stand usually produces both outcomes at once — seven commits and one
+refusal, with every committed row present — but not always: whether any writer runs out of
+retries varies run to run, and a run where all eight commit is just as correct. What is invariant,
+and what the scenario actually asserts, is that the row count equals the writers that reported
+success.
 
 `--sql-writers N` adds Hive `INSERT`s to the same table, so the contention crosses front doors:
 
@@ -445,6 +448,34 @@ The scenario instead keeps issuing REST appends in rounds while any SQL writer i
 asserts that the two sides' commit windows actually intersect — it reads the `alter_table`
 timestamps back out of the proxy log, where the thread name tells the paths apart. See
 `TEST-MATRIX.md` section I.
+
+## Multi-table transactions under contention (`run-iceberg-txn-contention-smoke.sh`)
+
+`POST /v1/{prefix}/transactions/commit` carries several tables in one request, and a client can
+reasonably read that as all-or-nothing. This scenario measures what actually happens when a
+competing writer moves one of those tables out from under the transaction:
+
+```bash
+smoke-stand/run-iceberg-txn-contention-smoke.sh --prefix hive4 --kerberos
+```
+
+The contention is real rather than injected: a second writer appends to one of the two tables
+through the same front door, advancing that table's `main` ref, and the transaction then arrives
+carrying the snapshot id read before that append — exactly what a losing racer would send, so no
+timing games are needed. The transaction is refused with `409 CommitFailedException: Requirement
+failed: branch main has changed`, neither table is left carrying the update, and the competing
+writer's rows survive.
+
+The run then does the same transaction with the current snapshot id and requires it to be
+**accepted** and applied to both tables. That positive control is the point: without it the
+refusal above would look just as convincing if the body were malformed, the prefix wrong or the
+table not writable at all.
+
+Requirement contention being all-or-nothing does **not** make the route atomic in general. When a
+commit fails rather than a requirement, Iceberg's own adapter validates every requirement up
+front and then commits the tables one by one with no rollback, so a failure partway leaves the
+earlier tables committed and the request answers `500 CommitStateUnknownException`. Both halves
+are recorded as I5 and I6 in `TEST-MATRIX.md`.
 
 ## MapReduce under Kerberos
 

@@ -47,6 +47,32 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   plain and the Kerberos profile. The stand's `IcebergRestWriter` grew
   `--properties` (to create a table at a chosen format version and write mode)
   and a `files` command (data- and delete-file counts of the planned scan).
+- `smoke-stand/run-iceberg-txn-contention-smoke.sh` measures what a multi-table
+  `POST /v1/{prefix}/transactions/commit` does under contention, because a
+  client can reasonably read "transaction" as all-or-nothing. The contention is
+  real rather than injected: a competing writer appends to one of the two tables
+  through the same front door, advancing that table's `main` ref, and the
+  transaction arrives carrying the snapshot id read before that append - what a
+  losing racer would send, so no timing games are needed. Measured: the
+  transaction is refused `409 CommitFailedException: Requirement failed: branch
+  main has changed`, neither table is left carrying the update, and the competing
+  writer's rows survive. The run ends with a positive control - the same
+  transaction at the current snapshot id must be accepted and applied to both
+  tables - without which the refusal would look equally convincing on a
+  malformed body or a non-writable table. This does **not** make the route
+  atomic in general: when a commit fails rather than a requirement, Iceberg's
+  adapter validates all requirements up front and then commits table by table
+  with no rollback, so the earlier tables stay committed and the request answers
+  `500 CommitStateUnknownException`. Both halves are recorded as I5 and I6 in the test
+  matrix, which also drops "no multi-table transactions under contention" from
+  its list of gaps.
+- Writer isolation (I2, I3) now has its Kerberos column: 5 and 8 concurrent REST
+  writers against the Hive 4 backend, row count equal to the writers that
+  reported success in every run. The stand README's claim that eight writers
+  "reliably" produce seven commits and one refusal was corrected - whether any
+  writer runs out of retries varies run to run, and a run where all eight commit
+  is equally correct; the invariant the scenario asserts is the row count, not
+  the refusal.
 
 ### Fixed
 
