@@ -56,7 +56,8 @@ For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
   losing racer would send, so no timing games are needed. Measured: the
   transaction is refused `409 CommitFailedException: Requirement failed: branch
   main has changed`, neither table is left carrying the update, and the competing
-  writer's rows survive. The run ends with a positive control - the same
+  writer's rows survive - identically on the plain and the Kerberos profile. The
+  run ends with a positive control - the same
   transaction at the current snapshot id must be accepted and applied to both
   tables - without which the refusal would look equally convincing on a
   malformed body or a non-writable table. This does **not** make the route

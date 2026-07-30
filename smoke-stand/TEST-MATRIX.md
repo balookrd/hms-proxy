@@ -284,8 +284,8 @@ without checking conflicts. Both halves of that argument are now pinned.
 | I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | ✅ Hive 4 backend |
 | I3 | 8 concurrent writers: the row count equals the writers that reported success plus the baseline, and a writer that is refused is refused with `CommitFailedException: branch main has changed` - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ 7 commit, 1 refused | ✅ Hive 4 backend; how many are refused varies run to run - 7 commits and 1 refusal in one run, 8 and none in another |
 | I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ✅ 12/12 on the 3.1 backend, against 1 loss in 12 before the repair took the Iceberg table lock |
-| I5 | **Multi-table transaction under contention**: a two-table `POST /v1/{prefix}/transactions/commit` whose requirement for the second table was invalidated by a competing writer is refused `409 CommitFailedException: Requirement failed: branch main has changed`, **neither** table is left carrying the update, and the competing writer's rows survive | — | ✅ |
-| I6 | The same route is **not** atomic when a commit fails rather than a requirement: requirements are all validated up front, then the tables are committed one by one with no rollback, so a failure partway leaves the earlier tables committed and the request answers `500 CommitStateUnknownException` (`IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`, confirmed on the stand's real Hive 4 metastore by starving the ddl rate-limit class) | n/a | ✅ |
+| I5 | **Multi-table transaction under contention**: a two-table `POST /v1/{prefix}/transactions/commit` whose requirement for the second table was invalidated by a competing writer is refused `409 CommitFailedException: Requirement failed: branch main has changed`, **neither** table is left carrying the update, and the competing writer's rows survive | ✅ | ✅ |
+| I6 | The same route is **not** atomic when a commit fails rather than a requirement: requirements are all validated up front, then the tables are committed one by one with no rollback, so a failure partway leaves the earlier tables committed and the request answers `500 CommitStateUnknownException` (`IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`, confirmed on the stand's real Hive 4 metastore by starving the ddl rate-limit class) | — | ✅ |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -775,6 +775,37 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   version used a `\|` alternation that silently matched nothing and the run failed on an empty
   file-shape reading. Switching the stand between `.env.hive4` and `.env.hive4-kerberos`
   recreates the HDFS chain, and the usual stale-DNS restart applies.
+
+- **2026-07-30**, jar `1.0.19-f4cbeea7` built from `f4cbeea` and staged into the stand, so the
+  proxy code under test is what is committed - the pointer guard's repair now takes Iceberg's
+  table lock, and `rest-catalog.purge.mode` exists. Closed the last two open cells of section I
+  and added rows I5 and I6.
+  I2 and I3 got their Kerberos column (`--prefix hive4 --kerberos`, `--writers 5` and
+  `--writers 8`, `--sql-writers 0`): 6 rows for 1 baseline + 5, and for 8 writers the row count
+  equal to the writers that reported success. Run twice at eight writers on purpose, and that is
+  what corrected the table: one run refused a writer (7 + 1), the next refused none (8 + 0). Both
+  are correct, so I3's wording - and the stand README's claim that eight writers "reliably"
+  produce a refusal - were overstating a run-to-run variable. The invariant the scenario asserts
+  is the row count.
+  I5 and I6 come from the new `run-iceberg-txn-contention-smoke.sh`, run on the `hive4` backend on
+  both profiles (Kerberos three times, plain once after bringing the whole stand up under
+  `.env.hive4`): the two-table transaction with a stale `assert-ref-snapshot-id` is refused `409
+  CommitFailedException`, neither table keeps the update, the competing writer's 5 rows are intact,
+  and the positive control at the current snapshot id is accepted and applied to both tables.
+  Not run: I6 on the plain profile - it is pinned by
+  `IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`
+  and was confirmed on the stand under Kerberos by starving the ddl rate-limit class; reproducing
+  that on the plain profile needs the same config change and adds nothing the unit test does not
+  decide deterministically. No other section was re-run, and `stand-hs2-hdp` was left on its
+  Kerberos container throughout (it is in the `hdp` profile, which these runs do not use).
+  Stand notes for a repeat: the runner is host-side, so `sed` is BSD `sed` - `\?` is **not** read
+  as "optional" there, and a GNU-style BRE silently matched nothing, returning each JSON field
+  with its own name still attached (`grep` does honour `\?`, which is what masked it). Under
+  Kerberos `curl` runs inside `stand-proxy`, so neither `-o` nor `--data @file` may name a host
+  path - the body has to come back on stdout. A recreated `stand-proxy` has no ticket cache, so
+  the scenario does its own `kinit` rather than expecting one. Switching only the proxy between
+  profiles does not work: the metastores keep their own auth and answer `500`, so the whole stand
+  has to come up on the other env file.
 
 ## Two caveats on faithfulness
 
