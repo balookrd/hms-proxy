@@ -73,6 +73,36 @@ failed with `Cannot set unknown field named: src` because the probe table had on
 writer writes two. The descriptor stayed concrete simply because no commit had happened. An
 unnoticed failure there would have "confirmed" the mechanism for the wrong reason.
 
+## The sibling defect on the Thrift path
+
+Verifying the REST fix on the stand uncovered a second instance of the same class, and it is not
+covered by the fix below. An `INSERT` issued by a 3.1 HiveServer2 into a Hive 4-created Iceberg
+table degrades the descriptor **by itself, with no REST commit involved**:
+
+| Step | `inputFormat` | `storage_handler` |
+| --- | --- | --- |
+| Hive 4 creates the table | `HiveIcebergInputFormat` | present |
+| HDP 3.1 runs `INSERT` | `org.apache.hadoop.mapred.FileInputFormat` | **gone** |
+
+Measured in isolation with a control: the same `INSERT` into a table the HDP engine created itself
+leaves the descriptor intact.
+
+The root cause is the same - `iceberg-hive-runtime` 1.6.1 running *inside* HiveServer2 writes the
+non-Hive-engine descriptor because the table carries no `engine.hive.enabled` - but the path is
+different, and the lever below cannot reach it: that Iceberg instance lives in the client's JVM,
+configured by the client, not by the proxy.
+
+What the proxy can do is protect the record, which is what `IcebergTablePointerGuard` already does
+for the pointers. The guard merges the metastore record's **parameters** under the incoming
+request and forces both pointers back; it never touches the `StorageDescriptor`, so this
+degradation passes straight through. Extending the merge to the descriptor - keeping the record's
+format classes and storage handler when the request would blank them - closes this without a new
+decision point, and reuses the "is this Iceberg" answer the guard already derives from the record.
+
+The user-visible symptom is identical to the REST one: a single write costs the 3.1 line a table it
+could read a moment earlier. Both halves have to be fixed for the four-participant
+`--origin hive4` run to pass.
+
 ## The fix
 
 Set `iceberg.engine.hive.enabled=true` on the per-catalog Hadoop `Configuration` that the REST
