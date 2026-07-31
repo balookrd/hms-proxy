@@ -187,6 +187,25 @@ expect_rows() {
   log "${label}: count=${expected} confirmed"
 }
 
+# A fixed 3.1 front door for the descriptor check below - "hdp" always fronts whatever catalog
+# is default (routing.default-catalog), so this works unchanged regardless of --prefix.
+beeline_query() {
+  beeline_run "$(sql_container hdp)" "$(hdp_jdbc_url)" "$@"
+}
+
+# A row count alone cannot catch a relapse: Hive 4 answers count(*) from the Iceberg summary it
+# keeps as table stats, so it reports the right number even off a descriptor the 3.1 line cannot
+# open. describe formatted instead reads the raw metastore record through a 3.1 front door, the
+# same shape H12 lost - see IcebergTablePointerGuard and rest-catalog.hive-engine-descriptor.
+assert_hive_readable_descriptor() {
+  local stage="$1" descriptor
+  descriptor="$(beeline_query "describe formatted ${TABLE};" | grep -iE 'inputformat' | head -n 1)"
+  case "${descriptor}" in
+    *HiveIcebergInputFormat*) log "descriptor still Hive-readable after ${stage}" ;;
+    *) fail "after ${stage} the descriptor lost its Hive input format: ${descriptor}" ;;
+  esac
+}
+
 # --- participants ----------------------------------------------------------------------------
 #
 # Four front doors can each play any role. Every participant knows how to create the table,
@@ -293,6 +312,7 @@ participant_create "${ORIGIN}"
 participant_append "${ORIGIN}" 2 1
 count="$(participant_count "${ORIGIN}")"
 expect_rows "$(participant_label "${ORIGIN}") read of its own rows" 2 "${count}"
+[[ "${ORIGIN}" == "rest" ]] && assert_hive_readable_descriptor "the origin's REST commit"
 
 # Whoever created the table, its metadata has to be loadable through REST: a SQL-created Iceberg
 # table is only interoperable if the REST catalog can resolve it too.
@@ -314,6 +334,7 @@ for who in "${OTHERS[@]}"; do
   next_id=$((next_id + 100))
   count="$(participant_count "${who}")"
   expect_rows "$(participant_label "${who}") read after its own append" "${expected}" "${count}"
+  [[ "${who}" == "rest" ]] && assert_hive_readable_descriptor "the REST participant's append"
 done
 
 log "final: every front door sees all ${expected} rows"
