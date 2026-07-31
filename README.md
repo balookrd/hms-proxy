@@ -1046,6 +1046,32 @@ rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
 with the other two modes; both contradictions fail the proxy at startup rather
 than being ignored.
 
+### Keeping an Iceberg table readable by Hive
+
+Iceberg writes one of two storage descriptors on every commit. With the Hive
+engine enabled it writes `storage_handler` and the concrete
+`HiveIcebergInputFormat`/`OutputFormat`/`SerDe`; with it disabled it writes the
+abstract `FileInputFormat`/`FileOutputFormat`/`LazySimpleSerDe` and removes
+`storage_handler`. Which one it picks comes from the table's own
+`engine.hive.enabled` property and, when the table sets none, from
+`iceberg.engine.hive.enabled` in the committing engine's configuration.
+
+A table created by Hive 4's `STORED BY ICEBERG` sets no such property, so a
+single commit could leave it unreadable by Hive 3.1 clients, which fail with
+`Cannot create an instance of InputFormat class
+org.apache.hadoop.mapred.FileInputFormat`. Two settings prevent that, one per
+write path, and both default to on:
+
+| Key | Path it covers |
+| --- | --- |
+| `rest-catalog.hive-engine-descriptor` | The proxy's own REST commits: they write the Hive-engine descriptor. A table that sets `engine.hive.enabled` itself always wins over this, and an explicit `catalog.<name>.conf.iceberg.engine.hive.enabled` is respected rather than overwritten. |
+| `routing.iceberg-pointer-guard.hive-engine-descriptor` | Commits arriving over Thrift from an engine the proxy cannot configure - a Hive 3.1 `INSERT`, for instance. The pointer guard keeps the descriptor the metastore record already holds instead of letting the request blank it. |
+
+The guard only ever *keeps* a descriptor, never imposes one: a record without
+`storage_handler` is a table with no Hive descriptor to lose, and its alters
+pass through untouched. A table degraded before these settings existed repairs
+itself on its next commit.
+
 Requests to this listener are covered by the Prometheus metrics described in
 [Prometheus metrics](#prometheus-metrics): `hms_proxy_rest_requests_total`,
 `hms_proxy_rest_request_duration_seconds`, and `hms_proxy_rest_listener_info`.

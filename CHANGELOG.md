@@ -6,6 +6,52 @@ tagged release, `v1.0.0`, was cut on 2026-04-29.
 
 For a Russian version, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 2026-07-31
+
+### Fixed
+
+- A single write no longer costs a Hive-created Iceberg table its readability
+  on the Hive 3.1 line. Iceberg writes one of two storage descriptors on every
+  commit, and picks the plain-files one - abstract `FileInputFormat`,
+  `FileOutputFormat`, `LazySimpleSerDe`, and no `storage_handler` - whenever the
+  committing engine has the Hive engine disabled and the table sets no
+  `engine.hive.enabled` of its own. A table created by Hive 4's `STORED BY
+  ICEBERG` sets none, so one commit was enough to leave every 3.1 client failing
+  with `Cannot create an instance of InputFormat class
+  org.apache.hadoop.mapred.FileInputFormat`. The table stayed a valid Iceberg
+  table and Hive 4 kept reading it, which is why the damage was easy to miss.
+  Two settings close it, one per write path, both defaulting to on:
+  `rest-catalog.hive-engine-descriptor` makes the proxy's own REST commits write
+  the Hive-engine descriptor, and
+  `routing.iceberg-pointer-guard.hive-engine-descriptor` makes the pointer guard
+  keep the descriptor the metastore record already holds when a commit arriving
+  over Thrift - a Hive 3.1 `INSERT`, say - would blank it. The second one exists
+  because that Iceberg runs inside the client's JVM, where the proxy's
+  configuration has no reach. The guard only ever keeps a descriptor and never
+  imposes one: a record without `storage_handler` is a table with no Hive
+  descriptor to lose, and its alters pass through untouched. Only the three
+  format fields come from the record; columns, location and the rest stay the
+  client's to change. A table degraded earlier repairs itself on its next
+  commit, so no migration is needed. Measured on the stand on both profiles: the
+  four-participant `--origin hive4` interop run now passes end to end, 5 rows
+  with every front door agreeing.
+
+### Changed
+
+- The interop scenario stopped asserting a limitation it never tested.
+  `run-iceberg-interop-smoke.sh` used to remove the `hdp` and `apache`
+  participants from every `--origin hive4` run, citing the matrix's H12 row,
+  which claimed a Hive 4-created Iceberg table is unreadable by the 3.1 line
+  because `STORED BY ICEBERG` leaves an abstract input format behind. Measuring
+  it instead of trusting it showed the recorded cause was wrong twice over: such
+  a table lands a concrete descriptor and both 3.1 engines read it, and what
+  actually broke it was the proxy's own commit path. The carve-out is deleted,
+  so the run now exercises all four participants, and the scenario asserts the
+  descriptor stays Hive-readable after the REST participant's append - a row
+  count alone would not notice a relapse, because Hive 4 reads a degraded table
+  just fine. The matrix records what the carve-out cost, because the lesson
+  generalizes: a skip must never stand in for a check.
+
 ## 2026-07-30
 
 ### Added

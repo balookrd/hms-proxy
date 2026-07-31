@@ -1044,6 +1044,32 @@ rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
 при двух других режимах; обе противоречивые комбинации роняют прокси на старте,
 а не игнорируются.
 
+### Как сохранить Iceberg-таблицу читаемой для Hive
+
+Iceberg на каждом коммите пишет один из двух storage descriptor'ов. С включённым
+Hive-движком — `storage_handler` и конкретные
+`HiveIcebergInputFormat`/`OutputFormat`/`SerDe`; с выключенным — абстрактные
+`FileInputFormat`/`FileOutputFormat`/`LazySimpleSerDe`, а `storage_handler`
+удаляет. Выбор определяется свойством самой таблицы `engine.hive.enabled`, а
+если таблица его не задаёт — значением `iceberg.engine.hive.enabled` в
+конфигурации того движка, который коммитит.
+
+Таблица, созданная через `STORED BY ICEBERG` в Hive 4, такого свойства не несёт,
+поэтому один-единственный коммит мог оставить её нечитаемой для клиентов Hive
+3.1: они падают с `Cannot create an instance of InputFormat class
+org.apache.hadoop.mapred.FileInputFormat`. Этому мешают две настройки, по одной
+на каждый путь записи, обе включены по умолчанию:
+
+| Ключ | Какой путь закрывает |
+| --- | --- |
+| `rest-catalog.hive-engine-descriptor` | Собственные REST-коммиты прокси: они пишут Hive-совместимый дескриптор. Таблица, задавшая `engine.hive.enabled` сама, всегда перевешивает эту настройку, а явный `catalog.<name>.conf.iceberg.engine.hive.enabled` уважается, а не перетирается. |
+| `routing.iceberg-pointer-guard.hive-engine-descriptor` | Коммиты, приходящие по Thrift от движка, который прокси настроить не может, — например `INSERT` от Hive 3.1. Pointer guard сохраняет дескриптор, уже лежащий в записи метастора, вместо того чтобы дать запросу его обнулить. |
+
+Guard дескриптор только **сохраняет** и никогда не навязывает: запись без
+`storage_handler` — это таблица, которой нечего терять, и её alter'ы проходят
+нетронутыми. Таблица, испорченная до появления этих настроек, чинится сама на
+следующем же коммите.
+
 Запросы к этому listener'у покрыты Prometheus-метриками из раздела
 [Prometheus-метрики](#prometheus-метрики): `hms_proxy_rest_requests_total`,
 `hms_proxy_rest_request_duration_seconds` и `hms_proxy_rest_listener_info`.
