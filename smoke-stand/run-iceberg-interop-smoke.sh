@@ -55,25 +55,14 @@ done
 [[ ${#OTHERS[@]} -eq $((${#PARTICIPANTS[@]} - 1)) ]] \
   || { echo "unknown --origin '${ORIGIN}'; expected one of: ${PARTICIPANTS[*]}" >&2; exit 1; }
 
-# A Hive 4-created Iceberg table cannot be read by the 3.1 line, and no proxy behaviour is
-# involved: `STORED BY ICEBERG` leaves the StorageDescriptor's inputFormat as the abstract
-# org.apache.hadoop.mapred.FileInputFormat (naming the handler class explicitly leaves it null
-# outright), because Hive 4 resolves the real format through the storage handler at plan time.
-# Hive 3.1 instead instantiates whatever the descriptor names and dies with "Cannot create an
-# instance of InputFormat class org.apache.hadoop.mapred.FileInputFormat". Tables written by
-# Iceberg's own HiveTableOperations - the REST path, and the 3.1 storage handler itself - carry
-# the concrete HiveIcebergInputFormat, which is why every other origin is readable everywhere.
-SKIPPED=()
-if [[ "${ORIGIN}" == "hive4" ]]; then
-  REMAINING=()
-  for candidate in "${OTHERS[@]}"; do
-    case "${candidate}" in
-      hdp|apache) SKIPPED+=("${candidate}") ;;
-      *) REMAINING+=("${candidate}") ;;
-    esac
-  done
-  OTHERS=("${REMAINING[@]}")
-fi
+# Every origin runs with all four participants. This used to carve hdp and apache out of a
+# `--origin hive4` run, on the belief that a Hive 4-created Iceberg table is unreadable by the 3.1
+# line - `STORED BY ICEBERG` was said to leave the descriptor's inputFormat as the abstract
+# org.apache.hadoop.mapred.FileInputFormat, which Hive 3.1 instantiates and dies on. Measured
+# again on 2026-07-31, that is not what happens: the descriptor lands carrying the concrete
+# HiveIcebergInputFormat, and both 3.1 engines read the table. The carve-out meant the scenario
+# asserted the limitation instead of testing it, so it could never notice - which is exactly why
+# a skip must never stand in for a check here.
 
 # The apache catalog is the only one on the second HDFS cluster; everything else lives on the
 # first. Only used to verify and clean up the table directory after the purge-drop.
@@ -298,10 +287,6 @@ interop_kinit
 # A rerun on a dirty stand must not half-fail on a leftover table; the drop is not asserted.
 log "defensive drop of a possible leftover '${NS}.${TABLE}'"
 writer drop --purge >/dev/null 2>&1 || true
-
-for skipped in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
-  log "skipping ${skipped}: a Hive 4-created Iceberg table names no concrete inputFormat, which the 3.1 line cannot plan against (see the comment at the top of this script)"
-done
 
 log "origin: ${ORIGIN} ($(participant_label "${ORIGIN}")) creates '${NS}.${TABLE}' and writes 2 rows"
 participant_create "${ORIGIN}"
