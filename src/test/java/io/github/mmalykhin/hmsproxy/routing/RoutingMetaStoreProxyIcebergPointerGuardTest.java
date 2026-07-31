@@ -41,6 +41,8 @@ import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.LockState;
 import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.SerDeInfo;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.hive.metastore.api.UnlockRequest;
@@ -121,6 +123,103 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
         stand.forwarded.get().getParameters().get("current-snapshot-id"));
   }
 
+  // --- The Hive-engine storage descriptor a committing engine can strip ---
+
+  /**
+   * The defect measured on the stand: a Hive 4 {@code STORED BY ICEBERG} create leaves no
+   * {@code engine.hive.enabled} in the Iceberg metadata, so a 3.1 engine committing its own
+   * {@code INSERT} onto that table falls back to {@code iceberg.engine.hive.enabled} in its own
+   * Hadoop configuration - unset, and false by default. Iceberg then rebuilds the descriptor with
+   * the abstract {@code FileInputFormat} and drops {@code storage_handler}, and the table stops
+   * being readable by the very line that just wrote it.
+   *
+   * <p>That request is a legitimate forward commit - its base pointer is the one the metastore
+   * holds - so nothing about the pointer is wrong with it and it is not repaired. The descriptor
+   * still has to survive it.
+   */
+  @Test
+  public void aForwardCommitThatStripsTheHiveEngineDescriptorKeepsTheRecordsOwn() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    Table commit = icebergTable(next, CURRENT);
+    commit.setSd(plainFilesDescriptor());
+    invokeAlter(stand, commit, null);
+
+    Table forwarded = stand.forwarded.get();
+    Assert.assertEquals("a forward commit still moves the pointer",
+        next, forwarded.getParameters().get("metadata_location"));
+    Assert.assertEquals("the input format a Hive 3.1 planner can instantiate must survive",
+        "org.apache.iceberg.mr.hive.HiveIcebergInputFormat", forwarded.getSd().getInputFormat());
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergOutputFormat",
+        forwarded.getSd().getOutputFormat());
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergSerDe",
+        forwarded.getSd().getSerdeInfo().getSerializationLib());
+    Assert.assertEquals("Iceberg drops storage_handler in the same branch that degrades the"
+            + " descriptor, so it has to be kept in the same place",
+        "org.apache.iceberg.mr.hive.HiveIcebergStorageHandler",
+        forwarded.getParameters().get("storage_handler"));
+    Assert.assertEquals("nothing else about the descriptor is the proxy's business",
+        "hdfs://nn/warehouse/sales/events", forwarded.getSd().getLocation());
+  }
+
+  /** The same has to hold on the path that does repair the pointer, not only on forward commits. */
+  @Test
+  public void aRepairedAlterKeepsTheHiveEngineDescriptorToo() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+
+    Table stale = icebergTable(STALE, null);
+    stale.setSd(plainFilesDescriptor());
+    invokeAlter(stand, stale, dropPropsContext());
+
+    Assert.assertEquals(CURRENT, stand.forwarded.get().getParameters().get("metadata_location"));
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergInputFormat",
+        stand.forwarded.get().getSd().getInputFormat());
+  }
+
+  /**
+   * The guard keeps what the record holds; it never imposes a descriptor. A table the metastore
+   * records without a storage handler - an Iceberg table whose owner turned the Hive engine off -
+   * is left exactly as the client sent it.
+   */
+  @Test
+  public void anIcebergTableWithoutAStorageHandlerIsLeftWithTheDescriptorAsSent() throws Throwable {
+    Table record = icebergTable(CURRENT, PREVIOUS);
+    record.setSd(plainFilesDescriptor());
+    Stand stand = newStand(record);
+
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    Table commit = icebergTable(next, CURRENT);
+    commit.setSd(plainFilesDescriptor());
+    invokeAlter(stand, commit, null);
+
+    Assert.assertEquals("a table that never had the Hive engine descriptor must not grow one",
+        "org.apache.hadoop.mapred.FileInputFormat", stand.forwarded.get().getSd().getInputFormat());
+    Assert.assertNull(stand.forwarded.get().getParameters().get("storage_handler"));
+  }
+
+  /**
+   * Turning the Hive engine off on a table that has it is a deliberate act, and the only thing the
+   * guard would otherwise stand in the way of, so it is switchable.
+   */
+  @Test
+  public void theDescriptorIsLeftAloneWhenTheGuardIsToldNotToKeepIt() throws Throwable {
+    Stand stand = newStand(
+        icebergRecord(CURRENT, PREVIOUS),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 10_000L, false));
+
+    String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
+    Table commit = icebergTable(next, CURRENT);
+    commit.setSd(plainFilesDescriptor());
+    invokeAlter(stand, commit, null);
+
+    Assert.assertEquals("org.apache.hadoop.mapred.FileInputFormat",
+        stand.forwarded.get().getSd().getInputFormat());
+    Assert.assertNull("the pointer guard itself keeps working; only the descriptor is let go",
+        stand.forwarded.get().getParameters().get("storage_handler"));
+  }
+
   /**
    * Ordinary Hive tables are where the volume is, so the answer "this name is not an Iceberg
    * table" is cached: the first alter reads the record, the next one inside the TTL does not.
@@ -145,7 +244,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Stand stand = newStand(
         hiveRecord(),
         MetastoreRuntimeProfile.APACHE_3_1_3,
-        new IcebergPointerGuardConfig(true, 1L, 10_000, true, 10_000L));
+        new IcebergPointerGuardConfig(true, 1L, 10_000, true, 10_000L, true));
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
     Assert.assertEquals(1, stand.reads.get());
@@ -200,7 +299,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Stand stand = newStand(
         icebergRecord(CURRENT, PREVIOUS),
         MetastoreRuntimeProfile.APACHE_3_1_3,
-        new IcebergPointerGuardConfig(false, 30_000L, 10_000, true, 10_000L));
+        new IcebergPointerGuardConfig(false, 30_000L, 10_000, true, 10_000L, true));
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
 
@@ -273,6 +372,11 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Assert.assertTrue(icebergMetrics,
         icebergMetrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
             + "{catalog=\"catalog1\",outcome=\"forward_commit\"} 1"));
+    // Both alters arrive without the storage handler the record holds, so both have it kept -
+    // the counter is per event, not per call.
+    Assert.assertTrue(icebergMetrics,
+        icebergMetrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
+            + "{catalog=\"catalog1\",outcome=\"hive_descriptor_kept\"} 2"));
     String hiveMetrics = hive.observability.metrics().render();
     Assert.assertTrue(hiveMetrics,
         hiveMetrics.contains("hms_proxy_iceberg_pointer_guard_events_total"
@@ -311,7 +415,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Stand stand = newStand(
         icebergRecord(CURRENT, PREVIOUS),
         MetastoreRuntimeProfile.APACHE_3_1_3,
-        new IcebergPointerGuardConfig(true, 30_000L, 10_000, false, 10_000L));
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, false, 10_000L, true));
     String next = "hdfs://nn/warehouse/sales/events/metadata/00007-next.metadata.json";
     landCommitDuringRead(stand, 1, next);
 
@@ -442,7 +546,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     Stand stand = newStand(
         icebergRecord(CURRENT, PREVIOUS),
         MetastoreRuntimeProfile.APACHE_3_1_3,
-        new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 120L));
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 120L, true));
     stand.lockNeverGranted = true;
 
     invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
@@ -738,6 +842,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
   /** The Iceberg record a metastore holds: the pointer plus everything Iceberg wrote next to it. */
   private static Table icebergRecord(String metadataLocation, String previousMetadataLocation) {
     Table table = icebergTable(metadataLocation, previousMetadataLocation);
+    table.setSd(hiveEngineDescriptor());
     table.getParameters().put("storage_handler", "org.apache.iceberg.mr.hive.HiveIcebergStorageHandler");
     table.getParameters().put("current-snapshot-id", "7051323893436947220");
     table.getParameters().put("current-snapshot-summary", "{\"added-records\":\"1\"}");
@@ -783,6 +888,40 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     }
     table.setParameters(parameters);
     return table;
+  }
+
+  /**
+   * What Iceberg writes when the Hive engine is enabled: the concrete classes a Hive 3.1 planner
+   * can instantiate. This is the shape a Hive 4 {@code STORED BY ICEBERG} create leaves behind,
+   * measured on the stand.
+   */
+  private static StorageDescriptor hiveEngineDescriptor() {
+    StorageDescriptor descriptor = new StorageDescriptor();
+    descriptor.setLocation("hdfs://nn/warehouse/sales/events");
+    descriptor.setInputFormat("org.apache.iceberg.mr.hive.HiveIcebergInputFormat");
+    descriptor.setOutputFormat("org.apache.iceberg.mr.hive.HiveIcebergOutputFormat");
+    SerDeInfo serde = new SerDeInfo();
+    serde.setSerializationLib("org.apache.iceberg.mr.hive.HiveIcebergSerDe");
+    serde.setParameters(new HashMap<>());
+    descriptor.setSerdeInfo(serde);
+    return descriptor;
+  }
+
+  /**
+   * What Iceberg writes when it computes the Hive engine to be disabled - the abstract base
+   * classes Hive 3.1 dies on with "Cannot create an instance of InputFormat class
+   * org.apache.hadoop.mapred.FileInputFormat".
+   */
+  private static StorageDescriptor plainFilesDescriptor() {
+    StorageDescriptor descriptor = new StorageDescriptor();
+    descriptor.setLocation("hdfs://nn/warehouse/sales/events");
+    descriptor.setInputFormat("org.apache.hadoop.mapred.FileInputFormat");
+    descriptor.setOutputFormat("org.apache.hadoop.mapred.FileOutputFormat");
+    SerDeInfo serde = new SerDeInfo();
+    serde.setSerializationLib("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
+    serde.setParameters(new HashMap<>());
+    descriptor.setSerdeInfo(serde);
+    return descriptor;
   }
 
   private static Table copyOf(Table table) {

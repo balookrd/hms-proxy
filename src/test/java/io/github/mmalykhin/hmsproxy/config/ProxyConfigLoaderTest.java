@@ -1893,4 +1893,54 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void pointerGuardKeepsTheHiveEngineDescriptorUnlessToldOtherwise() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      Assert.assertTrue(ProxyConfigLoader.load(file).icebergPointerGuard().hiveEngineDescriptor());
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          routing.iceberg-pointer-guard.hive-engine-descriptor=false
+          """);
+
+      Assert.assertFalse(ProxyConfigLoader.load(file).icebergPointerGuard().hiveEngineDescriptor());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsNonBooleanPointerGuardHiveEngineDescriptor() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.iceberg-pointer-guard.hive-engine-descriptor=yes
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for"
+            + " routing.iceberg-pointer-guard.hive-engine-descriptor=yes");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("routing.iceberg-pointer-guard.hive-engine-descriptor"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

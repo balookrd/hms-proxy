@@ -62,7 +62,12 @@ done
 # again on 2026-07-31, that is not what happens: the descriptor lands carrying the concrete
 # HiveIcebergInputFormat, and both 3.1 engines read the table. The carve-out meant the scenario
 # asserted the limitation instead of testing it, so it could never notice - which is exactly why
-# a skip must never stand in for a check here.
+# a skip must never stand in for a check here. What the un-skipped run did find is two write-side
+# defects, both since fixed in the proxy (rest-catalog.hive-engine-descriptor and the pointer
+# guard's hive-engine-descriptor): a commit strips that descriptor whenever the committing process
+# has iceberg.engine.hive.enabled off and the table sets no engine.hive.enabled of its own, which
+# is what a Hive 4-created table looks like to the REST front door and to a 3.1 engine alike. See
+# TEST-MATRIX.md, "H12 in detail".
 
 # The apache catalog is the only one on the second HDFS cluster; everything else lives on the
 # first. Only used to verify and clean up the table directory after the purge-drop.

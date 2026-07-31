@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
@@ -57,6 +58,14 @@ import org.slf4j.LoggerFactory;
  * self-deadlock on every honest commit. Hive's own {@code INSERT} holds no lock on the target
  * table at all (its only component is the {@code _dummy_database} placeholder), so the repair path
  * does not queue behind the statement it is serving.
+ *
+ * <p>Having read the record anyway, the guard also keeps the <b>Hive-engine storage
+ * descriptor</b> it holds - see {@link #keepHiveEngineDescriptor}. That one is not about stale
+ * requests: a perfectly current commit strips it whenever the committing engine has
+ * {@code iceberg.engine.hive.enabled} off and the table sets no {@code engine.hive.enabled} of its
+ * own, which is exactly what a Hive 4-created table looks like to a Hive 3.1 writer. It is kept
+ * here rather than in a class of its own so that "is this an Iceberg table" is still decided once,
+ * off one read.
  */
 final class IcebergTablePointerGuard {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergTablePointerGuard.class);
@@ -64,7 +73,9 @@ final class IcebergTablePointerGuard {
   private static final String PREVIOUS_METADATA_LOCATION = "previous_metadata_location";
   private static final String EXPECTED_PARAMETER_KEY = "expected_parameter_key";
   private static final String EXPECTED_PARAMETER_VALUE = "expected_parameter_value";
+  private static final String STORAGE_HANDLER = "storage_handler";
   private static final String OUTCOME_REPAIRED = "repaired";
+  private static final String OUTCOME_HIVE_DESCRIPTOR_KEPT = "hive_descriptor_kept";
   private static final String OUTCOME_FORWARD_COMMIT = "forward_commit";
   private static final String OUTCOME_NOT_ICEBERG = "not_iceberg";
   private static final String OUTCOME_CACHE_SUPPRESSED = "cache_suppressed";
@@ -155,6 +166,7 @@ final class IcebergTablePointerGuard {
       record(namespace, OUTCOME_NOT_ICEBERG);
       return UNLOCKED;
     }
+    keepHiveEngineDescriptor(namespace, incoming, current, backendDbName, tableName);
     if (currentLocation.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
       // A commit built on what the metastore holds now - the table is moving forward. Nothing is
       // locked here: this is the request an Iceberg commit sends from inside the table lock, and
@@ -290,6 +302,83 @@ final class IcebergTablePointerGuard {
             ? "not granted within " + config.lockAcquireTimeoutMs() + " ms"
             : "the lock call failed");
     return null;
+  }
+
+  /**
+   * Keeps the Hive-engine storage descriptor the record already carries when the request would
+   * replace it with the "plain files" one.
+   *
+   * <p>Iceberg writes one of two descriptors on every commit. With the Hive engine enabled it
+   * writes {@code storage_handler} plus the concrete {@code HiveIcebergInputFormat},
+   * {@code HiveIcebergOutputFormat} and {@code HiveIcebergSerDe}; with it disabled it writes the
+   * abstract {@code FileInputFormat}/{@code FileOutputFormat}/{@code LazySimpleSerDe} and
+   * <em>removes</em> {@code storage_handler}. Which one it picks comes from the table's own
+   * {@code engine.hive.enabled} property, and, when the table does not set it, from
+   * {@code iceberg.engine.hive.enabled} in the Hadoop configuration of whichever engine is
+   * committing - a process the proxy has no reach into.
+   *
+   * <p>That is a real interop defect, measured on the stand: a table created by Hive 4's
+   * {@code STORED BY ICEBERG} carries no {@code engine.hive.enabled} at all, so the first
+   * {@code INSERT} committed by a Hive 3.1 engine (which does not set the flag either) rewrites it
+   * into the plain-files shape, and every later 3.1 read dies with "Cannot create an instance of
+   * InputFormat class org.apache.hadoop.mapred.FileInputFormat". The call carrying it is a
+   * legitimate forward commit, so the pointer half of this guard has nothing to object to.
+   *
+   * <p>The descriptor is treated the way the pointers are: whatever the record holds wins. The
+   * guard only ever <em>keeps</em>, never imposes - a record without {@code storage_handler} is a
+   * table whose owner has no Hive engine descriptor to lose, and its alters pass through
+   * untouched. Only the three format fields are taken from the record; columns, location and
+   * everything else in the descriptor remain the client's to change.
+   */
+  private void keepHiveEngineDescriptor(
+      CatalogRouter.ResolvedNamespace namespace,
+      Table incoming,
+      Table current,
+      String backendDbName,
+      String tableName
+  ) {
+    if (!config.hiveEngineDescriptor()) {
+      return;
+    }
+    String storageHandler = parameter(current, STORAGE_HANDLER);
+    if (storageHandler == null || parameter(incoming, STORAGE_HANDLER) != null) {
+      return;
+    }
+    Map<String, String> parameters = incoming.isSetParameters()
+        ? incoming.getParameters()
+        : new LinkedHashMap<>();
+    parameters.put(STORAGE_HANDLER, storageHandler);
+    incoming.setParameters(parameters);
+    copyFormats(current.getSd(), incoming.getSd());
+    record(namespace, OUTCOME_HIVE_DESCRIPTOR_KEPT);
+    LOG.warn(
+        "requestId={} kept the Hive-engine storage descriptor of catalog '{}' db='{}' table='{}':"
+            + " the commit dropped storage_handler, which Iceberg does together with rewriting the"
+            + " descriptor into the abstract FileInputFormat shape a Hive 3.1 planner cannot open."
+            + " The committing engine most likely has iceberg.engine.hive.enabled off while the"
+            + " table does not set engine.hive.enabled.",
+        RequestContext.currentRequestId(),
+        namespace.catalogName(),
+        backendDbName,
+        tableName);
+  }
+
+  /**
+   * Moves only the three fields Iceberg flips together with {@code storage_handler}. A request
+   * that carries no descriptor at all is left without one - inventing a whole
+   * {@code StorageDescriptor}, columns and location included, for a call that never named one
+   * would be the guard changing more than it is keeping.
+   */
+  private static void copyFormats(StorageDescriptor from, StorageDescriptor to) {
+    if (from == null || to == null) {
+      return;
+    }
+    to.setInputFormat(from.getInputFormat());
+    to.setOutputFormat(from.getOutputFormat());
+    if (from.getSerdeInfo() == null || to.getSerdeInfo() == null) {
+      return;
+    }
+    to.getSerdeInfo().setSerializationLib(from.getSerdeInfo().getSerializationLib());
   }
 
   /**

@@ -187,22 +187,52 @@ what it made. Run on the `hive4` backend:
 | H9 | REST front door (Iceberg catalog `createTable`) | HDP, Apache, Hive 4 → 5 rows | ✅ | ✅ |
 | H10 | HDP HiveServer2 (`STORED BY 'HiveIcebergStorageHandler'`) | REST, Apache, Hive 4 → 5 rows | ✅ | ✅ |
 | H11 | Apache HiveServer2 (same DDL) | REST, HDP, Hive 4 → 5 rows | ✅ | ✅ |
-| H12 | Hive 4 HiveServer2 (`STORED BY ICEBERG`) | REST only → 3 rows; the 3.1-line engines **cannot** read it, see below | ✅ | ✅ |
+| H12 | Hive 4 HiveServer2 (`STORED BY ICEBERG`) | REST, HDP, Apache → 5 rows; it takes two proxy-side fixes, see below | ✅ | ✅ |
 
 Every participant reads the running total *before* its own append, so each hand-off across the
 front-door boundary is proven rather than assumed, and a final round has all participants
 confirm the same count.
 
-**The one asymmetry, and it is Hive's, not the proxy's.** A Hive 4-created Iceberg table is
-unreadable by the 3.1 line: `STORED BY ICEBERG` leaves the StorageDescriptor's `inputFormat` as
-the abstract `org.apache.hadoop.mapred.FileInputFormat` (spelling the handler class out
-explicitly leaves it `null` instead), because Hive 4 resolves the real format through the
-storage handler at plan time. Hive 3.1 instantiates whatever the descriptor names and fails with
-`Cannot create an instance of InputFormat class org.apache.hadoop.mapred.FileInputFormat`.
-Tables written by Iceberg's own `HiveTableOperations` - the REST path, and the 3.1 storage
-handler itself - carry the concrete `HiveIcebergInputFormat`, which is why every other origin is
-readable everywhere, Hive 4 included. The proxy passes the descriptor through unchanged in both
-directions; nothing here is a routing or compatibility decision it could make differently.
+**H12 in detail: who is allowed to keep the Hive-engine descriptor.** This row used to read
+"a Hive 4-created table is unreadable by the 3.1 line", on the belief that `STORED BY ICEBERG`
+leaves the StorageDescriptor's `inputFormat` as the abstract
+`org.apache.hadoop.mapred.FileInputFormat`. **That explanation was wrong, and it was wrong in a
+way the scenario could not notice**, because `--origin hive4` carved the two 3.1 engines out of
+the run and asserted the limitation instead of testing it. Measured again on 2026-07-31: Hive 4
+creates the table with the concrete `HiveIcebergInputFormat`, and both 3.1 engines read it. What
+is real is a *write*-side defect, and there are two of them, in two different processes.
+
+Both come from the same fork in Iceberg's `HiveTableOperations`. Every commit rebuilds the
+StorageDescriptor, and it writes one of two shapes: with the Hive engine enabled,
+`storage_handler` plus the concrete `HiveIcebergInputFormat`/`OutputFormat`/`SerDe`; with it
+disabled, the abstract `FileInputFormat`/`FileOutputFormat`/`LazySimpleSerDe`, and
+`storage_handler` *removed*. Which one it picks comes from the table's own
+`engine.hive.enabled`, and, when the table does not set it, from `iceberg.engine.hive.enabled`
+in the Hadoop configuration of whatever process is committing. A table created by Hive 4's
+`STORED BY ICEBERG` sets no `engine.hive.enabled` at all - verified by reading its
+`metadata.json` - so every later committer decides this for itself:
+
+- **The proxy's own REST commits** used to fall on the disabled side, because the REST front
+  door built its Iceberg client without the flag. One REST append rewrote a Hive-created table
+  into the plain-files shape and the 3.1 engines could no longer open it. Fixed by
+  `rest-catalog.hive-engine-descriptor` (default `true`), applied to a copy of each catalog's
+  Hadoop `Configuration` in `IcebergRestServices.open`.
+- **A 3.1 HiveServer2's own commits** fall on the disabled side too - `iceberg-hive-runtime`
+  1.6.1 inside `hs2-hdp`/`hs2` reads the flag from *its* `hive-site.xml`, which does not set it,
+  and no proxy setting can reach that JVM. So HDP's own `INSERT` onto a Hive 4-created table
+  degraded the descriptor a step later, and the request carrying it is a perfectly legitimate
+  forward commit that `IcebergTablePointerGuard` had no pointer-related reason to touch. Fixed
+  in that same guard: having read the record anyway, it now also keeps the Hive-engine
+  descriptor the record holds (`routing.iceberg-pointer-guard.hive-engine-descriptor`, default
+  `true`, counted as the `hive_descriptor_kept` outcome). It only ever *keeps* - a table the
+  metastore records without a storage handler is never given one.
+
+So the proxy is not a bystander here after all: it is the one place both the REST writer and
+every SQL engine pass through, and therefore the only place where a table created by one engine
+can be protected from another engine's idea of whether Hive should be able to read it. Setting
+`iceberg.engine.hive.enabled=true` in every engine's own `hive-site.xml` would fix the second
+half at the source, and on a real cluster that is worth doing; the stand deliberately does not,
+so that this scenario keeps testing the proxy rather than the workaround.
 
 ### H13-H20. Row-level DML: `DELETE` and `UPDATE`
 
@@ -223,14 +253,13 @@ created, and the other three front doors then have to read what it left behind. 
 | H19 | `copy-on-write` really is copy-on-write: the same delete leaves **0 delete files** because Hive 4 rewrites the data file instead, and every engine reads the same result | ✅ | ✅ |
 | H20 | The purge-drop still cleans up a v2 table that has delete files: no parquet, avro or `metadata.json` survives under the table directory | ✅ | ✅ |
 
-**The boundary is on the write side, not the read side** - the opposite of what the `inputFormat`
-asymmetry above would lead you to expect. A 3.1 HiveServer2 carrying `iceberg-hive-runtime` 1.6.1
-plans a scan of a format-version 2 table with position deletes and applies them; what it cannot
-do is *produce* them, because the Hive 3 storage handler registers no ACID-capable table and the
-semantic analyzer stops the statement before a plan exists. So a Hive 4 writer and a 3.1 reader
-can share a row-level-modified table, and a 3.1 client that tries to modify one fails loudly and
-early instead of half-writing. As with H12, none of this is a proxy decision: the same
-`alter_table` is relayed either way.
+**The boundary is on the write side, not the read side** - the same way round as H12 above. A 3.1
+HiveServer2 carrying `iceberg-hive-runtime` 1.6.1 plans a scan of a format-version 2 table with
+position deletes and applies them; what it cannot do is *produce* them, because the Hive 3
+storage handler registers no ACID-capable table and the semantic analyzer stops the statement
+before a plan exists. So a Hive 4 writer and a 3.1 reader can share a row-level-modified table,
+and a 3.1 client that tries to modify one fails loudly and early instead of half-writing. Unlike
+H12, this one really is not a proxy decision: the statement never reaches the metastore at all.
 
 Two things the scenario is careful about, because either would make it pass vacuously:
 
@@ -806,6 +835,41 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   the scenario does its own `kinit` rather than expecting one. Switching only the proxy between
   profiles does not work: the metastores keep their own auth and answer `500`, so the whole stand
   has to come up on the other env file.
+
+- **2026-07-31**, jar built from this change and staged into the stand (byte count of
+  `/opt/hms-proxy/hms-proxy.jar` compared against the built fat jar, equal), **H12 changed from a
+  documented limitation to a passing row** - and the limitation it documented turned out never to
+  have existed. The old text said a Hive 4-created Iceberg table is unreadable by the 3.1 line
+  because `STORED BY ICEBERG` leaves an abstract `inputFormat`. It does not: the table is created
+  with the concrete `HiveIcebergInputFormat`, and both 3.1 engines read it. The old wording
+  survived because `--origin hive4` carved those two engines out of the run, so the scenario
+  asserted the limitation instead of testing it. With the carve-out gone, two real *write*-side
+  defects appeared one after the other, both from the `engine.hive.enabled` fork in Iceberg's
+  `HiveTableOperations` (see "H12 in detail"): the proxy's own REST commits stripped the
+  Hive-engine descriptor, fixed earlier by `rest-catalog.hive-engine-descriptor`; and then a 3.1
+  HiveServer2's own `INSERT` stripped it, which no proxy setting could prevent at the source
+  because the flag is read inside that engine's JVM. Fixed by teaching
+  `IcebergTablePointerGuard` to keep the descriptor the record holds
+  (`routing.iceberg-pointer-guard.hive-engine-descriptor`, new `hive_descriptor_kept` outcome).
+  Root-caused rather than guessed: the `hiveEngineEnabled`/`storageDescriptor` fork was read out
+  of `iceberg-hive-runtime-1.6.1.jar` with `javap`, the absent `engine.hive.enabled` was read out
+  of the table's own `metadata.json` in HDFS, and `hs2-hdp`'s generated `hive-site.xml` was
+  checked for the flag before any code was changed.
+  Runs, all green: the isolated probe (Hive 4 creates, HDP inserts, descriptor intact afterwards
+  and the rows readable through HDP, with the metric showing exactly one `hive_descriptor_kept`);
+  `run-iceberg-interop-smoke.sh --prefix hive4` for **all four origins** on plain, and
+  `--origin hive4` and `--origin rest` on Kerberos; `run-iceberg-rowlevel-smoke.sh --prefix hive4`
+  and `run-iceberg-concurrency-smoke.sh --prefix hive4` on plain as regression cover for a guard
+  change that now touches every Iceberg `alter_table`. Unit suite: 714 tests, 0 failures, 0
+  skipped, on Java 17.
+  The stand deliberately still does **not** set `iceberg.engine.hive.enabled` in either 3.1
+  HiveServer2. Setting it there would fix the second defect at its source and make the scenario
+  green without the proxy - which is exactly why it is not set: the row would stop testing the
+  fix. On a real cluster, setting it is worth doing anyway.
+  Not run: the `hdp` and `apache` backends (`--prefix hdp` / `--prefix apache`), and the Kerberos
+  column of the row-level and concurrency sections. The proxy change is in the routing path shared
+  by all three backends and is covered by unit tests on both runtime profiles, but the other two
+  backends were not re-run on the stand for this change.
 
 ## Two caveats on faithfulness
 

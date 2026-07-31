@@ -14,6 +14,7 @@ public final class IcebergPointerGuardConfigParser {
         reader.getPositiveInt("routing.iceberg-pointer-guard.table-cache-max-entries", 10_000),
         reader.getBoolean("routing.iceberg-pointer-guard.lock-enabled", true),
         // Zero is a documented value - one lock attempt and no waiting.
-        reader.getNonNegativeLong("routing.iceberg-pointer-guard.lock-acquire-timeout-ms", 10_000L));
+        reader.getNonNegativeLong("routing.iceberg-pointer-guard.lock-acquire-timeout-ms", 10_000L),
+        reader.getBoolean("routing.iceberg-pointer-guard.hive-engine-descriptor", true));
   }
 }

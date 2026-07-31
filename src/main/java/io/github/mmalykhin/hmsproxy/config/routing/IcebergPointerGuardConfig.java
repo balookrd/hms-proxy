@@ -15,13 +15,25 @@ package io.github.mmalykhin.hmsproxy.config.routing;
  * separated by another writer's commit. {@code lockAcquireTimeoutMs} is a wait budget, never a
  * refusal: a lock that is not granted in time leaves the alter merged but unprotected, because
  * refusing it would fail an ordinary Hive write whenever the metastore's lock table hiccups.
+ *
+ * <p>{@code hiveEngineDescriptor} keeps the Hive-engine storage descriptor an Iceberg table's
+ * record already carries - {@code storage_handler} and the concrete
+ * {@code HiveIcebergInputFormat}/{@code OutputFormat}/{@code SerDe} - when a committing engine
+ * would replace it with the abstract {@code FileInputFormat} shape. Iceberg decides which of the
+ * two it writes from {@code iceberg.engine.hive.enabled} in the <em>committing engine's own</em>
+ * Hadoop configuration whenever the table itself does not set {@code engine.hive.enabled}, so a
+ * table created by an engine that leaves the property unset (Hive 4's {@code STORED BY ICEBERG})
+ * is degraded by the first commit from an engine that has the flag off - and the proxy is the only
+ * place that sees both. Turning this off lets an owner deliberately take the Hive engine away from
+ * a table that has it.
  */
 public record IcebergPointerGuardConfig(
     boolean enabled,
     long tableCacheTtlMs,
     int tableCacheMaxEntries,
     boolean lockEnabled,
-    long lockAcquireTimeoutMs
+    long lockAcquireTimeoutMs,
+    boolean hiveEngineDescriptor
 ) {
   public IcebergPointerGuardConfig {
     if (tableCacheTtlMs < 0L) {
@@ -40,6 +52,6 @@ public record IcebergPointerGuardConfig(
   }
 
   public static IcebergPointerGuardConfig defaults() {
-    return new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 10_000L);
+    return new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 10_000L, true);
   }
 }
