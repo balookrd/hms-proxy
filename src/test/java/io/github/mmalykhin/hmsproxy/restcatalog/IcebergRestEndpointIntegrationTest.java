@@ -86,7 +86,7 @@ public class IcebergRestEndpointIntegrationTest {
     delegate.tables.put("catalog2__default.events", events);
 
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     // Resolves the way CatalogRouter.resolveDatabase would for this fixture (default catalog1,
     // other catalog2, separator "__"), without needing a real CatalogRouter: CatalogRouter.open
     // eagerly connects to each catalog's hive.metastore.uris, which the fake URIs below cannot
@@ -927,7 +927,7 @@ public class IcebergRestEndpointIntegrationTest {
     server.close();
     services.close();
     ProxyConfig config = buildConfig(
-        new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null, mode, allowedPrefixes));
+        new RestCatalogConfig(true, "127.0.0.1", 0, 1, 4, null, null, mode, allowedPrefixes, true));
     Function<String, String> catalogForExternalDb = externalDbName ->
         externalDbName != null && externalDbName.startsWith(CATALOG2_NAME + "__")
             ? CATALOG2_NAME

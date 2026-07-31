@@ -15,6 +15,7 @@ import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreC
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import org.apache.hadoop.conf.Configuration;
 import org.junit.Test;
 
 public class IcebergRestServicesTest {
@@ -35,6 +36,24 @@ public class IcebergRestServicesTest {
       assertEquals("apache", services.byWarehouse("apache").catalogName());
       assertNull(services.byWarehouse("nope"));
     }
+  }
+
+  @Test
+  public void theRestCatalogGetsHiveEngineDescriptorsWithoutMutatingTheBackendConfiguration()
+      throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    Configuration backendConf = new Configuration(false);
+
+    // The positive half - that the per-catalog Configuration actually passed to
+    // IcebergRestService carries iceberg.engine.hive.enabled=true - has no accessor in this
+    // file's fixtures to assert against; it is covered by the stand run in Task 2 instead.
+    try (IcebergRestServices services = IcebergRestServices.open(
+        buildTwoCatalogConfig(), recording.iface, externalDbName -> "hdp", catalog -> backendConf)) {
+      assertNotNull(services.serviceFor("hdp"));
+    }
+
+    assertNull("the backend's shared Configuration must not be written to",
+        backendConf.get("iceberg.engine.hive.enabled"));
   }
 
   private static ProxyConfig buildTwoCatalogConfig() {
@@ -65,7 +84,7 @@ public class IcebergRestServicesTest {
                 Map.of("hive.metastore.uris", "thrift://hms-test:9084"))))
         .backend(new BackendConfig(Map.of()))
         .restCatalog(new RestCatalogConfig(
-            true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()))
+            true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
   }

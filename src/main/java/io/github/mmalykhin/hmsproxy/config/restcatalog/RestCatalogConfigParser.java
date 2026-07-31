@@ -57,8 +57,9 @@ public final class RestCatalogConfigParser {
           "rest-catalog.purge.allowed-prefixes is only used with rest-catalog.purge.mode=ALLOWLIST,"
               + " but the mode is " + purgeMode);
     }
+    boolean hiveEngineDescriptor = reader.getBoolean("rest-catalog.hive-engine-descriptor", true);
     return new RestCatalogConfig(
         enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab,
-        purgeMode, purgeAllowedPrefixes);
+        purgeMode, purgeAllowedPrefixes, hiveEngineDescriptor);
   }
 }

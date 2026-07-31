@@ -25,7 +25,7 @@ public class RestCatalogServerTest {
   @Test
   public void returnsNullWhenDisabled() throws Exception {
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        false, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        false, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics());
     Assert.assertNull(server);
   }
@@ -33,7 +33,7 @@ public class RestCatalogServerTest {
   @Test
   public void servesEmptyIcebergConfigOnGet() throws Exception {
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     try (RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics())) {
       Assert.assertNotNull(server);
       HttpResponse<String> response = request(server, "/v1/config", "GET");
@@ -47,7 +47,7 @@ public class RestCatalogServerTest {
   @Test
   public void rejectsNonReadMethodsOnConfig() throws Exception {
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     try (RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics())) {
       HttpResponse<String> response = request(server, "/v1/config", "POST");
       Assert.assertEquals(405, response.statusCode());
@@ -58,7 +58,7 @@ public class RestCatalogServerTest {
   @Test
   public void respondsWithNotFoundForUnknownPath() throws Exception {
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     try (RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics())) {
       HttpResponse<String> response = request(server, "/v1/namespaces", "GET");
       Assert.assertEquals(404, response.statusCode());
@@ -69,7 +69,7 @@ public class RestCatalogServerTest {
   @Test
   public void boundPortReflectsActualListener() throws Exception {
     ProxyConfig config = buildConfig(new RestCatalogConfig(
-        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of()));
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
     try (RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics())) {
       Assert.assertTrue("port must be allocated", server.boundPort() > 0);
     }

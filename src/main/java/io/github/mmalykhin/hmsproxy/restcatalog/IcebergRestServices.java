@@ -54,9 +54,16 @@ public final class IcebergRestServices implements AutoCloseable {
       CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
           ? null
           : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
+      // A copy, never the backend's own Configuration: in production that object is
+      // router.requireBackend(catalog).hiveConf(), shared with the Thrift path, and writing to it
+      // would change behaviour far outside the REST front door.
+      Configuration catalogConf = new Configuration(hadoopConfForCatalog.apply(catalog));
+      if (config.restCatalog().hiveEngineDescriptor()) {
+        catalogConf.setBoolean("iceberg.engine.hive.enabled", true);
+      }
       services.put(catalog,
           new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb,
-              hadoopConfForCatalog.apply(catalog), purgePolicy));
+              catalogConf, purgePolicy));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
   }

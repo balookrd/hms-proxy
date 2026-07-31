@@ -159,7 +159,7 @@ public class SpnegoIntegrationTest {
   private static ProxyConfig buildProxyConfig() {
     RestCatalogConfig rest = new RestCatalogConfig(
         true, "127.0.0.1", 0, 1, 4, serverPrincipal, serverKeytab.getAbsolutePath(),
-        RestCatalogPurgeMode.ALLOW, List.of());
+        RestCatalogPurgeMode.ALLOW, List.of(), true);
     return ProxyConfig.builder()
         .server(new ServerConfig("hms-proxy-spnego-test", "127.0.0.1", 9083, 1, 4))
         .catalogDbSeparator(".")
