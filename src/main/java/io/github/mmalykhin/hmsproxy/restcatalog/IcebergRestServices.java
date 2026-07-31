@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.iceberg.hadoop.ConfigProperties;
 
 /**
  * Prefix -> per-catalog REST service registry. The default catalog keeps the
@@ -58,8 +59,12 @@ public final class IcebergRestServices implements AutoCloseable {
       // router.requireBackend(catalog).hiveConf(), shared with the Thrift path, and writing to it
       // would change behaviour far outside the REST front door.
       Configuration catalogConf = new Configuration(hadoopConfForCatalog.apply(catalog));
-      if (config.restCatalog().hiveEngineDescriptor()) {
-        catalogConf.setBoolean("iceberg.engine.hive.enabled", true);
+      // Only fill in the default: an explicit catalog.<name>.conf.iceberg.engine.hive.enabled
+      // override is an operator choice for that one catalog and must survive the proxy-wide
+      // default, not get silently replaced by it.
+      if (config.restCatalog().hiveEngineDescriptor()
+          && catalogConf.get(ConfigProperties.ENGINE_HIVE_ENABLED) == null) {
+        catalogConf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
       }
       services.put(catalog,
           new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb,

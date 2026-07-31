@@ -39,14 +39,17 @@ public class IcebergRestServicesTest {
   }
 
   @Test
-  public void theRestCatalogGetsHiveEngineDescriptorsWithoutMutatingTheBackendConfiguration()
+  public void doesNotMutateTheBackendConfigurationWhenApplyingTheHiveEngineDescriptor()
       throws Exception {
     RecordingThriftIface recording = new RecordingThriftIface();
     Configuration backendConf = new Configuration(false);
 
-    // The positive half - that the per-catalog Configuration actually passed to
-    // IcebergRestService carries iceberg.engine.hive.enabled=true - has no accessor in this
-    // file's fixtures to assert against; it is covered by the stand run in Task 2 instead.
+    // This test only pins that the backend's own Configuration is left untouched; it says
+    // nothing about the descriptor actually reaching a committed table. That positive half -
+    // and the discriminating "flag off reproduces the pre-fix regression" half - live in
+    // IcebergRestEndpointIntegrationTest#restCommitWithHiveEngineDescriptorEnabledWritesHiveReadableStorageDescriptor
+    // and its disabled counterpart, which drive a real REST commit and inspect the fake
+    // metastore's stored Table.
     try (IcebergRestServices services = IcebergRestServices.open(
         buildTwoCatalogConfig(), recording.iface, externalDbName -> "hdp", catalog -> backendConf)) {
       assertNotNull(services.serviceFor("hdp"));

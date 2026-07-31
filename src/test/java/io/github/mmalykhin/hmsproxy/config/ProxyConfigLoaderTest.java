@@ -1852,6 +1852,30 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void rejectsNonBooleanRestCatalogHiveEngineDescriptor() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          rest-catalog.hive-engine-descriptor=yes
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for rest-catalog.hive-engine-descriptor=yes");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage(),
+            e.getMessage().contains("rest-catalog.hive-engine-descriptor"));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("true, false"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void restCatalogHiveEngineDescriptorCanBeTurnedOff() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

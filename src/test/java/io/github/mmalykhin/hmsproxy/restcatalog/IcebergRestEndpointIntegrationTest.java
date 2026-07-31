@@ -736,6 +736,105 @@ public class IcebergRestEndpointIntegrationTest {
         get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/txn_c").body().contains("\"txn\":\"applied\""));
   }
 
+  // Discriminating pair for the iceberg.engine.hive.enabled fix (commit 6915742): a real REST
+  // commit through HiveTableOperations.doCommit writes the storage descriptor and
+  // "storage_handler" parameter that RecordingThriftIface's alter_table_with_environment_context
+  // stores verbatim (see RecordingThriftIface.java, the "alter_table_with_environment_context"
+  // case) - no accessor needed, the fake metastore's own stored Table is the observation point.
+  // The disabled half reproduces the exact pre-fix regression: Iceberg's HiveTableOperations
+  // rewrites a Hive-created Iceberg table with plain-file formats and drops storage_handler,
+  // which is unreadable by Hive 3.1 engines after a single REST append.
+  @Test
+  public void restCommitWithHiveEngineDescriptorEnabledWritesHiveReadableStorageDescriptor()
+      throws Exception {
+    registerTableWithCommittedDataFile("hive_engine_on");
+    String uuid = tableUuid("hive_engine_on");
+    String body = "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuid + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"probe\":\"1\"}}]}";
+
+    HttpResponse<String> response =
+        post("/v1/" + CATALOG_NAME + "/namespaces/default/tables/hive_engine_on", body);
+
+    Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
+    Table committed = delegate.tables.get("default.hive_engine_on");
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergInputFormat",
+        committed.getSd().getInputFormat());
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergStorageHandler",
+        committed.getParameters().get("storage_handler"));
+  }
+
+  @Test
+  public void restCommitWithHiveEngineDescriptorDisabledReproducesPreFixRegression()
+      throws Exception {
+    restartWithHiveEngineDescriptor(false);
+    registerTableWithCommittedDataFile("hive_engine_off");
+    String uuid = tableUuid("hive_engine_off");
+    String body = "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuid + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"probe\":\"1\"}}]}";
+
+    HttpResponse<String> response =
+        post("/v1/" + CATALOG_NAME + "/namespaces/default/tables/hive_engine_off", body);
+
+    Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
+    Table committed = delegate.tables.get("default.hive_engine_off");
+    Assert.assertEquals("org.apache.hadoop.mapred.FileInputFormat",
+        committed.getSd().getInputFormat());
+    Assert.assertNull(committed.getParameters().get("storage_handler"));
+  }
+
+  // Minor 3: a catalog's own per-catalog conf (catalog.<name>.conf.iceberg.engine.hive.enabled=
+  // false, the shape routing.hiveConf() carries in production) is an explicit operator choice for
+  // that one catalog. rest-catalog.hive-engine-descriptor's proxy-wide default of true must not
+  // silently overwrite it back to true.
+  @Test
+  public void restCommitRespectsExplicitPerCatalogHiveEngineOverride() throws Exception {
+    server.close();
+    services.close();
+    Configuration overriddenConf = new Configuration(false);
+    overriddenConf.setBoolean("iceberg.engine.hive.enabled", false);
+    ProxyConfig config = buildConfig(new RestCatalogConfig(
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
+    Function<String, String> catalogForExternalDb = externalDbName ->
+        externalDbName != null && externalDbName.startsWith(CATALOG2_NAME + "__")
+            ? CATALOG2_NAME
+            : CATALOG_NAME;
+    services = IcebergRestServices.open(config, delegate.iface, catalogForExternalDb,
+        catalog -> catalog.equals(CATALOG_NAME) ? overriddenConf : new Configuration());
+    server = RestCatalogServer.open(config, services, metrics);
+
+    registerTableWithCommittedDataFile("override_off");
+    String uuid = tableUuid("override_off");
+    String body = "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuid + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"probe\":\"1\"}}]}";
+
+    HttpResponse<String> response =
+        post("/v1/" + CATALOG_NAME + "/namespaces/default/tables/override_off", body);
+
+    Assert.assertEquals("body: " + response.body(), 200, response.statusCode());
+    Table committed = delegate.tables.get("default.override_off");
+    Assert.assertEquals("an explicit per-catalog override to false must survive the "
+            + "proxy-wide default of true",
+        "org.apache.hadoop.mapred.FileInputFormat", committed.getSd().getInputFormat());
+    Assert.assertNull(committed.getParameters().get("storage_handler"));
+  }
+
+  // Restarts the listener with hiveEngineDescriptor toggled, leaving the @Before fixture (fake
+  // metastore, registered tables) alone - mirrors restartWithPurgePolicy below.
+  private void restartWithHiveEngineDescriptor(boolean hiveEngineDescriptor) throws Exception {
+    server.close();
+    services.close();
+    ProxyConfig config = buildConfig(new RestCatalogConfig(
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(),
+        hiveEngineDescriptor));
+    Function<String, String> catalogForExternalDb = externalDbName ->
+        externalDbName != null && externalDbName.startsWith(CATALOG2_NAME + "__")
+            ? CATALOG2_NAME
+            : CATALOG_NAME;
+    services = IcebergRestServices.open(config, delegate.iface, catalogForExternalDb);
+    server = RestCatalogServer.open(config, services, metrics);
+    Assert.assertNotNull("server must restart", server);
+  }
+
   private String tableUuid(String tableName) throws Exception {
     String body = get("/v1/" + CATALOG_NAME + "/namespaces/default/tables/" + tableName).body();
     java.util.regex.Matcher matcher =

@@ -3,6 +3,8 @@ package io.github.mmalykhin.hmsproxy.config.restcatalog;
 import java.util.List;
 
 /**
+ * Configuration for the Iceberg REST catalog front door.
+ *
  * <p>{@code hiveEngineDescriptor} makes the proxy's REST commits write the Hive-engine storage
  * descriptor. Iceberg's HiveTableOperations otherwise rewrites the table with
  * {@code FileInputFormat}, {@code FileOutputFormat} and {@code LazySimpleSerDe} and drops
