@@ -60,6 +60,8 @@ HDP-клиент не может пользоваться Apache-listener — Th
 | C3 | `add_write_notification_log`, отправленный **самим Hive** после ACID-записи, с настоящими delta-путями и контрольными суммами | ✅ | ✅ |
 | C4 | `allocate_table_write_ids` / `get_valid_write_ids` через федерацию | ✅ | ✅ |
 | C5 | Materialized view с включённым rewrite (`show materialized views` → `Yes`) | ✅ | ✅ |
+| C6 | ACID — свойство **front door**, а не только каталога: те же `create` и `insert` в транзакционную таблицу здесь проходят, а через Apache front door падают — вставка доходит, а обновление статистики отклоняется с `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)`, и наружу это выходит падающим `StatsTask`. У обоих HiveServer2 настройки `hive.support.concurrency`/`hive.txn.manager` одинаковые, так что дело не в конфигурации стенда; теряет ли write ID прокси или клиент его не шлёт — **пока не установлено** | ✅ отказ воспроизводится | — |
+| C7 | Когда default-каталогом стоит **метастор Apache 3.1.3** (`.env.apache`), ACID-пути нет вовсе: Hive сам шлёт `add_write_notification_log` после ACID-записи, а прокси отклоняет Hortonworks-запрос всякий раз, когда бэкенд не является Hortonworks-рантаймом (строка A6 фиксирует этот отказ как правильный). Запрос умирает в `MoveTask` с голым `Internal error processing add_write_notification_log`. Всё, что не ACID, в секциях B и C на этой раскладке проходит | ✅ | — |
 
 ## D. Два HDFS-кластера
 

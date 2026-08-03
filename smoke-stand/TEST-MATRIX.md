@@ -60,6 +60,8 @@ only path that covers the Hortonworks front door with a real client.
 | C3 | `add_write_notification_log` sent by **Hive itself** after an ACID write, with real delta paths and checksums | ✅ | ✅ |
 | C4 | `allocate_table_write_ids` / `get_valid_write_ids` through federation | ✅ | ✅ |
 | C5 | Materialized view with rewrite enabled (`show materialized views` → `Yes`) | ✅ | ✅ |
+| C6 | ACID is a property of the **front door**, not just the catalog: the same `create` + `insert` on a transactional table succeeds here and fails through the Apache front door, where the insert lands and the stats update is then refused with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)`, surfacing as a failing `StatsTask`. Both HiveServer2 instances carry identical `hive.support.concurrency`/`hive.txn.manager` settings, so this is not stand configuration; whether the write IDs are dropped by the proxy or never sent by that client is **not yet determined** | ✅ refused as described | — |
+| C7 | With the **Apache 3.1.3 metastore as the default catalog** (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | ✅ | — |
 
 ## D. Two HDFS clusters
 
