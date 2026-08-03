@@ -157,6 +157,7 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW    default: false
   HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL    default: false
   HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL default: false
+  HMS_SMOKE_SQL_FRONT_DOORS              default: apache hdp (which passes run)
   HMS_SMOKE_TRANSACTIONAL_SQL_FRONT_DOORS default: hdp (space-separated: apache hdp)
 EOF
 
@@ -636,10 +637,27 @@ assert_file_contains_identifier() {
 # its own line. Running the SQL suite against every configured HiveServer2 is what proves both
 # combinations of client and backend actually work, rather than assuming the second one follows
 # from the first.
-run_sql_smoke_all() {
-  run_sql_smoke "apache"
+# Which front-door passes to run. The default keeps both, which is what a single-metastore
+# installation wants. A stand that pairs each front door with its own metastore as the default
+# catalog runs one pass per layout instead: the Hortonworks front door while the Hortonworks
+# metastore is default, the Apache one while the Apache metastore is - the cross pairings are a
+# different topology and are covered by their own rows rather than by this run.
+sql_front_door_selected() {
+  local front_door="$1"
+  local selected=" ${HMS_SMOKE_SQL_FRONT_DOORS:-apache hdp} "
+  [[ "${selected}" == *" ${front_door} "* ]]
+}
 
-  if [[ -n "${HMS_SMOKE_BEELINE_HDP_JDBC_URL:-}" ]]; then
+run_sql_smoke_all() {
+  if sql_front_door_selected "apache"; then
+    run_sql_smoke "apache"
+  else
+    log "skipping the Apache front-door SQL smoke: not in HMS_SMOKE_SQL_FRONT_DOORS"
+  fi
+
+  if ! sql_front_door_selected "hdp"; then
+    log "skipping the Hortonworks front-door SQL smoke: not in HMS_SMOKE_SQL_FRONT_DOORS"
+  elif [[ -n "${HMS_SMOKE_BEELINE_HDP_JDBC_URL:-}" ]]; then
     HMS_SMOKE_BEELINE_JDBC_URL="${HMS_SMOKE_BEELINE_HDP_JDBC_URL}" \
     HMS_SMOKE_BEELINE_BIN="${HMS_SMOKE_BEELINE_HDP_BIN:-${HMS_SMOKE_BEELINE_BIN:-beeline}}" \
     HMS_SMOKE_BEELINE_USER="${HMS_SMOKE_BEELINE_HDP_USER:-${HMS_SMOKE_BEELINE_USER:-}}" \
