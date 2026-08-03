@@ -60,7 +60,7 @@ only path that covers the Hortonworks front door with a real client.
 | C3 | `add_write_notification_log` sent by **Hive itself** after an ACID write, with real delta paths and checksums | ✅ | ✅ |
 | C4 | `allocate_table_write_ids` / `get_valid_write_ids` through federation | ✅ | ✅ |
 | C5 | Materialized view with rewrite enabled (`show materialized views` → `Yes`) | ✅ | ✅ |
-| C8 | **The paired topology** - each front door with its own metastore as the default catalog, the other as a remote one: Hortonworks front door while `hms-hdp` is default, Apache front door while `hms-apache` is (`.env.apache`). Both pass the whole of sections B and C **including the ACID block**, with `allocate_table_write_ids` in the proxy log and the transactional table created. The Apache pairing sends no `add_write_notification_log` at all, which is why C7 does not arise there | ✅ both pairings | — |
+| C8 | **The paired topology** - each front door with its own metastore as the default catalog, the other as a remote one: Hortonworks front door while `hms-hdp` is default, Apache front door while `hms-apache` is (`.env.apache`). Both pass the whole of sections B and C **including the ACID block**, with `allocate_table_write_ids` in the proxy log and the transactional table created. The Apache pairing sends no `add_write_notification_log` at all, which is why C7 does not arise there | ✅ both pairings | ✅ both pairings |
 | C6 | **Cross pairing, outside the paired topology of C8.** ACID is a property of the **front door**, not just the catalog: the same `create` + `insert` on a transactional table succeeds here and fails through the Apache front door, where the insert lands and the stats update is then refused with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)`, surfacing as a failing `StatsTask`. **The proxy is not losing the write ID** - the two clients issue different RPCs. The vendor build never calls `set_aggr_stats_for` at all: it goes `get_valid_write_ids` → `alter_table_with_environment_context` → `commit_txn`. The Apache 3.1.3 client instead ends with `set_aggr_stats_for`, which carries no transactional write state, and the Hortonworks backend refuses it, after which the client aborts the txn. Ruled out along the way: federation is not the trigger (a non-federated `default` database fails identically), stand configuration is not (both HiveServer2 instances carry the same `hive.support.concurrency`/`hive.txn.manager`), and field loss in the proxy is not (`NamespaceInternalizer` deep-copies the struct). What this stand cannot settle is whether an Apache 3.1.3 client would hit the same rule against an Apache metastore: with that metastore as the default catalog the statement dies earlier, at C7 | ✅ refused as described | — |
 | C7 | **Cross pairing, outside the paired topology of C8.** With the **Apache 3.1.3 metastore as the default catalog** (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | ✅ | — |
 
@@ -873,6 +873,28 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   column of the row-level and concurrency sections. The proxy change is in the routing path shared
   by all three backends and is covered by unit tests on both runtime profiles, but the other two
   backends were not re-run on the stand for this change.
+
+- **2026-08-03**, jar `1.0.27-d14e85c2`, the SQL layer of the stand driven from repository files for
+  the first time. Until now every SQL setting in `smoke-stand/env/*.env` was commented out, so
+  `--scenario all` logged "skipping beeline SQL smoke" and `--scenario sql` refused to start;
+  sections B and C rested on hand-edited runs nobody could reproduce. Four env files now cover the
+  paired topology - `sql.env`, `sql-apache.env` and their `-kerberos` counterparts - and the runner
+  selects passes with `HMS_SMOKE_SQL_FRONT_DOORS` and the ACID blocks with
+  `HMS_SMOKE_TRANSACTIONAL_SQL_FRONT_DOORS`.
+  Four runs, all green: Hortonworks front door over the Hortonworks default catalog and Apache over
+  the Apache one, each on the plain and the Kerberos profile. The ACID block ran for the first time
+  and was verified rather than inferred - `allocate_table_write_ids` in the proxy log and the
+  transactional table created in each pairing - and the Kerberos runs were confirmed Kerberized the
+  same way (`security.mode=KERBEROS`, 169 calls from `hive/hs2@SMOKE.LOCAL`, SASL in the log)
+  rather than trusted because the profile said so.
+  Two failures surfaced along the way, and both turned out to be cross pairings rather than limits
+  of the supported layout: C6, an Apache front door over a Hortonworks backend, where the insert
+  lands and the stats update is refused for want of a transactional write ID; and C7, a Hortonworks
+  front door over an Apache backend, where Hive's own `add_write_notification_log` is refused
+  because the backend is not a Hortonworks runtime. C6 was chased to a conclusion: the proxy is not
+  losing the field - the two clients issue different RPCs, and the vendor build never calls
+  `set_aggr_stats_for` at all. Federation was ruled out by a non-federated database failing
+  identically, stand configuration by both HiveServer2 instances carrying the same settings.
 
 ## Two caveats on faithfulness
 
