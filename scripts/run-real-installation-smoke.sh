@@ -746,6 +746,21 @@ run_sql_smoke() {
   # has no MapReduce, so the engine cannot be named in hive-site.xml (the server would not start),
   # and a stand without YARN cannot use the vendor default of Tez either. `set` is the only place
   # left to choose, and it is what an operator types on a real cluster too.
+  # TRUNCATE is opt-out because one backend on the stand cannot serve it. The Hortonworks
+  # metastore answers a positional truncate_table by calling
+  # HdfsAdmin.getEncryptionZoneForPath, which its own classpath does not carry in a matching
+  # signature: it dies with NoSuchMethodError, the connection drops, and the client sees a bare
+  # TTransportException behind a failed DDLTask. The same statement through the Hortonworks front
+  # door succeeds, so the vendor's own truncate_table_req path does not make that call.
+  local truncate_sql_managed_hdp=""
+  local truncate_sql_managed_apache=""
+  if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
+    truncate_sql_managed_hdp="truncate table ${managed_hdp};
+select count(*) as managed_hdp_count_after_truncate from ${managed_hdp};"
+    truncate_sql_managed_apache="truncate table ${managed_apache};
+select count(*) as managed_apache_count_after_truncate from ${managed_apache};"
+  fi
+
   local session_init="${HMS_SMOKE_SQL_SESSION_INIT:-}"
   if [[ "${front_door}" == "hdp" && -n "${HMS_SMOKE_SQL_HDP_SESSION_INIT:-}" ]]; then
     session_init="${HMS_SMOKE_SQL_HDP_SESSION_INIT}"
@@ -784,7 +799,22 @@ show partitions ${managed_hdp};
 alter table ${managed_hdp} partition (p='2026-03-31') rename to partition (p='2026-04-01');
 show partitions ${managed_hdp};
 select count(*) as ${managed_hdp}_count_after_rename from ${managed_hdp} where p='2026-04-01';
-drop table ${managed_hdp};
+alter table ${managed_hdp} add columns (extra string);
+insert into ${managed_hdp} partition (p='2026-05-01') values (2, '2026-05-01', 'added_managed_hdp');
+-- The value, not a count: the assertion downstream looks for it in the output, and a
+-- count would print a number no matter what the added column actually holds.
+select extra as managed_hdp_added_column_value from ${managed_hdp} where p='2026-05-01';
+alter table ${managed_hdp} drop partition (p='2026-04-01');
+show partitions ${managed_hdp};
+${truncate_sql_managed_hdp}
+alter table ${managed_hdp} rename to ${managed_hdp}_renamed;
+describe formatted ${managed_hdp}_renamed;
+-- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- works for a managed table, whose directory moves with the rename; an external table
+-- keeps its original location, so the new name appears nowhere in that output.
+show tables like '${managed_hdp}_renamed';
+select count(*) as managed_hdp_renamed_count from ${managed_hdp}_renamed;
+drop table ${managed_hdp}_renamed;
 
 create external table if not exists ${external_hdp} (
   id int,
@@ -796,7 +826,16 @@ alter table ${external_hdp} set tblproperties ('smoke'='true', 'table_kind'='ext
 insert into ${external_hdp} values (2, '2026-03-31');
 select count(*) as ${external_hdp}_count from ${external_hdp} where id=2;
 describe formatted ${external_hdp};
-drop table ${external_hdp};
+alter table ${external_hdp} add columns (extra string);
+describe ${external_hdp};
+alter table ${external_hdp} rename to ${external_hdp}_renamed;
+describe formatted ${external_hdp}_renamed;
+-- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- works for a managed table, whose directory moves with the rename; an external table
+-- keeps its original location, so the new name appears nowhere in that output.
+show tables like '${external_hdp}_renamed';
+select count(*) as external_hdp_renamed_count from ${external_hdp}_renamed;
+drop table ${external_hdp}_renamed;
 EOF
 
   if [[ "${HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
@@ -831,7 +870,22 @@ show partitions ${managed_apache};
 alter table ${managed_apache} partition (p='2026-03-31') rename to partition (p='2026-04-01');
 show partitions ${managed_apache};
 select count(*) as ${managed_apache}_count_after_rename from ${managed_apache} where p='2026-04-01';
-drop table ${managed_apache};
+alter table ${managed_apache} add columns (extra string);
+insert into ${managed_apache} partition (p='2026-05-01') values (2, '2026-05-01', 'added_managed_apache');
+-- The value, not a count: the assertion downstream looks for it in the output, and a
+-- count would print a number no matter what the added column actually holds.
+select extra as managed_apache_added_column_value from ${managed_apache} where p='2026-05-01';
+alter table ${managed_apache} drop partition (p='2026-04-01');
+show partitions ${managed_apache};
+${truncate_sql_managed_apache}
+alter table ${managed_apache} rename to ${managed_apache}_renamed;
+describe formatted ${managed_apache}_renamed;
+-- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- works for a managed table, whose directory moves with the rename; an external table
+-- keeps its original location, so the new name appears nowhere in that output.
+show tables like '${managed_apache}_renamed';
+select count(*) as managed_apache_renamed_count from ${managed_apache}_renamed;
+drop table ${managed_apache}_renamed;
 
 create external table if not exists ${external_apache} (
   id int,
@@ -843,7 +897,16 @@ alter table ${external_apache} set tblproperties ('smoke'='true', 'table_kind'='
 insert into ${external_apache} values (2, '2026-03-31');
 select count(*) as ${external_apache}_count from ${external_apache} where id=2;
 describe formatted ${external_apache};
-drop table ${external_apache};
+alter table ${external_apache} add columns (extra string);
+describe ${external_apache};
+alter table ${external_apache} rename to ${external_apache}_renamed;
+describe formatted ${external_apache}_renamed;
+-- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- works for a managed table, whose directory moves with the rename; an external table
+-- keeps its original location, so the new name appears nowhere in that output.
+show tables like '${external_apache}_renamed';
+select count(*) as external_apache_renamed_count from ${external_apache}_renamed;
+drop table ${external_apache}_renamed;
 EOF
 
   if [[ "${HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
@@ -960,6 +1023,14 @@ EOF
   assert_file_contains "${output_file}" "${hdp_catalog}__default"
   assert_file_contains "${output_file}" "${apache_catalog}__default"
   assert_file_contains "${output_file}" "2026-04-01"
+  # The metadata-breaking operations: a rename must leave the table reachable under the new name,
+  # and a column added after the table existed must come back with the value written through it.
+  # Both touch paths where the proxy rewrites names and locations, so a silent no-op here would be
+  # a proxy defect rather than a Hive one.
+  assert_file_contains "${output_file}" "added_managed_hdp"
+  assert_file_contains "${output_file}" "added_managed_apache"
+  assert_file_contains "${output_file}" "${managed_hdp}_renamed"
+  assert_file_contains "${output_file}" "${external_hdp}_renamed"
   if [[ "${run_view_rewrite}" == "true" ]]; then
     assert_file_contains_identifier "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
     assert_file_contains_identifier "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
