@@ -4,6 +4,7 @@ FROM eclipse-temurin:8-jdk
 
 ARG METASTORE_JAR=hive-standalone-metastore-3.1.3.jar
 ARG ACID_LIB_DIR=acid-apache
+ARG OVERRIDE_LIB_DIR=override-apache
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends krb5-user netcat-openbsd \
@@ -21,6 +22,12 @@ COPY ${METASTORE_JAR} /opt/hms/metastore.jar
 # own copy of the metastore classes, so the entrypoint puts these last on the classpath - the jar
 # under test has to win every lookup, or the stand would stop testing the runtime it claims to.
 COPY ${ACID_LIB_DIR}/ /opt/hms/acid-lib/
+# Vendor jars that must WIN over the Maven-resolved set, so this one goes first on the classpath -
+# the opposite of acid-lib. The Hortonworks metastore needs its own hadoop-hdfs-client: Maven
+# resolves hadoop-hdfs 2.2.0 here, which predates HDFS encryption zones entirely, so a
+# truncate_table dies with NoSuchMethodError on HdfsAdmin.getEncryptionZoneForPath. Empty for the
+# Apache image, and empty for the Hortonworks one too when no HDP distribution is staged.
+COPY ${OVERRIDE_LIB_DIR}/ /opt/hms/override-lib/
 
 COPY InitSchema.java /opt/hms/
 RUN javac -cp "/opt/hms/metastore.jar:/opt/hms/lib/*" -d /opt/hms /opt/hms/InitSchema.java

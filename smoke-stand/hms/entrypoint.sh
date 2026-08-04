@@ -11,7 +11,9 @@ PORT=${METASTORE_PORT:-9083}
 # acid-lib goes last on purpose: it is only here so TransactionalValidationListener can resolve
 # OrcOutputFormat and accept a transactional table, and hive-exec carries its own metastore classes
 # that must never shadow the jar under test.
-CP="/opt/hms:/opt/hms/metastore.jar:/opt/hms/lib/*:/opt/hms/acid-lib/*"
+# override-lib goes first for the opposite reason: it carries vendor jars that must beat the
+# Maven-resolved set. It is normally empty, and the metastore jar under test still precedes it.
+CP="/opt/hms:/opt/hms/metastore.jar:/opt/hms/override-lib/*:/opt/hms/lib/*:/opt/hms/acid-lib/*"
 
 mkdir -p "$WAREHOUSE" "$(dirname "$DERBY_DIR")" /opt/hms/conf
 
