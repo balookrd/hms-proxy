@@ -156,6 +156,26 @@ rowlevel_kinit() {
     docker exec "${c}" kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL \
       || fail "kinit failed in ${c}"
   done
+  # The namenode container needs one too: without a ticket every hdfs CLI call from it fails under
+  # Kerberos, and the purge assertion below used to discard stderr, so an unreadable HDFS counted
+  # as an empty one. It logs in as the node's own principal, the HDFS superuser.
+  local host=${NAMENODE#stand-}
+  docker exec "${NAMENODE}" kinit -kt "/keytabs/${host}.keytab" "hdfs/${host}@SMOKE.LOCAL" \
+    || fail "kinit failed in ${NAMENODE}"
+}
+
+# Echoes a recursive listing of the table directory, empty when the directory does not exist.
+# Any other failure is fatal: an HDFS that cannot be read must never look like an empty one.
+namenode_table_listing() {
+  local path="/warehouse/${PREFIX}/${TABLE}"
+  local out status=0
+  out="$(docker exec "${NAMENODE}" hdfs dfs -ls -R "${path}" 2>&1)" || status=$?
+  if (( status != 0 )); then
+    grep -q 'No such file or directory' <<< "${out}" \
+      || fail "could not list ${path} on ${NAMENODE}: ${out}"
+    return 0
+  fi
+  printf '%s\n' "${out}"
 }
 
 # --- assertions ------------------------------------------------------------------------------
@@ -314,12 +334,13 @@ run_mode() {
   log "--- ${mode}: REST drops the table with purge"
   writer drop --purge >/dev/null
   local leftovers
-  leftovers="$(docker exec "${NAMENODE}" hdfs dfs -ls -R "/warehouse/${PREFIX}/${TABLE}" 2>/dev/null \
-    | grep -cE 'parquet|avro|metadata.json' || true)"
+  leftovers="$(namenode_table_listing | grep -cE 'parquet|avro|metadata.json' || true)"
   [[ "${leftovers}" == "0" ]] \
     || fail "purge left ${leftovers} file(s) under /warehouse/${PREFIX}/${TABLE}"
-  # The emptied directory itself is not removed by a purge; drop it so a rerun starts clean.
-  docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
+  # The emptied directory itself is not removed by a purge; drop it so a rerun starts clean. -f
+  # already tolerates a missing path, so a non-zero status here is a real failure.
+  docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 \
+    || fail "could not remove /warehouse/${PREFIX}/${TABLE} on ${NAMENODE}"
 
   log "=== ${mode}: passed"
 }

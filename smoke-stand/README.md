@@ -386,7 +386,11 @@ HiveServer2 logs `scheduled_query_poll` refusals every few seconds — a Hive 4-
 no Apache 3.1.3 mapping, refused cleanly as `UNKNOWN_METHOD`; noise by design. The scenario ends with a real
 `DELETE ... ?purgeRequested=true` and asserts no data, manifest or metadata file survives it -
 that manifest walk is the one REST path that reads Avro, so a broken Avro dependency shows up
-here and nowhere else. If HiveServer2 answers "File does not exist" for files that exist right after a
+here and nowhere else. That assertion reads HDFS from inside the namenode container, which under
+Kerberos has no ticket of its own, so the scenario logs it in from the node keytab first; without
+that the call fails with `Client cannot authenticate via:[TOKEN, KERBEROS]` and an unreadable HDFS
+would read as an empty one (it did, until 2026-08-04 - see the revalidation log).
+If HiveServer2 answers "File does not exist" for files that exist right after a
 stand rebuild, restart the HS2 containers — their JVMs cache a stale DNS resolution of the
 namenodes. See `TEST-MATRIX.md` section H for what has been run.
 

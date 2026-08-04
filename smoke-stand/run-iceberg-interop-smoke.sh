@@ -181,6 +181,28 @@ interop_kinit() {
     docker exec "${c}" kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL \
       || fail "kinit failed in ${c}"
   done
+  # The namenode container needs one too, and for a reason that already cost a false green: every
+  # hdfs CLI call from it fails under Kerberos with "Client cannot authenticate via:[TOKEN,
+  # KERBEROS]", and the purge assertion below used to discard stderr - so an unreadable HDFS
+  # counted as an empty one and the check passed without ever looking. It logs in as the node's
+  # own principal, which is the HDFS superuser and can therefore also read what Hive wrote.
+  local host=${NAMENODE#stand-}
+  docker exec "${NAMENODE}" kinit -kt "/keytabs/${host}.keytab" "hdfs/${host}@SMOKE.LOCAL" \
+    || fail "kinit failed in ${NAMENODE}"
+}
+
+# Echoes a recursive listing of the table directory, empty when the directory does not exist.
+# Any other failure is fatal: an HDFS that cannot be read must never look like an empty one.
+namenode_table_listing() {
+  local path="/warehouse/${PREFIX}/${TABLE}"
+  local out status=0
+  out="$(docker exec "${NAMENODE}" hdfs dfs -ls -R "${path}" 2>&1)" || status=$?
+  if (( status != 0 )); then
+    grep -q 'No such file or directory' <<< "${out}" \
+      || fail "could not list ${path} on ${NAMENODE}: ${out}"
+    return 0
+  fi
+  printf '%s\n' "${out}"
 }
 
 expect_rows() {
@@ -368,14 +390,16 @@ code="$(rest_curl -o /dev/null -w '%{http_code}' "$(rest_url)/v1/${PREFIX}/names
 
 # A purge must leave no data, manifest or metadata file behind - that walk over the manifests is
 # the one REST path that reads Avro, so a broken dependency shows up here and nowhere else.
-leftovers="$(docker exec "${NAMENODE}" hdfs dfs -ls -R "/warehouse/${PREFIX}/${TABLE}" 2>/dev/null \
-  | grep -cE 'parquet|avro|metadata.json' || true)"
+leftovers="$(namenode_table_listing | grep -cE 'parquet|avro|metadata.json' || true)"
 [[ "${leftovers}" == "0" ]] \
   || fail "purge left ${leftovers} file(s) under /warehouse/${PREFIX}/${TABLE}"
 log "purge left no data, manifest or metadata files behind"
 
-# The emptied directory itself is not removed by a purge; drop it so a rerun starts clean.
-docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
+# The emptied directory itself is not removed by a purge; drop it so a rerun starts clean. -f
+# already tolerates a missing path, so a non-zero status here is a real failure - and swallowing
+# it leaves orphan files for the next run's purge assertion to trip over.
+docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 \
+  || fail "could not remove /warehouse/${PREFIX}/${TABLE} on ${NAMENODE}"
 
 out="$(beeline_run stand-hs2 "$(apache_jdbc_url)" "show tables like '${TABLE}';")"
 if grep -q "${TABLE}" <<< "${out}"; then

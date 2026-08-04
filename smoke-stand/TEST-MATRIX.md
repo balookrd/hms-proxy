@@ -963,6 +963,64 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Not run: the plain profile, the remaining origins on the `apache` backend, and the row-level and
   concurrency scenarios.
 
+- **2026-08-04, third entry**, jar `1.0.44-a51616fb`, built from `a51616f` and staged by
+  `prepare.sh` (`using hms-proxy-1.0.44-a51616fb-fat.jar`). A whole-matrix rerun after the day's
+  changes - the two Iceberg descriptor fixes in the proxy, both metastore images rebuilt on a
+  matching Hadoop, the `EXTERNAL` DDL for the 3.1 line, and the metadata operations added to the
+  SQL scenario. Containers were recreated for every profile with `up -d --build --force-recreate`;
+  the volumes, and with them the hand-registered fixtures, were kept throughout.
+  Green under Kerberos: `--scenario all` from inside `stand-proxy` on `.env.kerberos`
+  (`scenario 'all' completed successfully`); both SQL pairings from inside `stand-hs2-hdp` -
+  `sql-kerberos.env` on `.env.kerberos` and `sql-apache-kerberos.env` on `.env.apache-kerberos`,
+  each ending in `scenario 'sql' completed successfully`. Neither SQL pass was trusted on its exit
+  code alone: the ACID block was confirmed by eight `allocate_table_write_ids` calls carrying real
+  `TxnToWriteId` pairs in the proxy log, and the Apache pairing's `TRUNCATE` by the two results it
+  prints - `truncate_emptied_managed_hdp` and `truncate_emptied_managed_apache`, i.e. it now
+  empties a table on *both* metastores, which is what the image rebuild bought (C10).
+  `run-iceberg-interop-smoke.sh --kerberos` ran on all three backends with two origins each -
+  `--prefix hdp` with `--origin rest` and `--origin hdp`, `--prefix apache` with `--origin rest`
+  and `--origin apache`, `--prefix hive4` with `--origin rest` and `--origin hdp` - every run
+  ending in its own `smoke passed` with all four front doors agreeing on 5 rows.
+  `run-iceberg-rowlevel-smoke.sh --prefix hive4 --kerberos` passed both delete modes,
+  `run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 8 --kerberos` was run twice (5
+  successes against 3 loud refusals, then 6 against 2 - the row count matched the successful
+  writers both times), and `run-iceberg-txn-contention-smoke.sh --prefix hive4 --kerberos` refused
+  the stale transaction with `409` and had its positive control accepted.
+  Green on the plain profile: `--scenario all` from the host through `env/simple.env`, and
+  `run-iceberg-interop-smoke.sh --prefix hdp` for `--origin hdp` and `--origin rest`.
+  Unit suite on Java 17: 714 tests, 0 failures, 0 errors, 0 skipped.
+  **One real defect surfaced, and it was in the scenarios rather than the proxy: the purge
+  assertion could not fail under Kerberos.** The plain `--prefix hdp --origin hdp` run stopped with
+  `purge left 7 file(s)`, and those seven turned out to be orphans of an earlier, aborted run -
+  their mtimes ran 08:11-08:23 UTC in three-minute steps, the retry cadence of the commit that used
+  to deadlock on a managed table, and their manifest and snapshot ids belonged to a different table
+  than the one just dropped, while the proxy log listed exactly the four manifests of the current
+  table as deleted. What let them sit there unnoticed is that the assertion ran
+  `docker exec <namenode> hdfs dfs -ls -R ... 2>/dev/null | grep -c`, and the namenode container
+  holds no Kerberos ticket: measured directly, that call fails with `Client cannot authenticate
+  via:[TOKEN, KERBEROS]` and exit 1, and with stderr discarded the count came out `0` - so *every*
+  Kerberos run of the interop and row-level scenarios had printed "purge left no data, manifest or
+  metadata files behind" without ever reading HDFS. The same blindness disabled the cleanup
+  `hdfs dfs -rm -r -f` in all three scenarios, which is why the orphans accumulated at all.
+  Fixed in `run-iceberg-{interop,rowlevel,concurrency}-smoke.sh`: the namenode container now does
+  its own `kinit` from the node keytab (`hdfs/namenode@SMOKE.LOCAL`, the HDFS superuser, so it can
+  also read what Hive wrote), an unreadable HDFS is a hard failure instead of an empty listing, and
+  a failed cleanup fails the run. Proven to discriminate rather than assumed: with a single
+  `orphan-probe.parquet` planted in the table directory, the Kerberos interop run failed with
+  `purge left 1 file(s)` - the same run that would have passed before the fix.
+  All six Kerberos interop runs and the row-level, concurrency and txn-contention runs listed above
+  were then re-run against the fixed assertion, plus one plain interop run, so no green in this
+  entry rests on the vacuous version. Left-over files from before were removed by hand first
+  (`/warehouse/hdp/smoke_iceberg_interop`, `/warehouse/hive4/smoke_iceberg_{interop,rowlevel,
+  concurrent}` and `/warehouse/apache/smoke_iceberg_interop`, the last still holding a full
+  2026-07-29 file set); after the fix each run clears its own directory again, verified by listing
+  both clusters afterwards. The three data files the refused concurrency writers had left on
+  `hive4` are Iceberg's ordinary orphans, not a proxy defect - a refused commit does not delete
+  what it already wrote.
+  Not run: the SQL layer on the plain profile, the row-level and concurrency scenarios on the `hdp`
+  and `apache` backends and on the plain profile, and I4 (`--sql-writers`, the mixed REST/SQL
+  contention run) in any form.
+
 ## Two caveats on faithfulness
 
 - The Kerberos profile is complete end to end — client → HiveServer2 → proxy → metastores → HDFS,

@@ -973,6 +973,66 @@ SQL-секции **не берут лок вообще** ни в одной ко
   Не прогонялось: профиль plain, остальные инициаторы на бэкенде `apache`, а также сценарии
   row-level и concurrency.
 
+- **2026-08-04, третья запись**, jar `1.0.44-a51616fb`, собран из `a51616f` и разложен по стенду
+  через `prepare.sh` (`using hms-proxy-1.0.44-a51616fb-fat.jar`). Полный перепрогон матрицы после
+  дневных правок — два фикса дескриптора Iceberg в прокси, оба образа метастора, пересобранные на
+  подходящем Hadoop, `EXTERNAL`-DDL для линии 3.1 и новые операции над метаданными в SQL-сценарии.
+  Контейнеры пересоздавались на каждом профиле (`up -d --build --force-recreate`), тома — а вместе
+  с ними и поставленные руками фикстуры — сохранялись.
+  Зелёное на Kerberos: `--scenario all` изнутри `stand-proxy` на `.env.kerberos`
+  (`scenario 'all' completed successfully`); обе SQL-пары изнутри `stand-hs2-hdp` —
+  `sql-kerberos.env` на `.env.kerberos` и `sql-apache-kerberos.env` на `.env.apache-kerberos`,
+  каждая с финальным `scenario 'sql' completed successfully`. Ни одному из SQL-прогонов не
+  доверяли по коду возврата: ACID-блок подтверждён восемью вызовами `allocate_table_write_ids` с
+  настоящими парами `TxnToWriteId` в логе прокси, а `TRUNCATE` в паре Apache — двумя результатами,
+  которые он печатает: `truncate_emptied_managed_hdp` и `truncate_emptied_managed_apache`, то есть
+  он теперь действительно опустошает таблицу на *обоих* метасторах — ради этого и пересобирались
+  образы (C10).
+  `run-iceberg-interop-smoke.sh --kerberos` прогнан на всех трёх бэкендах по два инициатора на
+  каждый — `--prefix hdp` с `--origin rest` и `--origin hdp`, `--prefix apache` с `--origin rest`
+  и `--origin apache`, `--prefix hive4` с `--origin rest` и `--origin hdp`, — каждый прогон
+  заканчивался своим `smoke passed`, все четыре front door сходились на 5 строках.
+  `run-iceberg-rowlevel-smoke.sh --prefix hive4 --kerberos` прошёл в обоих режимах удаления,
+  `run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 8 --kerberos` прогнан дважды (5
+  успехов против 3 громких отказов, затем 6 против 2 — оба раза число строк совпало с числом
+  успешных писателей), а `run-iceberg-txn-contention-smoke.sh --prefix hive4 --kerberos` отверг
+  устаревшую транзакцию с `409`, и его позитивный контроль был принят.
+  Зелёное на профиле plain: `--scenario all` с хоста через `env/simple.env` и
+  `run-iceberg-interop-smoke.sh --prefix hdp` для `--origin hdp` и `--origin rest`.
+  Юнит-набор на Java 17: 714 тестов, 0 падений, 0 ошибок, 0 пропусков.
+  **Всплыл один настоящий дефект, и он в сценариях, а не в прокси: проверка purge не умела падать
+  под Kerberos.** Plain-прогон `--prefix hdp --origin hdp` остановился на `purge left 7 file(s)`, и
+  эти семь оказались сиротами более раннего, оборванного прогона: их mtime шли с 08:11 до 08:23 UTC
+  шагом в три минуты — ритм ретраев того коммита, который раньше вставал во взаимоблокировку на
+  managed-таблице, — а идентификаторы манифеста и снапшота принадлежали другой таблице, не той, что
+  прогон только что дропнул; в логе прокси при этом перечислены как удалённые ровно четыре
+  манифеста текущей таблицы. Незамеченными они пролежали потому, что проверка выполняла
+  `docker exec <namenode> hdfs dfs -ls -R ... 2>/dev/null | grep -c`, а у контейнера namenode нет
+  своего Kerberos-тикета: измерено напрямую — вызов падает с `Client cannot authenticate
+  via:[TOKEN, KERBEROS]` и кодом 1, stderr глушился, счётчик выходил `0`. То есть *каждый*
+  Kerberos-прогон interop- и row-level-сценариев печатал «purge left no data, manifest or metadata
+  files behind», ни разу не заглянув в HDFS. Та же слепота отключала уборку `hdfs dfs -rm -r -f` во
+  всех трёх сценариях — потому сироты и накапливались.
+  Починено в `run-iceberg-{interop,rowlevel,concurrency}-smoke.sh`: контейнер namenode делает
+  собственный `kinit` по keytab узла (`hdfs/namenode@SMOKE.LOCAL` — суперпользователь HDFS, так что
+  ему видно и написанное Hive), нечитаемый HDFS теперь фатальная ошибка, а не пустой листинг, и
+  неудачная уборка роняет прогон. Способность краснеть доказана, а не предположена: с одним
+  подложенным в каталог таблицы `orphan-probe.parquet` Kerberos-прогон interop упал с
+  `purge left 1 file(s)` — тот самый прогон, который до фикса был бы зелёным.
+  После этого все шесть Kerberos-прогонов interop и перечисленные выше прогоны row-level,
+  concurrency и txn-contention повторены уже с починенной проверкой, плюс один plain-прогон
+  interop, — так что ни одно «зелено» в этой записи не опирается на вакуумную версию. Остатки
+  прежних прогонов перед этим убраны руками (`/warehouse/hdp/smoke_iceberg_interop`,
+  `/warehouse/hive4/smoke_iceberg_{interop,rowlevel,concurrent}` и
+  `/warehouse/apache/smoke_iceberg_interop` — в последнем всё ещё лежал полный набор файлов от
+  2026-07-29); после фикса каждый прогон снова вычищает свой каталог, что проверено листингом обоих
+  кластеров. Три файла данных, оставленные на `hive4` теми писателями concurrency, чьи коммиты были
+  отвергнуты, — обычные сироты Iceberg, а не дефект прокси: отвергнутый коммит не удаляет то, что
+  уже записал.
+  Не прогонялось: SQL-слой на профиле plain, сценарии row-level и concurrency на бэкендах `hdp` и
+  `apache` и на профиле plain, а также I4 (`--sql-writers`, смешанный прогон REST и SQL) в любом
+  виде.
+
 ## Две оговорки честности
 
 - Kerberos-профиль полный сквозняком — клиент → HiveServer2 → прокси → метасторы → HDFS, ни один

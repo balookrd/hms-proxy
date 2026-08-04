@@ -157,13 +157,21 @@ if [[ "${AUTH}" == "kerberos" ]]; then
     docker exec "${target}" kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL \
       || fail "kinit failed in ${target}"
   done
+  # The namenode container holds no ticket of its own either, and the directory cleanups below run
+  # from it: without this every hdfs CLI call fails with "Client cannot authenticate via:[TOKEN,
+  # KERBEROS]" and leaves the files of a failed run for the next one to inherit.
+  namenode_host=${NAMENODE#stand-}
+  docker exec "${NAMENODE}" kinit -kt "/keytabs/${namenode_host}.keytab" \
+    "hdfs/${namenode_host}@SMOKE.LOCAL" || fail "kinit failed in ${NAMENODE}"
 fi
 
 log "preparing '${NS}.${TABLE}' on catalog '${PREFIX}' with one baseline row"
 # A previous run that failed mid-way leaves the table behind, and its files with it. Drop through
-# REST, then clear the directory directly, so one failed run cannot cascade into the next.
+# REST, then clear the directory directly, so one failed run cannot cascade into the next. -f
+# already tolerates a missing path, so a non-zero status here is a real failure.
 writer drop --purge >/dev/null 2>&1 || true
-docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
+docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 \
+  || fail "could not remove /warehouse/${PREFIX}/${TABLE} on ${NAMENODE}"
 writer create >/dev/null
 writer append --rows 1 --marker baseline >/dev/null
 
@@ -305,6 +313,7 @@ fi
 code="$(rest_curl -o /dev/null -w '%{http_code}' -X DELETE \
   "$(rest_url)/v1/${PREFIX}/namespaces/${NS}/tables/${TABLE}?purgeRequested=true")"
 [[ "${code}" =~ ^2 ]] || fail "REST purge-drop of '${TABLE}' returned HTTP ${code}"
-docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 || true
+docker exec "${NAMENODE}" hdfs dfs -rm -r -f "/warehouse/${PREFIX}/${TABLE}" >/dev/null 2>&1 \
+  || fail "could not remove /warehouse/${PREFIX}/${TABLE} on ${NAMENODE}"
 
 log "writer-isolation smoke passed (auth=${AUTH}, catalog '${PREFIX}', ${WRITERS} concurrent writers)"
