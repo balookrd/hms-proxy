@@ -120,6 +120,25 @@ else
   echo "[prepare] no HDP Hadoop staged; the Hortonworks metastore keeps the Maven-resolved runtime"
 fi
 
+# The Apache metastore has exactly the same defect and gets the same treatment with Apache jars.
+# Its own pom resolves hadoop-hdfs 2.2.0, so TRUNCATE dies there too; the Apache HiveServer2's
+# resolved lib next door already carries Hadoop 3.1.0. Only the Hadoop libraries are taken - that
+# directory also holds hive-exec, which must never shadow the metastore jar under test - so this is
+# an explicit list rather than a copy of the directory.
+echo "[prepare] staging the Apache Hadoop runtime for the Apache metastore"
+APACHE_HS2_LIB="${STAND_DIR}/hs2/lib"
+rm -f "${STAND_DIR}/hms/override-apache/"*.jar
+if [[ -f "${APACHE_HS2_LIB}/hadoop-common-3.1.0.jar" ]]; then
+  for pattern in 'hadoop-common-3*' 'hadoop-hdfs-client-3*' 'hadoop-auth-3*' \
+                 'woodstox-core-*' 'stax2-api-*' 're2j-*' 'commons-configuration2-*' \
+                 'htrace-core4-*' 'jetty-util-ajax-*'; do
+    cp "${APACHE_HS2_LIB}/"${pattern}.jar "${STAND_DIR}/hms/override-apache/" 2>/dev/null || true
+  done
+  rm -f "${STAND_DIR}/hms/override-apache/"*-tests.jar
+else
+  echo "[prepare] no Apache Hadoop 3.1 staged; the Apache metastore keeps the Maven-resolved runtime"
+fi
+
 # The Iceberg storage handler the interop scenario needs in BOTH SQL engines. The Apache
 # HiveServer2 gets it through hs2/pom.xml; the vendor one has no pom, so the same resolved jar
 # is dropped into its staged hive/lib here (skipped when no HDP distribution is staged).
