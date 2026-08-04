@@ -185,7 +185,9 @@ Every cell below was observed on all three backends unless the row says otherwis
 
 The rows above have REST create the table and SQL take it over. `--origin` rotates that role, so
 each front door in turn is the one that creates and writes first while the other three modify
-what it made. Run on the `hive4` backend:
+what it made. The table below was filled in on the `hive4` backend; since the 3.1 DDL says
+`EXTERNAL` (see below) a SQL origin runs on the other two backends as well - the revalidation log
+of 2026-08-04 lists which combinations were measured there:
 
 | # | Origin (creates + writes 2 rows) | Modified afterwards by | plain | kerberos |
 | --- | --- | --- | --- | --- |
@@ -198,29 +200,29 @@ Every participant reads the running total *before* its own append, so each hand-
 front-door boundary is proven rather than assumed, and a final round has all participants
 confirm the same count.
 
-**Why the `--origin` rows name the `hive4` backend.** They are not run on the `hdp` backend, and
-measured on 2026-08-04 they cannot be: a table created there by a 3.1 HiveServer2 deadlocks its
-own `INSERT`, for a reason that never reaches the proxy. `create table ... stored by
-'HiveIcebergStorageHandler'` lands on the Hortonworks metastore as a `MANAGED_TABLE`, and writing
-into a managed non-ACID table under `DbTxnManager` makes Hive take an **EXCLUSIVE** lock on that
-table for the whole statement (`show locks` during the run: the statement's own transaction holds
-`default.<table> ACQUIRED EXCLUSIVE`). The Iceberg commit that finishes the very same statement
-runs in `HiveIcebergOutputCommitter.commitJob` and asks the metastore for its own EXCLUSIVE table
-lock (`org.apache.iceberg.hive.MetastoreLock`) — against the lock the statement is already
-holding. It retries four times three minutes, the local MapReduce job then dies, and beeline
-reports nothing but `return code 2 from org.apache.hadoop.hive.ql.exec.mr.MapRedTask`; the cause
-is only in the HiveServer2 log, as `MetastoreLock$WaitingForLockException`.
+**Why the 3.1 DDL says `EXTERNAL`.** `sql_create_ddl` creates the 3.1-line table as `create
+external table ... stored by 'HiveIcebergStorageHandler'`, and that word is load-bearing. Without
+it the table is a `MANAGED_TABLE` on a 3.1 metastore, and writing into a managed non-ACID table
+under `DbTxnManager` makes Hive take an **EXCLUSIVE** lock on the table itself for the whole
+statement - while the Iceberg commit that finishes that very same statement
+(`HiveIcebergOutputCommitter.commitJob` → `org.apache.iceberg.hive.MetastoreLock`) asks the
+metastore for its own EXCLUSIVE lock on it. The statement deadlocks against itself: four retries
+three minutes apart, then the local MapReduce job dies and beeline reports nothing but `return
+code 2 from org.apache.hadoop.hive.ql.exec.mr.MapRedTask`, with the cause visible only as
+`MetastoreLock$WaitingForLockException` in the HiveServer2 log.
 
-The other paths are not lucky, they are different: the table there is never managed. The Hive 4
-metastore's metadata transformer rewrites a non-transactional managed table into an external one
-(the identical DDL through the identical HDP HiveServer2 gives `Table Type: EXTERNAL_TABLE` with
-`TRANSLATED_TO_EXTERNAL=TRUE`), and a table the REST front door creates is external from the
-start - so H2 and the `--origin rest` runs pass on the `hdp` backend too, with Hive locking only
-the `_dummy_database` placeholder and the Iceberg commit lock granted immediately. The proxy's own
-pointer-guard lock is a bystander in all of this: it queues behind the statement's EXCLUSIVE lock,
-gives up after its 10 s budget, releases it and repairs without the lock. `--origin apache` on the
-`hdp` backend was not measured; it drives the same DDL through the same metastore, so the same
-deadlock is expected.
+Measured both ways with `show locks` while the statement ran. Managed: the statement's own
+transaction holds `default.<table> ACQUIRED EXCLUSIVE` and the Iceberg lock queues behind it until
+the job gives up. External: the table is not in the statement's lock request at all - only the
+`_dummy_database` placeholder is - and the Iceberg commit lock comes back ACQUIRED at once. The
+Hive 4 metastore hides the difference by translating a non-transactional managed table into an
+external one (`Table Type: EXTERNAL_TABLE`, `TRANSLATED_TO_EXTERNAL=TRUE` for the identical DDL
+through the identical HDP HiveServer2), which is why the `--origin` rows passed on the `hive4`
+backend for months while the same run against `hdp` hung; the Hortonworks and Apache 3.1
+metastores do not translate, so the DDL has to say it itself. Nothing is lost by saying it: every
+Iceberg table on this stand is external anyway - the REST front door creates them that way too.
+The proxy's own pointer-guard lock was a bystander throughout: it queues behind whatever the
+statement holds, gives up after its 10 s budget, releases it and repairs without the lock.
 
 **H12 in detail: who is allowed to keep the Hive-engine descriptor.** This row used to read
 "a Hive 4-created table is unreadable by the 3.1 line", on the belief that `STORED BY ICEBERG`
@@ -941,9 +943,25 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Hortonworks metastore deadlocks against the Iceberg commit lock taken inside that same
   statement. Measured, not inferred: the lock rows were read out of `show locks` while the
   statement hung, and the control - the same engine, the same metastore, but a REST-created
-  external table - locks only the `_dummy_database` placeholder and passes. See "Why the
-  `--origin` rows name the `hive4` backend" in section H.
+  external table - locks only the `_dummy_database` placeholder and passes. See "Why the 3.1 DDL
+  says `EXTERNAL`" in section H.
   Not run: the plain profile for any of it, and the row-level and concurrency scenarios.
+
+- **2026-08-04, same day**, that deadlock closed at its source: `sql_create_ddl` now creates the
+  3.1-line table as `create external table ... stored by 'HiveIcebergStorageHandler'`. External is
+  what the table is on every other path anyway - REST creates it external, and the Hive 4 metastore
+  translates the managed one into external - so this drops an accident of the DDL rather than
+  weakening the check: the same four front doors still hand the same table around.
+  Four runs on Kerberos, all green, chosen to cover every backend with a SQL origin and to catch a
+  regression on the row that was already green: `--prefix hdp --origin hdp` (the combination that
+  used to hang, now `smoke passed` with 5 rows), `--prefix hdp --origin apache`,
+  `--prefix apache --origin apache` and `--prefix hive4 --origin hdp`. The mechanism was verified
+  in isolation first, not only through the scenario: the same HDP HiveServer2 creating an external
+  Iceberg table and inserting into it locks nothing but `_dummy_database`, and the Iceberg commit
+  lock right after it comes back `ACQUIRED` - where the managed table held
+  `default.<table> ACQUIRED EXCLUSIVE` against itself.
+  Not run: the plain profile, the remaining origins on the `apache` backend, and the row-level and
+  concurrency scenarios.
 
 ## Two caveats on faithfulness
 

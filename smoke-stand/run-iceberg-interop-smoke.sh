@@ -23,14 +23,7 @@
 #
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos
-#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin apache
-#
-# A SQL origin needs a backend that does not keep the table managed. On the Hortonworks metastore
-# `create table ... stored by 'HiveIcebergStorageHandler'` stays a MANAGED_TABLE, whose INSERT takes
-# an EXCLUSIVE lock on the table for the whole statement - and the Iceberg commit inside that same
-# statement then waits for its own EXCLUSIVE lock until the MapReduce job dies with "return code 2".
-# So --origin hdp/apache belong on --prefix hive4 (its metastore translates the table to external);
-# --origin rest works on every backend. See TEST-MATRIX.md, section H.
+#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp --origin apache
 #
 # Every profile needs the SQL clients too, so bring the stand up with the hdp and hive4fe
 # compose profiles on top of the backend's own, e.g.:
@@ -263,10 +256,20 @@ sql_init() {
 
 # The DDL that makes an Iceberg table. Hive 4 has first-class syntax; the 3.1 line names the
 # storage handler that iceberg-hive-runtime brings.
+#
+# EXTERNAL on the 3.1 line is load-bearing, not decoration. A managed table makes Hive lock the
+# table itself EXCLUSIVE for the whole INSERT, and the Iceberg commit that finishes that same
+# statement then waits forever for its own EXCLUSIVE lock on it - the statement deadlocks against
+# itself and dies as "return code 2 from MapRedTask". Measured both ways with `show locks`: the
+# external table is not in the statement's lock request at all (only the _dummy_database
+# placeholder is), and the Iceberg commit lock is granted immediately. Hive 4's metastore hides
+# this by translating a non-transactional managed table into an external one; the Hortonworks and
+# Apache 3.1 metastores do not, so the word has to be in the DDL. Every Iceberg table on this
+# stand is external anyway - the REST front door creates them that way too.
 sql_create_ddl() {
   case "$1" in
     hive4) printf 'create table %s (id int, src string) stored by iceberg;' "${TABLE}" ;;
-    *) printf "create table %s (id int, src string) stored by 'org.apache.iceberg.mr.hive.HiveIcebergStorageHandler';" "${TABLE}" ;;
+    *) printf "create external table %s (id int, src string) stored by 'org.apache.iceberg.mr.hive.HiveIcebergStorageHandler';" "${TABLE}" ;;
   esac
 }
 
