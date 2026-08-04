@@ -62,7 +62,7 @@ only path that covers the Hortonworks front door with a real client.
 | C5 | Materialized view with rewrite enabled (`show materialized views` → `Yes`) | ✅ | ✅ |
 | C8 | **The paired topology** - each front door with its own metastore as the default catalog, the other as a remote one: Hortonworks front door while `hms-hdp` is default, Apache front door while `hms-apache` is (`.env.apache`). Both pass the whole of sections B and C **including the ACID block**, with `allocate_table_write_ids` in the proxy log and the transactional table created. The Apache pairing sends no `add_write_notification_log` at all, which is why C7 does not arise there | ✅ both pairings | ✅ both pairings |
 | C9 | **Metadata-breaking operations** on managed and external tables in both catalogs: `ALTER TABLE ADD COLUMNS` (the value written through the new column comes back), `ALTER TABLE RENAME TO` (the table answers under the new name), `ALTER TABLE DROP PARTITION`, and `TRUNCATE TABLE`. A rename moves a managed table's directory but leaves an external table's location where it was, so the scenario names the renamed table with `show tables like` rather than reading it out of `describe formatted` | — | ✅ both pairings |
-| C10 | `TRUNCATE` against the **Hortonworks metastore** used to be refused by that metastore, not by the proxy: it answered a positional `truncate_table` by calling `HdfsAdmin.getEncryptionZoneForPath` and died with `NoSuchMethodError`, because the image ran hadoop-hdfs 2.2.0 - HDFS encryption zones did not exist before 2.6 - while the metastore jar itself is built against Hadoop 3.1.1. **Fixed by building that image on the vendor's own Hadoop** (`prepare.sh` stages HDP 3.1.1 common, common/lib and hdfs-client into `override-hdp`, ahead of the Maven-resolved lib; Guava is excluded because HDP ships 11.0.2 and the metastore needs 19). Verified: an Apache-client `TRUNCATE` now takes the table from 1 row to 0. The Apache metastore image carried the identical defect and got the same treatment from the Apache HiveServer2's resolved Hadoop 3.1.0 (an explicit jar list, not a directory copy - that lib also holds `hive-exec`, which must never shadow the metastore jar under test). With both images rebuilt the Apache pairing passes **with `TRUNCATE` enabled**, and the Hortonworks pairing still passes, so nothing regressed. What remains is the client, not the classpath: the Hortonworks client sends an empty partition list and truncates nothing, which is why its env file keeps the flag off. Settled by experiment: the variable is one argument. The Apache client sends `partNames=null` - truncate the whole table - so the metastore deletes the table directory and reaches the encryption-zone check that fails to link. The vendor client sends `partNames=[]`, an empty partition list, so the metastore has nothing to delete and returns without doing any work. Ruled out along the way, each by holding it constant: the catalog's role (the same client fails with `hdp` as the default catalog too) and the location (identical in both roles). **Consequence: `TRUNCATE` through the Hortonworks client is a no-op**, so a run that only checks it does not fail proves nothing. The scenario therefore asserts the row count afterwards (`truncate_emptied_*`), which makes that path fail honestly; `HMS_SMOKE_SQL_RUN_TRUNCATE` is off in both stand env files because neither client can carry the statement out against this metastore - one errors, the other does nothing. Gated by `HMS_SMOKE_SQL_RUN_TRUNCATE`, off in `sql-apache-kerberos.env` | — | ✅ reproduced |
+| C10 | `TRUNCATE` against the **Hortonworks metastore** used to be refused by that metastore, not by the proxy: it answered a positional `truncate_table` by calling `HdfsAdmin.getEncryptionZoneForPath` and died with `NoSuchMethodError`, because the image ran hadoop-hdfs 2.2.0 - HDFS encryption zones did not exist before 2.6 - while the metastore jar itself is built against Hadoop 3.1.1. **Fixed by building that image on the vendor's own Hadoop** (`prepare.sh` stages HDP 3.1.1 common, common/lib and hdfs-client into `override-hdp`, ahead of the Maven-resolved lib; Guava is excluded because HDP ships 11.0.2 and the metastore needs 19). Verified: an Apache-client `TRUNCATE` now takes the table from 1 row to 0. The Apache metastore image carried the identical defect and got the same treatment from the Apache HiveServer2's resolved Hadoop 3.1.0 (an explicit jar list, not a directory copy - that lib also holds `hive-exec`, which must never shadow the metastore jar under test). With both images rebuilt the Apache pairing passes **with `TRUNCATE` enabled**, and the Hortonworks pairing still passes, so nothing regressed. What remains is the client, not the classpath: the Hortonworks client sends an empty partition list and truncates nothing, which is why its env file keeps the flag off. Settled by experiment: the variable is one argument. The Apache client sends `partNames=null` - truncate the whole table - so the metastore deletes the table directory and reaches the encryption-zone check that fails to link. The vendor client sends `partNames=[]`, an empty partition list, so the metastore has nothing to delete and returns without doing any work. Ruled out along the way, each by holding it constant: the catalog's role (the same client fails with `hdp` as the default catalog too) and the location (identical in both roles). **Consequence: `TRUNCATE` through the Hortonworks client is a no-op**, so a run that only checks it does not fail proves nothing. The scenario therefore asserts the row count afterwards (`truncate_emptied_*`), which makes that path fail honestly. Gated by `HMS_SMOKE_SQL_RUN_TRUNCATE`: on in `sql-apache-kerberos.env`, where the Apache client now really empties the table, off in `sql-kerberos.env`, where the vendor client would pass while doing nothing | — | ✅ reproduced |
 | C6 | **Cross pairing, outside the paired topology of C8.** ACID is a property of the **front door**, not just the catalog: the same `create` + `insert` on a transactional table succeeds here and fails through the Apache front door, where the insert lands and the stats update is then refused with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)`, surfacing as a failing `StatsTask`. **The proxy is not losing the write ID** - the two clients issue different RPCs. The vendor build never calls `set_aggr_stats_for` at all: it goes `get_valid_write_ids` → `alter_table_with_environment_context` → `commit_txn`. The Apache 3.1.3 client instead ends with `set_aggr_stats_for`, which carries no transactional write state, and the Hortonworks backend refuses it, after which the client aborts the txn. Ruled out along the way: federation is not the trigger (a non-federated `default` database fails identically), stand configuration is not (both HiveServer2 instances carry the same `hive.support.concurrency`/`hive.txn.manager`), and field loss in the proxy is not (`NamespaceInternalizer` deep-copies the struct). What this stand cannot settle is whether an Apache 3.1.3 client would hit the same rule against an Apache metastore: with that metastore as the default catalog the statement dies earlier, at C7 | ✅ refused as described | — |
 | C7 | **Cross pairing, outside the paired topology of C8.** With the **Apache 3.1.3 metastore as the default catalog** (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | ✅ | — |
 
@@ -197,6 +197,30 @@ what it made. Run on the `hive4` backend:
 Every participant reads the running total *before* its own append, so each hand-off across the
 front-door boundary is proven rather than assumed, and a final round has all participants
 confirm the same count.
+
+**Why the `--origin` rows name the `hive4` backend.** They are not run on the `hdp` backend, and
+measured on 2026-08-04 they cannot be: a table created there by a 3.1 HiveServer2 deadlocks its
+own `INSERT`, for a reason that never reaches the proxy. `create table ... stored by
+'HiveIcebergStorageHandler'` lands on the Hortonworks metastore as a `MANAGED_TABLE`, and writing
+into a managed non-ACID table under `DbTxnManager` makes Hive take an **EXCLUSIVE** lock on that
+table for the whole statement (`show locks` during the run: the statement's own transaction holds
+`default.<table> ACQUIRED EXCLUSIVE`). The Iceberg commit that finishes the very same statement
+runs in `HiveIcebergOutputCommitter.commitJob` and asks the metastore for its own EXCLUSIVE table
+lock (`org.apache.iceberg.hive.MetastoreLock`) — against the lock the statement is already
+holding. It retries four times three minutes, the local MapReduce job then dies, and beeline
+reports nothing but `return code 2 from org.apache.hadoop.hive.ql.exec.mr.MapRedTask`; the cause
+is only in the HiveServer2 log, as `MetastoreLock$WaitingForLockException`.
+
+The other paths are not lucky, they are different: the table there is never managed. The Hive 4
+metastore's metadata transformer rewrites a non-transactional managed table into an external one
+(the identical DDL through the identical HDP HiveServer2 gives `Table Type: EXTERNAL_TABLE` with
+`TRANSLATED_TO_EXTERNAL=TRUE`), and a table the REST front door creates is external from the
+start - so H2 and the `--origin rest` runs pass on the `hdp` backend too, with Hive locking only
+the `_dummy_database` placeholder and the Iceberg commit lock granted immediately. The proxy's own
+pointer-guard lock is a bystander in all of this: it queues behind the statement's EXCLUSIVE lock,
+gives up after its 10 s budget, releases it and repairs without the lock. `--origin apache` on the
+`hdp` backend was not measured; it drives the same DDL through the same metastore, so the same
+deadlock is expected.
 
 **H12 in detail: who is allowed to keep the Hive-engine descriptor.** This row used to read
 "a Hive 4-created table is unreadable by the 3.1 line", on the belief that `STORED BY ICEBERG`
@@ -898,6 +922,28 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   losing the field - the two clients issue different RPCs, and the vendor build never calls
   `set_aggr_stats_for` at all. Federation was ruled out by a non-federated database failing
   identically, stand configuration by both HiveServer2 instances carrying the same settings.
+
+- **2026-08-04**, same proxy jar as the entry above - this change is in the two metastore images
+  only (commits 5067ffa, c8794da, 2dec04a): each now runs the Hadoop its metastore jar was built
+  against instead of the Maven-resolved `hadoop-common` 2.6.0 / `hadoop-hdfs` 2.2.0, staged into
+  `hms/override-{hdp,apache}` and placed ahead of the Maven set. What that fixed is recorded in
+  C10: `TRUNCATE` from an Apache client used to die on `HdfsAdmin.getEncryptionZoneForPath`, and
+  now really empties the table.
+  Green after the rebuild: the SQL pairings of sections B and C on Kerberos (Hortonworks over the
+  Hortonworks default catalog, Apache over the Apache one with `TRUNCATE` on), `--scenario all` on
+  Kerberos, and the Iceberg interop scenario on all three backends under Kerberos -
+  `run-iceberg-interop-smoke.sh --prefix hive4 --kerberos`, `--prefix apache --kerberos` and
+  `--prefix hdp --origin rest --kerberos`, each ending in its own `smoke passed` line, all four
+  front doors agreeing on 5 rows and the purge leaving nothing behind.
+  Not green, and not a regression from the rebuild: `--prefix hdp --origin hdp`. It was never run
+  before - the `--origin` rotation has only ever been run on the `hive4` backend - and it cannot
+  pass, because a 3.1 HiveServer2's `INSERT` into the `MANAGED_TABLE` its own DDL creates on the
+  Hortonworks metastore deadlocks against the Iceberg commit lock taken inside that same
+  statement. Measured, not inferred: the lock rows were read out of `show locks` while the
+  statement hung, and the control - the same engine, the same metastore, but a REST-created
+  external table - locks only the `_dummy_database` placeholder and passes. See "Why the
+  `--origin` rows name the `hive4` backend" in section H.
+  Not run: the plain profile for any of it, and the row-level and concurrency scenarios.
 
 ## Two caveats on faithfulness
 

@@ -23,7 +23,14 @@
 #
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp
 #   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --kerberos
-#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hdp --origin apache
+#   smoke-stand/run-iceberg-interop-smoke.sh --prefix hive4 --origin apache
+#
+# A SQL origin needs a backend that does not keep the table managed. On the Hortonworks metastore
+# `create table ... stored by 'HiveIcebergStorageHandler'` stays a MANAGED_TABLE, whose INSERT takes
+# an EXCLUSIVE lock on the table for the whole statement - and the Iceberg commit inside that same
+# statement then waits for its own EXCLUSIVE lock until the MapReduce job dies with "return code 2".
+# So --origin hdp/apache belong on --prefix hive4 (its metastore translates the table to external);
+# --origin rest works on every backend. See TEST-MATRIX.md, section H.
 #
 # Every profile needs the SQL clients too, so bring the stand up with the hdp and hive4fe
 # compose profiles on top of the backend's own, e.g.:
