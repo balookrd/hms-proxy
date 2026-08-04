@@ -92,6 +92,34 @@ else
   cp "${STAND_DIR}/hms/acid-apache/"*.jar "${STAND_DIR}/hms/acid-hdp/"
 fi
 
+# The Hortonworks metastore runs on the vendor's own Hadoop, not on the Maven-resolved one.
+#
+# Without this it runs hadoop-common 2.6.0 and hadoop-hdfs 2.2.0 while the metastore jar itself is
+# built against Hadoop 3.1.1, and the mismatch is not theoretical: a positional truncate_table dies
+# with NoSuchMethodError on HdfsAdmin.getEncryptionZoneForPath, because HDFS encryption zones did
+# not exist before 2.6. Substituting hadoop-hdfs-client alone is worse than useless - a 3.1.1
+# client on top of common 2.6.0 breaks create_table instead - so the whole set goes in together.
+#
+# These land in override-hdp, which the image puts AHEAD of the Maven-resolved lib (the opposite of
+# acid-lib). Without a staged HDP distribution the directory stays empty and the image builds and
+# runs exactly as before.
+echo "[prepare] staging the vendor Hadoop runtime for the Hortonworks metastore"
+HDP_HADOOP_SHARE="${STAND_DIR}/hs2-hdp/dist/hadoop/share/hadoop"
+rm -f "${STAND_DIR}/hms/override-hdp/"*.jar
+if [[ -f "${HDP_HADOOP_SHARE}/common/hadoop-common-3.1.1.3.1.0.0-78.jar" ]]; then
+  cp "${HDP_HADOOP_SHARE}/common/"*.jar "${STAND_DIR}/hms/override-hdp/" 2>/dev/null || true
+  cp "${HDP_HADOOP_SHARE}/common/lib/"*.jar "${STAND_DIR}/hms/override-hdp/" 2>/dev/null || true
+  cp "${HDP_HADOOP_SHARE}/hdfs/hadoop-hdfs-client-"*.jar "${STAND_DIR}/hms/override-hdp/" 2>/dev/null || true
+  # Test jars are dead weight and can shadow real classes.
+  rm -f "${STAND_DIR}/hms/override-hdp/"*-tests.jar
+  # Guava is the one library that must NOT come from Hadoop here. HDP 3.1.1 ships Guava 11.0.2
+  # while the metastore needs 19, and putting 11 first costs Stopwatch.createUnstarted - the
+  # JvmPauseMonitor thread dies with NoSuchMethodError at startup. The Maven-resolved 19.0 stays.
+  rm -f "${STAND_DIR}/hms/override-hdp/"guava-*.jar
+else
+  echo "[prepare] no HDP Hadoop staged; the Hortonworks metastore keeps the Maven-resolved runtime"
+fi
+
 # The Iceberg storage handler the interop scenario needs in BOTH SQL engines. The Apache
 # HiveServer2 gets it through hs2/pom.xml; the vendor one has no pom, so the same resolved jar
 # is dropped into its staged hive/lib here (skipped when no HDP distribution is staged).
