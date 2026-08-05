@@ -155,6 +155,8 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_SQL_UDF_CLASS                default: org.apache.hadoop.hive.ql.udf.UDFReverse
   HMS_SMOKE_SQL_UDF_EXPECTED_RESULT      default: yxorp
   HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW    default: false
+  HMS_SMOKE_SQL_RUN_TRUNCATE             default: true
+  HMS_SMOKE_SQL_RUN_MSCK                 default: true (needs `dfs` commands on HiveServer2)
   HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL    default: false
   HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL default: false
   HMS_SMOKE_SQL_FRONT_DOORS              default: apache hdp (which passes run)
@@ -681,6 +683,45 @@ transactional_sql_runs_on_front_door() {
   [[ "${allowed}" == *" ${front_door} "* ]]
 }
 
+# The MSCK REPAIR block for one catalog. HiveServer2 walks the table location in HDFS itself and
+# sends back the partitions it finds, so a single statement crosses database name translation and
+# the partition write path (add_partitions_req) at once. Measured on this stand, it does not cross
+# location rewriting: the partitions arrive with location:null and the backend metastore computes
+# each directory itself.
+#
+# The orphaned partition is produced by Hive rather than staged by hand: the row is inserted
+# normally, the partition directory is renamed out from under the metastore with `dfs -mv`, and
+# the now-stale partition is dropped. That leaves a directory on disk no partition points at -
+# which is what a repair is for - without an hdfs client next to the runner. The table names its
+# own LOCATION because `dfs` takes absolute paths, and a managed table created without one lands
+# wherever the metastore decides.
+#
+# Both markers discriminate. The one before the repair asserts the partition really is gone, so
+# the check cannot pass on a table that never lost it; the one after carries the value read back
+# through the recovered partition, so a partition registered without its data - or no partition at
+# all - fails it. Verified by leaving the `dfs -mv` out: the drop then takes the data with it and
+# the run fails on the missing msck_repaired_* marker.
+msck_repair_sql() {
+  local table="$1"
+  local location="$2"
+  local label="$3"
+  cat <<EOF
+create table if not exists ${table} (id int)
+partitioned by (p string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location}';
+insert into ${table} partition (p='2026-06-06') values (7);
+dfs -mv ${location}/p=2026-06-06 ${location}/p=2026-07-07;
+alter table ${table} drop partition (p='2026-06-06');
+select case when count(*) = 0 then 'msck_absent_before_${label}' else 'msck_present_before_${label}' end as ${label}_msck_before from ${table} where p='2026-07-07';
+msck repair table ${table};
+show partitions ${table};
+select concat('msck_repaired_${label}_', cast(id as string)) as ${label}_msck_after from ${table} where p='2026-07-07';
+drop table ${table};
+EOF
+}
+
 run_sql_smoke() {
   # Names the front door this pass runs against, and keeps the objects of the two passes apart.
   local front_door="${1:-primary}"
@@ -713,6 +754,8 @@ run_sql_smoke() {
   run_id="$(date +%Y%m%d%H%M%S)_${front_door}"
   local managed_hdp="smoke_managed_hdp_${run_id}"
   local managed_apache="smoke_managed_apache_${run_id}"
+  local msck_hdp="smoke_msck_hdp_${run_id}"
+  local msck_apache="smoke_msck_apache_${run_id}"
   local external_hdp="smoke_external_hdp_${run_id}"
   local external_apache="smoke_external_apache_${run_id}"
   local txn_hdp="smoke_txn_hdp_${run_id}"
@@ -763,6 +806,17 @@ run_sql_smoke() {
 select case when count(*) = 0 then 'truncate_emptied_managed_hdp' else 'truncate_left_rows_managed_hdp' end as managed_hdp_truncate_result from ${managed_hdp};"
     truncate_sql_managed_apache="truncate table ${managed_apache};
 select case when count(*) = 0 then 'truncate_emptied_managed_apache' else 'truncate_left_rows_managed_apache' end as managed_apache_truncate_result from ${managed_apache};"
+  fi
+
+  # Opt-out for installations whose HiveServer2 refuses `dfs` commands (an authorization plugin
+  # can block them); the repair itself needs no extra privilege, only the setup does.
+  local msck_sql_hdp=""
+  local msck_sql_apache=""
+  if [[ "${HMS_SMOKE_SQL_RUN_MSCK:-true}" == "true" ]]; then
+    msck_sql_hdp="$(msck_repair_sql "${msck_hdp}" "${hdp_external_root}/msck/${msck_hdp}" "managed_hdp")"
+    msck_sql_apache="$(msck_repair_sql "${msck_apache}" "${apache_external_root}/msck/${msck_apache}" "managed_apache")"
+  else
+    log "skipping MSCK REPAIR SQL smoke because HMS_SMOKE_SQL_RUN_MSCK=${HMS_SMOKE_SQL_RUN_MSCK:-true}"
   fi
 
   local session_init="${HMS_SMOKE_SQL_SESSION_INIT:-}"
@@ -819,6 +873,7 @@ describe formatted ${managed_hdp}_renamed;
 show tables like '${managed_hdp}_renamed';
 select count(*) as managed_hdp_renamed_count from ${managed_hdp}_renamed;
 drop table ${managed_hdp}_renamed;
+${msck_sql_hdp}
 
 create external table if not exists ${external_hdp} (
   id int,
@@ -890,6 +945,7 @@ describe formatted ${managed_apache}_renamed;
 show tables like '${managed_apache}_renamed';
 select count(*) as managed_apache_renamed_count from ${managed_apache}_renamed;
 drop table ${managed_apache}_renamed;
+${msck_sql_apache}
 
 create external table if not exists ${external_apache} (
   id int,
@@ -1040,6 +1096,14 @@ EOF
     # metastore truncates nothing and answers success. Only the row count tells the two apart.
     assert_file_contains "${output_file}" "truncate_emptied_managed_hdp"
     assert_file_contains "${output_file}" "truncate_emptied_managed_apache"
+  fi
+  if [[ "${HMS_SMOKE_SQL_RUN_MSCK:-true}" == "true" ]]; then
+    # The pair matters: the first marker says the partition was really missing when the repair
+    # ran, the second carries a value read back through the partition the repair added.
+    assert_file_contains "${output_file}" "msck_absent_before_managed_hdp"
+    assert_file_contains "${output_file}" "msck_repaired_managed_hdp_7"
+    assert_file_contains "${output_file}" "msck_absent_before_managed_apache"
+    assert_file_contains "${output_file}" "msck_repaired_managed_apache_7"
   fi
   if [[ "${run_view_rewrite}" == "true" ]]; then
     assert_file_contains_identifier "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
