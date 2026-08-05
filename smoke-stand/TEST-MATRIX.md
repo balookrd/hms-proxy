@@ -64,6 +64,7 @@ only path that covers the Hortonworks front door with a real client.
 | C9 | **Metadata-breaking operations** on managed and external tables in both catalogs: `ALTER TABLE ADD COLUMNS` (the value written through the new column comes back), `ALTER TABLE RENAME TO` (the table answers under the new name), `ALTER TABLE DROP PARTITION`, and `TRUNCATE TABLE`. A rename moves a managed table's directory but leaves an external table's location where it was, so the scenario names the renamed table with `show tables like` rather than reading it out of `describe formatted` | — | ✅ both pairings |
 | C10 | `TRUNCATE` against the **Hortonworks metastore** used to be refused by that metastore, not by the proxy: it answered a positional `truncate_table` by calling `HdfsAdmin.getEncryptionZoneForPath` and died with `NoSuchMethodError`, because the image ran hadoop-hdfs 2.2.0 - HDFS encryption zones did not exist before 2.6 - while the metastore jar itself is built against Hadoop 3.1.1. **Fixed by building that image on the vendor's own Hadoop** (`prepare.sh` stages HDP 3.1.1 common, common/lib and hdfs-client into `override-hdp`, ahead of the Maven-resolved lib; Guava is excluded because HDP ships 11.0.2 and the metastore needs 19). Verified: an Apache-client `TRUNCATE` now takes the table from 1 row to 0. The Apache metastore image carried the identical defect and got the same treatment from the Apache HiveServer2's resolved Hadoop 3.1.0 (an explicit jar list, not a directory copy - that lib also holds `hive-exec`, which must never shadow the metastore jar under test). With both images rebuilt the Apache pairing passes **with `TRUNCATE` enabled**, and the Hortonworks pairing still passes, so nothing regressed. What remains is the client, not the classpath: the Hortonworks client sends an empty partition list and truncates nothing, which is why its env file keeps the flag off. Settled by experiment: the variable is one argument. The Apache client sends `partNames=null` - truncate the whole table - so the metastore deletes the table directory and reaches the encryption-zone check that fails to link. The vendor client sends `partNames=[]`, an empty partition list, so the metastore has nothing to delete and returns without doing any work. Ruled out along the way, each by holding it constant: the catalog's role (the same client fails with `hdp` as the default catalog too) and the location (identical in both roles). **Consequence: `TRUNCATE` through the Hortonworks client is a no-op**, so a run that only checks it does not fail proves nothing. The scenario therefore asserts the row count afterwards (`truncate_emptied_*`), which makes that path fail honestly. Gated by `HMS_SMOKE_SQL_RUN_TRUNCATE`: on in `sql-apache-kerberos.env`, where the Apache client now really empties the table, off in `sql-kerberos.env`, where the vendor client would pass while doing nothing | — | ✅ reproduced |
 | C11 | **`MSCK REPAIR TABLE`** on a partitioned managed table, in the default catalog and in the remote one, through both front doors. HiveServer2 walks the table location in HDFS itself and sends the partitions it finds back to the metastore, so one statement crosses database-name translation and the partition write path. Measured on the wire, not inferred: the repair arrives as a single `add_partitions_req` per table (the same method through either front door), the request names `dbName:<catalog>__default` and reaches the backend as `default`, the response comes back carrying the external name and `catName:<catalog>`, and nothing is refused - the only backend errors in the run are the `NoSuchObjectException`s of `create table if not exists`. **Location rewriting is not on this path**: the partitions arrive with `location:null`, so the backend metastore computes the directory itself, and a `get_table` of the repaired table returns the same location to the client that the backend holds. The scenario orphans a partition through Hive rather than staging files by hand - `insert`, then `dfs -mv` of the partition directory, then `drop partition` - and asserts a pair of markers: `msck_absent_before_*` proves the partition really was missing when the repair ran, `msck_repaired_*_7` carries a value read back through the partition the repair added. Gated by `HMS_SMOKE_SQL_RUN_MSCK` (on by default; the opt-out exists for a HiveServer2 that refuses `dfs` commands). Seen failing on purpose: with the `dfs -mv` removed the drop takes the data with it and the run dies on the missing `msck_repaired_managed_hdp_7` | — | ✅ both pairings |
+| C12 | **The data-path statements** on managed and external tables in both catalogs, through both front doors: `CREATE TABLE ... AS SELECT`, `INSERT OVERWRITE` (unpartitioned and per-partition), `LOAD DATA INPATH`, and managed↔external conversion through `ALTER TABLE ... SET TBLPROPERTIES('EXTERNAL'=...)`. **CTAS follows the catalog, not the client.** It names no `LOCATION`, so the directory is derived rather than sent: both HiveServer2 instances on this stand carry `hive.metastore.warehouse.dir=hdfs://namenode:8020/warehouse/hdp`, and a CTAS in `apache__default` still landed on `hdfs://namenode-b:8020/warehouse/apache/<table>` - the backend metastore computed it. The RPC is `create_table_with_environment_context`, one call per catalog on its own backend, measured from `hms_proxy_requests_total`; its **body is not in the trace** (the method is not in the traced set), so nothing is claimed here about what the request carried. `INSERT OVERWRITE` replaces rather than appends, and the partitioned form leaves the neighbouring partition alone - both markers carry the row count and the min/max of the value column, so an append prints a different marker. Its partition write path is `add_partition_with_environment_context` for a new partition and `alter_partitions_with_environment_context` for the overwritten one (again counters, not bodies). `LOAD DATA` **moves** files: the target holds the loaded value and the source directory is empty afterwards, which is what separates a move from a copy. Conversion is asserted by what `DROP` does next, not by the `ALTER` returning: a managed table turned external keeps its data, an external table turned managed loses it, and an external table carrying `external.table.purge=true` loses it as well. That last one is the proxy's own path on the `apache` catalog - `FileSystemExternalTableDropPurger` logged `purged external table data for catalog 'apache'` - while on `hdp` the vendor metastore deletes it, because the purger only engages for backends on the `APACHE_3_1_3` runtime; the client sees the same outcome either way. Gated by `HMS_SMOKE_SQL_RUN_CTAS`, `HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE`, `HMS_SMOKE_SQL_RUN_LOAD_DATA` and `HMS_SMOKE_SQL_RUN_TABLE_CONVERSION`, all on by default - every one of them worked on both pairings, so none needed an env file to turn it off. Each of the nine assertions was seen failing on purpose (see the 2026-08-05 revalidation entry) | — | ✅ both pairings |
 | C6 | **Cross pairing, outside the paired topology of C8.** ACID is a property of the **front door**, not just the catalog: the same `create` + `insert` on a transactional table succeeds here and fails through the Apache front door, where the insert lands and the stats update is then refused with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)`, surfacing as a failing `StatsTask`. **The proxy is not losing the write ID** - the two clients issue different RPCs. The vendor build never calls `set_aggr_stats_for` at all: it goes `get_valid_write_ids` → `alter_table_with_environment_context` → `commit_txn`. The Apache 3.1.3 client instead ends with `set_aggr_stats_for`, which carries no transactional write state, and the Hortonworks backend refuses it, after which the client aborts the txn. Ruled out along the way: federation is not the trigger (a non-federated `default` database fails identically), stand configuration is not (both HiveServer2 instances carry the same `hive.support.concurrency`/`hive.txn.manager`), and field loss in the proxy is not (`NamespaceInternalizer` deep-copies the struct). What this stand cannot settle is whether an Apache 3.1.3 client would hit the same rule against an Apache metastore: with that metastore as the default catalog the statement dies earlier, at C7 | ✅ refused as described | — |
 | C7 | **Cross pairing, outside the paired topology of C8.** With the **Apache 3.1.3 metastore as the default catalog** (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | ✅ | — |
 
@@ -528,7 +529,7 @@ goes with it) rather than assumed away; neither occurred in these runs.
 | Ranger, Atlas, HA | Out of the stand's scope |
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
 | Sustained load | Section I covers concurrent REST commits to a single table (I2, I3), REST mixed with SQL writers across front doors (I4) and a two-table transaction under contention (I5, I6). What is still missing is duration: every run is a burst of a handful of writers, never sustained load, and nothing measures throughput or latency under it |
-| `CTAS`, `INSERT OVERWRITE`, `LOAD DATA`, managed↔external conversion | Never run through the proxy. C9 covers `ADD COLUMNS`, `RENAME TO`, `DROP PARTITION` and `TRUNCATE`, C11 covers `MSCK REPAIR`; these are the next layer |
+| `LOAD DATA` across the two clusters | Measured by hand and it works - a file staged on `namenode` loaded into a table of the `apache` catalog left the first cluster and appeared under `/warehouse/apache` on `namenode-b`, so Hive copies across filesystems itself rather than refusing. It is **not** in the scenario: the runner has to stay usable on an installation with one filesystem, where the statement has no cross-cluster form at all. C12 loads within each catalog |
 | Iceberg partitioned tables, schema evolution, `MERGE INTO` | H13-H20 cover row-level `DELETE`/`UPDATE` on an unpartitioned table with a fixed schema. Partition specs (and their evolution), added/renamed/dropped columns and `MERGE INTO` have never been run through the proxy |
 
 ## Revalidation log
@@ -1055,6 +1056,84 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   (so `drop partition` takes the data with it and there is nothing to repair) exited 1 on the same
   env file with `error: expected 'msck_repaired_managed_hdp_7'`.
   Not run: the plain profile in any form, sections A, D, E, G, H, I, and the C6/C7 cross pairings.
+
+- **2026-08-05 (second entry)**, still jar `1.0.44-a51616fb` - the proxy did not change here either;
+  the change is the SQL scenario again. It closes row C12 and empties the last "never run" line of
+  section F: `CTAS`, `INSERT OVERWRITE`, `LOAD DATA` and managed↔external conversion.
+  Measured by hand first, on the live stand, in both catalogs and through both front doors before
+  a line of the scenario was written.
+  **CTAS.** A CTAS in `hdp__default` landed on `hdfs://namenode:8020/warehouse/hdp/<table>` and one
+  in `apache__default` on `hdfs://namenode-b:8020/warehouse/apache/<table>` - on each catalog's own
+  cluster, while *both* HiveServer2 instances carry
+  `hive.metastore.warehouse.dir=hdfs://namenode:8020/warehouse/hdp`, so the location came from the
+  backend metastore and not from the client. The RPC is
+  `create_table_with_environment_context`, one `ok` per catalog on its own backend in
+  `hms_proxy_requests_total` after the run. That counter is all that was measured: the method is
+  not in the traced set, so the proxy log shows no body for it and nothing is claimed about what
+  the request carried. `ExternalTableLocationRewriter` is by construction not on this path - it
+  only rewrites `Table` arguments of external tables.
+  **INSERT OVERWRITE.** Unpartitioned and partitioned, both catalogs: the unpartitioned table went
+  from `io_before` to exactly one row of `io_after`, the partitioned one replaced `p=k1` and left
+  `p=k2` untouched. Its partition write path showed up as
+  `add_partition_with_environment_context` (two per catalog, the two inserts) and
+  `alter_partitions_with_environment_context` (one per catalog, the overwritten partition) - again
+  counters, not bodies.
+  **LOAD DATA.** Inside a catalog it moves as promised: the loaded value read back from the target
+  and the source directory empty afterwards. Across the two clusters it also works, which is the
+  answer to whether the remote catalog can be loaded into at all: a file staged on `namenode`
+  under `/external/hdp/loadsrc` and loaded into a table of `apache__default` disappeared from the
+  first cluster and appeared as `/warehouse/apache/<table>/000000_0` on `namenode-b` (both listings
+  taken from the namenode containers after their own `kinit`, exit status checked). Hive copies
+  across filesystems itself; nothing was refused, so there is no limitation to record here. The
+  cross-cluster form stays out of the scenario on purpose - see section F.
+  **managed↔external.** `SET TBLPROPERTIES('EXTERNAL'='TRUE')` flipped `Table Type` to
+  `EXTERNAL_TABLE` and the following `DROP` left the data in place; `'EXTERNAL'='FALSE'` flipped it
+  back to `MANAGED_TABLE` and the `DROP` took the data with it; with `external.table.purge=true`
+  added, the data went too - and on the `apache` catalog it was the proxy that deleted it, logged
+  as `purged external table data for catalog 'apache' at location ...` by
+  `FileSystemExternalTableDropPurger`, on both layouts. On `hdp` no such line appears: the purger
+  only engages for `APACHE_3_1_3` backends, and the vendor metastore does the delete itself. Both
+  outcomes look identical to the client, which is why the assertion is about the data and not about
+  who removed it.
+  In the scenario, CTAS and INSERT OVERWRITE went into the managed-table block of each catalog,
+  LOAD DATA and the conversions into the external-table block, behind
+  `HMS_SMOKE_SQL_RUN_CTAS`, `HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE`, `HMS_SMOKE_SQL_RUN_LOAD_DATA` and
+  `HMS_SMOKE_SQL_RUN_TABLE_CONVERSION` - all on by default, none of them turned off in any env
+  file, because every statement worked on both pairings.
+  **A vacuous-assertion class was found and closed along the way, and it predates this change.**
+  `beeline -f` echoes each statement, and HiveServer2 logs it twice more, so a marker that is a
+  literal inside the SQL - the `then 'x' else 'y'` of a case expression - is in the output no matter
+  which branch the query took. Measured on a green run: `convert_e2m_left_external_hdp`,
+  `convert_purge_left_external_hdp` and `msck_present_before_managed_hdp` each appear **three times**
+  as a substring and **zero times** as a result line, i.e. the old `grep -F` form of the assertion
+  would have passed on the wrong outcome. All markers now go through
+  `assert_file_contains_result`, which anchors the match at the start of a line where beeline prints
+  results and nothing else; the existing `truncate_emptied_*`, `msck_absent_before_*`,
+  `added_managed_*`, `*_renamed` and `cross_*_join_ok` assertions were moved onto it too.
+  One stand-only defect fixed in passing: the SQL comment added with C9 contains
+  `` `describe formatted` ``, and inside an unquoted heredoc bash ran it - four
+  `describe: command not found` lines per run, with the comment silently emptied. The backticks are
+  escaped now and the runs are clean.
+  Green under Kerberos, both pairings, each ending in `scenario 'sql' completed successfully` with
+  exit status checked separately from the pipeline: `sql-kerberos.env` on `.env.kerberos`
+  (Hortonworks front door) and `sql-apache-kerberos.env` on `.env.apache-kerberos` (Apache front
+  door). The runner asserts eighteen new markers (nine per catalog) plus the two CTAS locations; all
+  eighteen were additionally counted by hand in each of the two output files with an anchored
+  `grep` - eighteen matches in each - to confirm they were printed as results rather than echoed.
+  Both final runs were made after the hand-made probe tables and their directories on the two
+  clusters had been removed, so nothing in them stands on state left over from the measurements.
+  Every one of the nine new assertions was seen failing, each from a copy of the runner with one
+  thing broken: CTAS without the seed insert (`error: expected result
+  'ctas_value_managed_hdp_ctas_seed_managed_hdp'`), the CTAS location assertion pointed at the other
+  cluster (`error: expected table smoke_ctas_hdp_... to be created on hdfs://namenode-b:8020`), a
+  row added after the unpartitioned overwrite (marker turned `_2_`), an overwrite of the neighbour
+  partition `k2`, a different value in the LOAD source, `insert ... select` in place of
+  `load data inpath` (source not drained), and each of the three conversion ALTERs removed in turn.
+  The two INSERT OVERWRITE mutations were run on the Hortonworks pairing: on the Apache one a second
+  `insert` into the same table dies in `StatsTask` before the assertions are reached, which is an
+  artefact of the mutation rather than of the scenario.
+  Not run: the plain profile in any form, sections A, D, E, G, H, I, the C6/C7 cross pairings, and
+  the unit suite - no Java changed in this entry.
 
 ## Two caveats on faithfulness
 

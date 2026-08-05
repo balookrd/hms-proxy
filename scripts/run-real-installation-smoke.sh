@@ -157,6 +157,10 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_SQL_RUN_MATERIALIZED_VIEW    default: false
   HMS_SMOKE_SQL_RUN_TRUNCATE             default: true
   HMS_SMOKE_SQL_RUN_MSCK                 default: true (needs `dfs` commands on HiveServer2)
+  HMS_SMOKE_SQL_RUN_CTAS                 default: true
+  HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE     default: true
+  HMS_SMOKE_SQL_RUN_LOAD_DATA            default: true (moves files under the external root)
+  HMS_SMOKE_SQL_RUN_TABLE_CONVERSION     default: true (managed<->external via TBLPROPERTIES)
   HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL    default: false
   HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL default: false
   HMS_SMOKE_SQL_FRONT_DOORS              default: apache hdp (which passes run)
@@ -624,6 +628,20 @@ assert_file_contains() {
   grep -F "${expected}" "${file}" >/dev/null || fail "expected '${expected}' in ${file}"
 }
 
+# Asserts that a marker was printed as a query *result* rather than merely appearing somewhere in
+# the output. beeline -f echoes every statement it runs, and HiveServer2 logs it twice more
+# ("Compiling command", "Executing command"), so a marker that is a literal inside the SQL - the
+# `then 'x' else 'y'` of a case expression, or a value being inserted - is in the file whichever
+# branch the query actually took. Matching it at the start of a line is what separates the two:
+# results are printed by themselves (--outputformat=tsv2, --showHeader=false), while every echo of
+# the statement is prefixed by the log level or the prompt.
+assert_file_contains_result() {
+  local file="$1"
+  local expected="$2"
+  grep -E "^${expected}([[:space:]]|$)" "${file}" >/dev/null \
+    || fail "expected result '${expected}' in ${file}"
+}
+
 # Identifier quoting is a dialect difference, not a behavioural one: `SHOW CREATE TABLE` on a
 # Hortonworks HiveServer2 prints `db`.`table` where the Apache one prints db.table. Both mean the
 # view was rewritten to the same external name, so the backticks are stripped before comparing.
@@ -722,6 +740,186 @@ drop table ${table};
 EOF
 }
 
+# CREATE TABLE AS SELECT for one catalog. The point is not that a table appears - it is where it
+# appears. CTAS names no LOCATION, so the table is created through
+# create_table_with_environment_context with a location nobody in the request chose, and the
+# question the proxy has to get right is which filesystem that ends up on. Measured on this stand:
+# HiveServer2's own hive.metastore.warehouse.dir points at the first cluster, and a CTAS in the
+# remote catalog still lands on the second one - the backend metastore computes the directory, so
+# the table follows its catalog rather than the client. The location assertion downstream is what
+# pins that; the marker value proves the rows were really written and read back through the new
+# table rather than the statement merely succeeding.
+ctas_sql() {
+  local seed="$1"
+  local ctas="$2"
+  local label="$3"
+  cat <<EOF
+create table if not exists ${seed} (id int, tag string) stored as parquet;
+insert into ${seed} values (11, 'ctas_seed_${label}');
+create table ${ctas} stored as parquet as
+select id, concat('ctas_value_${label}_', tag) as tag from ${seed};
+describe formatted ${ctas};
+select tag as ${label}_ctas_value from ${ctas} where id = 11;
+drop table ${seed};
+drop table ${ctas};
+EOF
+}
+
+# INSERT OVERWRITE for one catalog, unpartitioned and partitioned. Overwrite replaces data instead
+# of adding to it, so a check that only looks for the new value would pass on a table that still
+# holds the old one too: both markers therefore carry the row count and the min/max of the value
+# column, which a plain `insert into` would change. The partitioned half writes a second partition
+# that the overwrite must not touch - that marker is what tells "overwrote one partition" from
+# "overwrote the table".
+insert_overwrite_sql() {
+  local plain="$1"
+  local partitioned="$2"
+  local label="$3"
+  cat <<EOF
+create table if not exists ${plain} (id int, tag string) stored as parquet;
+insert into ${plain} values (1, 'io_before_${label}');
+insert overwrite table ${plain} select 2, 'io_after_${label}';
+select concat('io_plain_${label}_', cast(count(*) as string), '_', min(tag), '_', max(tag))
+  as ${label}_io_plain from ${plain};
+create table if not exists ${partitioned} (id int, tag string)
+partitioned by (p string)
+stored as parquet;
+insert into ${partitioned} partition (p='k1') values (1, 'io_before_${label}');
+insert into ${partitioned} partition (p='k2') values (9, 'io_keep_${label}');
+insert overwrite table ${partitioned} partition (p='k1') select 2, 'io_after_${label}';
+select concat('io_part_${label}_', p, '_', cast(count(*) as string), '_', min(tag), '_', max(tag))
+  as ${label}_io_part from ${partitioned} group by p;
+drop table ${plain};
+drop table ${partitioned};
+EOF
+}
+
+# LOAD DATA for one catalog. Unlike everything else in this suite the statement moves files, so the
+# check has two halves: the target must hold the loaded value, and the source directory must be
+# empty afterwards - a copy would leave it populated and is not what LOAD DATA promises. The source
+# is an external table under the catalog's external root, which is how the file gets there without
+# an hdfs client next to the runner, and the target is a managed table so the move crosses the
+# warehouse the backend metastore chose.
+load_data_sql() {
+  local source_table="$1"
+  local target_table="$2"
+  local source_location="$3"
+  local label="$4"
+  cat <<EOF
+create external table if not exists ${source_table} (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${source_location}';
+insert into ${source_table} values (42, 'load_${label}');
+create table if not exists ${target_table} (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile;
+load data inpath '${source_location}' into table ${target_table};
+select concat('load_moved_${label}_', tag, '_', cast(id as string)) as ${label}_load_moved
+from ${target_table};
+select case when count(*) = 0 then 'load_source_drained_${label}' else 'load_source_left_${label}' end
+  as ${label}_load_source from ${source_table};
+drop table ${source_table};
+drop table ${target_table};
+EOF
+}
+
+# managed <-> external conversion for one catalog. What changes is the meaning of DROP, so every
+# assertion here is about the data after the drop rather than about the ALTER answering without an
+# error: a conversion that did not take effect fails these markers in whichever direction it
+# failed. The state is read back by pointing a fresh external table at the same LOCATION, which
+# needs no filesystem client and no `dfs` privileges.
+#
+# Three tables, three outcomes. A managed table turned external keeps its data (the metastore may
+# no longer delete what it does not own); an external table turned managed loses it; an external
+# table that also carries external.table.purge=true loses it as well - and that last one is the
+# proxy's own path on a catalog whose backend runs the Apache runtime, where
+# FileSystemExternalTableDropPurger deletes the location itself after the drop returns. That purge
+# is asynchronous, which is safe here only because the read-back runs a CREATE plus a MapReduce job
+# behind it; do not shorten the gap.
+table_conversion_sql() {
+  local location_root="$1"
+  local prefix="$2"
+  local label="$3"
+  local to_external="${prefix}_m2e"
+  local to_managed="${prefix}_e2m"
+  local purged="${prefix}_purge"
+  cat <<EOF
+create table if not exists ${to_external} (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${to_external}';
+insert into ${to_external} values (5, 'convert_${label}');
+alter table ${to_external} set tblproperties ('EXTERNAL'='TRUE');
+describe formatted ${to_external};
+drop table ${to_external};
+create external table if not exists ${to_external}_probe (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${to_external}';
+select concat('convert_m2e_kept_${label}_', tag) as ${label}_convert_m2e from ${to_external}_probe;
+drop table ${to_external}_probe;
+
+create external table if not exists ${to_managed} (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${to_managed}';
+insert into ${to_managed} values (6, 'convert_${label}');
+alter table ${to_managed} set tblproperties ('EXTERNAL'='FALSE');
+describe formatted ${to_managed};
+drop table ${to_managed};
+create external table if not exists ${to_managed}_probe (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${to_managed}';
+select case when count(*) = 0 then 'convert_e2m_removed_${label}' else 'convert_e2m_left_${label}' end
+  as ${label}_convert_e2m from ${to_managed}_probe;
+drop table ${to_managed}_probe;
+
+create table if not exists ${purged} (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${purged}';
+insert into ${purged} values (7, 'convert_${label}');
+alter table ${purged} set tblproperties ('EXTERNAL'='TRUE', 'external.table.purge'='true');
+drop table ${purged};
+create external table if not exists ${purged}_probe (id int, tag string)
+row format delimited fields terminated by ','
+stored as textfile
+location '${location_root}/${purged}';
+select case when count(*) = 0 then 'convert_purged_${label}' else 'convert_purge_left_${label}' end
+  as ${label}_convert_purge from ${purged}_probe;
+drop table ${purged}_probe;
+EOF
+}
+
+# The scheme://authority of a location, i.e. the filesystem it names, or empty when the value is a
+# bare path. Used to assert which cluster a CTAS table landed on; a configuration that gives the
+# external roots as plain paths simply skips that assertion rather than asserting nothing.
+filesystem_of_location() {
+  local location="$1"
+  case "${location}" in
+    *://*)
+      local remainder="${location#*://}"
+      printf '%s://%s' "${location%%://*}" "${remainder%%/*}"
+      ;;
+    *) printf '' ;;
+  esac
+}
+
+# Asserts that `describe formatted` reported a location for this table on the expected filesystem.
+# The table name is part of the match because a run prints many locations, and the filesystem alone
+# would be satisfied by any other table in the same output.
+assert_table_filesystem() {
+  local file="$1"
+  local table="$2"
+  local filesystem="$3"
+  local escaped=""
+  escaped="$(printf '%s' "${filesystem}" | sed 's/[.[\*^$]/\\&/g')"
+  grep -E "Location:[[:space:]]+${escaped}[^[:space:]]*/${table}([[:space:]]|$)" "${file}" >/dev/null \
+    || fail "expected table ${table} to be created on ${filesystem} in ${file}"
+}
+
 run_sql_smoke() {
   # Names the front door this pass runs against, and keeps the objects of the two passes apart.
   local front_door="${1:-primary}"
@@ -756,6 +954,20 @@ run_sql_smoke() {
   local managed_apache="smoke_managed_apache_${run_id}"
   local msck_hdp="smoke_msck_hdp_${run_id}"
   local msck_apache="smoke_msck_apache_${run_id}"
+  local ctas_seed_hdp="smoke_ctas_seed_hdp_${run_id}"
+  local ctas_seed_apache="smoke_ctas_seed_apache_${run_id}"
+  local ctas_hdp="smoke_ctas_hdp_${run_id}"
+  local ctas_apache="smoke_ctas_apache_${run_id}"
+  local overwrite_hdp="smoke_ovw_hdp_${run_id}"
+  local overwrite_apache="smoke_ovw_apache_${run_id}"
+  local overwrite_part_hdp="smoke_ovwp_hdp_${run_id}"
+  local overwrite_part_apache="smoke_ovwp_apache_${run_id}"
+  local load_src_hdp="smoke_load_src_hdp_${run_id}"
+  local load_src_apache="smoke_load_src_apache_${run_id}"
+  local load_tgt_hdp="smoke_load_tgt_hdp_${run_id}"
+  local load_tgt_apache="smoke_load_tgt_apache_${run_id}"
+  local convert_hdp="smoke_conv_hdp_${run_id}"
+  local convert_apache="smoke_conv_apache_${run_id}"
   local external_hdp="smoke_external_hdp_${run_id}"
   local external_apache="smoke_external_apache_${run_id}"
   local txn_hdp="smoke_txn_hdp_${run_id}"
@@ -819,6 +1031,53 @@ select case when count(*) = 0 then 'truncate_emptied_managed_apache' else 'trunc
     log "skipping MSCK REPAIR SQL smoke because HMS_SMOKE_SQL_RUN_MSCK=${HMS_SMOKE_SQL_RUN_MSCK:-true}"
   fi
 
+  # The four data-path statements. Each has its own switch because an installation can refuse them
+  # for reasons that have nothing to do with the proxy - an authorization plugin that blocks
+  # LOAD DATA, a warehouse the smoke user may not write CTAS output into - and a run that silently
+  # skipped them would still be honest about what it covered.
+  local run_ctas="${HMS_SMOKE_SQL_RUN_CTAS:-true}"
+  local run_insert_overwrite="${HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE:-true}"
+  local run_load_data="${HMS_SMOKE_SQL_RUN_LOAD_DATA:-true}"
+  local run_table_conversion="${HMS_SMOKE_SQL_RUN_TABLE_CONVERSION:-true}"
+
+  local ctas_sql_hdp=""
+  local ctas_sql_apache=""
+  if [[ "${run_ctas}" == "true" ]]; then
+    ctas_sql_hdp="$(ctas_sql "${ctas_seed_hdp}" "${ctas_hdp}" "managed_hdp")"
+    ctas_sql_apache="$(ctas_sql "${ctas_seed_apache}" "${ctas_apache}" "managed_apache")"
+  else
+    log "skipping CTAS SQL smoke because HMS_SMOKE_SQL_RUN_CTAS=${run_ctas}"
+  fi
+
+  local overwrite_sql_hdp=""
+  local overwrite_sql_apache=""
+  if [[ "${run_insert_overwrite}" == "true" ]]; then
+    overwrite_sql_hdp="$(insert_overwrite_sql "${overwrite_hdp}" "${overwrite_part_hdp}" "managed_hdp")"
+    overwrite_sql_apache="$(insert_overwrite_sql "${overwrite_apache}" "${overwrite_part_apache}" "managed_apache")"
+  else
+    log "skipping INSERT OVERWRITE SQL smoke because HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE=${run_insert_overwrite}"
+  fi
+
+  local load_sql_hdp=""
+  local load_sql_apache=""
+  if [[ "${run_load_data}" == "true" ]]; then
+    load_sql_hdp="$(load_data_sql "${load_src_hdp}" "${load_tgt_hdp}" \
+      "${hdp_external_root}/load/${load_src_hdp}" "external_hdp")"
+    load_sql_apache="$(load_data_sql "${load_src_apache}" "${load_tgt_apache}" \
+      "${apache_external_root}/load/${load_src_apache}" "external_apache")"
+  else
+    log "skipping LOAD DATA SQL smoke because HMS_SMOKE_SQL_RUN_LOAD_DATA=${run_load_data}"
+  fi
+
+  local convert_sql_hdp=""
+  local convert_sql_apache=""
+  if [[ "${run_table_conversion}" == "true" ]]; then
+    convert_sql_hdp="$(table_conversion_sql "${hdp_external_root}/convert" "${convert_hdp}" "external_hdp")"
+    convert_sql_apache="$(table_conversion_sql "${apache_external_root}/convert" "${convert_apache}" "external_apache")"
+  else
+    log "skipping managed<->external conversion SQL smoke because HMS_SMOKE_SQL_RUN_TABLE_CONVERSION=${run_table_conversion}"
+  fi
+
   local session_init="${HMS_SMOKE_SQL_SESSION_INIT:-}"
   if [[ "${front_door}" == "hdp" && -n "${HMS_SMOKE_SQL_HDP_SESSION_INIT:-}" ]]; then
     session_init="${HMS_SMOKE_SQL_HDP_SESSION_INIT}"
@@ -867,13 +1126,15 @@ show partitions ${managed_hdp};
 ${truncate_sql_managed_hdp}
 alter table ${managed_hdp} rename to ${managed_hdp}_renamed;
 describe formatted ${managed_hdp}_renamed;
--- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- Names the renamed table explicitly. Relying on \`describe formatted\` to mention it only
 -- works for a managed table, whose directory moves with the rename; an external table
 -- keeps its original location, so the new name appears nowhere in that output.
 show tables like '${managed_hdp}_renamed';
 select count(*) as managed_hdp_renamed_count from ${managed_hdp}_renamed;
 drop table ${managed_hdp}_renamed;
 ${msck_sql_hdp}
+${ctas_sql_hdp}
+${overwrite_sql_hdp}
 
 create external table if not exists ${external_hdp} (
   id int,
@@ -889,12 +1150,14 @@ alter table ${external_hdp} add columns (extra string);
 describe ${external_hdp};
 alter table ${external_hdp} rename to ${external_hdp}_renamed;
 describe formatted ${external_hdp}_renamed;
--- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- Names the renamed table explicitly. Relying on \`describe formatted\` to mention it only
 -- works for a managed table, whose directory moves with the rename; an external table
 -- keeps its original location, so the new name appears nowhere in that output.
 show tables like '${external_hdp}_renamed';
 select count(*) as external_hdp_renamed_count from ${external_hdp}_renamed;
 drop table ${external_hdp}_renamed;
+${load_sql_hdp}
+${convert_sql_hdp}
 EOF
 
   if [[ "${HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
@@ -939,13 +1202,15 @@ show partitions ${managed_apache};
 ${truncate_sql_managed_apache}
 alter table ${managed_apache} rename to ${managed_apache}_renamed;
 describe formatted ${managed_apache}_renamed;
--- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- Names the renamed table explicitly. Relying on \`describe formatted\` to mention it only
 -- works for a managed table, whose directory moves with the rename; an external table
 -- keeps its original location, so the new name appears nowhere in that output.
 show tables like '${managed_apache}_renamed';
 select count(*) as managed_apache_renamed_count from ${managed_apache}_renamed;
 drop table ${managed_apache}_renamed;
 ${msck_sql_apache}
+${ctas_sql_apache}
+${overwrite_sql_apache}
 
 create external table if not exists ${external_apache} (
   id int,
@@ -961,12 +1226,14 @@ alter table ${external_apache} add columns (extra string);
 describe ${external_apache};
 alter table ${external_apache} rename to ${external_apache}_renamed;
 describe formatted ${external_apache}_renamed;
--- Names the renamed table explicitly. Relying on `describe formatted` to mention it only
+-- Names the renamed table explicitly. Relying on \`describe formatted\` to mention it only
 -- works for a managed table, whose directory moves with the rename; an external table
 -- keeps its original location, so the new name appears nowhere in that output.
 show tables like '${external_apache}_renamed';
 select count(*) as external_apache_renamed_count from ${external_apache}_renamed;
 drop table ${external_apache}_renamed;
+${load_sql_apache}
+${convert_sql_apache}
 EOF
 
   if [[ "${HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
@@ -1087,23 +1354,70 @@ EOF
   # and a column added after the table existed must come back with the value written through it.
   # Both touch paths where the proxy rewrites names and locations, so a silent no-op here would be
   # a proxy defect rather than a Hive one.
-  assert_file_contains "${output_file}" "added_managed_hdp"
-  assert_file_contains "${output_file}" "added_managed_apache"
-  assert_file_contains "${output_file}" "${managed_hdp}_renamed"
-  assert_file_contains "${output_file}" "${external_hdp}_renamed"
+  assert_file_contains_result "${output_file}" "added_managed_hdp"
+  assert_file_contains_result "${output_file}" "added_managed_apache"
+  assert_file_contains_result "${output_file}" "${managed_hdp}_renamed"
+  assert_file_contains_result "${output_file}" "${external_hdp}_renamed"
   if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
     # Not "did TRUNCATE fail": the Hortonworks client sends an empty partition list, so the
     # metastore truncates nothing and answers success. Only the row count tells the two apart.
-    assert_file_contains "${output_file}" "truncate_emptied_managed_hdp"
-    assert_file_contains "${output_file}" "truncate_emptied_managed_apache"
+    assert_file_contains_result "${output_file}" "truncate_emptied_managed_hdp"
+    assert_file_contains_result "${output_file}" "truncate_emptied_managed_apache"
   fi
   if [[ "${HMS_SMOKE_SQL_RUN_MSCK:-true}" == "true" ]]; then
     # The pair matters: the first marker says the partition was really missing when the repair
     # ran, the second carries a value read back through the partition the repair added.
-    assert_file_contains "${output_file}" "msck_absent_before_managed_hdp"
-    assert_file_contains "${output_file}" "msck_repaired_managed_hdp_7"
-    assert_file_contains "${output_file}" "msck_absent_before_managed_apache"
-    assert_file_contains "${output_file}" "msck_repaired_managed_apache_7"
+    assert_file_contains_result "${output_file}" "msck_absent_before_managed_hdp"
+    assert_file_contains_result "${output_file}" "msck_repaired_managed_hdp_7"
+    assert_file_contains_result "${output_file}" "msck_absent_before_managed_apache"
+    assert_file_contains_result "${output_file}" "msck_repaired_managed_apache_7"
+  fi
+  if [[ "${run_ctas}" == "true" ]]; then
+    # The value carried through the table CTAS created, so a table created empty fails here.
+    assert_file_contains_result "${output_file}" "ctas_value_managed_hdp_ctas_seed_managed_hdp"
+    assert_file_contains_result "${output_file}" "ctas_value_managed_apache_ctas_seed_managed_apache"
+    # And where it landed. CTAS chooses no location, so this is the check that the derived one
+    # follows the catalog rather than the client's own warehouse.
+    local hdp_filesystem=""
+    local apache_filesystem=""
+    hdp_filesystem="$(filesystem_of_location "${hdp_external_root}")"
+    apache_filesystem="$(filesystem_of_location "${apache_external_root}")"
+    if [[ -n "${hdp_filesystem}" && -n "${apache_filesystem}" ]]; then
+      assert_table_filesystem "${output_file}" "${ctas_hdp}" "${hdp_filesystem}"
+      assert_table_filesystem "${output_file}" "${ctas_apache}" "${apache_filesystem}"
+    else
+      log "skipping the CTAS location assertion: the external roots name no filesystem"
+    fi
+  fi
+  if [[ "${run_insert_overwrite}" == "true" ]]; then
+    # Row count and value in one marker: an overwrite that appended instead of replacing prints a
+    # different count, and one that wrote nothing prints the old value.
+    assert_file_contains_result "${output_file}" "io_plain_managed_hdp_1_io_after_managed_hdp_io_after_managed_hdp"
+    assert_file_contains_result "${output_file}" "io_plain_managed_apache_1_io_after_managed_apache_io_after_managed_apache"
+    assert_file_contains_result "${output_file}" "io_part_managed_hdp_k1_1_io_after_managed_hdp_io_after_managed_hdp"
+    assert_file_contains_result "${output_file}" "io_part_managed_apache_k1_1_io_after_managed_apache_io_after_managed_apache"
+    # The untouched neighbour partition - this is what separates overwriting one partition from
+    # overwriting the table.
+    assert_file_contains_result "${output_file}" "io_part_managed_hdp_k2_1_io_keep_managed_hdp_io_keep_managed_hdp"
+    assert_file_contains_result "${output_file}" "io_part_managed_apache_k2_1_io_keep_managed_apache_io_keep_managed_apache"
+  fi
+  if [[ "${run_load_data}" == "true" ]]; then
+    # Both halves are needed: the first says the data arrived, the second that it was moved rather
+    # than copied.
+    assert_file_contains_result "${output_file}" "load_moved_external_hdp_load_external_hdp_42"
+    assert_file_contains_result "${output_file}" "load_moved_external_apache_load_external_apache_42"
+    assert_file_contains_result "${output_file}" "load_source_drained_external_hdp"
+    assert_file_contains_result "${output_file}" "load_source_drained_external_apache"
+  fi
+  if [[ "${run_table_conversion}" == "true" ]]; then
+    # Each marker is read after a DROP, so it is the changed delete semantics being asserted, not
+    # the ALTER returning without an error.
+    assert_file_contains_result "${output_file}" "convert_m2e_kept_external_hdp_convert_external_hdp"
+    assert_file_contains_result "${output_file}" "convert_m2e_kept_external_apache_convert_external_apache"
+    assert_file_contains_result "${output_file}" "convert_e2m_removed_external_hdp"
+    assert_file_contains_result "${output_file}" "convert_e2m_removed_external_apache"
+    assert_file_contains_result "${output_file}" "convert_purged_external_hdp"
+    assert_file_contains_result "${output_file}" "convert_purged_external_apache"
   fi
   if [[ "${run_view_rewrite}" == "true" ]]; then
     assert_file_contains_identifier "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
@@ -1114,10 +1428,10 @@ EOF
     assert_file_contains "${output_file}" "${udf_expected_result}"
   fi
   if [[ "${run_cross_catalog_join}" == "true" ]]; then
-    assert_file_contains "${output_file}" "cross_catalog_join_ok"
+    assert_file_contains_result "${output_file}" "cross_catalog_join_ok"
   fi
   if [[ "${run_cross_database_join}" == "true" ]]; then
-    assert_file_contains "${output_file}" "cross_database_join_ok"
+    assert_file_contains_result "${output_file}" "cross_database_join_ok"
   fi
 }
 
