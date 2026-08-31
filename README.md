@@ -229,12 +229,15 @@ mvn -o package
 mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
 
-Build version is computed from git for every commit in the form `0.1.<git-distance>-<short-sha>`.
+Build version is computed from git. Regular branch builds use the configured jgitver pattern
+`1.0.<git-distance>-<short-sha>`, tag releases use the pushed `vMAJOR.MINOR.PATCH` tag, and the
+rolling nightly release pins Maven to the latest reachable release tag so a nightly built after
+`v1.2.0` produces `1.2.0` jars.
 
-GitHub Actions publishes prerelease builds automatically:
-- every push to `main` creates a `build-<project.version>` tag and attaches the built jars to a prerelease
-- a nightly run is scheduled for `00:00 UTC` every day and publishes a `nightly-YYYYMMDD` prerelease from the current `main` head
-- each prerelease also gets auto-generated GitHub release notes for that tag
+GitHub Actions publishes builds automatically:
+- branch and pull-request CI uploads jar artifacts
+- every push to `main`, plus manual `workflow_dispatch`, updates the rolling `nightly` prerelease from the current `main` head
+- pushed `v*` tags publish regular releases with generated GitHub release notes
 
 Manual releases are published through the `Release` workflow:
 - start it with `workflow_dispatch`

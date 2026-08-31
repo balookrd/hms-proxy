@@ -16,8 +16,8 @@ on:
         default: false
       make_latest:
         required: false
-        type: string
-        default: "true"
+        type: boolean
+        default: true
       release_name:
         required: false
         type: string
@@ -60,6 +60,32 @@ jobs:
         with:
           ref: ${{ steps.vars.outputs.checkout_ref }}
           fetch-depth: 0
+          fetch-tags: true
+
+      - id: maven-version
+        name: Resolve Maven version
+        shell: bash
+        env:
+          ROLLING_TAG: ${{ inputs.rolling_tag }}
+        run: |
+          set -euo pipefail
+
+          maven_args=""
+          if [[ "$ROLLING_TAG" == "true" ]]; then
+            git fetch origin '+refs/tags/*:refs/tags/*' --force
+            version_tag="$(git tag --merged HEAD -l 'v[0-9]*' --sort=-v:refname | head -n1)"
+            if [[ -z "$version_tag" ]]; then
+              echo "No reachable release tag found for rolling build version" >&2
+              exit 1
+            fi
+            version="${version_tag#v}"
+            maven_args="-Djgitver.use-version=${version}"
+            echo "Rolling build Maven version: ${version}"
+          else
+            echo "Using jgitver-computed Maven version."
+          fi
+
+          echo "args=${maven_args}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -69,10 +95,10 @@ jobs:
           cache: maven
 
       - name: Run unit tests
-        run: mvn -B test
+        run: mvn -B ${{ steps.maven-version.outputs.args }} test
 
       - name: Build jars
-        run: mvn -B -DskipTests package
+        run: mvn -B ${{ steps.maven-version.outputs.args }} -DskipTests package
 
       - name: Stage release assets
         shell: bash
@@ -89,7 +115,7 @@ jobs:
             cp "$jar" dist/
           done
           cd dist
-          sha256sum *.jar > SHA256SUMS.txt
+          sha256sum ./*.jar > SHA256SUMS.txt
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6

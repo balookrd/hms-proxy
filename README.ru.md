@@ -232,12 +232,15 @@ mvn -o package
 mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
 
-Версия сборки теперь вычисляется из git на каждом коммите в формате `0.1.<git-distance>-<short-sha>`.
+Версия сборки вычисляется из git. Обычные branch-сборки используют настроенный jgitver-шаблон
+`1.0.<git-distance>-<short-sha>`, tag release берёт pushed-тег `vMAJOR.MINOR.PATCH`, а rolling
+nightly фиксирует Maven на последнем достижимом release-теге, поэтому nightly после `v1.2.0`
+собирает jar-файлы версии `1.2.0`.
 
-GitHub Actions автоматически публикует prerelease-сборки:
-- каждый push в `main` создаёт тег `build-<project.version>` и прикладывает собранные jar-файлы к prerelease
-- nightly-запуск выполняется каждый день в `00:00 UTC` и публикует prerelease `nightly-YYYYMMDD` с актуального `main`
-- для каждого prerelease GitHub автоматически генерирует release notes по соответствующему тегу
+GitHub Actions автоматически публикует сборки:
+- branch и pull-request CI загружают jar-файлы как artifacts
+- каждый push в `main`, плюс ручной `workflow_dispatch`, обновляет rolling prerelease `nightly` с актуального `main`
+- pushed-теги `v*` публикуют обычные releases с GitHub-generated release notes
 
 Ручные релизы публикуются через workflow `Release`:
 - запускается через `workflow_dispatch`

@@ -20,6 +20,6 @@ jobs:
       tag: nightly
       checkout_ref: ${{ github.sha }}
       prerelease: true
-      make_latest: "false"
+      make_latest: false
       release_name: Nightly
       rolling_tag: true
