@@ -235,7 +235,7 @@ mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 Версия сборки вычисляется из git. Обычные branch-сборки используют настроенный jgitver-шаблон
 `1.0.<git-distance>-<short-sha>`, tag release берёт pushed-тег `vMAJOR.MINOR.PATCH`, а rolling
 nightly фиксирует Maven на последнем достижимом release-теге, поэтому nightly после `v1.2.0`
-собирает jar-файлы версии `1.2.0`.
+собирает jar-файлы версии `1.2.0-<short-sha>`.
 
 GitHub Actions автоматически публикует сборки:
 - branch и pull-request CI загружают jar-файлы как artifacts

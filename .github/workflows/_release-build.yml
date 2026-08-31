@@ -79,8 +79,10 @@ jobs:
               exit 1
             fi
             version="${version_tag#v}"
-            maven_args="-Djgitver.use-version=${version}"
-            echo "Rolling build Maven version: ${version}"
+            short_sha="$(git rev-parse --short=8 HEAD)"
+            maven_version="${version}-${short_sha}"
+            maven_args="-Djgitver.use-version=${maven_version}"
+            echo "Rolling build Maven version: ${maven_version}"
           else
             echo "Using jgitver-computed Maven version."
           fi

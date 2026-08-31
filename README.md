@@ -232,7 +232,7 @@ mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 Build version is computed from git. Regular branch builds use the configured jgitver pattern
 `1.0.<git-distance>-<short-sha>`, tag releases use the pushed `vMAJOR.MINOR.PATCH` tag, and the
 rolling nightly release pins Maven to the latest reachable release tag so a nightly built after
-`v1.2.0` produces `1.2.0` jars.
+`v1.2.0` produces `1.2.0-<short-sha>` jars.
 
 GitHub Actions publishes builds automatically:
 - branch and pull-request CI uploads jar artifacts
