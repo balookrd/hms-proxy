@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.config.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
+
 public final class LatencyRoutingConfigParser {
   private LatencyRoutingConfigParser() {
   }
@@ -32,6 +33,9 @@ public final class LatencyRoutingConfigParser {
     long hedgedReadFanoutTimeoutMs = reader.getPositiveLong("routing.hedged-read.fanout-timeout-ms", 30_000L);
     DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
         reader.getOrNull("routing.degraded-routing-policy"));
+    DatabaseListCacheConfig databaseListCache = new DatabaseListCacheConfig(
+        reader.getNonNegativeLong("routing.database-list-cache.ttl-ms", 0L),
+        reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000));
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
             backendStatePollingEnabled,
@@ -56,7 +60,8 @@ public final class LatencyRoutingConfigParser {
                 "routing.hedged-read.max-parallelism",
                 Math.max(1, catalogCount)))),
             hedgedReadFanoutTimeoutMs),
-        degradedRoutingPolicy);
+        degradedRoutingPolicy,
+        databaseListCache);
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {

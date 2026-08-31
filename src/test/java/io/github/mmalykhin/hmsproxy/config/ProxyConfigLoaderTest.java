@@ -1246,6 +1246,8 @@ public class ProxyConfigLoaderTest {
           routing.hedged-read.enabled=true
           routing.hedged-read.max-parallelism=4
           routing.hedged-read.fanout-timeout-ms=12000
+          routing.database-list-cache.ttl-ms=2000
+          routing.database-list-cache.max-entries=25
           routing.degraded-routing-policy=safe_fanout_reads
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.catalog1.latency-budget-ms=850
@@ -1269,6 +1271,8 @@ public class ProxyConfigLoaderTest {
       Assert.assertTrue(config.latencyRouting().hedgedRead().enabled());
       Assert.assertEquals(2, config.latencyRouting().hedgedRead().maxParallelism());
       Assert.assertEquals(12000L, config.latencyRouting().hedgedRead().fanoutTimeoutMs());
+      Assert.assertEquals(2000L, config.latencyRouting().databaseListCache().ttlMs());
+      Assert.assertEquals(25, config.latencyRouting().databaseListCache().maxEntries());
       Assert.assertEquals(
           DegradedRoutingPolicy.SAFE_FANOUT_READS,
           config.latencyRouting().degradedRoutingPolicy());

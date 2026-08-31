@@ -1,9 +1,10 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
-import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
+import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
+import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -18,7 +19,6 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
 
 /**
  * Terminal handler in the invocation chain. Performs namespace-aware routing to catalog backends.
@@ -58,6 +58,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         observability,
         dispatcher,
         impersonationResolver,
+        new DatabaseListCache(config.latencyRouting().databaseListCache()),
         new FileSystemExternalTableDropPurger(config));
   }
 
@@ -69,6 +70,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       ProxyObservability observability,
       BackendCallDispatcher dispatcher,
       ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
       ExternalTableDropPurger externalTableDropPurger
   ) {
     this.config = config;
@@ -76,7 +78,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     this.compatibilityLayer = compatibilityLayer;
     this.observability = observability;
     this.support = new RoutingSupport(
-        config, router, federationLayer, observability, dispatcher, impersonationResolver);
+        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);

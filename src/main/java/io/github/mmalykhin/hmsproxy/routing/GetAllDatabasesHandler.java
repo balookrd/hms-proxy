@@ -19,8 +19,13 @@ final class GetAllDatabasesHandler implements SpecialCaseHandler {
         method.getName(),
         (backend, impersonation, requestId) -> {
           @SuppressWarnings("unchecked")
-          List<String> result = (List<String>) support.dispatcher.invokeDirect(
-              backend, method, null, impersonation, requestId, false, false);
+          List<String> result = support.databaseListCache.get(
+              method.getName(),
+              backend.name(),
+              null,
+              impersonation,
+              () -> (List<String>) support.dispatcher.invokeDirect(
+                  backend, method, null, impersonation, requestId, false, false));
           return result;
         })) {
       databases.addAll(support.exposedDatabaseNames(

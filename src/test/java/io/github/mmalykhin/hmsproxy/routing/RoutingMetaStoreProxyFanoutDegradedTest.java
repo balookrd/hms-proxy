@@ -73,6 +73,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
 import io.github.mmalykhin.hmsproxy.config.routing.CircuitBreakerConfig;
 import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.DatabaseListCacheConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableDropPurgeMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableLocationRewriteMode;
@@ -95,6 +96,70 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 import static io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTestSupport.*;
 
 public class RoutingMetaStoreProxyFanoutDegradedTest {
+  @Test
+  public void databaseListCacheReusesFanoutBackendResults() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(true, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 1, 200L),
+            new HedgedReadConfig(false, 1, 30_000L),
+            DegradedRoutingPolicy.STRICT,
+            new DatabaseListCacheConfig(60_000L, 100)));
+
+    AtomicInteger catalog1Calls = new AtomicInteger();
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                catalog1Calls.incrementAndGet();
+                return List.of("sales");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    AtomicInteger catalog2Calls = new AtomicInteger();
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                catalog2Calls.incrementAndGet();
+                return List.of("reports");
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, observability);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    @SuppressWarnings("unchecked")
+    List<String> first = (List<String>) handler.invoke(null, method, new Object[0]);
+    @SuppressWarnings("unchecked")
+    List<String> second = (List<String>) handler.invoke(null, method, new Object[0]);
+
+    Assert.assertEquals(List.of("sales", "catalog2__reports"), first);
+    Assert.assertEquals(first, second);
+    Assert.assertEquals(1, catalog1Calls.get());
+    Assert.assertEquals(1, catalog2Calls.get());
+  }
+
   @Test
   public void safeFanoutReadsCanOmitDegradedBackendResults() throws Throwable {
     ProxyConfig config = latencyAwareConfig(

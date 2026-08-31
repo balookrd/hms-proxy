@@ -171,6 +171,7 @@ metastore. Этот слой по умолчанию выключен, поэт�
   half-open retry после `routing.circuit-breaker.open-state-ms`
 - polling'ом обновлять backend readiness в фоне, а не только во время запроса к `/readyz`
 - запускать в parallel только безопасные read-only fanout RPC при `routing.hedged-read.enabled=true`
+- опционально кэшировать fanout-ответы со списками баз через `routing.database-list-cache.ttl-ms`
 - исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
 
@@ -178,6 +179,10 @@ metastore. Этот слой по умолчанию выключен, поэт�
 read-only fanout method, сейчас это `get_all_databases`, `get_databases` и `get_table_meta`.
 Single-backend write и namespace-sensitive mutation по-прежнему идут по детерминированной
 маршрутизации выше и не race'ят несколько metastore одновременно.
+Кэш списков баз выключен по умолчанию (`ttl-ms=0`); когда он включён, повторные
+`SHOW DATABASES` / `get_all_databases` / `get_databases` не ходят в backend до истечения TTL.
+Ключ включает catalog, pattern и impersonated user, но видимость DDL всё равно ограничена
+настроенным TTL.
 
 ## Пул shared backend-сессий
 
@@ -1557,6 +1562,8 @@ routing.circuit-breaker.failure-threshold=3
 routing.circuit-breaker.open-state-ms=30000
 routing.hedged-read.enabled=true
 routing.hedged-read.max-parallelism=8
+routing.database-list-cache.ttl-ms=2000
+routing.database-list-cache.max-entries=1000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 

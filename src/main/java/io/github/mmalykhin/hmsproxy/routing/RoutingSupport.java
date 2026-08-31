@@ -28,6 +28,7 @@ final class RoutingSupport {
   final ProxyObservability observability;
   final BackendCallDispatcher dispatcher;
   final ImpersonationResolver impersonationResolver;
+  final DatabaseListCache databaseListCache;
 
   RoutingSupport(
       ProxyConfig config,
@@ -35,7 +36,8 @@ final class RoutingSupport {
       FederationOperations federationLayer,
       ProxyObservability observability,
       BackendCallDispatcher dispatcher,
-      ImpersonationResolver impersonationResolver
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache
   ) {
     this.config = config;
     this.router = router;
@@ -43,6 +45,7 @@ final class RoutingSupport {
     this.observability = observability;
     this.dispatcher = dispatcher;
     this.impersonationResolver = impersonationResolver;
+    this.databaseListCache = databaseListCache;
   }
 
   // --- Backend invocation bridges ---

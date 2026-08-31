@@ -5,8 +5,19 @@ public record LatencyRoutingConfig(
     AdaptiveTimeoutConfig adaptiveTimeout,
     CircuitBreakerConfig circuitBreaker,
     HedgedReadConfig hedgedRead,
-    DegradedRoutingPolicy degradedRoutingPolicy
+    DegradedRoutingPolicy degradedRoutingPolicy,
+    DatabaseListCacheConfig databaseListCache
 ) {
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null);
+  }
+
   public LatencyRoutingConfig {
     backendStatePolling =
         backendStatePolling == null ? new BackendStatePollingConfig(false, 10_000, 5_000L, 1) : backendStatePolling;
@@ -17,6 +28,8 @@ public record LatencyRoutingConfig(
     hedgedRead = hedgedRead == null ? new HedgedReadConfig(false, 8, 30_000L) : hedgedRead;
     degradedRoutingPolicy =
         degradedRoutingPolicy == null ? DegradedRoutingPolicy.STRICT : degradedRoutingPolicy;
+    databaseListCache =
+        databaseListCache == null ? DatabaseListCacheConfig.disabled() : databaseListCache;
   }
 
   public static LatencyRoutingConfig disabled() {
@@ -25,6 +38,7 @@ public record LatencyRoutingConfig(
         new AdaptiveTimeoutConfig(false, 5_000L, 1_000L, 60_000L, 4.0d, 0.2d),
         new CircuitBreakerConfig(false, 3, 30_000L),
         new HedgedReadConfig(false, 8, 30_000L),
-        DegradedRoutingPolicy.STRICT);
+        DegradedRoutingPolicy.STRICT,
+        DatabaseListCacheConfig.disabled());
   }
 }
