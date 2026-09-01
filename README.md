@@ -167,19 +167,22 @@ When enabled, the proxy can:
 - open a circuit after repeated transport or time-budget failures, then allow a half-open retry after
   `routing.circuit-breaker.open-state-ms`
 - poll backend readiness in the background instead of only probing on demand through `/readyz`
-- run only safe read-only fanout RPCs in parallel when `routing.hedged-read.enabled=true`
-- optionally cache database-name fanout results with `routing.database-list-cache.ttl-ms`
-- omit degraded backends from those safe fanout reads when
+- run safe read-only fanout RPCs in parallel across multiple catalogs
+- optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms`
+- optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` to accelerate HiveServer2 / Ranger authorization loops
+- coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
+- omit degraded backends from safe fanout reads when
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
 
 This is intentionally narrow in scope: hedged reads and degraded omission apply only to safe
 read-only fanout methods, currently `get_all_databases`, `get_databases`, and `get_table_meta`.
 Single-backend writes and namespace-sensitive mutations still follow the deterministic routing model
 described above and do not race multiple metastores.
-The database-list cache is disabled by default (`ttl-ms=0`); when enabled, repeated
-`SHOW DATABASES` / `get_all_databases` / `get_databases` calls avoid backend round trips until the
-TTL expires. Cache keys include the catalog, pattern and impersonated user, but DDL visibility is
-still bounded by the configured TTL.
+The database-list cache and database-metadata cache are disabled by default (`ttl-ms=0`). When enabled,
+repeated `SHOW DATABASES` or `get_database` calls avoid backend round trips until the TTL expires.
+Both caches use single-flight request coalescing, return defensive copies of Thrift structures, and
+are automatically invalidated when DDL mutations (`create_database`, `alter_database`, `drop_database`)
+execute through the proxy.
 
 ## Shared backend session pool
 
@@ -1628,8 +1631,10 @@ routing.circuit-breaker.failure-threshold=3
 routing.circuit-breaker.open-state-ms=30000
 routing.hedged-read.enabled=true
 routing.hedged-read.max-parallelism=8
-routing.database-list-cache.ttl-ms=2000
+routing.database-list-cache.ttl-ms=5000
 routing.database-list-cache.max-entries=1000
+routing.database-metadata-cache.ttl-ms=5000
+routing.database-metadata-cache.max-entries=1000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
