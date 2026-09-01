@@ -48,7 +48,7 @@ final class RoutingSupport {
         dispatcher,
         impersonationResolver,
         databaseListCache,
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache()));
+        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache));
   }
 
   RoutingSupport(

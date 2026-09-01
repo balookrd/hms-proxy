@@ -83,7 +83,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         dispatcher,
         impersonationResolver,
         databaseListCache,
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache()),
+        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache),
         externalTableDropPurger);
   }
 

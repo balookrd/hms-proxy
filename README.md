@@ -182,8 +182,10 @@ described above and do not race multiple metastores.
 The database-list cache and database-metadata cache are disabled by default (`ttl-ms=0`). When enabled,
 repeated `SHOW DATABASES` or `get_database` calls avoid backend round trips until the TTL expires.
 Both caches use single-flight request coalescing, return defensive copies of Thrift structures, and
-are automatically invalidated when DDL mutations (`create_database`, `alter_database`, `drop_database`)
-execute through the proxy.
+feature sliding batch expiration (progressive database fetches during large HiveServer2 / Ranger scans
+extend earlier cache entries so no entries expire midway through the scan, ensuring the full set stays cached for TTL
+after the entire scan completes). Both caches are automatically invalidated when DDL mutations
+(`create_database`, `alter_database`, `drop_database`) execute through the proxy.
 
 ## Shared backend session pool
 

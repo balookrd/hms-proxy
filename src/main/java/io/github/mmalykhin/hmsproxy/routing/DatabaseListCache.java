@@ -69,6 +69,19 @@ final class DatabaseListCache {
     }
   }
 
+  void extendCatalogExpiration(String catalogName, String userName, long newExpiresAtMs) {
+    if (catalogName == null) {
+      return;
+    }
+    String effectiveUser = userName == null ? "" : userName;
+    for (var entry : entries.entrySet()) {
+      if (entry.getKey().catalogName().equals(catalogName)
+          && entry.getKey().userName().equals(effectiveUser)) {
+        entry.getValue().extendExpiration(newExpiresAtMs);
+      }
+    }
+  }
+
   void invalidate(String catalogName) {
     if (catalogName == null) {
       return;
@@ -83,6 +96,12 @@ final class DatabaseListCache {
   private void put(Key key, List<String> databases, long expiresAtMs) {
     pruneIfFull();
     entries.put(key, new Entry(List.copyOf(databases), expiresAtMs));
+    for (var entry : entries.entrySet()) {
+      if (entry.getKey().catalogName().equals(key.catalogName())
+          && entry.getKey().userName().equals(key.userName())) {
+        entry.getValue().extendExpiration(expiresAtMs);
+      }
+    }
   }
 
   private void pruneIfFull() {
@@ -125,6 +144,27 @@ final class DatabaseListCache {
     }
   }
 
-  private record Entry(List<String> databases, long expiresAtMs) {
+  private static final class Entry {
+    private final List<String> databases;
+    private volatile long expiresAtMs;
+
+    Entry(List<String> databases, long expiresAtMs) {
+      this.databases = databases;
+      this.expiresAtMs = expiresAtMs;
+    }
+
+    List<String> databases() {
+      return databases;
+    }
+
+    long expiresAtMs() {
+      return expiresAtMs;
+    }
+
+    void extendExpiration(long newExpiresAtMs) {
+      if (newExpiresAtMs > this.expiresAtMs) {
+        this.expiresAtMs = newExpiresAtMs;
+      }
+    }
   }
 }

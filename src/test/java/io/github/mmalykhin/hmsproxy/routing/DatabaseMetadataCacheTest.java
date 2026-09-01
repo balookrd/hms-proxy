@@ -167,4 +167,59 @@ public class DatabaseMetadataCacheTest {
 
     Assert.assertEquals(1, loads.get());
   }
+
+  @Test
+  public void batchScanProgressExtendsExpirationForEarlierDatabases() throws Throwable {
+    DatabaseListCache listCache = new DatabaseListCache(
+        new io.github.mmalykhin.hmsproxy.config.routing.DatabaseListCacheConfig(50L, 100));
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(50L, 100), listCache);
+    AtomicInteger db1Loads = new AtomicInteger();
+    AtomicInteger db2Loads = new AtomicInteger();
+    AtomicInteger listLoads = new AtomicInteger();
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+
+    // Step 1: Initial list load
+    listCache.get("get_all_databases", "cat1", null, user, () -> {
+      listLoads.incrementAndGet();
+      return List.of("db1", "db2");
+    });
+
+    // Step 2: Load db1 at t=0
+    cache.get("cat1", "db1", user, () -> {
+      db1Loads.incrementAndGet();
+      Database db = new Database();
+      db.setName("db1");
+      return db;
+    });
+
+    // Step 3: Wait 30ms, then load db2 at t=30ms (simulating progressive batch scan)
+    Thread.sleep(30L);
+    cache.get("cat1", "db2", user, () -> {
+      db2Loads.incrementAndGet();
+      Database db = new Database();
+      db.setName("db2");
+      return db;
+    });
+
+    // Step 4: Wait another 30ms (total 60ms elapsed since db1 and listCache were first loaded)
+    // 60ms > 50ms TTL, but db2's load extended db1 and listCache expiration to 30ms + 50ms = 80ms!
+    Thread.sleep(30L);
+
+    // Reading db1 at t=60ms should be a cache hit (0 extra loads)
+    Database cachedDb1 = cache.get("cat1", "db1", user, () -> {
+      db1Loads.incrementAndGet();
+      return new Database();
+    });
+    Assert.assertEquals("db1", cachedDb1.getName());
+    Assert.assertEquals(1, db1Loads.get());
+
+    // Reading listCache at t=60ms should also be a cache hit (0 extra loads)
+    List<String> cachedList = listCache.get("get_all_databases", "cat1", null, user, () -> {
+      listLoads.incrementAndGet();
+      return List.of();
+    });
+    Assert.assertEquals(List.of("db1", "db2"), cachedList);
+    Assert.assertEquals(1, listLoads.get());
+  }
 }

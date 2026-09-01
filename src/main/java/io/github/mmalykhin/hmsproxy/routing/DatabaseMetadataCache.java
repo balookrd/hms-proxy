@@ -12,12 +12,18 @@ import org.apache.hadoop.hive.metastore.api.Database;
 final class DatabaseMetadataCache {
   private final long ttlMs;
   private final int maxEntries;
+  private final DatabaseListCache databaseListCache;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Database>> inFlight = new ConcurrentHashMap<>();
 
   DatabaseMetadataCache(DatabaseMetadataCacheConfig config) {
+    this(config, null);
+  }
+
+  DatabaseMetadataCache(DatabaseMetadataCacheConfig config, DatabaseListCache databaseListCache) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
+    this.databaseListCache = databaseListCache;
   }
 
   Database get(
@@ -89,6 +95,15 @@ final class DatabaseMetadataCache {
   private void put(Key key, Database database, long expiresAtMs) {
     pruneIfFull();
     entries.put(key, new Entry(new Database(database), expiresAtMs));
+    for (var entry : entries.entrySet()) {
+      if (entry.getKey().catalogName().equals(key.catalogName())
+          && entry.getKey().userName().equals(key.userName())) {
+        entry.getValue().extendExpiration(expiresAtMs);
+      }
+    }
+    if (databaseListCache != null) {
+      databaseListCache.extendCatalogExpiration(key.catalogName(), key.userName(), expiresAtMs);
+    }
   }
 
   private void pruneIfFull() {
@@ -128,6 +143,27 @@ final class DatabaseMetadataCache {
     }
   }
 
-  private record Entry(Database database, long expiresAtMs) {
+  private static final class Entry {
+    private final Database database;
+    private volatile long expiresAtMs;
+
+    Entry(Database database, long expiresAtMs) {
+      this.database = database;
+      this.expiresAtMs = expiresAtMs;
+    }
+
+    Database database() {
+      return database;
+    }
+
+    long expiresAtMs() {
+      return expiresAtMs;
+    }
+
+    void extendExpiration(long newExpiresAtMs) {
+      if (newExpiresAtMs > this.expiresAtMs) {
+        this.expiresAtMs = newExpiresAtMs;
+      }
+    }
   }
 }
