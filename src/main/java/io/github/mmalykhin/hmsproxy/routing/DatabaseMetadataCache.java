@@ -1,29 +1,28 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
-import io.github.mmalykhin.hmsproxy.config.routing.DatabaseListCacheConfig;
-import java.util.ArrayList;
+import io.github.mmalykhin.hmsproxy.config.routing.DatabaseMetadataCacheConfig;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import org.apache.hadoop.hive.metastore.api.Database;
 
-final class DatabaseListCache {
+final class DatabaseMetadataCache {
   private final long ttlMs;
   private final int maxEntries;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<Key, CompletableFuture<List<String>>> inFlight = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Key, CompletableFuture<Database>> inFlight = new ConcurrentHashMap<>();
 
-  DatabaseListCache(DatabaseListCacheConfig config) {
+  DatabaseMetadataCache(DatabaseMetadataCacheConfig config) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
   }
 
-  List<String> get(
-      String methodName,
+  Database get(
       String catalogName,
-      String pattern,
+      String backendDbName,
       ImpersonationContext impersonation,
       Loader loader
   ) throws Throwable {
@@ -31,18 +30,18 @@ final class DatabaseListCache {
       return loader.load();
     }
     long nowMs = System.currentTimeMillis();
-    Key key = Key.of(methodName, catalogName, pattern, impersonation);
+    Key key = Key.of(catalogName, backendDbName, impersonation);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
-      return new ArrayList<>(cached.databases());
+      return new Database(cached.database());
     }
 
-    CompletableFuture<List<String>> future = new CompletableFuture<>();
-    CompletableFuture<List<String>> existing = inFlight.putIfAbsent(key, future);
+    CompletableFuture<Database> future = new CompletableFuture<>();
+    CompletableFuture<Database> existing = inFlight.putIfAbsent(key, future);
     if (existing != null) {
       try {
-        List<String> result = existing.get();
-        return result == null ? null : new ArrayList<>(result);
+        Database result = existing.get();
+        return result == null ? null : new Database(result);
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -51,16 +50,16 @@ final class DatabaseListCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
-        List<String> result = new ArrayList<>(cached.databases());
+        Database result = new Database(cached.database());
         future.complete(result);
         return result;
       }
-      List<String> loaded = loader.load();
+      Database loaded = loader.load();
       if (loaded != null) {
         put(key, loaded, System.currentTimeMillis() + ttlMs);
       }
       future.complete(loaded);
-      return loaded == null ? null : new ArrayList<>(loaded);
+      return loaded == null ? null : new Database(loaded);
     } catch (Throwable t) {
       future.completeExceptionally(t);
       throw t;
@@ -69,7 +68,14 @@ final class DatabaseListCache {
     }
   }
 
-  void invalidate(String catalogName) {
+  void invalidate(String catalogName, String backendDbName) {
+    if (catalogName == null || backendDbName == null) {
+      return;
+    }
+    entries.keySet().removeIf(k -> k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
+  }
+
+  void invalidateCatalog(String catalogName) {
     if (catalogName == null) {
       return;
     }
@@ -80,9 +86,9 @@ final class DatabaseListCache {
     entries.clear();
   }
 
-  private void put(Key key, List<String> databases, long expiresAtMs) {
+  private void put(Key key, Database database, long expiresAtMs) {
     pruneIfFull();
-    entries.put(key, new Entry(List.copyOf(databases), expiresAtMs));
+    entries.put(key, new Entry(new Database(database), expiresAtMs));
   }
 
   private void pruneIfFull() {
@@ -98,26 +104,23 @@ final class DatabaseListCache {
 
   @FunctionalInterface
   interface Loader {
-    List<String> load() throws Throwable;
+    Database load() throws Throwable;
   }
 
   private record Key(
-      String methodName,
       String catalogName,
-      String pattern,
+      String backendDbName,
       String userName,
       List<String> groupNames
   ) {
     private static Key of(
-        String methodName,
         String catalogName,
-        String pattern,
+        String backendDbName,
         ImpersonationContext impersonation
     ) {
       return new Key(
-          methodName,
           catalogName,
-          pattern == null ? "" : pattern,
+          backendDbName == null ? "" : backendDbName,
           impersonation == null ? "" : Objects.requireNonNullElse(impersonation.userName(), ""),
           impersonation == null || impersonation.groupNames() == null
               ? List.of()
@@ -125,6 +128,6 @@ final class DatabaseListCache {
     }
   }
 
-  private record Entry(List<String> databases, long expiresAtMs) {
+  private record Entry(Database database, long expiresAtMs) {
   }
 }

@@ -33,6 +33,7 @@ final class RoutingPipelineFactory {
     AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
     FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
     DatabaseListCache databaseListCache = new DatabaseListCache(config.latencyRouting().databaseListCache());
+    DatabaseMetadataCache databaseMetadataCache = new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache());
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
         compatibilityLayer, admissionGate, observability, fanoutExecutor);
     long aliveSince = System.currentTimeMillis() / 1000L;
@@ -46,6 +47,7 @@ final class RoutingPipelineFactory {
         dispatcher,
         impersonationResolver,
         databaseListCache,
+        databaseMetadataCache,
         externalTableDropPurger);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,

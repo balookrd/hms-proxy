@@ -59,8 +59,9 @@ public final class BackendRoutingController implements AutoCloseable {
     } else {
       this.probeExecutor = null;
     }
-    if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
-      int poolSize = Math.min(config.latencyRouting().hedgedRead().maxParallelism(), router.backends().size());
+    if (router.backends().size() > 1) {
+      int maxParallelism = config.latencyRouting().hedgedRead().maxParallelism();
+      int poolSize = Math.max(1, Math.min(maxParallelism > 0 ? maxParallelism : 8, router.backends().size()));
       // Bound the queue to the number of backends: a single request submits at most backends.size()
       // tasks. The pool is shared, so concurrent fanout requests can still exhaust it; CallerRunsPolicy
       // then applies back-pressure by running a task on the request thread, and FanoutExecutor counts

@@ -36,6 +36,9 @@ public final class LatencyRoutingConfigParser {
     DatabaseListCacheConfig databaseListCache = new DatabaseListCacheConfig(
         reader.getNonNegativeLong("routing.database-list-cache.ttl-ms", 0L),
         reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000));
+    DatabaseMetadataCacheConfig databaseMetadataCache = new DatabaseMetadataCacheConfig(
+        reader.getNonNegativeLong("routing.database-metadata-cache.ttl-ms", 0L),
+        reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000));
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
             backendStatePollingEnabled,
@@ -61,7 +64,8 @@ public final class LatencyRoutingConfigParser {
                 Math.max(1, catalogCount)))),
             hedgedReadFanoutTimeoutMs),
         degradedRoutingPolicy,
-        databaseListCache);
+        databaseListCache,
+        databaseMetadataCache);
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {

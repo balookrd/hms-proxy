@@ -6,7 +6,8 @@ public record LatencyRoutingConfig(
     CircuitBreakerConfig circuitBreaker,
     HedgedReadConfig hedgedRead,
     DegradedRoutingPolicy degradedRoutingPolicy,
-    DatabaseListCacheConfig databaseListCache
+    DatabaseListCacheConfig databaseListCache,
+    DatabaseMetadataCacheConfig databaseMetadataCache
 ) {
   public LatencyRoutingConfig(
       BackendStatePollingConfig backendStatePolling,
@@ -15,7 +16,18 @@ public record LatencyRoutingConfig(
       HedgedReadConfig hedgedRead,
       DegradedRoutingPolicy degradedRoutingPolicy
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null);
+  }
+
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy,
+      DatabaseListCacheConfig databaseListCache
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null);
   }
 
   public LatencyRoutingConfig {
@@ -30,6 +42,8 @@ public record LatencyRoutingConfig(
         degradedRoutingPolicy == null ? DegradedRoutingPolicy.STRICT : degradedRoutingPolicy;
     databaseListCache =
         databaseListCache == null ? DatabaseListCacheConfig.disabled() : databaseListCache;
+    databaseMetadataCache =
+        databaseMetadataCache == null ? DatabaseMetadataCacheConfig.disabled() : databaseMetadataCache;
   }
 
   public static LatencyRoutingConfig disabled() {
@@ -39,6 +53,7 @@ public record LatencyRoutingConfig(
         new CircuitBreakerConfig(false, 3, 30_000L),
         new HedgedReadConfig(false, 8, 30_000L),
         DegradedRoutingPolicy.STRICT,
-        DatabaseListCacheConfig.disabled());
+        DatabaseListCacheConfig.disabled(),
+        DatabaseMetadataCacheConfig.disabled());
   }
 }

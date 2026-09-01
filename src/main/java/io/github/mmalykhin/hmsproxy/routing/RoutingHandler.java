@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
@@ -73,12 +74,37 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       DatabaseListCache databaseListCache,
       ExternalTableDropPurger externalTableDropPurger
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        compatibilityLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        databaseListCache,
+        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache()),
+        externalTableDropPurger);
+  }
+
+  RoutingHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      CompatibilityLayer compatibilityLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      ExternalTableDropPurger externalTableDropPurger
+  ) {
     this.config = config;
     this.router = router;
     this.compatibilityLayer = compatibilityLayer;
     this.observability = observability;
     this.support = new RoutingSupport(
-        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache);
+        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache, databaseMetadataCache);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);
@@ -179,7 +205,21 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     validateReadExposure(method.getName(), namespace, args);
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
-    Object result = support.invokeDirect(namespace.backend(), method, routedArgs);
+    Object result;
+    if ("get_database".equals(method.getName())) {
+      ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+      result = support.databaseMetadataCache.get(
+          namespace.catalogName(),
+          namespace.backendDbName(),
+          impersonation,
+          () -> (org.apache.hadoop.hive.metastore.api.Database) support.invokeDirect(namespace.backend(), method, routedArgs));
+    } else {
+      result = support.invokeDirect(namespace.backend(), method, routedArgs);
+      if ("drop_database".equals(method.getName()) || "alter_database".equals(method.getName())) {
+        support.databaseMetadataCache.invalidate(namespace.catalogName(), namespace.backendDbName());
+        support.databaseListCache.invalidate(namespace.catalogName());
+      }
+    }
     result = filterReadResult(method.getName(), namespace, result);
     return support.federationLayer.externalizeResult(result, namespace);
   }
@@ -219,6 +259,12 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     try (IcebergTablePointerGuard.Protection protection =
         icebergTablePointerGuard.protect(routedArgs, extractedNamespace, methodName)) {
       result = support.invokeDirect(extractedNamespace.backend(), method, routedArgs);
+    }
+    if (methodName.startsWith("create_database")
+        || methodName.startsWith("alter_database")
+        || methodName.startsWith("drop_database")) {
+      support.databaseMetadataCache.invalidate(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
+      support.databaseListCache.invalidate(extractedNamespace.catalogName());
     }
     result = filterReadResult(methodName, extractedNamespace, result);
     return support.federationLayer.externalizeResult(result, extractedNamespace);
