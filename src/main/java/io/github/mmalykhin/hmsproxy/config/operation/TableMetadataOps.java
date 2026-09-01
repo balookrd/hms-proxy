@@ -31,5 +31,6 @@ final class TableMetadataOps {
         .filter(ReadResultFilterKind.SINGLE_TABLE)
         .trace());
     r.op("get_table_objects_by_name_req", o -> o.filter(ReadResultFilterKind.TABLE_COLLECTION));
+    r.op("refresh_privileges", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating().trace());
   }
 }

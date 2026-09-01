@@ -63,10 +63,10 @@ public class HmsOperationPolicyTest {
   }
 
   @Test
-  public void refreshPrivilegesIsAServiceGlobalWrite() {
+  public void refreshPrivilegesIsAMetadataWrite() {
     OperationMetadata operation = HmsOperationPolicy.describe("refresh_privileges");
 
-    Assert.assertEquals(HmsOperationClass.SERVICE_GLOBAL_WRITE, operation.operationClass());
+    Assert.assertEquals(HmsOperationClass.METADATA_WRITE, operation.operationClass());
     Assert.assertTrue(operation.mutating());
   }
 

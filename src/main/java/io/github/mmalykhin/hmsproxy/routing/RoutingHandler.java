@@ -127,6 +127,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler getTablesExt = new GetTablesExtHandler(support);
     SpecialCaseHandler getAllMvForRewriting = new GetAllMaterializedViewObjectsForRewritingHandler(support);
     SpecialCaseHandler lock = new LockRoutingHandler(support, this);
+    SpecialCaseHandler refreshPrivileges = new RefreshPrivilegesHandler(support);
     return Map.ofEntries(
         Map.entry("lock", lock),
         Map.entry("set_ugi", setUgi),
@@ -139,7 +140,8 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("getTablesExt", getTablesExt),
         Map.entry("getAllMaterializedViewObjectsForRewriting", getAllMvForRewriting),
         Map.entry("drop_table", dropTable),
-        Map.entry("drop_table_with_environment_context", dropTable)
+        Map.entry("drop_table_with_environment_context", dropTable),
+        Map.entry("refresh_privileges", refreshPrivileges)
     );
   }
 

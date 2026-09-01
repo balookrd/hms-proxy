@@ -112,7 +112,7 @@ public class RoutingMetaStoreProxyAccessControlTest {
   }
 
   @Test
-  public void readOnlyCatalogBlocksRefreshPrivileges() throws Throwable {
+  public void readOnlyCatalogReturnsSuccessWithoutMutatingBackendForRefreshPrivileges() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler = accessModeHandler(
         CatalogAccessMode.READ_ONLY,
@@ -125,14 +125,13 @@ public class RoutingMetaStoreProxyAccessControlTest {
         String.class,
         org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeRequest.class);
 
-    MetaException error = Assert.assertThrows(
-        MetaException.class,
-        () -> handler.invoke(null, method, new Object[] {
-            new org.apache.hadoop.hive.metastore.api.HiveObjectRef(),
-            "admin",
-            new org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeRequest()}));
+    Object result = handler.invoke(null, method, new Object[] {
+        new org.apache.hadoop.hive.metastore.api.HiveObjectRef(),
+        "admin",
+        new org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeRequest()});
 
-    Assert.assertTrue(error.getMessage().contains("READ_ONLY"));
+    Assert.assertTrue(result instanceof org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeResponse);
+    Assert.assertTrue(((org.apache.hadoop.hive.metastore.api.GrantRevokePrivilegeResponse) result).isSuccess());
     Assert.assertEquals(0, backendCalls.get());
   }
 
