@@ -1,0 +1,62 @@
+# git-cliff configuration for hms-proxy.
+# This file decides how commits map to release-notes sections and how each line is rendered.
+
+[changelog]
+# No global title/footer: the output is a GitHub release body, not a CHANGELOG
+# file. The compare-link footer is appended by the script, from the exact
+# PREV/TAG it computed — more reliable than git-cliff's tag resolution.
+header = ""
+body = """
+{% if version %}## What's Changed in {{ version }}{% else %}## Unreleased{% endif %}
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### ⚠️ BREAKING CHANGES
+{% for commit in breaking -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.breaking_description | default(value=commit.message) | split(pat="\n") | first | upper_first }}
+{% endfor -%}
+{% endif -%}
+{% for group, group_commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in group_commits -%}
+{% if commit.breaking %}{% continue %}{% endif -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+{% endfor -%}
+{% endfor -%}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits  = true
+filter_unconventional = false
+protect_breaking_commits = true
+filter_commits        = true
+topo_order            = false
+sort_commits          = "oldest"
+# Sort keys "<!-- N -->" order the sections; `striptags` strips them in the body.
+commit_parsers = [
+  { message = "^feat", group = "<!-- 1 -->⭐ Features" },
+  { message = "^[Aa]dd", group = "<!-- 1 -->⭐ Features" },
+  { message = "^[Ss]upport", group = "<!-- 1 -->⭐ Features" },
+  { message = "^[Ii]ntroduce", group = "<!-- 1 -->⭐ Features" },
+  { message = "^fix",  group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "^[Ff]ix", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "^[Cc]lose", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "^[Hh]andle", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "^perf", group = "<!-- 3 -->⚡ Performance" },
+  { message = "^[Oo]ptimize|^[Ss]peed", group = "<!-- 3 -->⚡ Performance" },
+  { message = "^refactor", skip = true },
+  { message = "^[Rr]efactor|^[Rr]estructure|^[Cc]lean", skip = true },
+  { message = "^docs",  skip = true },
+  { message = "^[Dd]ocument|^[Uu]pdate README|^[Rr]ecord|^[Ee]xplain", skip = true },
+  { message = "^test",  skip = true },
+  { message = "^[Cc]over|^[Aa]ssert|^[Tt]est", skip = true },
+  { message = "^chore", skip = true },
+  { message = "^ci",    skip = true },
+  { message = "^build", skip = true },
+  { message = "^[Bb]uild", skip = true },
+  { message = "^style", skip = true },
+  { message = "^ops",   skip = true },
+  { message = "^Merge", skip = true },
+  { message = ".*",     skip = true },
+]
