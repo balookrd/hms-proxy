@@ -168,8 +168,9 @@ When enabled, the proxy can:
   `routing.circuit-breaker.open-state-ms`
 - poll backend readiness in the background instead of only probing on demand through `/readyz`
 - run safe read-only fanout RPCs in parallel across multiple catalogs
-- optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms`
-- optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` to accelerate HiveServer2 / Ranger authorization loops
+- optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms` (or `ttl-seconds`)
+- optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
+- immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
 - omit degraded backends from safe fanout reads when
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
@@ -1635,6 +1636,7 @@ routing.database-list-cache.ttl-ms=5000
 routing.database-list-cache.max-entries=1000
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
+routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 

@@ -171,8 +171,9 @@ metastore. Этот слой по умолчанию выключен, поэт�
   half-open retry после `routing.circuit-breaker.open-state-ms`
 - polling'ом обновлять backend readiness в фоне, а не только во время запроса к `/readyz`
 - запускать в parallel безопасные read-only fanout RPC между несколькими каталогами
-- опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms`
-- опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` для ускорения проверок прав в HiveServer2 / Ranger
+- опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms` (или `ttl-seconds`)
+- опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
+- мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
 - исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
@@ -1572,6 +1573,7 @@ routing.database-list-cache.ttl-ms=5000
 routing.database-list-cache.max-entries=1000
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
+routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 

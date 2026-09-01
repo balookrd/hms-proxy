@@ -75,3 +75,13 @@ description: Expert Java 17 development guidelines, concurrency, lock safety, me
     JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 mvn -o test
     ```
   - Покрывай как позитивные сценарии, так и degraded modes, fallback при `UNKNOWN_METHOD`, таймауты и `READ_ONLY` ограничения.
+
+---
+
+## 6. Документация и синхронизация артефактов
+
+- **Всегда синхронно обновляй документацию:**
+  - При изменении runtime-поведения, добавлении новых настроек, параметров конфигурации или фич обязательно обновляй:
+    - `README.md` и `README.ru.md` (секции возможностей и примеры конфигурации).
+    - `src/main/resources/hms-proxy-example.properties` (комментарии и дефолты).
+    - `capabilities.yaml` (матрица совместимости; при изменении синхронизируй командой `mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true test`).
