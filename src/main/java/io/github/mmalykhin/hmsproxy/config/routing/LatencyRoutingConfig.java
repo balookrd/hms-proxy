@@ -7,7 +7,8 @@ public record LatencyRoutingConfig(
     HedgedReadConfig hedgedRead,
     DegradedRoutingPolicy degradedRoutingPolicy,
     DatabaseListCacheConfig databaseListCache,
-    DatabaseMetadataCacheConfig databaseMetadataCache
+    DatabaseMetadataCacheConfig databaseMetadataCache,
+    boolean refreshPrivilegesSyntheticSuccess
 ) {
   public LatencyRoutingConfig(
       BackendStatePollingConfig backendStatePolling,
@@ -16,7 +17,7 @@ public record LatencyRoutingConfig(
       HedgedReadConfig hedgedRead,
       DegradedRoutingPolicy degradedRoutingPolicy
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null, false);
   }
 
   public LatencyRoutingConfig(
@@ -27,7 +28,19 @@ public record LatencyRoutingConfig(
       DegradedRoutingPolicy degradedRoutingPolicy,
       DatabaseListCacheConfig databaseListCache
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null, false);
+  }
+
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy,
+      DatabaseListCacheConfig databaseListCache,
+      DatabaseMetadataCacheConfig databaseMetadataCache
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, false);
   }
 
   public LatencyRoutingConfig {
@@ -54,6 +67,7 @@ public record LatencyRoutingConfig(
         new HedgedReadConfig(false, 8, 30_000L),
         DegradedRoutingPolicy.STRICT,
         DatabaseListCacheConfig.disabled(),
-        DatabaseMetadataCacheConfig.disabled());
+        DatabaseMetadataCacheConfig.disabled(),
+        false);
   }
 }

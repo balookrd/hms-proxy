@@ -32,7 +32,8 @@ final class RefreshPrivilegesHandler implements SpecialCaseHandler {
     CatalogBackend backend = namespace.backend();
     CatalogConfig catalogConfig = support.config.catalogs().get(backend.name());
 
-    if (isReadOnly(catalogConfig, namespace.backendDbName())) {
+    if (support.config.latencyRouting().refreshPrivilegesSyntheticSuccess()
+        || isReadOnly(catalogConfig, namespace.backendDbName())) {
       GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
       response.setSuccess(true);
       return response;

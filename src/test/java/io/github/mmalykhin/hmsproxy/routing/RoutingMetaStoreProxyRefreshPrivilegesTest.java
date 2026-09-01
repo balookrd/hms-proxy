@@ -246,6 +246,97 @@ public class RoutingMetaStoreProxyRefreshPrivilegesTest {
     Assert.assertTrue(((GrantRevokePrivilegeResponse) result).isSuccess());
   }
 
+  @Test
+  public void returnsSuccessWithoutBackendCallWhenGloballyEnabledViaConfig() throws Throwable {
+    AtomicInteger defaultCalls = new AtomicInteger();
+    AtomicInteger hdpCalls = new AtomicInteger();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1",
+            new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, List.of(), null, null, Map.of("hive.metastore.uris", "thrift://default:9083")),
+            "hdp",
+            new CatalogConfig(
+                "hdp", "hdp", "file:///hdp", false, CatalogAccessMode.READ_WRITE, List.of(), null, null, Map.of("hive.metastore.uris", "thrift://hdp:9083"))))
+        .compatibility(new CompatibilityConfig(false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .latencyRouting(new io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig(
+            null, null, null, null, null, null, null, true))
+        .build();
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((proxy, method, args) -> {
+          defaultCalls.incrementAndGet();
+          GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
+          response.setSuccess(true);
+          return response;
+        })));
+    CatalogBackend hdpBackend = newBackend(
+        config,
+        config.catalogs().get("hdp"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("hdp"), newSession((proxy, method, args) -> {
+          hdpCalls.incrementAndGet();
+          GrantRevokePrivilegeResponse response = new GrantRevokePrivilegeResponse();
+          response.setSuccess(true);
+          return response;
+        })));
+
+    CatalogRouter router = new CatalogRouter(
+        config,
+        new LinkedHashMap<>(Map.of("catalog1", defaultBackend, "hdp", hdpBackend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(
+        config, router, new FederationLayer(config, router), null);
+
+    HiveObjectRef objRef = new HiveObjectRef();
+    objRef.setObjectType(HiveObjectType.DATABASE);
+    objRef.setDbName("hdp__1cdpre");
+
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "refresh_privileges",
+        HiveObjectRef.class,
+        String.class,
+        GrantRevokePrivilegeRequest.class);
+
+    Object result = handler.invoke(
+        null, method, new Object[] {objRef, "RangerHiveAuthorizer", new GrantRevokePrivilegeRequest()});
+
+    Assert.assertTrue(result instanceof GrantRevokePrivilegeResponse);
+    Assert.assertTrue(((GrantRevokePrivilegeResponse) result).isSuccess());
+    Assert.assertEquals(0, defaultCalls.get());
+    Assert.assertEquals(0, hdpCalls.get());
+  }
+
+  @Test
+  public void parsesLatencyRoutingPropertiesCorrectly() {
+    java.util.Properties props = new java.util.Properties();
+    props.setProperty("routing.refresh-privileges.synthetic-success", "true");
+    props.setProperty("routing.database-list-cache.ttl-seconds", "30");
+    props.setProperty("routing.database-metadata-cache.ttl-seconds", "45");
+
+    io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig parsed =
+        io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser.parse(
+            new io.github.mmalykhin.hmsproxy.config.PropertyReader(props), 2);
+
+    Assert.assertTrue(parsed.refreshPrivilegesSyntheticSuccess());
+    Assert.assertEquals(30000L, parsed.databaseListCache().ttlMs());
+    Assert.assertEquals(45000L, parsed.databaseMetadataCache().ttlMs());
+
+    props.clear();
+    props.setProperty("routing.refresh-privileges.mode", "SYNTHETIC_SUCCESS");
+    parsed = io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser.parse(
+        new io.github.mmalykhin.hmsproxy.config.PropertyReader(props), 2);
+    Assert.assertTrue(parsed.refreshPrivilegesSyntheticSuccess());
+  }
+
   private static ProxyConfig multiCatalogConfig(
       CatalogAccessMode defaultAccessMode,
       CatalogAccessMode hdpAccessMode

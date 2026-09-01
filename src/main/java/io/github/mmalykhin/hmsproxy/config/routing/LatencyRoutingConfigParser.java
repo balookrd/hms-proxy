@@ -33,12 +33,21 @@ public final class LatencyRoutingConfigParser {
     long hedgedReadFanoutTimeoutMs = reader.getPositiveLong("routing.hedged-read.fanout-timeout-ms", 30_000L);
     DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
         reader.getOrNull("routing.degraded-routing-policy"));
+    long dbListTtlMs = reader.getNonNegativeLong(
+        "routing.database-list-cache.ttl-ms",
+        reader.getNonNegativeLong("routing.database-list-cache.ttl-seconds", 0L) * 1000L);
     DatabaseListCacheConfig databaseListCache = new DatabaseListCacheConfig(
-        reader.getNonNegativeLong("routing.database-list-cache.ttl-ms", 0L),
+        dbListTtlMs,
         reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000));
+    long dbMetaTtlMs = reader.getNonNegativeLong(
+        "routing.database-metadata-cache.ttl-ms",
+        reader.getNonNegativeLong("routing.database-metadata-cache.ttl-seconds", 0L) * 1000L);
     DatabaseMetadataCacheConfig databaseMetadataCache = new DatabaseMetadataCacheConfig(
-        reader.getNonNegativeLong("routing.database-metadata-cache.ttl-ms", 0L),
+        dbMetaTtlMs,
         reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000));
+    boolean refreshPrivilegesSyntheticSuccess =
+        reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
+        || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
             backendStatePollingEnabled,
@@ -65,7 +74,8 @@ public final class LatencyRoutingConfigParser {
             hedgedReadFanoutTimeoutMs),
         degradedRoutingPolicy,
         databaseListCache,
-        databaseMetadataCache);
+        databaseMetadataCache,
+        refreshPrivilegesSyntheticSuccess);
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {

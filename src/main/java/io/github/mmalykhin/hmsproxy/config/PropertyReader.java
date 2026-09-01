@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 public final class PropertyReader {
   private final Properties properties;
 
-  PropertyReader(Properties properties) {
+  public PropertyReader(Properties properties) {
     this.properties = properties;
   }
 
