@@ -484,6 +484,23 @@ branch main has changed`, изменение не остаётся ни на о�
 таблицы закоммиченными, а прокси отвечает `500 CommitStateUnknownException`. Обе половины записаны
 как I5 и I6 в `TEST-MATRIX.ru.md`.
 
+## Apache Ranger и общий кэш метаданных (`run-ranger-shared-cache-smoke.sh`)
+
+Проверяет встроенную авторизацию через Apache Ranger в связке с общим глобальным кэшем метаданных (`shared-across-users=true`):
+
+```bash
+cd smoke-stand && ./prepare.sh
+PROXY_CONFIG=/opt/hms-proxy/hms-proxy-ranger.properties docker compose up -d --build proxy
+./run-ranger-shared-cache-smoke.sh
+```
+
+Сценарий тестирует многопользовательскую авторизацию и разделяемый кэш на запущенном прокси:
+- Создаёт изолированные тестовые базы данных `sales` (таблицы `orders`, `customers`) и `finance` (таблицы `reports`, `expenses`).
+- Проверяет, что пользователь `alice` видит только разрешённую базу данных `sales` и её таблицы в `get_all_databases` и `get_all_tables`.
+- Проверяет, что пользователь `bob` получает `get_all_databases` из общего кэша (без повторных запросов в бэкенд HMS) и видит только `finance`.
+- Проверяет, что `bob` получает отказ при обращении к `sales`, а `alice` — при обращении к `finance`.
+- Проверяет, что неавторизованный пользователь `eve` не имеет доступа к приватным базам, а `admin` видит все базы данных и производит корректную очистку.
+
 ## MapReduce под Kerberos
 
 Чтобы керберизованный `INSERT` заработал, нужны две вещи, и `LocalJobRunner` прячет обе за

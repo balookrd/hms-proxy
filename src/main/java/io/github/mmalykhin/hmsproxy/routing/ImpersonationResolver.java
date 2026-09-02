@@ -18,8 +18,8 @@ final class ImpersonationResolver {
   private final SecurityConfig security;
 
   ImpersonationResolver(ProxyConfig config) {
-    this.anyImpersonationEnabled = config.catalogs().values().stream()
-        .anyMatch(CatalogConfig::impersonationEnabled);
+    this.anyImpersonationEnabled = config.ranger().enabled()
+        || config.catalogs().values().stream().anyMatch(c -> c.impersonationEnabled() || c.ranger().enabled());
     this.security = config.security();
   }
 
@@ -28,15 +28,24 @@ final class ImpersonationResolver {
       return Optional.empty();
     }
     try {
-      UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
-      String userName = currentUser.getShortUserName();
+      String remoteUser = io.github.mmalykhin.hmsproxy.security.ClientRequestContext.remoteUser().orElse(null);
+      UserGroupInformation currentUser = null;
+      String userName = null;
+      if (remoteUser != null && !remoteUser.isBlank()) {
+        userName = io.github.mmalykhin.hmsproxy.util.PrincipalUtil.shortUserName(remoteUser);
+      }
+      if (userName == null || userName.isBlank()) {
+        currentUser = UserGroupInformation.getCurrentUser();
+        userName = currentUser != null ? currentUser.getShortUserName() : null;
+      }
       if (userName == null || userName.isBlank()) {
         return Optional.empty();
       }
       if (RoutingMetaStoreProxy.isServicePrincipalUser(userName, security)) {
         return Optional.empty();
       }
-      return Optional.of(new ImpersonationContext(userName, resolveGroupNames(currentUser, userName)));
+      List<String> groups = currentUser != null ? resolveGroupNames(currentUser, userName) : List.of();
+      return Optional.of(new ImpersonationContext(userName, groups));
     } catch (Exception e) {
       throw new MetaException("Unable to resolve authenticated caller for impersonation: " + e.getMessage());
     }

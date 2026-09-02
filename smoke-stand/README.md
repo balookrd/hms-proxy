@@ -481,6 +481,23 @@ front and then commits the tables one by one with no rollback, so a failure part
 earlier tables committed and the request answers `500 CommitStateUnknownException`. Both halves
 are recorded as I5 and I6 in `TEST-MATRIX.md`.
 
+## Apache Ranger & Shared Metadata Cache (`run-ranger-shared-cache-smoke.sh`)
+
+Validates embedded Apache Ranger policy evaluation combined with global shared metadata caching (`shared-across-users=true`):
+
+```bash
+cd smoke-stand && ./prepare.sh
+PROXY_CONFIG=/opt/hms-proxy/hms-proxy-ranger.properties docker compose up -d --build proxy
+./run-ranger-shared-cache-smoke.sh
+```
+
+The scenario exercises multi-user authorization and global caching against the running proxy:
+- Creates isolated test namespaces `sales` (tables `orders`, `customers`) and `finance` (tables `reports`, `expenses`).
+- Verifies that `alice` sees only authorized `sales` database and tables in `get_all_databases` and `get_all_tables`.
+- Verifies that `bob` queries `get_all_databases` from the shared cache (without redundant backend HMS queries), receiving only `finance`.
+- Asserts that `bob` is rejected when accessing `sales` and `alice` is rejected when accessing `finance`.
+- Asserts that unauthorized user `eve` cannot access any private namespaces, while `admin` sees all namespaces and cleans up.
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

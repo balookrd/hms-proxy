@@ -19,8 +19,19 @@ final class SetUgiHandler implements SpecialCaseHandler {
 
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
+    java.util.List<String> groups = new java.util.ArrayList<>();
+    if (args != null && args.length > 0 && args[0] instanceof String requestedUser && !requestedUser.isBlank()) {
+      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setRemoteUser(requestedUser);
+      if (args.length > 1 && args[1] instanceof java.util.List<?> requestedGroups) {
+        for (Object g : requestedGroups) {
+          if (g != null) {
+            groups.add(g.toString());
+          }
+        }
+      }
+    }
     if (!support.router.defaultBackend().impersonationEnabled()) {
-      return fallback.invokeGlobal(method, args);
+      return groups;
     }
     ImpersonationContext impersonation = support.impersonationResolver.resolve().orElseThrow(() ->
         new MetaException("Kerberos caller identity is unavailable for impersonation"));

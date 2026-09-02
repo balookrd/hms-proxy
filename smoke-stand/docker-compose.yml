@@ -309,6 +309,8 @@ services:
       - ./proxy/hms-proxy-hive4-kerberos.properties:/opt/hms-proxy/hms-proxy-hive4-kerberos.properties:ro
       - ./proxy/hms-proxy-apache.properties:/opt/hms-proxy/hms-proxy-apache.properties:ro
       - ./proxy/hms-proxy-apache-kerberos.properties:/opt/hms-proxy/hms-proxy-apache-kerberos.properties:ro
+      - ./proxy/hms-proxy-ranger.properties:/opt/hms-proxy/hms-proxy-ranger.properties:ro
+      - ./ranger/policy-cache:/opt/hms-proxy/ranger-cache
       # The Iceberg REST writer runs inside this container: data-file writes need the
       # datanodes, which only resolve in-network. Built by prepare.sh before compose up.
       - ./iceberg-rest-writer/target/iceberg-rest-writer.jar:/opt/hms-proxy/iceberg-rest-writer.jar:ro

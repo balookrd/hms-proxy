@@ -44,6 +44,7 @@ public final class HmsMetastoreSmokeCli {
   private static final String MODE_TXN = "txn";
   private static final String MODE_LOCK = "lock";
   private static final String MODE_NOTIFICATION = "notification";
+  private static final String MODE_METADATA = "metadata";
   private static final String AUTH_SIMPLE = "simple";
   private static final String AUTH_KERBEROS = "kerberos";
   private static final String TXN_CLOSE_ABORT = "abort";
@@ -65,6 +66,7 @@ public final class HmsMetastoreSmokeCli {
       case MODE_TXN -> runTxnSmoke(cli);
       case MODE_LOCK -> runLockSmoke(cli);
       case MODE_NOTIFICATION -> runNotificationSmoke(cli);
+      case MODE_METADATA -> runMetadataSmoke(cli);
       default -> throw new IllegalArgumentException("Unknown mode: " + mode);
     }
   }
@@ -406,8 +408,112 @@ public final class HmsMetastoreSmokeCli {
     throw new IllegalStateException(failure);
   }
 
+  private static void runMetadataSmoke(CliArgs cli) throws Exception {
+    String uri = cli.required("uri");
+    String op = cli.getOrDefault("op", "get_all_databases");
+    String db = cli.get("db");
+    String table = cli.get("table");
+    String pattern = cli.get("pattern");
+
+    applyOptionalKrbs(cli);
+    HiveConf conf = baseConf(cli, uri);
+
+    try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
+      ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+      switch (op.toLowerCase(Locale.ROOT)) {
+        case "get_all_databases" -> {
+          List<String> databases = thriftClient.get_all_databases();
+          System.out.println("databases=" + databases);
+        }
+        case "get_databases" -> {
+          List<String> databases = thriftClient.get_databases(pattern != null ? pattern : ".*");
+          System.out.println("databases=" + databases);
+        }
+        case "get_database" -> {
+          if (db == null) {
+            throw new IllegalArgumentException("--db is required for get_database");
+          }
+          org.apache.hadoop.hive.metastore.api.Database database = thriftClient.get_database(db);
+          System.out.println("database.name=" + database.getName() + " description=" + database.getDescription());
+        }
+        case "get_all_tables" -> {
+          if (db == null) {
+            throw new IllegalArgumentException("--db is required for get_all_tables");
+          }
+          List<String> tables = thriftClient.get_all_tables(db);
+          System.out.println("tables=" + tables);
+        }
+        case "get_tables" -> {
+          if (db == null) {
+            throw new IllegalArgumentException("--db is required for get_tables");
+          }
+          List<String> tables = thriftClient.get_tables(db, pattern != null ? pattern : ".*");
+          System.out.println("tables=" + tables);
+        }
+        case "get_table" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for get_table");
+          }
+          org.apache.hadoop.hive.metastore.api.Table tbl = thriftClient.get_table(db, table);
+          System.out.println("table.name=" + tbl.getTableName() + " type=" + tbl.getTableType());
+        }
+        case "create_database" -> {
+          if (db == null) {
+            throw new IllegalArgumentException("--db is required for create_database");
+          }
+          org.apache.hadoop.hive.metastore.api.Database newDb = new org.apache.hadoop.hive.metastore.api.Database();
+          newDb.setName(db);
+          newDb.setDescription(cli.getOrDefault("description", "Created by smoke CLI"));
+          thriftClient.create_database(newDb);
+          System.out.println("created database=" + db);
+        }
+        case "drop_database" -> {
+          if (db == null) {
+            throw new IllegalArgumentException("--db is required for drop_database");
+          }
+          boolean deleteData = cli.getBoolean("delete-data", true);
+          boolean cascade = cli.getBoolean("cascade", true);
+          thriftClient.drop_database(db, deleteData, cascade);
+          System.out.println("dropped database=" + db);
+        }
+        case "create_table" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for create_table");
+          }
+          org.apache.hadoop.hive.metastore.api.Table newTable = new org.apache.hadoop.hive.metastore.api.Table();
+          newTable.setDbName(db);
+          newTable.setTableName(table);
+          newTable.setTableType("EXTERNAL_TABLE");
+          org.apache.hadoop.hive.metastore.api.StorageDescriptor sd = new org.apache.hadoop.hive.metastore.api.StorageDescriptor();
+          sd.setCols(List.of(new org.apache.hadoop.hive.metastore.api.FieldSchema("id", "int", "identifier")));
+          org.apache.hadoop.hive.metastore.api.SerDeInfo serde = new org.apache.hadoop.hive.metastore.api.SerDeInfo();
+          serde.setSerializationLib("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
+          sd.setSerdeInfo(serde);
+          newTable.setSd(sd);
+          thriftClient.create_table(newTable);
+          System.out.println("created table=" + db + "." + table);
+        }
+        case "drop_table" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for drop_table");
+          }
+          boolean deleteData = cli.getBoolean("delete-data", true);
+          thriftClient.drop_table(db, table, deleteData);
+          System.out.println("dropped table=" + db + "." + table);
+        }
+        default -> throw new IllegalArgumentException("Unknown metadata op: " + op);
+      }
+    }
+  }
+
   private static HiveMetaStoreClient openApacheClient(CliArgs cli, HiveConf conf) throws Exception {
     if (!AUTH_KERBEROS.equals(cli.getOrDefault("auth", AUTH_SIMPLE))) {
+      String user = cli.get("user");
+      if (user != null && !user.isBlank()) {
+        conf.set("hive.metastore.execute.setugi", "true");
+        UserGroupInformation ugi = UserGroupInformation.createRemoteUser(user);
+        return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+      }
       return new HiveMetaStoreClient(conf);
     }
 
@@ -550,6 +656,7 @@ public final class HmsMetastoreSmokeCli {
           java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn [options]
           java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock [options]
           java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification [options]
+          java -cp <classpath> io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata [options]
 
         Common options:
           --uri thrift://host:9083
@@ -559,6 +666,13 @@ public final class HmsMetastoreSmokeCli {
           --keytab /path/client.keytab          required for --auth kerberos
           --krb5-conf /etc/krb5.conf            optional
           --conf key=value                      repeatable extra HiveConf override
+
+        metadata mode:
+          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|create_database|drop_database|create_table|drop_table
+          --user alice                          optional impersonation user for simple auth
+          --db db_name                          optional database name
+          --table table_name                    optional table name
+          --pattern pattern                     optional pattern for get_databases / get_tables
 
         txn mode:
           --db hdp__default
