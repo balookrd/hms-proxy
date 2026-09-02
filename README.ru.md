@@ -463,6 +463,13 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_rest_requests_total{prefix,route,status}`
 - `hms_proxy_rest_request_duration_seconds{prefix,route}`
 - `hms_proxy_rest_listener_info{bind_host,port}`
+- `hms_proxy_cache_requests_total{cache,catalog,result}`
+- `hms_proxy_cache_entries{cache,catalog}`
+- `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
+- `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
+- `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
+- `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
+- `hms_proxy_ranger_plugin_info{catalog,service_name,service_type,app_id}`
 
 Пример Prometheus scrape config:
 
@@ -497,6 +504,13 @@ scrape_configs:
 - `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
 - `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
 - `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
+- `hms_proxy_cache_requests_total` считает обращения к кэшу метаданных с группировкой по `cache` (`database_list`, `database_metadata`), `catalog` и `result` (`hit`, `miss`)
+- `hms_proxy_cache_entries` отслеживает текущее число записей в кэшах метаданных с группировкой по `cache` и `catalog`
+- `hms_proxy_cache_invalidations_total` считает инвалидации записей кэша с группировкой по `cache`, `catalog` и `reason` (`write`, `catalog`, `prune`, `all`)
+- `hms_proxy_ranger_evaluations_total` считает проверки политик Apache Ranger с группировкой по `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`) и `result` (`allowed`, `denied`)
+- `hms_proxy_ranger_evaluation_duration_seconds` измеряет длительность вычисления политик Ranger в секундах с группировкой по `catalog` и `resource_type`
+- `hms_proxy_ranger_filtered_objects_total` считает базы и таблицы, скрытые фильтрами Ranger при multi-object listing с группировкой по `catalog` и `resource_type`
+- `hms_proxy_ranger_plugin_info` это info gauge с конфигурацией активных плагинов Ranger (`catalog`, `service_name`, `service_type`, `app_id`)
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default

@@ -143,4 +143,33 @@ public class DatabaseListCacheTest {
     Assert.assertEquals(List.of("db1", "db2"), bobList);
     Assert.assertNotSame(aliceList, bobList);
   }
+
+  @Test
+  public void recordsMetricsOnHitsMissesAndInvalidation() throws Throwable {
+    io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics =
+        new io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics();
+    DatabaseListCache cache = new DatabaseListCache(new DatabaseListCacheConfig(60_000L, 100, true), metrics);
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of());
+
+    // Miss
+    cache.get("get_all_databases", "cat1", null, alice, () -> List.of("db1", "db2"));
+    // Hit
+    cache.get("get_all_databases", "cat1", null, alice, () -> List.of("should_not_load"));
+
+    String rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_list\",catalog=\"cat1\",result=\"miss\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_list\",catalog=\"cat1\",result=\"hit\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_list\",catalog=\"cat1\"} 1.0"));
+
+    // Invalidation
+    cache.invalidate("cat1");
+    rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_invalidations_total{cache=\"database_list\",catalog=\"cat1\",reason=\"write\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_list\",catalog=\"cat1\"} 0.0"));
+  }
 }

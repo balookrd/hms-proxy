@@ -24,8 +24,18 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
   private static final Logger LOG = LoggerFactory.getLogger(RangerMetadataAuthorizer.class);
 
   private final Map<String, RangerBasePlugin> pluginsByCatalog = new LinkedHashMap<>();
+  private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
 
   public RangerMetadataAuthorizer(RangerConfig config, Map<String, CatalogConfig> catalogs) {
+    this(config, catalogs, null);
+  }
+
+  public RangerMetadataAuthorizer(
+      RangerConfig config,
+      Map<String, CatalogConfig> catalogs,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics
+  ) {
+    this.metrics = metrics;
     if (catalogs != null) {
       for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
         String catalogName = entry.getKey();
@@ -38,6 +48,13 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
           try {
             RangerBasePlugin plugin = createPlugin(catalogName, rangerConfig);
             pluginsByCatalog.put(catalogName, plugin);
+            if (metrics != null) {
+              metrics.setRangerPluginInfo(
+                  catalogName,
+                  plugin.getServiceName(),
+                  plugin.getServiceType(),
+                  plugin.getAppId());
+            }
             LOG.info("Initialized RangerBasePlugin for catalog '{}' (serviceName={}, serviceType={}, restUrl={})",
                 catalogName, rangerConfig.serviceName(), rangerConfig.serviceType(), rangerConfig.policyRestUrl());
           } catch (Exception e) {
@@ -112,25 +129,44 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       return true;
     }
 
+    long startNanos = System.nanoTime();
+    String accessTypeUsed = "select";
+    boolean allowed = false;
+
     RangerAccessResourceImpl resource = new RangerAccessResourceImpl();
     resource.setValue("database", backendDbName);
 
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
     RangerAccessResult result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
     if (result != null && result.getIsAllowed()) {
-      return true;
+      allowed = true;
+    } else {
+      // Try fallback access types "read" and "use"
+      request = createAccessRequest(resource, impersonation, "read");
+      result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+      if (result != null && result.getIsAllowed()) {
+        accessTypeUsed = "read";
+        allowed = true;
+      } else {
+        request = createAccessRequest(resource, impersonation, "use");
+        result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+        if (result != null && result.getIsAllowed()) {
+          accessTypeUsed = "use";
+          allowed = true;
+        }
+      }
     }
 
-    // Try fallback access types "read" and "use"
-    request = createAccessRequest(resource, impersonation, "read");
-    result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
-    if (result != null && result.getIsAllowed()) {
-      return true;
+    if (metrics != null) {
+      double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+      metrics.recordRangerEvaluation(
+          catalogName,
+          "database",
+          accessTypeUsed,
+          allowed ? "allowed" : "denied",
+          durationSeconds);
     }
-
-    request = createAccessRequest(resource, impersonation, "use");
-    result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
-    return result != null && result.getIsAllowed();
+    return allowed;
   }
 
   @Override
@@ -143,10 +179,16 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       return new ArrayList<>(backendDbNames);
     }
     List<String> visible = new ArrayList<>(backendDbNames.size());
+    int filtered = 0;
     for (String dbName : backendDbNames) {
       if (isDatabaseAllowed(catalogName, dbName, impersonation)) {
         visible.add(dbName);
+      } else {
+        filtered++;
       }
+    }
+    if (metrics != null && filtered > 0) {
+      metrics.recordRangerFilteredObjects(catalogName, "database", filtered);
     }
     return visible;
   }
@@ -164,6 +206,10 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       return true;
     }
 
+    long startNanos = System.nanoTime();
+    String accessTypeUsed = "select";
+    boolean allowed = false;
+
     RangerAccessResourceImpl resource = new RangerAccessResourceImpl();
     resource.setValue("database", backendDbName);
     resource.setValue("table", tableName);
@@ -171,19 +217,34 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
     RangerAccessResult result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
     if (result != null && result.getIsAllowed()) {
-      return true;
+      allowed = true;
+    } else {
+      // Try fallback access types "read" and "show"
+      request = createAccessRequest(resource, impersonation, "read");
+      result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+      if (result != null && result.getIsAllowed()) {
+        accessTypeUsed = "read";
+        allowed = true;
+      } else {
+        request = createAccessRequest(resource, impersonation, "show");
+        result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+        if (result != null && result.getIsAllowed()) {
+          accessTypeUsed = "show";
+          allowed = true;
+        }
+      }
     }
 
-    // Try fallback access types "read" and "show"
-    request = createAccessRequest(resource, impersonation, "read");
-    result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
-    if (result != null && result.getIsAllowed()) {
-      return true;
+    if (metrics != null) {
+      double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+      metrics.recordRangerEvaluation(
+          catalogName,
+          "table",
+          accessTypeUsed,
+          allowed ? "allowed" : "denied",
+          durationSeconds);
     }
-
-    request = createAccessRequest(resource, impersonation, "show");
-    result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
-    return result != null && result.getIsAllowed();
+    return allowed;
   }
 
   @Override
@@ -196,10 +257,16 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       return new ArrayList<>(tableNames);
     }
     List<String> visible = new ArrayList<>(tableNames.size());
+    int filtered = 0;
     for (String tableName : tableNames) {
       if (isTableAllowed(catalogName, backendDbName, tableName, impersonation)) {
         visible.add(tableName);
+      } else {
+        filtered++;
       }
+    }
+    if (metrics != null && filtered > 0) {
+      metrics.recordRangerFilteredObjects(catalogName, "table", filtered);
     }
     return visible;
   }

@@ -13,13 +13,19 @@ final class DatabaseListCache {
   private final long ttlMs;
   private final int maxEntries;
   private final boolean sharedAcrossUsers;
+  private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<List<String>>> inFlight = new ConcurrentHashMap<>();
 
   DatabaseListCache(DatabaseListCacheConfig config) {
+    this(config, null);
+  }
+
+  DatabaseListCache(DatabaseListCacheConfig config, io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
     this.sharedAcrossUsers = config.sharedAcrossUsers();
+    this.metrics = metrics;
   }
 
   List<String> get(
@@ -36,6 +42,9 @@ final class DatabaseListCache {
     Key key = Key.of(methodName, catalogName, pattern, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
+      if (metrics != null) {
+        metrics.recordCacheRequest("database_list", catalogName, "hit");
+      }
       return new ArrayList<>(cached.databases());
     }
 
@@ -44,6 +53,9 @@ final class DatabaseListCache {
     if (existing != null) {
       try {
         List<String> result = existing.get();
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_list", catalogName, "hit");
+        }
         return result == null ? null : new ArrayList<>(result);
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
@@ -53,9 +65,15 @@ final class DatabaseListCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_list", catalogName, "hit");
+        }
         List<String> result = new ArrayList<>(cached.databases());
         future.complete(result);
         return result;
+      }
+      if (metrics != null) {
+        metrics.recordCacheRequest("database_list", catalogName, "miss");
       }
       List<String> loaded = loader.load();
       if (loaded != null) {
@@ -88,11 +106,27 @@ final class DatabaseListCache {
     if (catalogName == null) {
       return;
     }
-    entries.keySet().removeIf(k -> k.catalogName().equals(catalogName));
+    int removed = 0;
+    for (var it = entries.keySet().iterator(); it.hasNext(); ) {
+      if (it.next().catalogName().equals(catalogName)) {
+        it.remove();
+        removed++;
+      }
+    }
+    if (metrics != null) {
+      if (removed > 0) {
+        metrics.recordCacheInvalidation("database_list", catalogName, "write", removed);
+      }
+      metrics.setCacheEntries("database_list", catalogName, countEntries(catalogName));
+    }
   }
 
   void invalidateAll() {
+    int total = entries.size();
     entries.clear();
+    if (metrics != null && total > 0) {
+      metrics.recordCacheInvalidation("database_list", "all", "all", total);
+    }
   }
 
   private void put(Key key, List<String> databases, long expiresAtMs) {
@@ -104,6 +138,9 @@ final class DatabaseListCache {
         entry.getValue().extendExpiration(expiresAtMs);
       }
     }
+    if (metrics != null) {
+      metrics.setCacheEntries("database_list", key.catalogName(), countEntries(key.catalogName()));
+    }
   }
 
   private void pruneIfFull() {
@@ -111,10 +148,26 @@ final class DatabaseListCache {
       return;
     }
     long nowMs = System.currentTimeMillis();
+    int before = entries.size();
     entries.entrySet().removeIf(entry -> entry.getValue().expiresAtMs() <= nowMs);
+    int pruned = before - entries.size();
     if (entries.size() >= maxEntries) {
+      pruned += entries.size();
       entries.clear();
     }
+    if (metrics != null && pruned > 0) {
+      metrics.recordCacheInvalidation("database_list", "all", "prune", pruned);
+    }
+  }
+
+  private long countEntries(String catalogName) {
+    long count = 0;
+    for (Key k : entries.keySet()) {
+      if (k.catalogName().equals(catalogName)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   @FunctionalInterface

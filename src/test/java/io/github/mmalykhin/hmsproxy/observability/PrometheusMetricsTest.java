@@ -169,6 +169,52 @@ public class PrometheusMetricsTest {
     Assert.assertEquals(cap - 1 + racers, observedRequests);
   }
 
+  @Test
+  public void rendersCacheAndRangerMetrics() {
+    PrometheusMetrics metrics = new PrometheusMetrics();
+
+    metrics.recordCacheRequest("database_list", "hdp", "hit");
+    metrics.recordCacheRequest("database_metadata", "hdp", "miss");
+    metrics.setCacheEntries("database_list", "hdp", 12L);
+    metrics.setCacheEntries("database_metadata", "hdp", 45L);
+    metrics.recordCacheInvalidation("database_list", "hdp", "write", 3L);
+    metrics.recordCacheInvalidation("database_metadata", "all", "prune", 10L);
+
+    metrics.recordRangerEvaluation("hdp", "database", "select", "allowed", 0.00025);
+    metrics.recordRangerEvaluation("hdp", "table", "select", "denied", 0.00035);
+    metrics.recordRangerFilteredObjects("hdp", "database", 5L);
+    metrics.recordRangerFilteredObjects("hdp", "table", 8L);
+    metrics.setRangerPluginInfo("hdp", "hive_service", "hive", "hms-proxy");
+
+    String rendered = metrics.render();
+
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_list\",catalog=\"hdp\",result=\"hit\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_metadata\",catalog=\"hdp\",result=\"miss\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_list\",catalog=\"hdp\"} 12.0"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_metadata\",catalog=\"hdp\"} 45.0"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_invalidations_total{cache=\"database_list\",catalog=\"hdp\",reason=\"write\"} 3"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_invalidations_total{cache=\"database_metadata\",catalog=\"all\",reason=\"prune\"} 10"));
+
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluations_total{catalog=\"hdp\",resource_type=\"database\",access_type=\"select\",result=\"allowed\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluations_total{catalog=\"hdp\",resource_type=\"table\",access_type=\"select\",result=\"denied\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluation_duration_seconds_count{catalog=\"hdp\",resource_type=\"database\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_filtered_objects_total{catalog=\"hdp\",resource_type=\"database\"} 5"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_filtered_objects_total{catalog=\"hdp\",resource_type=\"table\"} 8"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_plugin_info{catalog=\"hdp\",service_name=\"hive_service\",service_type=\"hive\",app_id=\"hms-proxy\"} 1.0"));
+  }
+
   private static List<String> seriesOf(String rendered, String metricName) {
     List<String> series = new ArrayList<>();
     for (String line : rendered.split("\n")) {

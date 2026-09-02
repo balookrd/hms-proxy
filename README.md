@@ -461,6 +461,13 @@ Current Prometheus metrics:
 - `hms_proxy_rest_requests_total{prefix,route,status}`
 - `hms_proxy_rest_request_duration_seconds{prefix,route}`
 - `hms_proxy_rest_listener_info{bind_host,port}`
+- `hms_proxy_cache_requests_total{cache,catalog,result}`
+- `hms_proxy_cache_entries{cache,catalog}`
+- `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
+- `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
+- `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
+- `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
+- `hms_proxy_ranger_plugin_info{catalog,service_name,service_type,app_id}`
 
 Example Prometheus scrape config:
 
@@ -495,6 +502,13 @@ Metric semantics:
 - `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
 - `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
 - `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
+- `hms_proxy_cache_requests_total` counts metadata cache lookups grouped by `cache` (`database_list`, `database_metadata`), `catalog`, and `result` (`hit`, `miss`)
+- `hms_proxy_cache_entries` tracks the number of live entries stored in metadata caches grouped by `cache` and `catalog`
+- `hms_proxy_cache_invalidations_total` counts metadata cache entry invalidations grouped by `cache`, `catalog`, and `reason` (`write`, `catalog`, `prune`, `all`)
+- `hms_proxy_ranger_evaluations_total` counts Apache Ranger policy evaluations grouped by `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`), and `result` (`allowed`, `denied`)
+- `hms_proxy_ranger_evaluation_duration_seconds` measures Apache Ranger policy evaluation duration in seconds grouped by `catalog` and `resource_type`
+- `hms_proxy_ranger_filtered_objects_total` counts databases and tables hidden by Ranger authorization filters during listing RPCs grouped by `catalog` and `resource_type`
+- `hms_proxy_ranger_plugin_info` is an info gauge exposing the active Ranger plugin configuration (`catalog`, `service_name`, `service_type`, `app_id`)
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.

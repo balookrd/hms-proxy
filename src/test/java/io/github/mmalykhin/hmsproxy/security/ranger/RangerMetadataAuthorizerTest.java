@@ -49,7 +49,10 @@ public class RangerMetadataAuthorizerTest {
 
     ServicePolicies servicePolicies = buildServicePolicies("test_hive_svc");
 
-    RangerMetadataAuthorizer authorizer = new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig)) {
+    io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics =
+        new io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics();
+
+    RangerMetadataAuthorizer authorizer = new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig), metrics) {
       @Override
       protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
         RangerBasePlugin plugin = super.createPlugin(catalogName, config);
@@ -90,6 +93,20 @@ public class RangerMetadataAuthorizerTest {
     List<String> financeTables = List.of("reports", "salaries");
     Assert.assertEquals(List.of("reports"), authorizer.filterTables("cat1", "finance", financeTables, bob));
     Assert.assertEquals(List.of(), authorizer.filterTables("cat1", "finance", financeTables, eve));
+
+    String rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluations_total{catalog=\"cat1\",resource_type=\"database\",access_type=\"select\",result=\"allowed\"}"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluations_total{catalog=\"cat1\",resource_type=\"database\",access_type=\"select\",result=\"denied\"}"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_evaluations_total{catalog=\"cat1\",resource_type=\"table\",access_type=\"select\",result=\"allowed\"}"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_filtered_objects_total{catalog=\"cat1\",resource_type=\"database\"}"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_filtered_objects_total{catalog=\"cat1\",resource_type=\"table\"}"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_ranger_plugin_info{catalog=\"cat1\",service_name=\"test_hive_svc\",service_type=\"hive\",app_id=\"hms-proxy\"} 1.0"));
 
     authorizer.close();
   }

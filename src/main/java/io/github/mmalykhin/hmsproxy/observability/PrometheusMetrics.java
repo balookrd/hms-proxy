@@ -19,6 +19,8 @@ import java.util.function.Supplier;
 public final class PrometheusMetrics {
   private static final double[] REQUEST_DURATION_BUCKETS =
       new double[] {0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0};
+  private static final double[] RANGER_DURATION_BUCKETS =
+      new double[] {0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0};
 
   static final int DEFAULT_MAX_SERIES_PER_METRIC = 5000;
   static final String OVERFLOW_LABEL_VALUE = "overflow";
@@ -145,6 +147,35 @@ public final class PrometheusMetrics {
       "hms_proxy_rest_listener_info",
       "Configured Iceberg REST listener bind host and port for this proxy instance",
       List.of("bind_host", "port"));
+  private final Counter cacheRequestsTotal = new Counter(
+      "hms_proxy_cache_requests_total",
+      "Total metadata cache lookups grouped by cache type, catalog, and result (hit or miss)",
+      List.of("cache", "catalog", "result"));
+  private final Gauge cacheEntries = new Gauge(
+      "hms_proxy_cache_entries",
+      "Current number of entries stored in metadata caches grouped by cache type and catalog",
+      List.of("cache", "catalog"));
+  private final Counter cacheInvalidationsTotal = new Counter(
+      "hms_proxy_cache_invalidations_total",
+      "Metadata cache entry invalidations grouped by cache type, catalog, and reason",
+      List.of("cache", "catalog", "reason"));
+  private final Counter rangerEvaluationsTotal = new Counter(
+      "hms_proxy_ranger_evaluations_total",
+      "Total Apache Ranger policy evaluations grouped by catalog, resource type, access type, and result",
+      List.of("catalog", "resource_type", "access_type", "result"));
+  private final Histogram rangerEvaluationDurationSeconds = new Histogram(
+      "hms_proxy_ranger_evaluation_duration_seconds",
+      "Apache Ranger policy evaluation duration in seconds grouped by catalog and resource type",
+      List.of("catalog", "resource_type"),
+      RANGER_DURATION_BUCKETS);
+  private final Counter rangerFilteredObjectsTotal = new Counter(
+      "hms_proxy_ranger_filtered_objects_total",
+      "Total metadata objects hidden by Ranger authorization filters grouped by catalog and resource type",
+      List.of("catalog", "resource_type"));
+  private final Gauge rangerPluginInfo = new Gauge(
+      "hms_proxy_ranger_plugin_info",
+      "Active Apache Ranger plugins configured for metastore catalogs",
+      List.of("catalog", "service_name", "service_type", "app_id"));
 
   public void recordRequest(String method, String catalog, String backend, String status, double durationSeconds) {
     requestsTotal.inc(labels("method", method, "catalog", catalog, "backend", backend, "status", status));
@@ -307,6 +338,55 @@ public final class PrometheusMetrics {
     restListenerInfo.set(labels("bind_host", bindHost, "port", String.valueOf(port)), 1.0);
   }
 
+  public void recordCacheRequest(String cache, String catalog, String result) {
+    recordCacheRequest(cache, catalog, result, 1L);
+  }
+
+  public void recordCacheRequest(String cache, String catalog, String result, long count) {
+    cacheRequestsTotal.add(labels("cache", cache, "catalog", catalog, "result", result), count);
+  }
+
+  public void setCacheEntries(String cache, String catalog, long entries) {
+    cacheEntries.set(labels("cache", cache, "catalog", catalog), entries);
+  }
+
+  public void recordCacheInvalidation(String cache, String catalog, String reason) {
+    recordCacheInvalidation(cache, catalog, reason, 1L);
+  }
+
+  public void recordCacheInvalidation(String cache, String catalog, String reason, long count) {
+    cacheInvalidationsTotal.add(labels("cache", cache, "catalog", catalog, "reason", reason), count);
+  }
+
+  public void recordRangerEvaluation(
+      String catalog,
+      String resourceType,
+      String accessType,
+      String result,
+      double durationSeconds
+  ) {
+    rangerEvaluationsTotal.inc(labels(
+        "catalog", catalog,
+        "resource_type", resourceType,
+        "access_type", accessType,
+        "result", result));
+    rangerEvaluationDurationSeconds.observe(labels(
+        "catalog", catalog,
+        "resource_type", resourceType), durationSeconds);
+  }
+
+  public void recordRangerFilteredObjects(String catalog, String resourceType, long count) {
+    rangerFilteredObjectsTotal.add(labels("catalog", catalog, "resource_type", resourceType), count);
+  }
+
+  public void setRangerPluginInfo(String catalog, String serviceName, String serviceType, String appId) {
+    rangerPluginInfo.set(labels(
+        "catalog", catalog,
+        "service_name", serviceName,
+        "service_type", serviceType,
+        "app_id", appId), 1.0);
+  }
+
   // Declared last so every metric field above is already initialized; render order is the
   // exposition order of /metrics.
   private final List<Metric> exposedMetrics = List.of(
@@ -334,7 +414,14 @@ public final class PrometheusMetrics {
       icebergPointerGuardEventsTotal,
       restRequestsTotal,
       restRequestDurationSeconds,
-      restListenerInfo);
+      restListenerInfo,
+      cacheRequestsTotal,
+      cacheEntries,
+      cacheInvalidationsTotal,
+      rangerEvaluationsTotal,
+      rangerEvaluationDurationSeconds,
+      rangerFilteredObjectsTotal,
+      rangerPluginInfo);
 
   public String render() {
     int estimatedSize = 0;

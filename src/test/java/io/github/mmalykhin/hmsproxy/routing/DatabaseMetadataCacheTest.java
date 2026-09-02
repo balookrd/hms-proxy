@@ -271,4 +271,38 @@ public class DatabaseMetadataCacheTest {
     Assert.assertEquals("sales db", bobDb.getDescription());
     Assert.assertNotSame(aliceDb, bobDb);
   }
+
+  @Test
+  public void recordsMetricsOnHitsMissesAndInvalidation() throws Throwable {
+    io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics =
+        new io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics();
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(60_000L, 100, true), null, metrics);
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of());
+
+    // Miss
+    cache.get("cat1", "sales", alice, () -> {
+      Database db = new Database();
+      db.setName("sales");
+      return db;
+    });
+    // Hit
+    cache.get("cat1", "sales", alice, () -> new Database());
+
+    String rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_metadata\",catalog=\"cat1\",result=\"miss\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_requests_total{cache=\"database_metadata\",catalog=\"cat1\",result=\"hit\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_metadata\",catalog=\"cat1\"} 1.0"));
+
+    // Invalidation
+    cache.invalidate("cat1", "sales");
+    rendered = metrics.render();
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_invalidations_total{cache=\"database_metadata\",catalog=\"cat1\",reason=\"write\"} 1"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_entries{cache=\"database_metadata\",catalog=\"cat1\"} 0.0"));
+  }
 }

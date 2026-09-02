@@ -35,15 +35,16 @@ final class RoutingPipelineFactory {
     BackendRoutingController backendRoutingController = new BackendRoutingController(config, router, observability);
     AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
     FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
-    DatabaseListCache databaseListCache = new DatabaseListCache(config.latencyRouting().databaseListCache());
+    DatabaseListCache databaseListCache =
+        new DatabaseListCache(config.latencyRouting().databaseListCache(), observability.metrics());
     DatabaseMetadataCache databaseMetadataCache =
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache);
+        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache, observability.metrics());
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
         compatibilityLayer, admissionGate, observability, fanoutExecutor);
     long aliveSince = System.currentTimeMillis() / 1000L;
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
     MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
-        ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs())
+        ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs(), observability.metrics())
         : io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE;
     RoutingHandler routingHandler = new RoutingHandler(
         config,

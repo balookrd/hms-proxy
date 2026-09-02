@@ -44,16 +44,22 @@ run_cli() {
   fi
 }
 
+if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  log "Ensuring proxy is running with hms-proxy-ranger.properties..."
+  (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy-ranger.properties docker compose up -d proxy >/dev/null 2>&1)
+  sleep 3
+fi
+
 log "=== 1. Setup test metadata (databases & tables) via admin user ==="
 
 # Clean any leftover dbs first
 run_cli admin --op drop_table --db sales --table orders 2>/dev/null || true
 run_cli admin --op drop_table --db sales --table customers 2>/dev/null || true
-run_cli admin --op drop_database --db sales 2>/dev/null || true
+run_cli admin --op drop_database --db sales --cascade true 2>/dev/null || true
 
 run_cli admin --op drop_table --db finance --table reports 2>/dev/null || true
 run_cli admin --op drop_table --db finance --table expenses 2>/dev/null || true
-run_cli admin --op drop_database --db finance 2>/dev/null || true
+run_cli admin --op drop_database --db finance --cascade true 2>/dev/null || true
 
 # Create sales db & tables
 run_cli admin --op create_database --db sales
@@ -127,17 +133,22 @@ echo "${ADMIN_DBS}" | grep -q "finance" || fail "Admin expected to see finance"
 
 log "=== 10. Check Prometheus metrics for cache and authorization ==="
 METRICS=$(docker exec "${PROXY_CONTAINER}" curl -sf http://localhost:9090/metrics || true)
-if echo "${METRICS}" | grep -q "hms_proxy_cache_hit_total"; then
-  log "Cache hit metric present in /metrics: $(echo "${METRICS}" | grep "hms_proxy_cache_hit_total" | head -n 3)"
+if [ -n "${METRICS}" ]; then
+  echo "${METRICS}" | grep -q "hms_proxy_cache_requests_total" || fail "Missing hms_proxy_cache_requests_total in /metrics"
+  echo "${METRICS}" | grep -q "hms_proxy_cache_entries" || fail "Missing hms_proxy_cache_entries in /metrics"
+  echo "${METRICS}" | grep -q "hms_proxy_ranger_evaluations_total" || fail "Missing hms_proxy_ranger_evaluations_total in /metrics"
+  echo "${METRICS}" | grep -q "hms_proxy_ranger_plugin_info" || fail "Missing hms_proxy_ranger_plugin_info in /metrics"
+  log "Observed cache metrics: $(echo "${METRICS}" | grep "^hms_proxy_cache_" | head -n 4)"
+  log "Observed ranger metrics: $(echo "${METRICS}" | grep "^hms_proxy_ranger_" | head -n 4)"
 fi
 
 log "=== 11. Cleanup test metadata ==="
 run_cli admin --op drop_table --db sales --table orders || true
 run_cli admin --op drop_table --db sales --table customers || true
-run_cli admin --op drop_database --db sales || true
+run_cli admin --op drop_database --db sales --cascade true || true
 
 run_cli admin --op drop_table --db finance --table reports || true
 run_cli admin --op drop_table --db finance --table expenses || true
-run_cli admin --op drop_database --db finance || true
+run_cli admin --op drop_database --db finance --cascade true || true
 
 log "=== ALL RANGER & SHARED CACHE SMOKE CHECKS PASSED ==="

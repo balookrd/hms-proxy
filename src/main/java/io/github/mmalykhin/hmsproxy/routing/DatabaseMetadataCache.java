@@ -14,18 +14,28 @@ final class DatabaseMetadataCache {
   private final int maxEntries;
   private final boolean sharedAcrossUsers;
   private final DatabaseListCache databaseListCache;
+  private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Database>> inFlight = new ConcurrentHashMap<>();
 
   DatabaseMetadataCache(DatabaseMetadataCacheConfig config) {
-    this(config, null);
+    this(config, null, null);
   }
 
   DatabaseMetadataCache(DatabaseMetadataCacheConfig config, DatabaseListCache databaseListCache) {
+    this(config, databaseListCache, null);
+  }
+
+  DatabaseMetadataCache(
+      DatabaseMetadataCacheConfig config,
+      DatabaseListCache databaseListCache,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics
+  ) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
     this.sharedAcrossUsers = config.sharedAcrossUsers();
     this.databaseListCache = databaseListCache;
+    this.metrics = metrics;
   }
 
   Database get(
@@ -41,6 +51,9 @@ final class DatabaseMetadataCache {
     Key key = Key.of(catalogName, backendDbName, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
+      if (metrics != null) {
+        metrics.recordCacheRequest("database_metadata", catalogName, "hit");
+      }
       return new Database(cached.database());
     }
 
@@ -49,6 +62,9 @@ final class DatabaseMetadataCache {
     if (existing != null) {
       try {
         Database result = existing.get();
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_metadata", catalogName, "hit");
+        }
         return result == null ? null : new Database(result);
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
@@ -58,9 +74,15 @@ final class DatabaseMetadataCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_metadata", catalogName, "hit");
+        }
         Database result = new Database(cached.database());
         future.complete(result);
         return result;
+      }
+      if (metrics != null) {
+        metrics.recordCacheRequest("database_metadata", catalogName, "miss");
       }
       Database loaded = loader.load();
       if (loaded != null) {
@@ -80,18 +102,40 @@ final class DatabaseMetadataCache {
     if (catalogName == null || backendDbName == null) {
       return;
     }
-    entries.keySet().removeIf(k -> k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
+    boolean removed = entries.keySet().removeIf(k -> k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
+    if (metrics != null) {
+      if (removed) {
+        metrics.recordCacheInvalidation("database_metadata", catalogName, "write");
+      }
+      metrics.setCacheEntries("database_metadata", catalogName, countEntries(catalogName));
+    }
   }
 
   void invalidateCatalog(String catalogName) {
     if (catalogName == null) {
       return;
     }
-    entries.keySet().removeIf(k -> k.catalogName().equals(catalogName));
+    int removed = 0;
+    for (var it = entries.keySet().iterator(); it.hasNext(); ) {
+      if (it.next().catalogName().equals(catalogName)) {
+        it.remove();
+        removed++;
+      }
+    }
+    if (metrics != null) {
+      if (removed > 0) {
+        metrics.recordCacheInvalidation("database_metadata", catalogName, "catalog", removed);
+      }
+      metrics.setCacheEntries("database_metadata", catalogName, countEntries(catalogName));
+    }
   }
 
   void invalidateAll() {
+    int total = entries.size();
     entries.clear();
+    if (metrics != null && total > 0) {
+      metrics.recordCacheInvalidation("database_metadata", "all", "all", total);
+    }
   }
 
   private void put(Key key, Database database, long expiresAtMs) {
@@ -106,6 +150,9 @@ final class DatabaseMetadataCache {
     if (databaseListCache != null) {
       databaseListCache.extendCatalogExpiration(key.catalogName(), key.userName(), expiresAtMs);
     }
+    if (metrics != null) {
+      metrics.setCacheEntries("database_metadata", key.catalogName(), countEntries(key.catalogName()));
+    }
   }
 
   private void pruneIfFull() {
@@ -113,10 +160,26 @@ final class DatabaseMetadataCache {
       return;
     }
     long nowMs = System.currentTimeMillis();
+    int before = entries.size();
     entries.entrySet().removeIf(entry -> entry.getValue().expiresAtMs() <= nowMs);
+    int pruned = before - entries.size();
     if (entries.size() >= maxEntries) {
+      pruned += entries.size();
       entries.clear();
     }
+    if (metrics != null && pruned > 0) {
+      metrics.recordCacheInvalidation("database_metadata", "all", "prune", pruned);
+    }
+  }
+
+  private long countEntries(String catalogName) {
+    long count = 0;
+    for (Key k : entries.keySet()) {
+      if (k.catalogName().equals(catalogName)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   @FunctionalInterface
