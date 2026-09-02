@@ -1639,6 +1639,27 @@ catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
 
+#### Обработка схем (баз данных) и таблиц в Ranger
+
+1. **Трансляция пространств имён и сопоставление ресурсов**:
+   Перед проверкой прав в Ranger прокси транслирует федеративные имена во внутренние имена бэкенда:
+   - При запросе к `apache__marketing.campaigns` (каталог `apache`, база `marketing`), в Ranger проверяется ресурс:
+     - `database` = `marketing`
+     - `table` = `campaigns`
+   - При запросе к `sales.orders` дефолтного каталога, в Ranger проверяется:
+     - `database` = `sales`
+     - `table` = `orders`
+   Политики в Apache Ranger Admin всегда настраиваются на оригинальные имена баз и таблиц бэкенда (без федеративных префиксов прокси).
+
+2. **Общий (Global) vs. Раздельные (Per-Catalog) Ranger**:
+   - **Общий Ranger (`ranger.*`)**: Все каталоги используют один общий сервис Ranger (например, `hive`). Политика на `database=sales` применяется к базе `sales` во всех каталогах, использующих этот глобальный сервис.
+   - **Раздельные Ranger для каталогов (`catalog.<name>.ranger.*`)**: Для каждого каталога создаётся изолированный экземпляр `RangerBasePlugin`, подключенный к собственному сервису (например, `onprem_hive`, `cloud_hive`) или отдельному инстансу Ranger Admin. Политики полностью изолированы: база `sales` в `catalog1` и база `sales` в `catalog2` авторизуются по своим собственным независимым наборам правил.
+
+3. **Жизненный цикл фильтрации**:
+   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
+   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`.
+   - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав выбрасывается `NoSuchObjectException`, скрывая сам факт существования недоступных объектов.
+
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
 метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в

@@ -1701,6 +1701,27 @@ catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
 
+#### How Schemas and Tables Are Evaluated in Ranger
+
+1. **Namespace Translation and Resource Matching**:
+   The proxy translates federated namespaces to backend-native names before evaluating Ranger policies:
+   - For a request to `apache__marketing.campaigns` (catalog `apache`, backend database `marketing`), the Ranger resource is evaluated as:
+     - `database` = `marketing`
+     - `table` = `campaigns`
+   - For a request to `sales.orders` in the default catalog, the Ranger resource is evaluated as:
+     - `database` = `sales`
+     - `table` = `orders`
+   Policies in Apache Ranger Admin should always be defined against native backend database names without proxy catalog prefixes.
+
+2. **Global vs. Per-Catalog Ranger Configuration**:
+   - **Global Ranger (`ranger.*`)**: All catalogs share a single Ranger service instance (e.g., `hive`). A policy defined on `database=sales` applies to database `sales` across any catalog governed by that global service.
+   - **Per-Catalog Ranger (`catalog.<name>.ranger.*`)**: Each catalog initializes an independent `RangerBasePlugin` pointing to its own Ranger service (e.g., `onprem_hive`, `cloud_hive`) or distinct Ranger Admin URL. Policies are strictly isolated per catalog: database `sales` in catalog `catalog1` and database `sales` in catalog `catalog2` are evaluated against their respective, independent Ranger policy sets.
+
+3. **Filtering Lifecycle**:
+   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
+   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`.
+   - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. If the caller lacks permission, `NoSuchObjectException` is thrown to hide the existence of unauthorized objects.
+
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
 and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the
