@@ -15,6 +15,10 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer;
+import io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer;
+
 /**
  * Shared collaborators and helpers used by the namespace-aware routing handler and its
  * special-case sub-handlers.
@@ -30,6 +34,7 @@ final class RoutingSupport {
   final ImpersonationResolver impersonationResolver;
   final DatabaseListCache databaseListCache;
   final DatabaseMetadataCache databaseMetadataCache;
+  final MetadataAuthorizer metadataAuthorizer;
 
   RoutingSupport(
       ProxyConfig config,
@@ -48,7 +53,8 @@ final class RoutingSupport {
         dispatcher,
         impersonationResolver,
         databaseListCache,
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache));
+        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache),
+        NoOpMetadataAuthorizer.INSTANCE);
   }
 
   RoutingSupport(
@@ -61,6 +67,29 @@ final class RoutingSupport {
       DatabaseListCache databaseListCache,
       DatabaseMetadataCache databaseMetadataCache
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        databaseListCache,
+        databaseMetadataCache,
+        NoOpMetadataAuthorizer.INSTANCE);
+  }
+
+  RoutingSupport(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      MetadataAuthorizer metadataAuthorizer
+  ) {
     this.config = config;
     this.router = router;
     this.federationLayer = federationLayer;
@@ -69,6 +98,7 @@ final class RoutingSupport {
     this.impersonationResolver = impersonationResolver;
     this.databaseListCache = databaseListCache;
     this.databaseMetadataCache = databaseMetadataCache;
+    this.metadataAuthorizer = metadataAuthorizer == null ? NoOpMetadataAuthorizer.INSTANCE : metadataAuthorizer;
   }
 
   // --- Backend invocation bridges ---
@@ -164,8 +194,24 @@ final class RoutingSupport {
     CatalogAccessModeGuard.validate(config.catalogs().get(backend.name()), methodName, backendDbName);
   }
 
+  ImpersonationContext currentImpersonation() {
+    try {
+      return impersonationResolver.resolve().orElse(null);
+    } catch (Exception e) {
+      LOG.warn("Failed to resolve impersonation context: {}", e.getMessage());
+      return null;
+    }
+  }
+
   void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
       throws NoSuchObjectException {
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throw new NoSuchObjectException(
+          "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+              + namespace.catalogName() + "'");
+    }
     if (federationLayer.isDatabaseExposed(namespace)) {
       return;
     }
@@ -180,6 +226,13 @@ final class RoutingSupport {
       CatalogRouter.ResolvedNamespace namespace,
       String tableName
   ) throws NoSuchObjectException {
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throw new NoSuchObjectException(
+          "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+              + namespace.catalogName() + "'");
+    }
     if (federationLayer.isTableExposed(namespace, tableName)) {
       return;
     }
@@ -233,11 +286,13 @@ final class RoutingSupport {
   }
 
   List<String> exposedDatabaseNames(String methodName, String catalogName, List<String> backendDatabases) {
+    ImpersonationContext impersonation = currentImpersonation();
+    List<String> authorizedDatabases = metadataAuthorizer.filterDatabases(catalogName, backendDatabases, impersonation);
     return filterExposed(
         methodName,
         catalogName,
         "database",
-        backendDatabases,
+        authorizedDatabases,
         backendDatabase -> federationLayer.isDatabaseExposed(catalogName, backendDatabase),
         backendDatabase -> federationLayer.externalDatabaseName(catalogName, backendDatabase));
   }
@@ -265,12 +320,19 @@ final class RoutingSupport {
   }
 
   List<Object> filterTableObjectList(String methodName, CatalogRouter.ResolvedNamespace namespace, List<?> tables) {
+    ImpersonationContext impersonation = currentImpersonation();
     List<Object> filtered = new ArrayList<>(tables.size());
     for (Object candidate : tables) {
       String tableName = extractTableName(candidate);
-      if (tableName != null && !federationLayer.isTableExposed(namespace, tableName)) {
-        recordFilteredObject(methodName, namespace.catalogName(), "table");
-        continue;
+      if (tableName != null) {
+        if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+          recordFilteredObject(methodName, namespace.catalogName(), "table");
+          continue;
+        }
+        if (!federationLayer.isTableExposed(namespace, tableName)) {
+          recordFilteredObject(methodName, namespace.catalogName(), "table");
+          continue;
+        }
       }
       filtered.add(candidate);
     }

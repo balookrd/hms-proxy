@@ -36,15 +36,19 @@ public final class LatencyRoutingConfigParser {
     long dbListTtlMs = reader.getNonNegativeLong(
         "routing.database-list-cache.ttl-ms",
         reader.getNonNegativeLong("routing.database-list-cache.ttl-seconds", 0L) * 1000L);
+    boolean dbListShared = reader.getBoolean("routing.database-list-cache.shared-across-users", false);
     DatabaseListCacheConfig databaseListCache = new DatabaseListCacheConfig(
         dbListTtlMs,
-        reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000));
+        reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000),
+        dbListShared);
     long dbMetaTtlMs = reader.getNonNegativeLong(
         "routing.database-metadata-cache.ttl-ms",
         reader.getNonNegativeLong("routing.database-metadata-cache.ttl-seconds", 0L) * 1000L);
+    boolean dbMetaShared = reader.getBoolean("routing.database-metadata-cache.shared-across-users", false);
     DatabaseMetadataCacheConfig databaseMetadataCache = new DatabaseMetadataCacheConfig(
         dbMetaTtlMs,
-        reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000));
+        reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000),
+        dbMetaShared);
     boolean refreshPrivilegesSyntheticSuccess =
         reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
         || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));

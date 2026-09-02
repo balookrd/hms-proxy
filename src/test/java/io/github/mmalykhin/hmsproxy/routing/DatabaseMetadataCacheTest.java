@@ -222,4 +222,53 @@ public class DatabaseMetadataCacheTest {
     Assert.assertEquals(List.of("db1", "db2"), cachedList);
     Assert.assertEquals(1, listLoads.get());
   }
+
+  @Test
+  public void cachesPerUserWhenSharedDisabled() throws Throwable {
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(new DatabaseMetadataCacheConfig(60_000L, 100, false));
+    AtomicInteger loads = new AtomicInteger();
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of("group1"));
+    ImpersonationContext bob = new ImpersonationContext("bob", List.of("group2"));
+
+    cache.get("cat1", "sales", alice, () -> {
+      loads.incrementAndGet();
+      Database db = new Database();
+      db.setName("sales");
+      return db;
+    });
+    cache.get("cat1", "sales", bob, () -> {
+      loads.incrementAndGet();
+      Database db = new Database();
+      db.setName("sales");
+      return db;
+    });
+
+    Assert.assertEquals(2, loads.get());
+  }
+
+  @Test
+  public void sharesCacheAcrossUsersWhenSharedEnabled() throws Throwable {
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(new DatabaseMetadataCacheConfig(60_000L, 100, true));
+    AtomicInteger loads = new AtomicInteger();
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of("group1"));
+    ImpersonationContext bob = new ImpersonationContext("bob", List.of("group2"));
+
+    Database aliceDb = cache.get("cat1", "sales", alice, () -> {
+      loads.incrementAndGet();
+      Database db = new Database();
+      db.setName("sales");
+      db.setDescription("sales db");
+      return db;
+    });
+    Database bobDb = cache.get("cat1", "sales", bob, () -> {
+      loads.incrementAndGet();
+      return new Database();
+    });
+
+    Assert.assertEquals(1, loads.get());
+    Assert.assertEquals("sales", aliceDb.getName());
+    Assert.assertEquals("sales", bobDb.getName());
+    Assert.assertEquals("sales db", bobDb.getDescription());
+    Assert.assertNotSame(aliceDb, bobDb);
+  }
 }

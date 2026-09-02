@@ -138,6 +138,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC без namespace в payload | любой | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: идут в `routing.default-catalog`; допустимые non-ACID `SELECT`, `NO_TXN` DDL и non-transactional write (`INSERT`/`UPDATE`/`DELETE`) lock всё же могут синтетически обслуживаться на non-default catalog, но в остальном это стоит считать single-catalog control plane, пока не проведена отдельная валидация. |
 | Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
 | Клиенты, которые пытаются делать mutation без explicit namespace ownership или динамически управлять registry каталогов | любой | любой | `NONE` или `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Безопасно отклоняется по design, чтобы сохранить deterministic routing, explicit namespace ownership и не допустить silent split-brain writes. |
+| HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные | любой | любой | `NONE` или `KERBEROS` | чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), общий глобальный кэш метаданных для всех пользователей, вычисление политик Ranger отдельно по каталогам | Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC. |
 <!-- END GENERATED: capability-matrix -->
 
 ## Важные оговорки
@@ -1573,8 +1574,10 @@ routing.hedged-read.enabled=true
 routing.hedged-read.max-parallelism=8
 routing.database-list-cache.ttl-ms=5000
 routing.database-list-cache.max-entries=1000
+routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
+routing.database-metadata-cache.shared-across-users=true
 routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
@@ -1594,6 +1597,47 @@ shared backend client и сбросу кэша impersonation-клиентов (K
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
 открывает его.
+
+### Авторизация через Apache Ranger и общий глобальный кэш метаданных
+
+Когда множество пользователей обращаются к метастору (например, через HiveServer2, Trino или Spark), кэширование метаданных раздельно для каждого пользователя приводит к дублированию RPC-запросов в бэкенд-метасторы, росту задержек и увеличению расхода памяти на кэш.
+
+В `hms-proxy` встроен плагин авторизации **Apache Ranger** (`ranger-plugins-common` 2.5.0), который вычисляет политики доступа локально в процессе прокси. Это открывает возможность использовать **общий глобальный кэш метаданных**:
+
+- `routing.database-list-cache.shared-across-users=true`
+- `routing.database-metadata-cache.shared-across-users=true`
+
+При `shared-across-users=true` ключи кэша не привязываются к пользователю и группам, благодаря чему вызовы `SHOW DATABASES`, `SHOW TABLES` и `get_database`/`get_table*` от любых пользователей попадают в единый кэш, единожды заполненный из бэкенд-метасторов. Перед выдачей клиенту встроенный Ranger-авторизатор фильтрует базы данных, таблицы и представления в соответствии с правами конкретного вызывающего пользователя. При выключенном Ranger (`NoOpMetadataAuthorizer`) проверка прав пропускается с нулевым оверхедом.
+
+```properties
+# Включение встроенного Ranger-плагина
+ranger.enabled=true
+ranger.policy.rest.url=http://ranger-admin.internal:6080
+ranger.service-name=hms_proxy_hive
+ranger.service-type=hive
+ranger.app-id=hms-proxy
+# Опциональный локальный кэш политик и интервал опроса
+# ranger.policy.cache.dir=/var/cache/hms-proxy/ranger
+# ranger.policy.poll-interval-ms=30000
+# ranger.policy.connection-timeout-ms=5000
+# ranger.policy.read-timeout-ms=10000
+# ranger.ssl.truststore.file=/etc/security/truststore.jks
+# ranger.ssl.truststore.password=changeit
+# ranger.config-dir=/etc/ranger/hms-proxy
+# ranger.audit.enabled=false
+
+# Общий кэш метаданных:
+routing.database-list-cache.ttl-ms=10000
+routing.database-list-cache.shared-across-users=true
+routing.database-metadata-cache.ttl-ms=10000
+routing.database-metadata-cache.shared-across-users=true
+
+# Переопределения для отдельных каталогов (отдельный сервис Ranger для каталога):
+catalog.catalog1.ranger.enabled=true
+catalog.catalog1.ranger.service-name=c1_hive_service
+catalog.catalog2.ranger.enabled=true
+catalog.catalog2.ranger.service-name=c2_hive_service
+```
 
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а

@@ -4,6 +4,9 @@ import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
+import io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer;
+import io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer;
+import io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer;
 import java.lang.reflect.InvocationHandler;
 
 final class RoutingPipelineFactory {
@@ -39,6 +42,9 @@ final class RoutingPipelineFactory {
         compatibilityLayer, admissionGate, observability, fanoutExecutor);
     long aliveSince = System.currentTimeMillis() / 1000L;
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
+    MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
+        ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs())
+        : io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE;
     RoutingHandler routingHandler = new RoutingHandler(
         config,
         router,
@@ -49,7 +55,8 @@ final class RoutingPipelineFactory {
         impersonationResolver,
         databaseListCache,
         databaseMetadataCache,
-        externalTableDropPurger);
+        externalTableDropPurger,
+        metadataAuthorizer);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
         routingHandler);

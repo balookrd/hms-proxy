@@ -102,4 +102,45 @@ public class DatabaseListCacheTest {
 
     Assert.assertEquals(1, loads.get());
   }
+
+  @Test
+  public void cachesPerUserWhenSharedDisabled() throws Throwable {
+    DatabaseListCache cache = new DatabaseListCache(new DatabaseListCacheConfig(60_000L, 100, false));
+    AtomicInteger loads = new AtomicInteger();
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of("group1"));
+    ImpersonationContext bob = new ImpersonationContext("bob", List.of("group2"));
+
+    cache.get("get_all_databases", "cat1", null, alice, () -> {
+      loads.incrementAndGet();
+      return List.of("db1", "db2");
+    });
+    cache.get("get_all_databases", "cat1", null, bob, () -> {
+      loads.incrementAndGet();
+      return List.of("db1", "db2");
+    });
+
+    Assert.assertEquals(2, loads.get());
+  }
+
+  @Test
+  public void sharesCacheAcrossUsersWhenSharedEnabled() throws Throwable {
+    DatabaseListCache cache = new DatabaseListCache(new DatabaseListCacheConfig(60_000L, 100, true));
+    AtomicInteger loads = new AtomicInteger();
+    ImpersonationContext alice = new ImpersonationContext("alice", List.of("group1"));
+    ImpersonationContext bob = new ImpersonationContext("bob", List.of("group2"));
+
+    List<String> aliceList = cache.get("get_all_databases", "cat1", null, alice, () -> {
+      loads.incrementAndGet();
+      return List.of("db1", "db2");
+    });
+    List<String> bobList = cache.get("get_all_databases", "cat1", null, bob, () -> {
+      loads.incrementAndGet();
+      return List.of("unexpected");
+    });
+
+    Assert.assertEquals(1, loads.get());
+    Assert.assertEquals(List.of("db1", "db2"), aliceList);
+    Assert.assertEquals(List.of("db1", "db2"), bobList);
+    Assert.assertNotSame(aliceList, bobList);
+  }
 }

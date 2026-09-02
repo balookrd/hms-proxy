@@ -12,12 +12,14 @@ import java.util.concurrent.ExecutionException;
 final class DatabaseListCache {
   private final long ttlMs;
   private final int maxEntries;
+  private final boolean sharedAcrossUsers;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<List<String>>> inFlight = new ConcurrentHashMap<>();
 
   DatabaseListCache(DatabaseListCacheConfig config) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
+    this.sharedAcrossUsers = config.sharedAcrossUsers();
   }
 
   List<String> get(
@@ -31,7 +33,7 @@ final class DatabaseListCache {
       return loader.load();
     }
     long nowMs = System.currentTimeMillis();
-    Key key = Key.of(methodName, catalogName, pattern, impersonation);
+    Key key = Key.of(methodName, catalogName, pattern, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
       return new ArrayList<>(cached.databases());
@@ -73,10 +75,10 @@ final class DatabaseListCache {
     if (catalogName == null) {
       return;
     }
-    String effectiveUser = userName == null ? "" : userName;
+    String effectiveUser = sharedAcrossUsers ? "" : (userName == null ? "" : userName);
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(catalogName)
-          && entry.getKey().userName().equals(effectiveUser)) {
+          && (sharedAcrossUsers || entry.getKey().userName().equals(effectiveUser))) {
         entry.getValue().extendExpiration(newExpiresAtMs);
       }
     }
@@ -98,7 +100,7 @@ final class DatabaseListCache {
     entries.put(key, new Entry(List.copyOf(databases), expiresAtMs));
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(key.catalogName())
-          && entry.getKey().userName().equals(key.userName())) {
+          && (sharedAcrossUsers || entry.getKey().userName().equals(key.userName()))) {
         entry.getValue().extendExpiration(expiresAtMs);
       }
     }
@@ -131,14 +133,15 @@ final class DatabaseListCache {
         String methodName,
         String catalogName,
         String pattern,
-        ImpersonationContext impersonation
+        ImpersonationContext impersonation,
+        boolean sharedAcrossUsers
     ) {
       return new Key(
           methodName,
           catalogName,
           pattern == null ? "" : pattern,
-          impersonation == null ? "" : Objects.requireNonNullElse(impersonation.userName(), ""),
-          impersonation == null || impersonation.groupNames() == null
+          sharedAcrossUsers ? "" : (impersonation == null ? "" : Objects.requireNonNullElse(impersonation.userName(), "")),
+          sharedAcrossUsers || impersonation == null || impersonation.groupNames() == null
               ? List.of()
               : List.copyOf(impersonation.groupNames()));
     }

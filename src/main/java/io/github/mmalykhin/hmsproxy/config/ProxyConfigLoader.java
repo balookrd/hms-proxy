@@ -29,6 +29,9 @@ import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfigParser;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfigParser;
+import io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig;
+import io.github.mmalykhin.hmsproxy.config.security.RangerConfig;
+import io.github.mmalykhin.hmsproxy.config.security.RangerConfigParser;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfigParser;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
@@ -54,6 +57,36 @@ public final class ProxyConfigLoader {
     boolean globalImpersonation = reader.getBoolean("security.impersonation-enabled", false);
     Map<String, CatalogConfig> catalogs =
         CatalogConfigParser.parse(reader, backendConf, globalImpersonation);
+    RangerConfig ranger = RangerConfigParser.parse(reader, catalogs.keySet());
+    if (ranger.enabled() || !ranger.catalogConfigs().isEmpty()) {
+      Map<String, CatalogConfig> enrichedCatalogs = new java.util.LinkedHashMap<>();
+      for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+        CatalogConfig orig = entry.getValue();
+        CatalogRangerConfig catRanger = ranger.forCatalog(entry.getKey());
+        enrichedCatalogs.put(entry.getKey(), new CatalogConfig(
+            orig.name(),
+            orig.description(),
+            orig.locationUri(),
+            orig.impersonationEnabled(),
+            orig.accessMode(),
+            orig.writeDbWhitelist(),
+            orig.exposeMode(),
+            orig.exposeDbPatterns(),
+            orig.exposeTablePatterns(),
+            orig.runtimeProfile(),
+            orig.backendStandaloneMetastoreJar(),
+            orig.hiveConf(),
+            orig.latencyBudgetMs(),
+            orig.maxImpersonationClients(),
+            orig.impersonationClientIdleTtlMs(),
+            orig.sharedSessionPoolSize(),
+            orig.impersonationPoolMaxSize(),
+            orig.impersonationSessionIdleTtlMs(),
+            catRanger
+        ));
+      }
+      catalogs = enrichedCatalogs;
+    }
     String defaultCatalog = CatalogConfigParser.resolveDefaultCatalog(reader, catalogs);
     SecurityConfig security = SecurityConfigParser.parse(reader, catalogs, globalImpersonation);
     FederationConfig federation =
@@ -88,6 +121,7 @@ public final class ProxyConfigLoader {
         .latencyRouting(latencyRouting)
         .icebergPointerGuard(icebergPointerGuard)
         .additionalFrontends(additionalFrontends)
+        .ranger(ranger)
         .build();
   }
 

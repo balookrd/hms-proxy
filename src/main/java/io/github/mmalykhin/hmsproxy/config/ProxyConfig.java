@@ -17,6 +17,7 @@ import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.security.RangerConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
@@ -37,7 +38,8 @@ public record ProxyConfig(
     RateLimitConfig rateLimit,
     LatencyRoutingConfig latencyRouting,
     IcebergPointerGuardConfig icebergPointerGuard,
-    List<AdditionalFrontendConfig> additionalFrontends
+    List<AdditionalFrontendConfig> additionalFrontends,
+    RangerConfig ranger
 ) {
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
@@ -63,6 +65,7 @@ public record ProxyConfig(
     icebergPointerGuard =
         icebergPointerGuard == null ? IcebergPointerGuardConfig.defaults() : icebergPointerGuard;
     additionalFrontends = additionalFrontends == null ? List.of() : List.copyOf(additionalFrontends);
+    ranger = ranger == null ? RangerConfig.disabled() : ranger;
   }
 
   public static Builder builder() {
@@ -86,6 +89,7 @@ public record ProxyConfig(
     private LatencyRoutingConfig latencyRouting;
     private IcebergPointerGuardConfig icebergPointerGuard;
     private List<AdditionalFrontendConfig> additionalFrontends;
+    private RangerConfig ranger;
 
     public Builder server(ServerConfig server) { this.server = server; return this; }
     public Builder security(SecurityConfig security) { this.security = security; return this; }
@@ -106,11 +110,12 @@ public record ProxyConfig(
       this.additionalFrontends = additionalFrontends;
       return this;
     }
+    public Builder ranger(RangerConfig ranger) { this.ranger = ranger; return this; }
 
     public ProxyConfig build() {
       return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
           backend, compatibility, federation, transactionalDdlGuard, management, restCatalog,
-          syntheticReadLockStore, rateLimit, latencyRouting, icebergPointerGuard, additionalFrontends);
+          syntheticReadLockStore, rateLimit, latencyRouting, icebergPointerGuard, additionalFrontends, ranger);
     }
   }
 

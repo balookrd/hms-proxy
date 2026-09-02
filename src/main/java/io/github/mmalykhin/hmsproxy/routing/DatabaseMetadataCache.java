@@ -12,6 +12,7 @@ import org.apache.hadoop.hive.metastore.api.Database;
 final class DatabaseMetadataCache {
   private final long ttlMs;
   private final int maxEntries;
+  private final boolean sharedAcrossUsers;
   private final DatabaseListCache databaseListCache;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Database>> inFlight = new ConcurrentHashMap<>();
@@ -23,6 +24,7 @@ final class DatabaseMetadataCache {
   DatabaseMetadataCache(DatabaseMetadataCacheConfig config, DatabaseListCache databaseListCache) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
+    this.sharedAcrossUsers = config.sharedAcrossUsers();
     this.databaseListCache = databaseListCache;
   }
 
@@ -36,7 +38,7 @@ final class DatabaseMetadataCache {
       return loader.load();
     }
     long nowMs = System.currentTimeMillis();
-    Key key = Key.of(catalogName, backendDbName, impersonation);
+    Key key = Key.of(catalogName, backendDbName, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
       return new Database(cached.database());
@@ -97,7 +99,7 @@ final class DatabaseMetadataCache {
     entries.put(key, new Entry(new Database(database), expiresAtMs));
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(key.catalogName())
-          && entry.getKey().userName().equals(key.userName())) {
+          && (sharedAcrossUsers || entry.getKey().userName().equals(key.userName()))) {
         entry.getValue().extendExpiration(expiresAtMs);
       }
     }
@@ -131,13 +133,14 @@ final class DatabaseMetadataCache {
     private static Key of(
         String catalogName,
         String backendDbName,
-        ImpersonationContext impersonation
+        ImpersonationContext impersonation,
+        boolean sharedAcrossUsers
     ) {
       return new Key(
           catalogName,
           backendDbName == null ? "" : backendDbName,
-          impersonation == null ? "" : Objects.requireNonNullElse(impersonation.userName(), ""),
-          impersonation == null || impersonation.groupNames() == null
+          sharedAcrossUsers ? "" : (impersonation == null ? "" : Objects.requireNonNullElse(impersonation.userName(), "")),
+          sharedAcrossUsers || impersonation == null || impersonation.groupNames() == null
               ? List.of()
               : List.copyOf(impersonation.groupNames()));
     }

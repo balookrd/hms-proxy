@@ -512,6 +512,56 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#catalogManagementRpcsAreRejected
+  - id: ranger_authorization_with_shared_cache
+    status: supported
+    client:
+      en: >-
+        HiveServer2 / HMS clients with end-user impersonation or Kerberos identity querying metadata
+      ru: >-
+        HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные
+    front_door:
+      profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+        - APACHE_4_1_0
+      wildcard: true
+      en: any
+      ru: любой
+    backend:
+      runtime_profiles:
+        - APACHE_3_1_3
+        - HORTONWORKS_3_1_0_3_1_0_78
+        - HORTONWORKS_3_1_0_3_1_5_6150_1
+        - APACHE_4_1_0
+      wildcard: true
+      en: any
+      ru: любой
+    auth:
+      modes:
+        - NONE
+        - KERBEROS
+      en: "`NONE` or `KERBEROS`"
+      ru: "`NONE` или `KERBEROS`"
+    method_families:
+      en:
+        - metadata reads (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`)
+        - shared global metadata caching across users
+        - per-catalog Ranger policy engine evaluation
+      ru:
+        - чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`)
+        - общий глобальный кэш метаданных для всех пользователей
+        - вычисление политик Ranger отдельно по каталогам
+    expected_result:
+      en: >-
+        Metadata is cached once across users when `shared-across-users=true`, and embedded Apache Ranger plugins
+        filter database and table listings per user without redundant backend metastore RPCs.
+      ru: >-
+        Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины
+        Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC.
+    smoke_tests:
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyRangerTest#testSharedCacheFilteredByRanger
+      - io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizerTest#testRangerAuthorizerWithInjectedPolicies
 method_matrix:
   - id: object_scoped_reads_and_writes
     method:

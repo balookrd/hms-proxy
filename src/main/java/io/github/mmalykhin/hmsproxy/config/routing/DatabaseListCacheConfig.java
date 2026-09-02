@@ -8,8 +8,13 @@ package io.github.mmalykhin.hmsproxy.config.routing;
  */
 public record DatabaseListCacheConfig(
     long ttlMs,
-    int maxEntries
+    int maxEntries,
+    boolean sharedAcrossUsers
 ) {
+  public DatabaseListCacheConfig(long ttlMs, int maxEntries) {
+    this(ttlMs, maxEntries, false);
+  }
+
   public DatabaseListCacheConfig {
     if (ttlMs < 0L) {
       throw new IllegalArgumentException("routing.database-list-cache.ttl-ms must be >= 0, got: " + ttlMs);
@@ -20,6 +25,6 @@ public record DatabaseListCacheConfig(
   }
 
   public static DatabaseListCacheConfig disabled() {
-    return new DatabaseListCacheConfig(0L, 1_000);
+    return new DatabaseListCacheConfig(0L, 1_000, false);
   }
 }

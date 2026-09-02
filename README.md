@@ -137,6 +137,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT`, `NO_TXN` DDL and non-transactional write (`INSERT`/`UPDATE`/`DELETE`) locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
 | Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
 | Clients attempting mutations without explicit namespace ownership or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Safely failed by design to preserve deterministic routing, explicit namespace ownership, and no silent split-brain writes. |
+| HiveServer2 / HMS clients with end-user impersonation or Kerberos identity querying metadata | any | any | `NONE` or `KERBEROS` | metadata reads (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), shared global metadata caching across users, per-catalog Ranger policy engine evaluation | Metadata is cached once across users when `shared-across-users=true`, and embedded Apache Ranger plugins filter database and table listings per user without redundant backend metastore RPCs. |
 <!-- END GENERATED: capability-matrix -->
 
 ## Scope notes
@@ -1636,8 +1637,10 @@ routing.hedged-read.enabled=true
 routing.hedged-read.max-parallelism=8
 routing.database-list-cache.ttl-ms=5000
 routing.database-list-cache.max-entries=1000
+routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
+routing.database-metadata-cache.shared-across-users=true
 routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
@@ -1656,6 +1659,47 @@ failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.
+
+### Apache Ranger authorization and global shared metadata cache
+
+When multiple users query the metastore (for example via HiveServer2, Trino, or Spark), caching metadata separately per user leads to redundant metastore RPCs, increased latency, and high cache memory footprint.
+
+`hms-proxy` includes an embedded **Apache Ranger** authorization plugin (`ranger-plugins-common` 2.5.0) that can evaluate policies locally inside the proxy. This enables a **global shared metadata cache**:
+
+- `routing.database-list-cache.shared-across-users=true`
+- `routing.database-metadata-cache.shared-across-users=true`
+
+With `shared-across-users=true`, cache keys omit user/group identities, allowing `SHOW DATABASES`, `SHOW TABLES`, and `get_database`/`get_table*` calls across all users to hit a single cache populated once from backend metastores. Before returning metadata to the caller, the proxy's embedded Ranger authorizer filters databases, tables, and views according to each caller's Ranger permissions. If authorization is not configured (`NoOpMetadataAuthorizer`), all metadata is returned directly without overhead.
+
+```properties
+# Enable embedded Ranger policy evaluation
+ranger.enabled=true
+ranger.policy.rest.url=http://ranger-admin.internal:6080
+ranger.service-name=hms_proxy_hive
+ranger.service-type=hive
+ranger.app-id=hms-proxy
+# Optional local policy cache and polling interval
+# ranger.policy.cache.dir=/var/cache/hms-proxy/ranger
+# ranger.policy.poll-interval-ms=30000
+# ranger.policy.connection-timeout-ms=5000
+# ranger.policy.read-timeout-ms=10000
+# ranger.ssl.truststore.file=/etc/security/truststore.jks
+# ranger.ssl.truststore.password=changeit
+# ranger.config-dir=/etc/ranger/hms-proxy
+# ranger.audit.enabled=false
+
+# Global shared metadata caches:
+routing.database-list-cache.ttl-ms=10000
+routing.database-list-cache.shared-across-users=true
+routing.database-metadata-cache.ttl-ms=10000
+routing.database-metadata-cache.shared-across-users=true
+
+# Per-catalog Ranger overrides (e.g. separate Ranger service or Admin per catalog):
+catalog.catalog1.ranger.enabled=true
+catalog.catalog1.ranger.service-name=c1_hive_service
+catalog.catalog2.ranger.enabled=true
+catalog.catalog2.ranger.service-name=c2_hive_service
+```
 
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,

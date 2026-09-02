@@ -24,7 +24,8 @@ public record CatalogConfig(
     long impersonationClientIdleTtlMs,
     int sharedSessionPoolSize,
     int impersonationPoolMaxSize,
-    long impersonationSessionIdleTtlMs
+    long impersonationSessionIdleTtlMs,
+    io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger
 ) {
   public static final CatalogAccessMode DEFAULT_ACCESS_MODE = CatalogAccessMode.READ_WRITE;
   public static final CatalogExposureMode DEFAULT_EXPOSE_MODE = CatalogExposureMode.ALLOW_ALL;
@@ -53,6 +54,7 @@ public record CatalogConfig(
         impersonationPoolMaxSize <= 0 ? DEFAULT_IMPERSONATION_POOL_MAX_SIZE : impersonationPoolMaxSize;
     impersonationSessionIdleTtlMs =
         Math.max(impersonationSessionIdleTtlMs, DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
+    ranger = ranger == null ? io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled() : ranger;
     Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
     for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
       copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -90,7 +92,8 @@ public record CatalogConfig(
         DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS,
         DEFAULT_SHARED_SESSION_POOL_SIZE,
         DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
-        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
+        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
   }
 
   public CatalogConfig(
@@ -125,6 +128,49 @@ public record CatalogConfig(
         DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS,
         DEFAULT_SHARED_SESSION_POOL_SIZE,
         DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
-        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
+        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
+  }
+
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf,
+      long latencyBudgetMs,
+      int maxImpersonationClients,
+      long impersonationClientIdleTtlMs,
+      int sharedSessionPoolSize,
+      int impersonationPoolMaxSize,
+      long impersonationSessionIdleTtlMs
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        latencyBudgetMs,
+        maxImpersonationClients,
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize,
+        impersonationPoolMaxSize,
+        impersonationSessionIdleTtlMs,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
   }
 }

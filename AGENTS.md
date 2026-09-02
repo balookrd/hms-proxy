@@ -8,6 +8,10 @@
 - Переходи на другой язык только по явной просьбе пользователя или когда нужно сохранить уже существующий англоязычный артефакт.
 - Код, команды, имена классов, ключи конфигурации, stack traces и пути к файлам оставляй в исходном виде.
 
+## Память проекта
+
+- Внешняя память и исторический контекст проекта (JDK 17, HDP дистрибутив, smoke-стенд, lost update I4, чистка после работы) находятся в `~/.claude/projects/-Users-mvmalykh-IdeaProjects-hms-proxy/memory` (`MEMORY.md`). Читай и используй её при работе над проектом.
+
 ## Форма проекта
 
 - Это Maven-проект на Java 17 для `hms-proxy`: catalog-aware proxy для federation и compatibility поверх Hive Metastore.
@@ -142,7 +146,7 @@ scripts/run-real-installation-smoke-simple.sh --env-file smoke-stand/env/simple.
 - Process-wide Kerberos state (`UserGroupInformation.setConfiguration`, `UserGroupInformation.loginUserFromKeytab`) меняется только через `security/ProcessKerberosConfiguration`: front door ставит полную конфигурацию при старте, остальные пути лишь дополняют её один раз и никогда не перезаписывают. Инвариант закреплён тестом `ProcessWideUgiStateTest`.
 - Kerberos health probe (`/readyz`) читает уже существующие login'ы и не делает kinit: endpoint не аутентифицирован и опрашивается каждые несколько секунд. Истёкший TGT отдаётся как `STALE` и не роняет readiness - Hadoop не обновляет TGT keytab-логина сам, а SASL acceptor работает по service keys из keytab.
 - `logs/`, `target/`, IDE metadata и локальные smoke env files - локальные артефакты. Не включай их в обычные code changes без явной просьбы.
-- Игнорируй директории и файлы `.claude/`, `.idea/` и `*.iml`: не читай их, не анализируй и не упоминай в ответах. Это персональные/IDE-артефакты, не относящиеся к проекту.
+- Игнорируй директории и файлы `.claude/` (внутри репозитория), `.idea/` и `*.iml`: не включай их в коммиты и не анализируй без необходимости. Это персональные/IDE-артефакты.
 - Smoke scripts могут требовать реальные HMS/HS2/Kerberos credentials; не запускай их бездумно против production-like окружений.
 - Жизненный цикл Thrift-listener'ов: `MetastoreThriftServer` владеет только своим сокетом. Общий `FrontDoorSecurity` закрывает тот, кто его открыл (`HmsProxyApplication`), а не `stop()` отдельного listener'а. `stop()` обязан оставаться идемпотентным и безопасным в гонке с `serve()` — libthrift 0.9.3 сбрасывает свой флаг `stopped_` уже внутри `serve()`. Shutdown hook останавливает primary listener и ждёт упорядоченную остановку в main-потоке: JVM делает halt сразу после возврата последнего hook.
 

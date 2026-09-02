@@ -8,8 +8,13 @@ package io.github.mmalykhin.hmsproxy.config.routing;
  */
 public record DatabaseMetadataCacheConfig(
     long ttlMs,
-    int maxEntries
+    int maxEntries,
+    boolean sharedAcrossUsers
 ) {
+  public DatabaseMetadataCacheConfig(long ttlMs, int maxEntries) {
+    this(ttlMs, maxEntries, false);
+  }
+
   public DatabaseMetadataCacheConfig {
     if (ttlMs < 0L) {
       throw new IllegalArgumentException("routing.database-metadata-cache.ttl-ms must be >= 0, got: " + ttlMs);
@@ -20,6 +25,6 @@ public record DatabaseMetadataCacheConfig(
   }
 
   public static DatabaseMetadataCacheConfig disabled() {
-    return new DatabaseMetadataCacheConfig(0L, 1_000);
+    return new DatabaseMetadataCacheConfig(0L, 1_000, false);
   }
 }

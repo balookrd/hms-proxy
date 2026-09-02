@@ -99,12 +99,39 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       DatabaseMetadataCache databaseMetadataCache,
       ExternalTableDropPurger externalTableDropPurger
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        compatibilityLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        databaseListCache,
+        databaseMetadataCache,
+        externalTableDropPurger,
+        io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE);
+  }
+
+  RoutingHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      CompatibilityLayer compatibilityLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      ExternalTableDropPurger externalTableDropPurger,
+      io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer metadataAuthorizer
+  ) {
     this.config = config;
     this.router = router;
     this.compatibilityLayer = compatibilityLayer;
     this.observability = observability;
     this.support = new RoutingSupport(
-        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache, databaseMetadataCache);
+        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache, databaseMetadataCache, metadataAuthorizer);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);
@@ -114,6 +141,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   /** Stops the background external-table purge workers; pending purges are awaited. */
   void close() {
     dropTableHandler.close();
+    support.metadataAuthorizer.close();
   }
 
   private Map<String, SpecialCaseHandler> buildSpecialCaseHandlers(SpecialCaseHandler dropTable) {
@@ -359,9 +387,14 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (!(result instanceof List<?> names)) {
       return result;
     }
+    ImpersonationContext impersonation = support.currentImpersonation();
     List<String> filtered = new ArrayList<>(names.size());
     for (Object candidate : names) {
       if (!(candidate instanceof String tableName)) {
+        continue;
+      }
+      if (!support.metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+        support.recordFilteredObject(methodName, namespace.catalogName(), "table");
         continue;
       }
       if (!support.federationLayer.isTableExposed(namespace, tableName)) {
