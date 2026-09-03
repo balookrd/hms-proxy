@@ -167,7 +167,7 @@ final class BackendCallDispatcher {
       if (declaredMethod != null) {
         throw BackendErrorNormalizer.normalize(declaredMethod, backend.name(), cause);
       }
-      throw cause;
+      throw BackendErrorNormalizer.normalizeInfrastructure(backend.name(), methodName, cause);
     }
   }
 
@@ -194,7 +194,7 @@ final class BackendCallDispatcher {
     if (declaredMethod != null) {
       throw BackendErrorNormalizer.normalize(declaredMethod, backend.name(), cause);
     }
-    throw cause;
+    throw BackendErrorNormalizer.normalizeInfrastructure(backend.name(), methodName, cause);
   }
 
   private void logBackendRequest(
