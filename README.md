@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml)
 
-Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md)
+Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md), [FAILOVER.ru.md](FAILOVER.ru.md)
 
 HMS Proxy is a catalog-aware Hive Metastore federation and compatibility proxy for mixed
 Apache Hive `3.1.3`, Hive `4.1.x`, and Hortonworks Data Platform `3.1.0.x` environments.
