@@ -18,4 +18,5 @@ buildNumber.properties
 .idea/
 *.iml
 .claude/
+.codex/project-index/
 logs/
