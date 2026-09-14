@@ -215,6 +215,29 @@ public class PrometheusMetricsTest {
         "hms_proxy_ranger_plugin_info{catalog=\"hdp\",service_name=\"hive_service\",service_type=\"hive\",app_id=\"hms-proxy\"} 1.0"));
   }
 
+  @Test
+  public void rendersJvmMemoryMetrics() {
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    String rendered = metrics.render();
+
+    Assert.assertTrue(rendered.contains("# HELP hms_proxy_jvm_memory_used_bytes"));
+    Assert.assertTrue(rendered.contains("# TYPE hms_proxy_jvm_memory_used_bytes gauge"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_memory_used_bytes{area=\"heap\"}"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_memory_used_bytes{area=\"nonheap\"}"));
+
+    Assert.assertTrue(rendered.contains("# HELP hms_proxy_jvm_memory_committed_bytes"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_memory_committed_bytes{area=\"heap\"}"));
+
+    Assert.assertTrue(rendered.contains("# HELP hms_proxy_jvm_memory_max_bytes"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_memory_max_bytes{area=\"heap\"}"));
+
+    Assert.assertTrue(rendered.contains("# HELP hms_proxy_jvm_memory_pool_used_bytes"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_memory_pool_used_bytes{"));
+
+    Assert.assertTrue(rendered.contains("# HELP hms_proxy_jvm_buffer_pool_used_bytes"));
+    Assert.assertTrue(rendered.contains("hms_proxy_jvm_buffer_pool_used_bytes{pool=\"direct\"}"));
+  }
+
   private static List<String> seriesOf(String rendered, String metricName) {
     List<String> series = new ArrayList<>();
     for (String line : rendered.split("\n")) {

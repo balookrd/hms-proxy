@@ -1,5 +1,11 @@
 package io.github.mmalykhin.hmsproxy.observability;
 
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
+import java.lang.management.MemoryUsage;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -176,6 +182,42 @@ public final class PrometheusMetrics {
       "hms_proxy_ranger_plugin_info",
       "Active Apache Ranger plugins configured for metastore catalogs",
       List.of("catalog", "service_name", "service_type", "app_id"));
+  private final Gauge jvmMemoryUsedBytes = new Gauge(
+      "hms_proxy_jvm_memory_used_bytes",
+      "Current JVM memory usage in bytes grouped by memory area (heap or nonheap)",
+      List.of("area"));
+  private final Gauge jvmMemoryCommittedBytes = new Gauge(
+      "hms_proxy_jvm_memory_committed_bytes",
+      "Current JVM memory committed in bytes grouped by memory area (heap or nonheap)",
+      List.of("area"));
+  private final Gauge jvmMemoryMaxBytes = new Gauge(
+      "hms_proxy_jvm_memory_max_bytes",
+      "Maximum JVM memory in bytes grouped by memory area (heap or nonheap), or -1 if undefined",
+      List.of("area"));
+  private final Gauge jvmMemoryPoolUsedBytes = new Gauge(
+      "hms_proxy_jvm_memory_pool_used_bytes",
+      "Current JVM memory pool usage in bytes grouped by pool name and area",
+      List.of("pool", "area"));
+  private final Gauge jvmMemoryPoolCommittedBytes = new Gauge(
+      "hms_proxy_jvm_memory_pool_committed_bytes",
+      "Current JVM memory pool committed size in bytes grouped by pool name and area",
+      List.of("pool", "area"));
+  private final Gauge jvmMemoryPoolMaxBytes = new Gauge(
+      "hms_proxy_jvm_memory_pool_max_bytes",
+      "Maximum JVM memory pool size in bytes grouped by pool name and area, or -1 if undefined",
+      List.of("pool", "area"));
+  private final Gauge jvmBufferPoolUsedBytes = new Gauge(
+      "hms_proxy_jvm_buffer_pool_used_bytes",
+      "Current JVM buffer pool memory used in bytes grouped by pool name",
+      List.of("pool"));
+  private final Gauge jvmBufferPoolTotalCapacityBytes = new Gauge(
+      "hms_proxy_jvm_buffer_pool_total_capacity_bytes",
+      "Total capacity of JVM buffer pools in bytes grouped by pool name",
+      List.of("pool"));
+  private final Gauge jvmBufferPoolCount = new Gauge(
+      "hms_proxy_jvm_buffer_pool_count",
+      "Number of buffers in JVM buffer pools grouped by pool name",
+      List.of("pool"));
 
   public void recordRequest(String method, String catalog, String backend, String status, double durationSeconds) {
     requestsTotal.inc(labels("method", method, "catalog", catalog, "backend", backend, "status", status));
@@ -387,6 +429,58 @@ public final class PrometheusMetrics {
         "app_id", appId), 1.0);
   }
 
+  public void refreshJvmMemoryMetrics() {
+    try {
+      MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+      MemoryUsage heap = memoryBean.getHeapMemoryUsage();
+      if (heap != null) {
+        jvmMemoryUsedBytes.set(labels("area", "heap"), heap.getUsed());
+        jvmMemoryCommittedBytes.set(labels("area", "heap"), heap.getCommitted());
+        jvmMemoryMaxBytes.set(labels("area", "heap"), heap.getMax());
+      }
+      MemoryUsage nonHeap = memoryBean.getNonHeapMemoryUsage();
+      if (nonHeap != null) {
+        jvmMemoryUsedBytes.set(labels("area", "nonheap"), nonHeap.getUsed());
+        jvmMemoryCommittedBytes.set(labels("area", "nonheap"), nonHeap.getCommitted());
+        jvmMemoryMaxBytes.set(labels("area", "nonheap"), nonHeap.getMax());
+      }
+    } catch (Throwable ignored) {
+      // Best-effort JVM memory sampling
+    }
+
+    try {
+      List<MemoryPoolMXBean> pools = ManagementFactory.getMemoryPoolMXBeans();
+      if (pools != null) {
+        for (MemoryPoolMXBean pool : pools) {
+          String name = pool.getName();
+          String area = pool.getType() == MemoryType.HEAP ? "heap" : "nonheap";
+          MemoryUsage usage = pool.getUsage();
+          if (usage != null) {
+            jvmMemoryPoolUsedBytes.set(labels("pool", name, "area", area), usage.getUsed());
+            jvmMemoryPoolCommittedBytes.set(labels("pool", name, "area", area), usage.getCommitted());
+            jvmMemoryPoolMaxBytes.set(labels("pool", name, "area", area), usage.getMax());
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+      // Best-effort memory pool sampling
+    }
+
+    try {
+      List<BufferPoolMXBean> bufferPools = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
+      if (bufferPools != null) {
+        for (BufferPoolMXBean bufferPool : bufferPools) {
+          String name = bufferPool.getName();
+          jvmBufferPoolUsedBytes.set(labels("pool", name), bufferPool.getMemoryUsed());
+          jvmBufferPoolTotalCapacityBytes.set(labels("pool", name), bufferPool.getTotalCapacity());
+          jvmBufferPoolCount.set(labels("pool", name), bufferPool.getCount());
+        }
+      }
+    } catch (Throwable ignored) {
+      // Best-effort buffer pool sampling
+    }
+  }
+
   // Declared last so every metric field above is already initialized; render order is the
   // exposition order of /metrics.
   private final List<Metric> exposedMetrics = List.of(
@@ -421,9 +515,19 @@ public final class PrometheusMetrics {
       rangerEvaluationsTotal,
       rangerEvaluationDurationSeconds,
       rangerFilteredObjectsTotal,
-      rangerPluginInfo);
+      rangerPluginInfo,
+      jvmMemoryUsedBytes,
+      jvmMemoryCommittedBytes,
+      jvmMemoryMaxBytes,
+      jvmMemoryPoolUsedBytes,
+      jvmMemoryPoolCommittedBytes,
+      jvmMemoryPoolMaxBytes,
+      jvmBufferPoolUsedBytes,
+      jvmBufferPoolTotalCapacityBytes,
+      jvmBufferPoolCount);
 
   public String render() {
+    refreshJvmMemoryMetrics();
     int estimatedSize = 0;
     for (Metric metric : exposedMetrics) {
       estimatedSize += metric.estimatedRenderSize();

@@ -470,6 +470,15 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
 - `hms_proxy_ranger_plugin_info{catalog,service_name,service_type,app_id}`
+- `hms_proxy_jvm_memory_used_bytes{area}`
+- `hms_proxy_jvm_memory_committed_bytes{area}`
+- `hms_proxy_jvm_memory_max_bytes{area}`
+- `hms_proxy_jvm_memory_pool_used_bytes{pool,area}`
+- `hms_proxy_jvm_memory_pool_committed_bytes{pool,area}`
+- `hms_proxy_jvm_memory_pool_max_bytes{pool,area}`
+- `hms_proxy_jvm_buffer_pool_used_bytes{pool}`
+- `hms_proxy_jvm_buffer_pool_total_capacity_bytes{pool}`
+- `hms_proxy_jvm_buffer_pool_count{pool}`
 
 Пример Prometheus scrape config:
 
@@ -511,6 +520,9 @@ scrape_configs:
 - `hms_proxy_ranger_evaluation_duration_seconds` измеряет длительность вычисления политик Ranger в секундах с группировкой по `catalog` и `resource_type`
 - `hms_proxy_ranger_filtered_objects_total` считает базы и таблицы, скрытые фильтрами Ranger при multi-object listing с группировкой по `catalog` и `resource_type`
 - `hms_proxy_ranger_plugin_info` это info gauge с конфигурацией активных плагинов Ranger (`catalog`, `service_name`, `service_type`, `app_id`)
+- `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes` и `hms_proxy_jvm_memory_max_bytes` отражают использование памяти JVM в байтах по области памяти `area` (`heap` или `nonheap`)
+- `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes` и `hms_proxy_jvm_memory_pool_max_bytes` отслеживают память по отдельным пулам памяти JVM (`pool`, `area`)
+- `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes` и `hms_proxy_jvm_buffer_pool_count` отображают использование пулов NIO-буферов (`pool`: `direct` или `mapped`)
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default
@@ -549,9 +561,11 @@ Proxy также пишет один structured audit log на каждый за
 
 Готовый Grafana dashboard лежит в
 `monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
-backend failures, fallbacks, default-catalog routing и ambiguous routing, а также ряд Iceberg
-REST: request rate, error ratio и квантили латентности REST-listener'а, разбивки по HTTP-статусу,
-catalog prefix и route, и stat «listener up».
+backend failures, fallbacks, default-catalog routing и ambiguous routing, ряд Iceberg
+REST (request rate, error ratio и квантили латентности REST-listener'а, разбивки по HTTP-статусу,
+catalog prefix и route, и stat «listener up»), а также отдельная секция JVM Memory:
+использование heap-памяти, предел и процент утилизации, non-heap память, детальная разбивка
+по пулам памяти и NIO buffer pools (direct и mapped буферы).
 
 ### Selective federation exposure
 

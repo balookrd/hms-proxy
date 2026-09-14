@@ -468,6 +468,15 @@ Current Prometheus metrics:
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
 - `hms_proxy_ranger_plugin_info{catalog,service_name,service_type,app_id}`
+- `hms_proxy_jvm_memory_used_bytes{area}`
+- `hms_proxy_jvm_memory_committed_bytes{area}`
+- `hms_proxy_jvm_memory_max_bytes{area}`
+- `hms_proxy_jvm_memory_pool_used_bytes{pool,area}`
+- `hms_proxy_jvm_memory_pool_committed_bytes{pool,area}`
+- `hms_proxy_jvm_memory_pool_max_bytes{pool,area}`
+- `hms_proxy_jvm_buffer_pool_used_bytes{pool}`
+- `hms_proxy_jvm_buffer_pool_total_capacity_bytes{pool}`
+- `hms_proxy_jvm_buffer_pool_count{pool}`
 
 Example Prometheus scrape config:
 
@@ -509,6 +518,9 @@ Metric semantics:
 - `hms_proxy_ranger_evaluation_duration_seconds` measures Apache Ranger policy evaluation duration in seconds grouped by `catalog` and `resource_type`
 - `hms_proxy_ranger_filtered_objects_total` counts databases and tables hidden by Ranger authorization filters during listing RPCs grouped by `catalog` and `resource_type`
 - `hms_proxy_ranger_plugin_info` is an info gauge exposing the active Ranger plugin configuration (`catalog`, `service_name`, `service_type`, `app_id`)
+- `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes`, and `hms_proxy_jvm_memory_max_bytes` report JVM memory usage in bytes by memory `area` (`heap` or `nonheap`)
+- `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes`, and `hms_proxy_jvm_memory_pool_max_bytes` track memory across individual JVM memory pools (`pool`, `area`)
+- `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes`, and `hms_proxy_jvm_buffer_pool_count` report NIO buffer pool usage by `pool` (`direct` or `mapped`)
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.
@@ -546,9 +558,10 @@ computed for output nobody reads.
 
 A ready-to-import Grafana dashboard is included in
 `monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
-fallbacks, default-catalog routing, and ambiguous routing events, plus an Iceberg REST row:
-request rate, error ratio and latency quantiles of the REST listener, breakdowns by HTTP status,
-catalog prefix and route, and a listener-up stat.
+fallbacks, default-catalog routing, and ambiguous routing events, plus an Iceberg REST row
+(request rate, error ratio and latency quantiles of the REST listener, breakdowns by HTTP status,
+catalog prefix and route, and a listener-up stat), and a dedicated JVM Memory row: heap memory usage,
+max, and utilization percentage, non-heap memory, individual memory pools, and direct/mapped NIO buffer pools.
 
 ### Selective federation exposure
 
