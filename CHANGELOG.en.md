@@ -32,6 +32,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Changed
 
+- **Post-Push Target Directory Cleanup Policy**:
+  - Enforced mandatory rule in `AGENTS.md` and project memory to automatically clean up the `target/` build directory immediately after `git push`.
 - **Documentation Primary Locale**:
   - Russian documentation is now primary without language suffix (`README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`), while English versions use the `.en.md` suffix (`README.en.md`, `CHANGELOG.en.md`, etc.).
 - **Commit Message Policy**:
