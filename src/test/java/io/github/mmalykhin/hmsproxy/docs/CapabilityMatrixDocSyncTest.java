@@ -7,31 +7,31 @@ import org.junit.Test;
 
 public class CapabilityMatrixDocSyncTest {
   @Test
-  public void englishReadmeMatchesGeneratedCapabilityMatrix() throws IOException {
-    assertReadmeSync(
-        CapabilityMatrixData.README_PATH,
-        CapabilityMatrixData.Language.EN);
-  }
-
-  @Test
   public void russianReadmeMatchesGeneratedCapabilityMatrix() throws IOException {
     assertReadmeSync(
-        CapabilityMatrixData.README_RU_PATH,
+        CapabilityMatrixData.README_PATH,
         CapabilityMatrixData.Language.RU);
   }
 
   @Test
-  public void englishMethodCompatibilityDocMatchesGeneratedMatrix() throws IOException {
-    assertMethodCompatibilityDocSync(
-        CapabilityMatrixData.COMPATIBILITY_DOC_PATH,
+  public void englishReadmeMatchesGeneratedCapabilityMatrix() throws IOException {
+    assertReadmeSync(
+        CapabilityMatrixData.README_EN_PATH,
         CapabilityMatrixData.Language.EN);
   }
 
   @Test
   public void russianMethodCompatibilityDocMatchesGeneratedMatrix() throws IOException {
     assertMethodCompatibilityDocSync(
-        CapabilityMatrixData.COMPATIBILITY_DOC_RU_PATH,
+        CapabilityMatrixData.COMPATIBILITY_DOC_PATH,
         CapabilityMatrixData.Language.RU);
+  }
+
+  @Test
+  public void englishMethodCompatibilityDocMatchesGeneratedMatrix() throws IOException {
+    assertMethodCompatibilityDocSync(
+        CapabilityMatrixData.COMPATIBILITY_DOC_EN_PATH,
+        CapabilityMatrixData.Language.EN);
   }
 
   private static void assertReadmeSync(

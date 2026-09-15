@@ -1,125 +1,125 @@
-# Fault Tolerance and Hive Metastore Backend Unavailability
+# Отказоустойчивость и обработка недоступности Hive Metastore
 
-Russian version: [FAILOVER.ru.md](FAILOVER.ru.md)
+English version: [FAILOVER.en.md](FAILOVER.en.md)
 
-This document describes how **hms-proxy** handles unavailability, network failures, and degradation of remote Hive Metastore (HMS) backends across various lifecycle stages.
+В этом документе описано, как **hms-proxy** обрабатывает недоступность, сетевые сбои и деградацию удалённых бэкендов Hive Metastore (HMS) на различных этапах жизненного цикла.
 
 ---
 
-## 1. Startup Behavior
+## 1. Поведение при запуске прокси (Startup)
 
-During application startup ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
-1. The proxy parses configuration and initializes the catalog router ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
-2. For each configured catalog (`catalog.<name>.*`), a [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) instance is instantiated, opening its underlying runtime layer ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
-3. As part of session pool initialization, the session factory immediately attempts to establish an initial connection (`initialSession`) using `HiveMetaStoreClient` or the isolated runtime client.
+При запуске приложения ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
+1. Прокси читает конфигурацию и инициализирует роутер каталогов ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
+2. Для каждого сконфигурированного каталога (`catalog.<name>.*`) создаётся экземпляр [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) и открывается runtime-слой ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
+3. В рамках инициализации пула сессий фабрика сессий немедленно пытается создать первичное соединение (`initialSession`) через `HiveMetaStoreClient` или изолированный клиент.
 
 > [!WARNING]
-> **Startup Fail-Fast**: If any configured backend is unreachable during startup, `HiveMetaStoreClient` exhausts its connection retries (`hive.metastore.connect.retries`) and throws a `MetaException`. Consequently, the proxy terminates immediately with a non-zero exit code and **does not open client listener ports**.
+> **Startup Fail-Fast**: Если хотя бы один из сконфигурированных бэкендов недоступен на этапе старта, `HiveMetaStoreClient` исчерпывает попытки переподключения (`hive.metastore.connect.retries`), после чего выбрасывает `MetaException`. В результате прокси аварийно завершает работу с ненулевым кодом выхода и **не открывает клиентские порты**.
 
 ---
 
-## 2. Runtime Behavior on Backend Outage
+## 2. Поведение во время работы (Runtime) при сбое бэкенда
 
-If a backend metastore becomes unavailable while the proxy is running, the following protection mechanisms take effect:
+Если бэкенд стал недоступен в процессе работы прокси, вступают в действие следующие механизмы защиты:
 
-### 2.1. Session Pooling and Automatic Single-Shot Retry
-* All remote calls to a backend are served by session pools:
-  * A shared session pool ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) sized by `catalog.<name>.shared-session-pool-size`.
-  * A per-user impersonation session pool ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) sized by `catalog.<name>.impersonation-pool-max-size`.
-* When a transport failure occurs (`TTransportException`, TCP connection reset, broken pipe), the corrupted session is marked invalid and discarded (`discard`).
-* The proxy borrows or establishes a fresh session and executes **exactly one automatic retry** (`retrying once`).
-* If the retry also fails, the failure is recorded by the admission control subsystem.
+### 2.1. Пул сессий и автоматический однократный Retry
+* Все сетевые вызовы к бэкенду обслуживаются пулами сессий:
+  * Общим пулом shared-сессий ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) размером `catalog.<name>.shared-session-pool-size`.
+  * Пулом impersonation-сессий пользователя ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) размером `catalog.<name>.impersonation-pool-max-size`.
+* При возникновении транспортной ошибки (`TTransportException`, разрыв TCP-соединения, сброс сокета) повреждённая сессия признаётся невалидной и уничтожается (`discard`).
+* Прокси берет/создает из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
+* Если повторный вызов также завершается ошибкой, сбой регистрируется подсистемой контроля admission.
 
-### 2.2. Circuit Breaker
-When enabled via `routing.circuit-breaker.enabled=true`:
-1. **Failure Tracking**: Connectivity errors (`TTransportException`), socket timeouts (`SocketTimeoutException`), and protocol desyncs are tracked in the backend runtime status ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
-2. **Tripping to `OPEN`**: When consecutive failures exceed the configured threshold (`routing.circuit-breaker.failure-threshold`, default: `3`), the circuit trips to `OPEN`.
-3. **Client Fast-Fail**: All subsequent requests to this catalog are rejected immediately without blocking threads or waiting for socket timeouts:
+### 2.2. Circuit Breaker (Предохранитель)
+Если включен механизм защиты `routing.circuit-breaker.enabled=true`:
+1. **Регистрация сбоев**: Ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и сбои протокола учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
+2. **Переход в `OPEN`**: При накоплении серии ошибок подряд (`routing.circuit-breaker.failure-threshold`, по умолчанию `3`), состояние контура переходит в `OPEN`.
+3. **Fast-Fail клиентов**: Все последующие запросы к данному каталогу отклоняются мгновенно без блокировки потоков и ожидания сетевого таймаута:
    ```text
    MetaException: Backend catalog '<name>' rejected method '<method>' because circuit_open; next retry window in <X>ms
    ```
-4. **Probing with `HALF_OPEN`**: Once the cooldown window elapses (`routing.circuit-breaker.open-state-ms`, default: `30000` ms), the circuit enters `HALF_OPEN`. Exactly one client call is admitted to probe backend availability:
-   * If successful, the circuit resets to `CLOSED` and failure counters are cleared.
-   * If it fails, the circuit re-enters `OPEN` for another cooldown interval.
+4. **Пробный переход `HALF_OPEN`**: По истечении интервала ожидания (`routing.circuit-breaker.open-state-ms`, по умолчанию `30000` мс) контур переходит в состояние `HALF_OPEN`. Ровно один клиентский запрос пропускается для проверки доступности:
+   * При успешном ответе контур возвращается в `CLOSED`, счётчик сбоев сбрасывается.
+   * При повторном сбое контур снова переходит в `OPEN` на заданный интервал.
 
-### 2.3. Adaptive Socket Timeout
-When enabled via `routing.adaptive-timeout.enabled=true`:
-* The proxy computes an Exponentially Weighted Moving Average (EWMA) of backend response latency.
-* On detecting elevated latency or transient timeouts, the proxy dynamically adjusts the client socket timeout within `[min-timeout-ms, max-timeout-ms]`, preventing spurious disconnects during temporary remote HMS load spikes.
+### 2.3. Адаптивный таймаут сокета (Adaptive Socket Timeout)
+Если включен `routing.adaptive-timeout.enabled=true`:
+* Прокси рассчитывает скользящее среднее (EWMA) задержки ответов бэкенда.
+* При обнаружении роста задержек или единичных таймаутов прокси динамически корректирует сокет-таймаут клиента в пределах `[min-timeout-ms, max-timeout-ms]`, предотвращая преждевременные обрывы при временных нагрузках на удаленный HMS.
 
-### 2.4. Error Normalization for Thrift Clients
-* In the Hive Thrift IDL, infrastructure network exceptions (`TTransportException`, `TApplicationException`) are not declared in the `throws` clauses of most methods. Without special handling, the Thrift processor would intercept them and return a generic `TApplicationException("Internal error processing <method>")`, obscuring the root cause.
-* For transparent client-side diagnostics, [`BackendErrorNormalizer`](src/main/java/io/github/mmalykhin/hmsproxy/routing/BackendErrorNormalizer.java) catches infrastructure exceptions and normalizes them into Hive's standard `MetaException`:
+### 2.4. Нормализация ошибок для Thrift-клиентов
+* В Hive Thrift IDL инфраструктурные сетевые исключения (`TTransportException`, `TApplicationException`) не объявлены в секции `throws` большинства методов. Без специальной обработки библиотека Thrift перехватывала бы их и возвращала клиенту обезличенное сообщение `TApplicationException("Internal error processing <method>")`, скрывая первопричину сбоя.
+* Для прозрачности диагностики [`BackendErrorNormalizer`](src/main/java/io/github/mmalykhin/hmsproxy/routing/BackendErrorNormalizer.java) перехватывает сетевые ошибки и нормализует их в стандартное для экосистемы Hive `MetaException`:
    ```text
    MetaException: Backend catalog 'hdp' failed in method 'get_table' with TTransportException: java.net.SocketException: Connection reset
    ```
-  This preserves the full diagnostic cause for upstream engines (Spark, HiveServer2, Trino, Impala).
+  Это позволяет клиентам (Spark, HiveServer2, Trino, Impala) логировать точную причину сетевого отказа.
 
-### 2.5. Compatibility Fallbacks for Service Methods
-* For secondary and diagnostic metastore calls whose failure does not compromise metadata consistency (e.g., `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), the compatibility layer ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) intercepts failures and returns an empty valid payload instead of failing the user session.
-* For critical methods (schema reads, locks, transactions, privileges), failures are never masked — callers are guaranteed to receive an explicit exception.
-
----
-
-## 3. Federation and Fanout Requests (`SHOW DATABASES`, `get_table_meta`)
-
-When servicing operations that query all configured backends concurrently or sequentially ([`FanoutExecutor`](src/main/java/io/github/mmalykhin/hmsproxy/routing/FanoutExecutor.java)):
-
-* **Default Policy — `STRICT` (`routing.degraded-routing-policy=STRICT`)**:
-  A failure in any catalog fails the entire fanout operation. Callers receive a `MetaException` indicating which backend failed.
-* **Degraded Policy — `SAFE_FANOUT_READS` (`routing.degraded-routing-policy=SAFE_FANOUT_READS`)**:
-  The proxy omits the failed backend from the result set and returns an aggregated view from all healthy catalogs.
-  * A warning is logged: `omitting degraded backend catalog=<name> from safe fanout method=<method>`.
-  * The request metric is tagged with `degraded=true`.
-  * This degradation applies strictly to safe read-only metadata methods (`get_all_databases`, `get_databases`, `get_table_meta`). Writes and targeted catalog requests remain strict.
+### 2.5. Compatibility Fallbacks для сервисных методов
+* Для вспомогательных и диагностических вызовов метастора, сбой которых не нарушает консистентность данных (например, `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), слой совместимости ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) перехватывает сбой и возвращает пустой валидный ответ вместо падения всей пользовательской сессии.
+* Для критичных методов (чтение схемы, блокировки, транзакции, права) пустые ответы никогда не маскируют ошибку — клиент гарантированно получает явное исключение.
 
 ---
 
-## 4. Role Separation: `default-catalog` vs Secondary Catalogs
+## 3. Федеративные и Fanout-запросы (`SHOW DATABASES`, `get_table_meta`)
 
-The operational impact of a backend failure depends directly on its configured role:
+При выполнении операций, которые опрашивают сразу все сконфигурированные бэкенды в параллельном или последовательном режиме ([`FanoutExecutor`](src/main/java/io/github/mmalykhin/hmsproxy/routing/FanoutExecutor.java)):
 
-### Secondary Catalog Failure
-* Only queries referencing databases and tables in that catalog are impacted (e.g., `catalog2__analytics.events`).
-* Requests directed to `default-catalog` and other healthy catalogs continue operating normally.
-* Namespace isolation prevents an issue in an external/remote metastore from degrading the primary cluster.
-
-### `default-catalog` Failure
-* **Critical Control-Plane Outage**:
-  * Global Thrift RPCs without an explicit database name (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) are pinned directly to `default-catalog` and will fail.
-  * Hive transaction and lock coordination (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) is backed by `default-catalog`. When down, transactional DDL/DML operations cannot proceed.
-  * Schema mutations and writes via the Iceberg REST Catalog gateway (`WriteRouteGate`) are permitted exclusively for `default-catalog` tables. Consequently, Iceberg write operations are halted.
+* **Режим по умолчанию — `STRICT` (`routing.degraded-routing-policy=STRICT`)**:
+  Сбой любого из опрашиваемых каталогов приводит к ошибке всей операции. Клиент получает `MetaException`, сигнализирующий о сбое конкретного бэкенда.
+* **Режим деградации — `SAFE_FANOUT_READS` (`routing.degraded-routing-policy=SAFE_FANOUT_READS`)**:
+  Прокси исключает недоступный каталог из выборки и возвращает агрегированный результат от всех живых каталогов.
+  * В лог прокси пишется предупреждение: `omitting degraded backend catalog=<name> from safe fanout method=<method>`.
+  * Метрика запроса помечается флагом `degraded=true`.
+  * Этот режим действует исключительно на безопасные операции чтения метаданных (`get_all_databases`, `get_databases`, `get_table_meta`). Любые операции записи и точечные обращения остаются строгими.
 
 ---
 
-## 5. Iceberg REST Catalog Gateway Behavior
+## 4. Разделение ролей: `default-catalog` и secondary-каталоги
 
-* When the backend backing an Iceberg catalog is unreachable, the HTTP handler ([`IcebergHttpHandler`](src/main/java/io/github/mmalykhin/hmsproxy/restcatalog/IcebergHttpHandler.java)) translates metastore exceptions into standard Iceberg REST responses:
-  * The client receives an **HTTP 500 (Internal Server Error)** or **HTTP 503 (Service Unavailable)**.
-  * The response body contains a structured `ErrorResponse` JSON with error details and messages expected by Iceberg REST clients (Spark, Trino, Flink, PyIceberg).
+Последствия недоступности бэкенда принципиально зависят от его роли в конфигурации:
+
+### Недоступен вторичный (secondary) каталог
+* Пострадают только запросы, адресующие базы данных и таблицы этого каталога (например, `catalog2__analytics.events`).
+* Запросы к `default-catalog` и другим работоспособным каталогам продолжают обслуживаться штатно.
+* Изоляция гарантирует, что сбой внешней или аналитической метабазы не парализует работу основного кластера.
+
+### Недоступен `default-catalog`
+* **Критический отказ control-plane**:
+  * Все глобальные Thrift RPC без квалифицированного имени БД (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) жестко привязаны к `default-catalog`. При его отказе данные вызовы не могут быть обслужены.
+  * Механизм транзакций и распределенных блокировок Hive (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) управляется бэкендом `default-catalog`. При его недоступности транзакционные DDL/DML блокируются.
+  * Все операции изменения схемы и данных через шлюз Iceberg REST Catalog (`WriteRouteGate`) разрешены только для таблиц `default-catalog`. Соответственно, запись в Iceberg-таблицы прекращается.
 
 ---
 
-## 6. Monitoring, Health Checks, and Observability
+## 5. Поведение шлюза Iceberg REST Catalog
 
-The management HTTP server ([`ManagementHttpServer`](src/main/java/io/github/mmalykhin/hmsproxy/app/ManagementHttpServer.java)) exposes endpoints and metrics for backend health tracking:
+* При недоступности бэкенда, обслуживающего Iceberg-каталог, HTTP-обработчик ([`IcebergHttpHandler`](src/main/java/io/github/mmalykhin/hmsproxy/restcatalog/IcebergHttpHandler.java)) транслирует ошибки метастора в спецификацию REST Catalog:
+  * Клиент получает статус **HTTP 500 (Internal Server Error)** или **HTTP 503 (Service Unavailable)**.
+  * Ответ содержит структурированный JSON объекта `ErrorResponse` с типом ошибки и подробным сообщением, понятным REST-клиентам Iceberg (Spark, Trino, Flink, PyIceberg).
 
-### 6.1. Health Endpoints
+---
+
+## 6. Мониторинг, Health Checks и наблюдаемость
+
+Служебный HTTP-сервер ([`ManagementHttpServer`](src/main/java/io/github/mmalykhin/hmsproxy/app/ManagementHttpServer.java)) предоставляет точки мониторинга состояния бэкендов:
+
+### 6.1. Эндпоинты проверки жизнеспособности
 * **`/healthz` (Liveness probe)**:
-  * Always returns **HTTP 200 OK** (`{"status":"ok","alive":true,...}`) as long as the proxy JVM process is running and accepting HTTP connections. Used for container liveness probes.
+  * Всегда возвращает **HTTP 200 OK** (`{"status":"ok","alive":true,...}`), если процесс JVM запущен и способен принимать HTTP-запросы. Служит для K8s liveness probe.
 * **`/readyz` (Readiness probe)**:
-  * Verifies connectivity across all configured backends.
-  * If any backend is unreachable, disconnected, or has an `OPEN` circuit breaker, the endpoint returns **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
-  * Load balancers (HAProxy, Envoy, Kubernetes Ingress/Service) use this response to automatically remove the proxy instance from the active routing pool.
+  * Опрашивает состояние соединений всех бэкендов.
+  * Если хотя бы один бэкенд недоступен, отключен или его Circuit Breaker находится в состоянии `OPEN`, эндпоинт возвращает **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
+  * Балансировщики нагрузки (HAProxy, Envoy, Kubernetes Ingress/Service) используют этот сигнал для автоматического вывода инстанса прокси из пула активной маршрутизации.
 
-### 6.2. Background Health Polling
-* When `routing.backend-state-polling.enabled=true` is set, a background scheduler periodically tests backend reachability using lightweight `getStatus` calls with a configurable `probe-timeout-ms`.
-* This detects backend failures and recoveries proactively without waiting for user traffic or blocking external `/readyz` scrapes.
+### 6.2. Фоновый опрос доступности (Background Polling)
+* При включении `routing.backend-state-polling.enabled=true` отдельный планировщик периодически проверяет доступность каждого бэкенда легковесным вызовом `getStatus` с настраиваемым таймаутом `probe-timeout-ms`.
+* Это позволяет обнаружить аварию или восстановление метастора заранее, не дожидаясь клиентских запросов и не задерживая внешние проверки `/readyz`.
 
-### 6.3. Prometheus Metrics (`/metrics`)
-Backend outages update several key observability counters:
-* `hms_proxy_backend_failures_total{backend="<name>", error="<class>"}` — total backend failure count by error type.
-* `hms_proxy_backend_status{backend="<name>", state="connected|degraded"}` — current backend connectivity status.
-* `hms_proxy_circuit_state{backend="<name>"}` — current Circuit Breaker state (`0 = CLOSED`, `1 = OPEN`, `2 = HALF_OPEN`).
-* `hms_proxy_backend_session_acquire_timeouts_total{backend="<name>", reason="borrow|reconnect"}` — session acquisition timeouts under overload or backend unresponsiveness.
-* `hms_proxy_impersonation_session_evictions_total{backend="<name>", reason="transport_failure"}` — impersonation sessions dropped due to transport errors.
+### 6.3. Метрики Prometheus (`/metrics`)
+При сбоях бэкендов обновляются следующие ключевые метрики:
+* `hms_proxy_backend_failures_total{backend="<name>", error="<class>"}` — счётчик сбоев бэкенда по типам ошибок.
+* `hms_proxy_backend_status{backend="<name>", state="connected|degraded"}` — текущий статус подключения.
+* `hms_proxy_circuit_state{backend="<name>"}` — текущее состояние Circuit Breaker (`0 = CLOSED`, `1 = OPEN`, `2 = HALF_OPEN`).
+* `hms_proxy_backend_session_acquire_timeouts_total{backend="<name>", reason="borrow|reconnect"}` — таймауты ожидания сессии из-за перегрузки или недоступности бэкенда.
+* `hms_proxy_impersonation_session_evictions_total{backend="<name>", reason="transport_failure"}` — сбросы сессий пользователей из-за сетевых разрывов.

@@ -2,233 +2,236 @@
 
 [![CI](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/balookrd/hms-proxy/actions/workflows/ci.yml)
 
-Russian documentation: [README.ru.md](README.ru.md), [SMOKE.ru.md](SMOKE.ru.md), [FAILOVER.ru.md](FAILOVER.ru.md)
+English documentation: [README.en.md](README.en.md), [SMOKE.en.md](SMOKE.en.md), [FAILOVER.en.md](FAILOVER.en.md)
 
-HMS Proxy is a catalog-aware Hive Metastore federation and compatibility proxy for mixed
-Apache Hive `3.1.3`, Hive `4.1.x`, and Hortonworks Data Platform `3.1.0.x` environments.
+HMS Proxy - это catalog-aware Hive Metastore federation and compatibility proxy для смешанных
+окружений с Apache Hive `3.1.3`, Hive `4.1.x` и Hortonworks Data Platform `3.1.0.x`.
 
-It gives you one (or several) production-facing HMS Thrift endpoint(s) that can federate
-catalogs across multiple backend metastores, bridge Apache 3.1.3 / HDP 3.1.0.x / Hive 4.1.x
-API differences in either direction, and establish a clear security boundary between clients
-and backend HMS services.
+Он даёт один (или несколько) production-facing HMS Thrift endpoint(ов), которые федеративно
+маршрутизируют каталоги в несколько backend metastore, сглаживают API-различия Apache 3.1.3 /
+HDP 3.1.0.x / Hive 4.1.x в обе стороны и задают явную security boundary между клиентами и
+backend HMS сервисами.
 
-## Three pillars
+## Три опоры
 
 ### 1. Federation
 
-Use one production-facing HMS Thrift endpoint for HiveServer2 and direct HMS API clients (or
-several, on different ports, when clients of different Hive versions cannot share a single
-front door — Thrift has no version-negotiation handshake), while routing requests to multiple
-backend metastores by explicit `catName` or by legacy `catalog<separator>db` database names.
+Один production-facing HMS Thrift endpoint для HiveServer2 и прямых HMS API клиентов (или
+несколько, на разных портах, когда клиенты разных версий Hive не могут делить общий front
+door — в Thrift-протоколе нет version-negotiation handshake), который маршрутизирует запросы
+в несколько backend metastore по явному `catName` или по legacy database name в формате
+`catalog<separator>db`.
 
-This lets you centralize catalog-aware routing and selective exposure without forcing clients to
-understand backend metastore layout.
+Это позволяет централизовать catalog-aware routing и selective exposure, не заставляя клиентов
+знать внутреннюю раскладку backend metastore.
 
 ### 2. Compatibility bridge
 
-Expose an Apache Hive Metastore `3.1.3`, Hortonworks `3.1.0.x` or Hive `4.1.x` front door (one
-primary listener plus optional additional listeners on separate ports) and connect it to any
-mix of Apache 3.1.3, Hortonworks 3.1.0.x, or Hive 4.1.x backends. The proxy downgrades
-selected `*_req` APIs for older Hortonworks backends, upgrades the two positional read methods
-Hive 4 removed (`get_table`, `get_table_objects_by_name`) when fronting a Hive 4 backend with
-an Apache 3.1.3 client, and downgrades Hive 4-only read/standard-DDL `*_req` wrappers to their
-positional Apache 3.1.3 equivalents when serving Hive 4 clients against an Apache 3.1.3
-backend. Hortonworks-specific RPCs are exposed via the HDP `standalone-metastore` jar when a
-matching HDP backend is configured; truly Hive 4-only APIs (data connectors, scheduled
-queries, stored procedures, packages, ACID v2 extensions) respond with
-`TApplicationException UNKNOWN_METHOD`.
+Apache Hive Metastore `3.1.3`, Hortonworks `3.1.0.x` или Hive `4.1.x` на фронте (один primary
+listener плюс опциональные дополнительные listener'ы на отдельных портах) поверх любой
+комбинации Apache 3.1.3, Hortonworks 3.1.0.x и Hive 4.1.x backend'ов. Proxy выполняет
+compatibility downgrade выбранных `*_req` API для старых Hortonworks backend'ов; поднимает
+два positional read метода, удалённых в Hive 4 (`get_table`, `get_table_objects_by_name`),
+когда фронтит Hive 4 backend для Apache 3.1.3 клиента; и опускает Hive 4-only `*_req`
+wrappers для read/стандартного DDL до их positional Apache 3.1.3 эквивалентов, когда
+обслуживает Hive 4 клиентов против Apache 3.1.3 backend. Hortonworks-специфичные RPC
+доступны через HDP `standalone-metastore` jar при сконфигурированном HDP backend; truly
+Hive 4-only API (data connectors, scheduled queries, stored procedures, packages, ACID v2
+extensions) отвечают `TApplicationException UNKNOWN_METHOD`.
 
-This makes the proxy a practical bridge for mixed Apache/HDP/Hive 4 estates and staged
-migrations in either direction, not just a request router.
+На практике proxy становится мостом для смешанных Apache/HDP/Hive 4 estate и поэтапных
+миграций в обе стороны, а не просто request router.
 
 ### 3. Security boundary
 
-Run the proxy as the security boundary between clients and backend metastores with optional
-Kerberos/SASL on the front door, optional outbound Kerberos to backends, and optional
-impersonation of the authenticated Kerberos caller.
+Proxy как security boundary между клиентами и backend metastore: Kerberos/SASL на фронте,
+опциональный outbound Kerberos к backend и опциональная impersonation аутентифицированного
+Kerberos пользователя.
 
-This keeps authentication, identity propagation, and backend exposure policy concentrated in one
-place.
+Так authentication, identity propagation и политика доступа к backend сосредоточены в одной
+точке.
 
-## Canonical routing model
+## Каноническая модель маршрутизации
 
-Two naming layers appear throughout this README:
+В этом README встречаются два слоя именования:
 
-| Term | Meaning |
+| Термин | Что означает |
 | --- | --- |
-| External name | The client-facing proxy namespace. Examples: `catName=catalog2`, `catalogName=catalog2`, legacy `dbName=catalog2__sales`. |
-| Internal name | The real names on the selected backend HMS. Example: backend `catName=hive`, `dbName=sales`. |
-| Default catalog | `routing.default-catalog`, used when a request does not carry a trustworthy catalog hint. |
-| Ambiguous request | The request carries conflicting catalog hints, or a multi-catalog write does not resolve to exactly one catalog. |
+| Внешнее имя | Клиентский namespace на границе proxy. Примеры: `catName=catalog2`, `catalogName=catalog2`, legacy `dbName=catalog2__sales`. |
+| Внутреннее имя | Реальные имена на выбранном backend HMS. Пример: backend `catName=hive`, `dbName=sales`. |
+| Default catalog | `routing.default-catalog`, куда proxy идёт, если запрос не несёт надёжного catalog hint. |
+| Ambiguous request | В запросе есть конфликтующие catalog hints, либо multi-catalog write не разрешается ровно в один catalog. |
 
-Routing is then decided like this:
+Дальше routing работает так:
 
-| Request shape | How the proxy picks a backend | What happens without namespace |
+| Форма запроса | Как proxy выбирает backend | Что происходит без namespace |
 | --- | --- | --- |
-| Object-scoped reads and writes | Prefer explicit proxy `catName`. Otherwise parse external `dbName` / `fullTableName` such as `catalog2__sales`. Otherwise use `routing.default-catalog` for compatibility. | Routed to `routing.default-catalog`. |
-| Session-level and global reads | Use `routing.default-catalog`. | Routed to `routing.default-catalog`. |
-| ACID RPCs whose payload still names an object | Route by that payload, for example `dbName` or `fullTableName` in `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, or `add_dynamic_partitions`. | If no routable object namespace remains, fall through to the next row. |
-| Txn / lock lifecycle RPCs that only carry ids | Pin to `routing.default-catalog`, for example `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, and `heartbeat`. | Routed to `routing.default-catalog`; non-ACID `SELECT`, eligible `NO_TXN` DDL and non-transactional write locks on non-default catalogs can use the synthetic shim. |
-| Global writes and catalog-registry changes | Require exactly one owned namespace in a multi-catalog deployment. | If that ownership is ambiguous, the proxy fails safely instead of guessing a target catalog. |
+| Object-scoped read/write RPC | Сначала явный proxy `catName`. Иначе внешний `dbName` / `fullTableName` вида `catalog2__sales`. Иначе `routing.default-catalog` для совместимости. | Идёт в `routing.default-catalog`. |
+| Session-level и global read RPC | Используется `routing.default-catalog`. | Идёт в `routing.default-catalog`. |
+| ACID RPC, где в payload ещё назван объект | Routing по этому payload, например по `dbName` или `fullTableName` в `get_valid_write_ids`, `allocate_table_write_ids`, `compact` или `add_dynamic_partitions`. | Если routable object namespace уже нет, применяется строка ниже. |
+| Txn / lock lifecycle RPC, где остались только ids | Пинятся к `routing.default-catalog`, например `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`. | Идут в `routing.default-catalog`; non-ACID `SELECT`, допустимые `NO_TXN` DDL и non-transactional write lock на non-default catalog может обслужить synthetic shim. |
+| Global write и catalog-registry RPC | Требуют ровно один owned namespace в multi-catalog deployment. | Если ownership получается ambiguous, proxy безопасно падает вместо того, чтобы угадывать target catalog. |
 
-If a request carries a backend `catName` such as `hive` instead of a proxy catalog id, the proxy
-treats that field as non-authoritative for compatibility and falls back to `dbName` or
-`routing.default-catalog`.
+Если запрос несёт backend `catName` вроде `hive`, а не proxy catalog id, это поле для
+совместимости не считается авторитетным: proxy пытается маршрутизировать по `dbName`, а если
+этого мало, идёт в `routing.default-catalog`.
 
-For mutations, the proxy prefers policy-driven guarantees over best-effort guessing: deterministic
-routing, explicit namespace ownership, no silent split-brain writes, and safe failure when a
-mutation stays ambiguous.
+Для mutation path proxy предпочитает policy-driven guarantees, а не best-effort guessing:
+deterministic routing, explicit namespace ownership, отсутствие silent split-brain writes и safe
+failure, если mutation остаётся ambiguous.
 
-These switches change client-visible names or SQL text, not backend selection:
+Следующие настройки меняют клиентское представление имён или SQL, но не сам выбор backend:
 
-| Switch | Effect |
+| Switch | Эффект |
 | --- | --- |
-| `routing.catalog-db-separator` | Changes the external legacy spelling, for example `catalog2__sales` instead of `catalog2.sales`. |
-| `federation.preserve-backend-catalog-name=true` | Returns backend `catName` / `catalogName` such as `hive`, but routing still follows the external `dbName` or explicit proxy catalog. |
-| `federation.view-text-rewrite.mode=REWRITE` | Rewrites view SQL between external and internal names; it does not change backend selection for the RPC itself. |
+| `routing.catalog-db-separator` | Меняет внешний legacy формат, например `catalog2__sales` вместо `catalog2.sales`. |
+| `federation.preserve-backend-catalog-name=true` | Возвращает backend `catName` / `catalogName` вроде `hive`, но routing всё равно идёт по внешнему `dbName` или явному proxy catalog. |
+| `federation.view-text-rewrite.mode=REWRITE` | Переписывает SQL внутри view между внешними и внутренними именами; на выбор backend для самого RPC не влияет. |
 
-## RPC behavior matrix
+## Матрица поведения RPC
 
-| RPC group | Status | Behavior |
+| Группа RPC | Статус | Поведение |
 | --- | --- | --- |
-| Catalog-aware metadata reads and writes with explicit namespace (`catName`, `dbName`, `fullTableName`) | supported | Routed to the resolved catalog/backend normally. |
-| Legacy reads and writes using `catalog<separator>db` database names | supported | Routed by externalized database name; table/database objects are rewritten on the way back. |
-| Apache `3.1.3` wrapper RPCs against older Hortonworks `3.1.0.x` backends | degraded | Proxy retries selected `*_req` APIs through older legacy methods such as `get_table`. |
-| Apache `3.1.3` positional RPCs against Hive `4.1.x` backends (`catalog.<name>.runtime-profile=APACHE_4_1_0`) | degraded | Backend adapter auto-upgrades the two positional methods Hive 4 removed (`get_table`, `get_table_objects_by_name`) to their `*_req` equivalents; everything else flows through binary-compatible Thrift delegation unchanged. |
-| Hive `4.1.x` clients (`compatibility.frontend-profile=APACHE_4_1_0`) against Apache `3.1.3` or Hortonworks `3.1.0.x` backends | degraded | Frontend bridge downgrades selected Hive 4-only `*_req` wrappers on read and standard-DDL paths (`get_database_req`, `get_table_req`, `get_partition*_req`, `create_table_req`, `alter_table_req`, etc.) to their positional Apache 3.1.3 equivalents; the 199 shared methods flow through binary-compatible delegation. |
-| Hive 4-only APIs (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions) on `APACHE_4_1_0` front door | rejected | Responded with `TApplicationException UNKNOWN_METHOD`; there is no safe downgrade to an Apache 3.1.3 backend for these RPCs. |
-| Session-level and global read-only RPCs without catalog context | degraded | Routed to `routing.default-catalog`, including `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, and `get_open_txns_info`. |
-| Read-only service APIs missing on a backend (`TApplicationException UNKNOWN_METHOD` on notifications, privilege refresh/introspection, token/key listings except delegation-token issuance, txn/lock/compaction status) | degraded | Proxy returns an empty compatibility response instead of failing the caller. A backend that *has* the method but fails the call (any other `TApplicationException` type, transport failure, or `MetaException`) is reported as an error, so an empty answer never masquerades as real ACID, lock, or privilege state. |
-| Optional service reads (`get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`) | degraded | Proxy returns an empty compatibility response on any backend failure, because these RPCs only expose optional workload-management and diagnostic state. |
-| ACID / txn / lock lifecycle RPCs without routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Pinned to `routing.default-catalog`; non-ACID `SELECT` locks, eligible non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs can use the proxy's synthetic lock shim, but this is still not a distributed ACID coordinator and the shim does not serialize concurrent writers. |
-| Global write operations without clear catalog context | rejected | Proxy enforces deterministic routing and explicit namespace ownership: namespace-less service writes such as `setMetaConf`, `grant_role`, `revoke_role`, and `add_token` fail safely instead of guessing a catalog. |
-| Catalog registry management (`create_catalog`, `drop_catalog`) | rejected | Catalog ownership is policy-managed in proxy config, not delegated to client RPCs. |
-| HDP-only front-door methods with an explicit Apache bridge mapping | supported | Proxy adapts selected Hortonworks request-wrapper methods to Apache equivalents. |
-| HDP-only methods that require a matching Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Forwarded only to compatible Hortonworks backends/front doors when configured. |
-| HDP-only methods without a safe Apache mapping | rejected | Proxy fails explicitly instead of returning a misleading success response. |
+| Metadata read/write RPC с явным namespace (`catName`, `dbName`, `fullTableName`) | supported | Нормально маршрутизируются в нужный catalog/backend. |
+| Legacy read/write RPC с database name в формате `catalog<separator>db` | supported | Маршрутизируются по externalized database name; table/database объекты переписываются на обратном пути. |
+| Apache `3.1.3` wrapper RPC против старых Hortonworks `3.1.0.x` backend | degraded | Proxy повторяет часть `*_req` API через старые legacy методы вроде `get_table`. |
+| Apache `3.1.3` positional RPC против Hive `4.1.x` backend (`catalog.<name>.runtime-profile=APACHE_4_1_0`) | degraded | Backend adapter автоматически поднимает два positional метода, удалённых в Hive 4 (`get_table`, `get_table_objects_by_name`), до их `*_req` эквивалентов; всё остальное идёт через binary-compatible Thrift делегацию без изменений. |
+| Hive `4.1.x` клиенты (`compatibility.frontend-profile=APACHE_4_1_0`) против Apache `3.1.3` или Hortonworks `3.1.0.x` backend | degraded | Frontend bridge понижает выбранные Hive 4-only `*_req` wrappers на read и стандартного DDL (`get_database_req`, `get_table_req`, `get_partition*_req`, `create_table_req`, `alter_table_req` и т.п.) до их позиционных Apache 3.1.3 эквивалентов; 199 общих методов идут через binary-compatible делегацию. |
+| Hive 4-only API (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions) на `APACHE_4_1_0` front door | rejected | Отвечают `TApplicationException UNKNOWN_METHOD`; для этих RPC нет безопасного downgrade в Apache 3.1.3 backend. |
+| Session-level и global read-only RPC без catalog context | degraded | Идут в `routing.default-catalog`, включая `getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns` и `get_open_txns_info`. |
+| Read-only service API, которых нет на backend (`TApplicationException UNKNOWN_METHOD` на notifications, privilege refresh/introspection, token/key listings кроме delegation-token issuance, txn/lock/compaction status) | degraded | Proxy возвращает empty compatibility response вместо ошибки. Если метод у backend есть, но вызов провалился (любой другой тип `TApplicationException`, transport failure или `MetaException`), клиент получает ошибку — пустой ответ не выдаётся за реальное ACID, lock или privilege состояние. |
+| Optional service read RPC (`get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`) | degraded | Proxy возвращает empty compatibility response при любом сбое backend, потому что эти RPC отдают только опциональные workload-management и diagnostic данные. |
+| ACID / txn / lock lifecycle RPC без routable namespace (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`) | degraded | Пинятся к `routing.default-catalog`; для non-ACID `SELECT` lock, допустимых non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default catalog proxy может использовать synthetic lock shim, но это всё ещё не distributed ACID coordinator и shim не сериализует параллельных писателей. |
+| Global write operations без явного catalog context | rejected | Proxy навязывает deterministic routing и explicit namespace ownership: namespace-less service write RPC вроде `setMetaConf`, `grant_role`, `revoke_role` и `add_token` безопасно падают вместо угадывания каталога. |
+| Управление каталогами (`create_catalog`, `drop_catalog`) | rejected | Ownership каталогов policy-managed в конфиге proxy, а не через клиентские RPC. |
+| HDP-only front-door методы, для которых есть явный Apache bridge mapping | supported | Proxy адаптирует выбранные Hortonworks request-wrapper методы к Apache equivalents. |
+| HDP-only методы, которым нужен совместимый Hortonworks runtime (`add_write_notification_log`, `get_tables_ext`, `get_all_materialized_view_objects_for_rewriting`) | passthrough | Пробрасываются только в совместимые Hortonworks backend/front door при соответствующей конфигурации. |
+| HDP-only методы без безопасного Apache mapping | rejected | Proxy падает явно, а не возвращает вводящий в заблуждение success. |
 
 ## Public compatibility matrix
 
-This matrix is the public contract for how to think about the proxy. It is intentionally grouped by
-client shape, advertised front door, backend runtime, auth mode, and method family rather than by
-individual thrift method names. The table is generated from [capabilities.yaml](capabilities.yaml)
-and each capability row is linked to smoke-test coverage in the test suite.
+Это публичная сводка того, как позиционировать proxy. Матрица сгруппирована не по отдельным thrift
+методам, а по типу клиента, advertised front door, backend runtime, auth mode и семействам методов.
+Таблица генерируется из [capabilities.yaml](capabilities.yaml), а каждая capability привязана к
+smoke-тестам в test suite.
 
-For a method-level spreadsheet view of backend support, routing mode, fallback strategy, and
-semantic risk, see [COMPATIBILITY.md](COMPATIBILITY.md).
+Если нужен spreadsheet-like method-level вид по backend support, routing mode, fallback strategy и
+semantic risk, смотри [COMPATIBILITY.md](COMPATIBILITY.md).
 
-Refresh the generated table with:
+Обновить сгенерированную таблицу можно так:
 
 ```bash
 mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true test
 ```
 
 <!-- BEGIN GENERATED: capability-matrix -->
-| Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
+| Версия клиента | Профиль front door | Профиль backend | Режим auth | Семейства методов | Ожидаемый результат |
 | --- | --- | --- | --- | --- | --- |
-| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` or `KERBEROS` | catalog-aware reads/writes, legacy `catalog<separator>db` routing, view rewrite | Supported as the baseline deployment. |
-| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | read paths, selected metadata writes that can fall back from `*_req` APIs | Supported with compatibility downgrade; some calls are degraded to legacy RPCs. |
-| Hive `4.1.x` clients (beeline, JDBC, Spark, Trino-Hive) that speak the Hive 4 request-wrapper Thrift API | `APACHE_4_1_0` | `APACHE_3_1_3`, Hortonworks `3.1.0.x`, or `APACHE_4_1_0` | `NONE` or `KERBEROS` | 199 read/write methods shared with Apache 3.1.3 (binary-compatible), selected Hive 4-only `*_req` wrappers downgraded to positional Apache 3.1.3 RPCs, `lock` with the Hive 4-only `EXCL_WRITE` lock type downgraded to `EXCLUSIVE` | Supported with compatibility downgrade for read + standard DDL; Hive 4-only APIs (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions) respond with `TApplicationException UNKNOWN_METHOD`. |
-| Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hive `4.1.x` | `NONE` or `KERBEROS` | 199 read/write methods shared with Hive 4 via binary-compatible Thrift delegation, positional `get_table` and `get_table_objects_by_name` (removed in Hive 4) auto-upgraded to their `*_req` equivalents | Supported with compatibility upgrade for the two positional methods Hive 4 removed; all other RPCs flow through unchanged. Hive 4-only APIs (data connectors, scheduled queries, etc.) are not reachable from an Apache 3.1.3 front door because Apache 3.1.3 has no Thrift bindings for them. |
-| Hortonworks clients that only expect a Hortonworks front-door identity via `getVersion()` | `HORTONWORKS_*` without standalone jar | `APACHE_3_1_3` or Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | overlapping Apache/HDP method families | Supported when changing the advertised profile is enough for the client. |
-| Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Supported when the matching Hortonworks front-door and backend runtime jars are configured. |
-| Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
-| HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
-| HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT`, `NO_TXN` DDL and non-transactional write (`INSERT`/`UPDATE`/`DELETE`) locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
-| Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user, delegation tokens, and `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
-| Clients attempting mutations without explicit namespace ownership or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Safely failed by design to preserve deterministic routing, explicit namespace ownership, and no silent split-brain writes. |
-| HiveServer2 / HMS clients with end-user impersonation or Kerberos identity querying metadata | any | any | `NONE` or `KERBEROS` | metadata reads (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), shared global metadata caching across users, per-catalog Ranger policy engine evaluation | Metadata is cached once across users when `shared-across-users=true`, and embedded Apache Ranger plugins filter database and table listings per user without redundant backend metastore RPCs. |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | `APACHE_3_1_3` | `NONE` или `KERBEROS` | catalog-aware read/write, legacy `catalog<separator>db` routing, view rewrite | Базовый полностью поддержанный сценарий. |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | read path, часть metadata write, где возможен fallback с `*_req` API | Поддержано через compatibility downgrade; часть вызовов работает в degraded-режиме через legacy RPC. |
+| Hive `4.1.x` клиенты (beeline, JDBC, Spark, Trino-Hive), говорящие на Hive 4 request-wrapper Thrift API | `APACHE_4_1_0` | `APACHE_3_1_3`, Hortonworks `3.1.0.x` или `APACHE_4_1_0` | `NONE` или `KERBEROS` | 199 read/write методов общих с Apache 3.1.3 (binary-compatible), часть Hive 4-only `*_req` wrappers понижается до позиционных Apache 3.1.3 RPC, `lock` с Hive 4-only типом `EXCL_WRITE` понижается до `EXCLUSIVE` | Поддержано через compatibility downgrade для read + стандартного DDL; Hive 4-only API (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions) отвечают `TApplicationException UNKNOWN_METHOD`. |
+| Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3` request wrappers | `APACHE_3_1_3` | Hive `4.1.x` | `NONE` или `KERBEROS` | 199 read/write методов общих с Hive 4 через binary-compatible Thrift делегацию, позиционные `get_table` и `get_table_objects_by_name` (удалены в Hive 4) автоматически поднимаются до `*_req` эквивалентов | Поддержано через compatibility upgrade для двух позиционных методов, удалённых в Hive 4; остальные RPC проходят прозрачно. Hive 4-only API (data connectors, scheduled queries и т.п.) недоступны с Apache 3.1.3 front door, потому что у Apache 3.1.3 нет Thrift bindings для них. |
+| Hortonworks клиенты, которым достаточно Hortonworks identity на фронте через `getVersion()` | `HORTONWORKS_*` без standalone jar | `APACHE_3_1_3` или Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | пересекающиеся Apache/HDP method families | Поддержано, если клиенту достаточно только смены advertised profile. |
+| Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | mapped HDP-only methods, runtime-specific passthrough methods | Поддержано при наличии совместимых Hortonworks front-door и backend runtime jar. |
+| Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | HDP-only passthrough методы вроде `add_write_notification_log` | Явно отклоняется, если target backend не даёт совместимый Hortonworks runtime. |
+| HiveServer2 / Beeline SQL workloads через несколько каталогов | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | read, DDL/DML, namespace rewrite, optional view rewrite | Поддержано, пока routing может однозначно вычислить целевой каталог. |
+| HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC без namespace в payload | любой | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: идут в `routing.default-catalog`; допустимые non-ACID `SELECT`, `NO_TXN` DDL и non-transactional write (`INSERT`/`UPDATE`/`DELETE`) lock всё же могут синтетически обслуживаться на non-default catalog, но в остальном это стоит считать single-catalog control plane, пока не проведена отдельная валидация. |
+| Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user, delegation tokens и `set_ugi()` имперсонация | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
+| Клиенты, которые пытаются делать mutation без explicit namespace ownership или динамически управлять registry каталогов | любой | любой | `NONE` или `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Безопасно отклоняется по design, чтобы сохранить deterministic routing, explicit namespace ownership и не допустить silent split-brain writes. |
+| HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные | любой | любой | `NONE` или `KERBEROS` | чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), общий глобальный кэш метаданных для всех пользователей, вычисление политик Ranger отдельно по каталогам | Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC. |
 <!-- END GENERATED: capability-matrix -->
 
-## Scope notes
+## Важные оговорки
 
-- legacy database references without a catalog prefix are routed to `routing.default-catalog`
-- this keeps Spark/Hive compatibility while still preserving deterministic routing and avoiding silent split-brain metadata writes
-- in practice this means ACID write lifecycle is supported only for the default catalog unless the
-  request payload itself carries routable namespace information such as `dbName` or `fullTableName`
-- the proxy can synthesize non-ACID `SHARED_READ` `SELECT` locks, eligible non-transactional
-  `NO_TXN` DDL locks and non-transactional write locks (`INSERT`, `UPDATE`, `DELETE`) for
-  non-default catalogs so HiveServer2 read, non-ACID DDL and non-ACID `INSERT` paths stop
-  depending on backend txn state alignment
-- that synthetic lock state is in-memory by default and can be moved to ZooKeeper for multi-instance
-  proxy failover, but it still does not make ACID writes or write-id coordination multi-catalog safe
-- Hive ACID, locks, tokens, and other truly global metastore operations still need careful
-  validation in your environment before turning them on behind a multi-catalog proxy
+- legacy database references без префикса каталога идут в `routing.default-catalog`
+- это сохраняет совместимость со Spark/Hive и одновременно поддерживает deterministic routing без silent split-brain metadata write
+- на практике это означает, что ACID write lifecycle полноценно поддерживается только для
+  `default-catalog`, если из payload нельзя извлечь namespace
+- request-based ACID методы, где в payload есть `dbName` или `fullTableName`, продолжают
+  маршрутизироваться по этому payload
+- proxy умеет синтетически обслуживать non-ACID `SHARED_READ` `SELECT` lock, допустимые
+  non-transactional `NO_TXN` DDL lock и non-transactional write lock (`INSERT`, `UPDATE`,
+  `DELETE`) для non-default catalog, чтобы HS2 read path, non-ACID DDL path и non-ACID
+  `INSERT` не зависели от рассинхрона backend txn state
+- этот synthetic lock state по умолчанию хранится в памяти, а для multi-instance failover может
+  быть вынесен в ZooKeeper, но это не делает multi-catalog ACID writes безопасными
+- Hive ACID, lock, token и другие по-настоящему global metastore операции всё ещё требуют
+  отдельной валидации в вашей среде перед включением их за multi-catalog proxy
 
-## Latency-aware backend routing
+## Latency-aware routing backend'ов
 
-The proxy can also apply optional latency-aware backend handling for slow or intermittently failing
-metastores. This layer is disabled by default, so existing deployments keep the previous routing
-behavior until you opt in.
+Proxy умеет опционально включать latency-aware обработку медленных или нестабильных backend
+metastore. Этот слой по умолчанию выключен, поэтому существующие deployment не меняют поведение,
+пока ты явно не включишь новые настройки.
 
-When enabled, the proxy can:
+Когда он включён, proxy может:
 
-- keep a per-catalog latency budget via `catalog.<name>.latency-budget-ms`
-- track per-backend latency EWMA and derive adaptive backend socket timeouts from recent response times
-- open a circuit after repeated transport or time-budget failures, then allow a half-open retry after
-  `routing.circuit-breaker.open-state-ms`
-- poll backend readiness in the background instead of only probing on demand through `/readyz`
-- run safe read-only fanout RPCs in parallel across multiple catalogs
-- optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms` (or `ttl-seconds`)
-- optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
-- immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
-- coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
-- omit degraded backends from safe fanout reads when
+- держать per-catalog latency budget через `catalog.<name>.latency-budget-ms`
+- считать per-backend latency EWMA и на его основе подбирать adaptive backend socket timeout
+- открывать circuit после повторяющихся transport failure или time-budget breach и затем давать
+  half-open retry после `routing.circuit-breaker.open-state-ms`
+- polling'ом обновлять backend readiness в фоне, а не только во время запроса к `/readyz`
+- запускать в parallel безопасные read-only fanout RPC между несколькими каталогами
+- опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms` (или `ttl-seconds`)
+- опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
+- мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
+- объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
+- исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
 
-This is intentionally narrow in scope: hedged reads and degraded omission apply only to safe
-read-only fanout methods, currently `get_all_databases`, `get_databases`, and `get_table_meta`.
-Single-backend writes and namespace-sensitive mutations still follow the deterministic routing model
-described above and do not race multiple metastores.
-The database-list cache and database-metadata cache are disabled by default (`ttl-ms=0`). When enabled,
-repeated `SHOW DATABASES` or `get_database` calls avoid backend round trips until the TTL expires.
-Both caches use single-flight request coalescing, return defensive copies of Thrift structures, and
-feature sliding batch expiration (progressive database fetches during large HiveServer2 / Ranger scans
-extend earlier cache entries so no entries expire midway through the scan, ensuring the full set stays cached for TTL
-after the entire scan completes). Both caches are automatically invalidated when DDL mutations
-(`create_database`, `alter_database`, `drop_database`) execute through the proxy.
+Это намеренно узкий механизм: hedged read и degraded omission применяются только к безопасным
+read-only fanout method, сейчас это `get_all_databases`, `get_databases` и `get_table_meta`.
+Single-backend write и namespace-sensitive mutation по-прежнему идут по детерминированной
+маршрутизации выше и не race'ят несколько metastore одновременно.
+Кэш списков баз и кэш метаданных баз выключены по умолчанию (`ttl-ms=0`). Когда они включены,
+повторные `SHOW DATABASES` или `get_database` не ходят в backend до истечения TTL. Оба кэша
+используют single-flight коалесцирование, возвращают защитные копии (defensive copies) Thrift-структур,
+поддерживают скользящую батчевую экспирацию (пошаговая загрузка баз при длинных сканах HiveServer2 / Ranger
+продлевает TTL ранее загруженных баз, исключая их преждевременное устаревание до окончания всего цикла сканирования) и
+автоматически инвалидируются при выполнении DDL-мутаций (`create_database`, `alter_database`, `drop_database`)
+через прокси.
 
-## Shared backend session pool
+## Пул shared backend-сессий
 
-Non-impersonated calls to a catalog go through a borrow/return pool of backend Thrift sessions sized
-by `catalog.<name>.shared-session-pool-size`. The default is `1`, which preserves the previous
-single-session, serialized behavior — concurrent shared calls will queue on a single Thrift
-transport. To benefit from parallelism, set this explicitly per catalog, e.g.:
+Non-impersonated вызовы к каталогу идут через borrow/return пул backend Thrift-сессий размером
+`catalog.<name>.shared-session-pool-size`. Дефолт — `1`, и он сохраняет прежнее поведение с
+единственной сессией: параллельные shared-вызовы упрутся в один Thrift transport. Чтобы реально
+получить параллелизм, выставляй это значение явно по каталогам, например:
 
 ```properties
 catalog.catalog1.shared-session-pool-size=8
 ```
 
-Trade-offs to consider when raising it:
+Что учитывать при повышении:
 
-- More idle Thrift sessions held open against the backend HMS (with proportional Kerberos cost when
-  `KERBEROS` is enabled on the backend).
-- `reconnectShared` drains the full pool, so larger pools take longer to swap on a runtime profile
-  change or forced reconnect.
+- Больше idle Thrift-сессий держится открытыми к backend HMS (с пропорциональной стоимостью
+  Kerberos, если он включён на backend).
+- `reconnectShared` дренирует весь пул, поэтому большие пулы дольше пересоздаются при смене runtime
+  profile или принудительном reconnect.
 
-When impersonation is enabled on the catalog, real authenticated client traffic does not use this
-pool — each caller is served from the per-user impersonation client cache governed by
-`catalog.<name>.impersonation-max-clients` and `catalog.<name>.impersonation-client-idle-ttl-ms`.
-Each cached user owns an internal pool of backend Thrift sessions sized by
-`catalog.<name>.impersonation-pool-max-size` (default `4`); idle sessions inside that pool can be
-closed via `catalog.<name>.impersonation-session-idle-ttl-ms` (default `0` = never). Concurrent
-calls from the same user (or the HiveServer2 driving them) borrow distinct sessions in parallel
-instead of serializing on a single Thrift transport. Grafana surfaces this as
+Если на каталоге включена impersonation, реальный аутентифицированный клиентский трафик через этот
+пул не идёт — каждый caller обслуживается из per-user кэша impersonation client'ов, управляемого
+`catalog.<name>.impersonation-max-clients` и `catalog.<name>.impersonation-client-idle-ttl-ms`.
+Внутри кэша на каждого пользователя живёт собственный пул backend Thrift-сессий размером
+`catalog.<name>.impersonation-pool-max-size` (дефолт `4`); idle-сессии внутри пула можно закрывать
+по `catalog.<name>.impersonation-session-idle-ttl-ms` (дефолт `0` — никогда). Параллельные вызовы
+одного пользователя (или гонящего их HiveServer2) занимают разные сессии и реально идут в параллель,
+а не сериализуются на одном Thrift transport. В Grafana это видно по метрикам
 `hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,
-`hms_proxy_impersonation_session_acquire_timeouts_total` (per-user borrow timeouts) and
+`hms_proxy_impersonation_session_acquire_timeouts_total` (timeout per-user borrow) и
 `hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|user_evicted|user_capacity}`.
-The shared pool then carries only:
+В shared пуле тогда остаются только:
 
-- internal proxy-driven calls such as backend health probes and reconnect bookkeeping;
-- requests authenticated as a service principal listed under `security.service-principals.*`, which
-  by design bypass impersonation and reuse a shared backend session.
+- внутренние proxy-driven вызовы: backend health probe и reconnect-логика;
+- запросы от service principal'ов, перечисленных в `security.service-principals.*`, — они by design
+  обходят impersonation и переиспользуют общую backend-сессию.
 
-In a pure-impersonation deployment with no service-principal client traffic, raising
-`shared-session-pool-size` therefore has no effect on application throughput. Tune it when at least
-one catalog has `impersonation-enabled=false`, or when service-principal callers (for example
-HiveServer2 itself) drive a meaningful share of requests against the catalog.
+В чистом impersonation-deployment без service-principal клиентского трафика повышать
+`shared-session-pool-size` бессмысленно — на throughput приложения это не влияет. Тюнить пул нужно,
+если хотя бы на одном каталоге `impersonation-enabled=false` или если значимую долю запросов к
+каталогу гонят service principal'ы (например, сам HiveServer2).
 
-## Build
+## Сборка
 
 ```bash
 mvn -o test
@@ -236,31 +239,31 @@ mvn -o package
 mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
 
-Build version is computed from git. Regular branch builds use the configured jgitver pattern
-`1.0.<git-distance>-<short-sha>`, tag releases use the pushed `vMAJOR.MINOR.PATCH` tag, and the
-rolling nightly release pins Maven to the latest reachable release tag so a nightly built after
-`v1.2.0` produces `1.2.0-<short-sha>` jars.
+Версия сборки вычисляется из git. Обычные branch-сборки используют настроенный jgitver-шаблон
+`1.0.<git-distance>-<short-sha>`, tag release берёт pushed-тег `vMAJOR.MINOR.PATCH`, а rolling
+nightly фиксирует Maven на последнем достижимом release-теге, поэтому nightly после `v1.2.0`
+собирает jar-файлы версии `1.2.0-<short-sha>`.
 
-GitHub Actions publishes builds automatically:
-- branch and pull-request CI uploads jar artifacts
-- every push to `main`, plus manual `workflow_dispatch`, updates the rolling `nightly` prerelease from the current `main` head
-- pushed `v*` tags publish regular releases with generated GitHub release notes
+GitHub Actions автоматически публикует сборки:
+- branch и pull-request CI загружают jar-файлы как artifacts
+- каждый push в `main`, плюс ручной `workflow_dispatch`, обновляет rolling prerelease `nightly` с актуального `main`
+- pushed-теги `v*` публикуют обычные releases с GitHub-generated release notes
 
-Manual releases are published through the `Release` workflow:
-- start it with `workflow_dispatch`
-- pass only `major_minor` such as `1.7`
-- the workflow computes the next patch version automatically and publishes a GitHub release tag like `v1.7.0`, `v1.7.1`, and so on
+Ручные релизы публикуются через workflow `Release`:
+- запускается через `workflow_dispatch`
+- передаётся только `major_minor`, например `1.7`
+- workflow сам вычисляет следующий patch и публикует GitHub release с тегом вида `v1.7.0`, `v1.7.1` и далее
 
-## Run
+## Запуск
 
 ```bash
 java -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
-`mvn package` produces both a regular jar and a runnable fat jar with classifier `fat`.
-The fat jar file name changes with every new commit.
+`mvn package` создаёт обычный jar и runnable fat jar с classifier `fat`.
+Имя fat jar меняется на каждом новом коммите.
 
-For Java 17+ with Hadoop 2.x Kerberos libraries, start with:
+Для Java 17+ с Hadoop 2.x Kerberos библиотеками запускай так:
 
 ```bash
 java \
@@ -270,105 +273,105 @@ java \
   -jar "target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar" /etc/hms-proxy/hms-proxy.properties
 ```
 
-### Front-door socket lifetime and shutdown
+### Жизненный цикл front-door сокетов и shutdown
 
-libthrift accepts client sockets with an infinite read timeout, so a client that disappears
-without FIN/RST — a network failure, a process killed behind NAT — leaves its worker thread
-blocked in read forever. The worker pool is bounded by `server.max-worker-threads`, so the
-listener slowly drains until it stops accepting new connections. Every listener therefore
-applies a bounded socket lifetime:
+libthrift принимает клиентские сокеты с бесконечным read timeout, поэтому клиент, исчезнувший
+без FIN/RST (сбой сети, kill процесса за NAT), навсегда оставляет свой worker-поток
+заблокированным в read. Пул worker'ов ограничен `server.max-worker-threads`, так что listener
+медленно вымывается вплоть до полного отказа принимать новые соединения. Поэтому каждый
+listener ограничивает жизненный цикл сокета:
 
-| Key | Default | Meaning |
+| Ключ | По умолчанию | Смысл |
 | --- | --- | --- |
-| `server.client-socket-timeout-ms` | `600000` | Read timeout on an accepted connection; `0` restores the unbounded libthrift behavior |
-| `server.tcp-keepalive` | `true` | SO_KEEPALIVE on accepted connections |
-| `server.tcp-keepalive-idle-seconds` | `120` | Idle time before the first keepalive probe |
-| `server.tcp-keepalive-interval-seconds` | `30` | Interval between keepalive probes |
-| `server.tcp-keepalive-count` | `4` | Failed probes before the connection is dropped |
-| `server.shutdown-timeout-seconds` | `30` | Bound on the ordered teardown after SIGTERM |
+| `server.client-socket-timeout-ms` | `600000` | Read timeout на принятом соединении; `0` возвращает неограниченное поведение libthrift |
+| `server.tcp-keepalive` | `true` | SO_KEEPALIVE на принятых соединениях |
+| `server.tcp-keepalive-idle-seconds` | `120` | Простой до первой keepalive-пробы |
+| `server.tcp-keepalive-interval-seconds` | `30` | Интервал между keepalive-пробами |
+| `server.tcp-keepalive-count` | `4` | Сколько проб должно провалиться, прежде чем соединение будет закрыто |
+| `server.shutdown-timeout-seconds` | `30` | Ограничение на упорядоченную остановку после SIGTERM |
 
-`client-socket-timeout-ms` is a **read** timeout: it bounds how long a worker waits for the next
-request on an established connection and does not abort long server-side calls such as
-`drop_table` with purge, because no read is in flight while a request is being processed. The
-default is the order of magnitude of Hive's own `hive.metastore.client.socket.timeout` (600s);
-clients wrapped in `RetryingMetaStoreClient` (HiveServer2, Spark) reconnect transparently when an
-idle connection is recycled.
+`client-socket-timeout-ms` — именно **read** timeout: он ограничивает, сколько worker ждёт
+следующего запроса на уже установленном соединении, и не обрывает долгие серверные вызовы вроде
+`drop_table` с purge, потому что во время обработки запроса чтения нет. Дефолт согласован по
+порядку величины с хайвовым `hive.metastore.client.socket.timeout` (600s); клиенты, обёрнутые в
+`RetryingMetaStoreClient` (HiveServer2, Spark), переподключаются прозрачно, когда idle-соединение
+рециклится.
 
-The keepalive timers bound dead-peer detection at `idle + interval * count` seconds — 4 minutes
-with the defaults, instead of the roughly two hours the OS-wide `tcp_keepalive_*` defaults give.
-Tuning the timers needs per-socket keepalive options (Linux and macOS); on a platform without
-them the proxy logs once per listener and falls back to the OS-wide timers, keeping plain
+Keepalive-таймеры ограничивают детект мёртвого peer'а величиной `idle + interval * count` секунд —
+4 минуты на дефолтах вместо примерно двух часов, которые дают системные `tcp_keepalive_*`.
+Тюнинг таймеров требует per-socket keepalive-опций (Linux и macOS); на платформе без них proxy
+пишет одну запись в лог на listener и откатывается к системным таймерам, сохраняя обычный
 SO_KEEPALIVE.
 
-On SIGTERM the shutdown hook stops the primary listener and then waits for the main thread to
-close, in order, the additional frontend listeners, the management listener, the router backends
-and the front-door security. The JVM halts as soon as the last shutdown hook returns, so this
-wait is what keeps in-flight requests on the additional frontends from being cut off and backend
-resources from being left open. It is bounded by `server.shutdown-timeout-seconds`; when the
-teardown does not finish in time the proxy logs a warning and lets the JVM halt anyway.
+По SIGTERM shutdown hook останавливает primary listener и затем ждёт, пока main-поток закроет по
+порядку дополнительные frontend listener'ы, management listener, backend-ресурсы router'а и
+front-door security. JVM выполняет halt сразу после возврата последнего shutdown hook, поэтому
+именно это ожидание не даёт оборвать in-flight запросы дополнительных фронтендов и оставить
+незакрытыми backend-ресурсы. Ожидание ограничено `server.shutdown-timeout-seconds`; если
+остановка не уложилась в лимит, proxy пишет WARN и всё равно отпускает JVM.
 
-## Configuration validation
+## Валидация конфигурации
 
-The proxy validates its properties file at startup and refuses to start on a value it cannot
-interpret. A misconfigured proxy that runs and quietly does the opposite of what the file says is
-worse than one that does not start.
+Proxy проверяет properties-файл на старте и отказывается стартовать на значении, которое не может
+интерпретировать. Proxy, который запустился и тихо делает противоположное написанному в файле,
+хуже, чем proxy, который не стартовал.
 
-**Booleans** accept only `true` and `false`, in any case. `yes`, `on`, `1` and typos such as `ture`
-are startup errors naming the key and the value. Previously they were read as `false`, which
-silently disabled impersonation, the management listener, or hedged reads.
+**Boolean-значения** принимают только `true` и `false` в любом регистре. `yes`, `on`, `1` и
+опечатки вроде `ture` — ошибка старта с указанием ключа и значения. Раньше они читались как
+`false`, то есть молча выключали имперсонацию, management-листенер или hedged reads.
 
-**Enum values** — every mode, profile and policy key — are case-insensitive, so
-`access-mode=read_only` and `frontend-profile=apache_3_1_3` are accepted everywhere. An unknown
-value reports the key and the accepted constants.
+**Enum-значения** — все ключи режимов, профилей и политик — регистронезависимы, поэтому
+`access-mode=read_only` и `frontend-profile=apache_3_1_3` принимаются везде. При неизвестном
+значении сообщение содержит ключ и список допустимых констант.
 
-**Durations** in HiveConf keys such as `hive.metastore.client.socket.timeout` follow Hive: an
-integer with an optional unit suffix `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`, `d`/`day`
-(long spellings such as `600sec`, `5min` work too). A bare number means seconds. A value Hive
-itself would reject, such as `1.5s`, is logged as a `WARN` naming the value and the applied
-default.
+**Длительности** в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` соответствуют
+Hive: целое число с необязательным суффиксом `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`,
+`d`/`day` (длинные написания вроде `600sec`, `5min` тоже работают). Число без суффикса означает
+секунды. Значение, которое отверг бы и сам Hive (например `1.5s`), логируется как `WARN` с
+указанием значения и применённого дефолта.
 
-**Contradictory combinations** are startup errors rather than silent behavior swaps:
+**Противоречивые комбинации** дают ошибку старта, а не тихую подмену поведения:
 
-| Combination | Result |
+| Комбинация | Результат |
 | --- | --- |
-| `catalog.<name>.write-db-whitelist` without `access-mode=READ_WRITE_DB_WHITELIST` | error: the whitelist would be ignored and writes would stay open to every database |
-| `access-mode=READ_WRITE_DB_WHITELIST` with an empty whitelist | error: use `READ_ONLY` to forbid all writes |
-| `synthetic-read-lock.store.mode=IN_MEMORY` with any `synthetic-read-lock.store.zookeeper.*` key | error: locks would silently stay in memory |
-| Two listeners on the same `host:port` | error, including a wildcard bind host: `0.0.0.0:9083` conflicts with `127.0.0.1:9083` |
+| `catalog.<name>.write-db-whitelist` без `access-mode=READ_WRITE_DB_WHITELIST` | ошибка: whitelist игнорировался бы, запись оставалась бы разрешена во все базы |
+| `access-mode=READ_WRITE_DB_WHITELIST` с пустым whitelist | ошибка: для полного запрета записи есть `READ_ONLY` |
+| `synthetic-read-lock.store.mode=IN_MEMORY` вместе с любым ключом `synthetic-read-lock.store.zookeeper.*` | ошибка: локи молча остались бы в памяти |
+| Два листенера на одном `host:port` | ошибка, в том числе через wildcard bind host: `0.0.0.0:9083` конфликтует с `127.0.0.1:9083` |
 
-Listener conflict checks cover the primary listener, the management listener (including its
-default `server.port + 1000`) and every `additional-frontends.<name>` entry. Host names are
-compared as configured, without DNS resolution, so `localhost` versus `127.0.0.1` still surfaces
-at bind time rather than at validation time.
+Проверка конфликтов охватывает основной листенер, management-листенер (включая дефолтный
+`server.port + 1000`) и каждую запись `additional-frontends.<name>`. Хосты сравниваются как
+заданы, без DNS-резолва, поэтому `localhost` против `127.0.0.1` по-прежнему проявится при bind, а
+не на валидации.
 
 ## Observability
 
 ### Management listener
 
-The proxy can expose a lightweight HTTP listener for health checks, readiness, and Prometheus
-metrics. The listener is disabled by default and turns on automatically when `management.port`
-is configured:
+Proxy может поднимать легковесный HTTP listener для health checks, readiness и Prometheus
+метрик. По умолчанию listener выключен и автоматически включается, если задан `management.port`:
 
 ```properties
 management.bind-host=0.0.0.0
 management.port=19083
 ```
 
-You can also enable it explicitly:
+Либо его можно включить явно:
 
 ```properties
 management.enabled=true
-# Optional; defaults to server.bind-host
+# Необязательно; по умолчанию берётся server.bind-host
 management.bind-host=0.0.0.0
-# Optional; defaults to server.port + 1000
+# Необязательно; по умолчанию server.port + 1000
 management.port=19083
-# Optional; handler threads for the management listener, defaults to 4
+# Необязательно; число handler-потоков management listener, по умолчанию 4
 management.threads=4
-# Optional; how long readiness probe results are reused, in ms; defaults to 2000, 0 disables caching
+# Необязательно; сколько мс переиспользуются результаты readiness probe;
+# по умолчанию 2000, значение 0 отключает кэш
 management.readiness-cache-ms=2000
 ```
 
-Quick checks:
+Быстрые проверки:
 
 ```bash
 curl -s http://127.0.0.1:19083/healthz
@@ -376,70 +379,69 @@ curl -s http://127.0.0.1:19083/readyz
 curl -s http://127.0.0.1:19083/metrics
 ```
 
-The listener serves requests from a small dedicated thread pool (`management.threads`), so a slow
-`/readyz` never blocks `/healthz` or `/metrics`. Keep at least two threads.
+Listener обслуживает запросы из небольшого выделенного пула потоков (`management.threads`), поэтому
+медленный `/readyz` не блокирует `/healthz` и `/metrics`. Держи как минимум два потока.
 
-**The management endpoints have no authentication or authorization.** `/readyz` exposes Kerberos
-principals and per-backend `lastError` strings that usually contain internal hostnames. Bind
-`management.bind-host` to an interface reachable only from your monitoring and orchestration
-network, or otherwise restrict the port with firewall rules or a network policy. Do not publish it
-alongside the client-facing Thrift port.
+**У management endpoints нет ни аутентификации, ни авторизации.** `/readyz` отдаёт
+Kerberos-принципалы и per-backend `lastError`, в котором обычно видны внутренние hostname. Привязывай
+`management.bind-host` к интерфейсу, доступному только из сети мониторинга и оркестрации, либо
+ограничивай порт firewall-правилами или network policy. Не публикуй его рядом с клиентским
+Thrift-портом.
 
-### Health and readiness endpoints
+### Health и readiness endpoints
 
-Available endpoints:
+Доступные endpoints:
 
-- `/healthz` returns process liveness and uptime
-- `/readyz` checks backend connectivity, returns per-backend `connected` / `degraded` state,
-  and includes Kerberos login status plus TGT freshness for front-door and outbound backend credentials
-- `/metrics` exposes Prometheus text format metrics
+- `/healthz` возвращает liveness процесса и uptime
+- `/readyz` проверяет backend connectivity, отдаёт per-backend состояние `connected` / `degraded`,
+  а также включает Kerberos login status и TGT freshness для front-door и outbound backend credentials
+- `/metrics` отдаёт Prometheus text format
 
-`/healthz` is intended for simple liveness checks and only answers whether the proxy process is up.
+`/healthz` предназначен для простых liveness checks и отвечает только на вопрос, жив ли сам
+процесс proxy.
 
-`/readyz` is intended for load balancers, orchestration probes, and operational diagnostics. The
-response includes:
+`/readyz` предназначен для load balancer, orchestration probes и operational diagnostics. В ответе есть:
 
-- overall readiness status
-- `probeAgeMs`, the age of the probe results the response was built from
-- backend connectivity summary
-- per-backend `connected`, `degraded`, `lastSuccessEpochSecond`, `lastFailureEpochSecond`,
-  `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`, `baselineTimeoutMs`,
-  `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`, `consecutiveFailures`,
-  `circuitRetryAtEpochMs`, and `lastError`
-- Kerberos status for the front door and outbound backend credentials, including `state`
-  (`DISABLED`, `PENDING`, `ACTIVE`, `STALE`, `FAILED`), `loggedIn`, and `healthy`
-- Kerberos TGT freshness via `tgtExpiresAtEpochSecond` and `secondsUntilExpiry` when available
+- общий статус readiness
+- `probeAgeMs` — возраст данных probe, по которым построен ответ
+- summary по backend connectivity
+- по каждому backend поля `connected`, `degraded`, `lastSuccessEpochSecond`,
+  `lastFailureEpochSecond`, `lastProbeEpochSecond`, `lastLatencyMs`, `latencyEwmaMs`,
+  `baselineTimeoutMs`, `adaptiveTimeoutMs`, `latencyBudgetMs`, `circuitState`,
+  `consecutiveFailures`, `circuitRetryAtEpochMs` и `lastError`
+- Kerberos status для front door и outbound backend credentials, включая `state`
+  (`DISABLED`, `PENDING`, `ACTIVE`, `STALE`, `FAILED`), `loggedIn` и `healthy`
+- TGT freshness через `tgtExpiresAtEpochSecond` и `secondsUntilExpiry`, когда эти данные доступны
 
-Kerberos status is read from the logins the proxy already uses. The Kerberos probe never reinstalls
-the process-wide security configuration and never performs a keytab login of its own, so it does not
-race with live SASL handshakes and adds no KDC traffic. Note that the on-demand backend connectivity
-probes above still open a backend session per scrape, which does perform a keytab login when the
-backend uses SASL; enable `routing.backend-state-polling.enabled=true` to move that off the request
-path.
+Kerberos status читается по уже используемым proxy login'ам. Kerberos probe не переустанавливает
+process-wide security configuration и не делает собственный keytab login, поэтому не конкурирует с
+живыми SASL handshake и не добавляет трафика к KDC. При этом on-demand connectivity probes выше
+по-прежнему открывают backend-сессию на каждый scrape, а она при backend SASL делает keytab login;
+чтобы убрать это с пути запроса, включите `routing.backend-state-polling.enabled=true`.
 
-Readiness fails only when the front-door login user is missing or has no Kerberos credentials at
-all. An aged-out TGT is reported as `state=STALE` with `secondsUntilExpiry<=0` instead of failing
-readiness, because Hadoop does not renew the TGT of a keytab login on its own while the SASL
-acceptor keeps authenticating clients with the keytab service keys. Backend Kerberos is diagnostic
-only: `PENDING` until the first backend session opens, `STALE` when the last recorded backend login
-is unusable - every backend session performs its own keytab login, so real backend health comes from
-the connectivity probes. Because the probe no longer logs in, a rotated or revoked keytab is not
-detected by `/readyz` itself; it surfaces through failing client authentication or backend
-connectivity.
+Readiness падает только тогда, когда front-door login user отсутствует или вообще не имеет
+Kerberos credentials. Истёкший TGT отдаётся как `state=STALE` с `secondsUntilExpiry<=0` и не роняет
+readiness: Hadoop не обновляет TGT keytab-логина сам по себе, а SASL acceptor продолжает
+аутентифицировать клиентов по service keys из keytab. Backend Kerberos - только диагностика:
+`PENDING` до открытия первой backend-сессии, `STALE` когда последний зафиксированный backend login
+непригоден; каждая backend-сессия делает собственный keytab login, поэтому реальное здоровье
+backend'ов показывают connectivity probes. Так как probe больше не логинится, ротацию или отзыв
+keytab сам `/readyz` не обнаруживает - это проявится через отказы клиентской аутентификации или
+backend connectivity.
 
-If `routing.backend-state-polling.enabled=true`, readiness reflects the most recent background probe
-results. Otherwise `/readyz` measures backend probe latency on demand and returns the same fields.
+Если включён `routing.backend-state-polling.enabled=true`, readiness отражает результат последних
+фоновых probe. Иначе `/readyz` сам делает on-demand probe backend'ов и возвращает те же поля.
 
-Backend and Kerberos probes are the expensive part of `/readyz`, so their results are reused for
-`management.readiness-cache-ms` (2s by default) and refreshed by at most one request at a time:
-concurrent callers are served the previous result rather than fanning out more network checks. The
-per-backend state fields are always rendered from current in-memory runtime state, and `probeAgeMs`
-tells you how stale the underlying probe data is. Set `management.readiness-cache-ms=0` to probe on
-every request.
+Дорогая часть `/readyz` — это backend- и Kerberos-probe, поэтому их результаты переиспользуются в
+течение `management.readiness-cache-ms` (по умолчанию 2s) и обновляются не более чем одним запросом
+одновременно: параллельные вызовы получают предыдущий результат, а не порождают новый fanout
+сетевых проверок. Per-backend поля состояния всегда рендерятся из актуального in-memory runtime
+state, а `probeAgeMs` показывает, насколько устарели данные probe. Чтобы делать probe на каждый
+запрос, поставь `management.readiness-cache-ms=0`.
 
-### Prometheus metrics
+### Prometheus метрики
 
-Current Prometheus metrics:
+Текущие Prometheus метрики:
 
 - `hms_proxy_requests_total{method,catalog,backend,status}`
 - `hms_proxy_request_duration_seconds{method,catalog,backend}`
@@ -478,7 +480,7 @@ Current Prometheus metrics:
 - `hms_proxy_jvm_buffer_pool_total_capacity_bytes{pool}`
 - `hms_proxy_jvm_buffer_pool_count{pool}`
 
-Example Prometheus scrape config:
+Пример Prometheus scrape config:
 
 ```yaml
 scrape_configs:
@@ -488,198 +490,200 @@ scrape_configs:
           - hms-proxy-01.example.com:19083
 ```
 
-Metric semantics:
+Семантика метрик:
 
-- `status` in `hms_proxy_requests_total` is one of `ok`, `error`, `fallback`, or `throttled`
-- `catalog=all, backend=fanout` means a request was broadcast to multiple backends
-- `hms_proxy_backend_failures_total` counts backend-side invocation failures grouped by backend and exception type
-- `hms_proxy_backend_fallback_total` counts compatibility fallbacks returned after backend failures
-- `hms_proxy_routing_ambiguous_total` counts requests that safely failed because the proxy saw conflicting namespace hints and refused to guess
-- `hms_proxy_default_catalog_routed_total` counts requests that were routed to the default catalog because no explicit catalog namespace was present
-- `hms_proxy_lock_request_split_total` counts lock requests that named several catalogs and were routed to one of them, the other components dropped from the request that reached the backend
-- `hms_proxy_rate_limited_total` counts requests rejected by overload protection with labels for the limiting dimension, configured scope, method family, and resolved catalog
-- `hms_proxy_filtered_objects_total` counts databases or tables hidden by selective federation exposure rules before they are returned to the client
-- `hms_proxy_synthetic_read_lock_events_total` tracks synthetic lock shim lifecycle transitions such as `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, and `cleanup`
-- `hms_proxy_synthetic_read_lock_store_failures_total` counts in-memory or ZooKeeper store failures grouped by operation and exception type
-- `hms_proxy_synthetic_read_lock_handoffs_total` counts cases where one proxy instance continues serving a synthetic lock originally acquired through another instance
-- `hms_proxy_synthetic_read_locks_active` exposes the number of currently visible synthetic locks for the configured store backend; it is adjusted in place on every acquire/release and re-synchronized with the store by the background expiry sweep (every 30s), so lock operations never pay for a store-wide listing
-- `hms_proxy_synthetic_read_lock_store_info` is a constant-info gauge that marks whether this proxy runs with `in_memory` or `zookeeper` synthetic lock storage
-- `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
-- `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
-- `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
-- `hms_proxy_iceberg_pointer_guard_events_total` counts the Iceberg pointer guard's decisions on `alter_table`: `repaired` (the request would have erased the record's Iceberg state and was merged over it), `forward_commit` (an Iceberg commit built on the current pointer, passed through), `not_iceberg` (the record holds no pointer, remembered as such), `cache_suppressed` (answered from that memory, no backend read), `read_failed` (the record could not be read and the alter was passed through). Everything except `cache_suppressed` cost one `get_table`, so the added round trips and the cache hit rate are both readable from this one metric
-- `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
-- `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
-- `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
-- `hms_proxy_cache_requests_total` counts metadata cache lookups grouped by `cache` (`database_list`, `database_metadata`), `catalog`, and `result` (`hit`, `miss`)
-- `hms_proxy_cache_entries` tracks the number of live entries stored in metadata caches grouped by `cache` and `catalog`
-- `hms_proxy_cache_invalidations_total` counts metadata cache entry invalidations grouped by `cache`, `catalog`, and `reason` (`write`, `catalog`, `prune`, `all`)
-- `hms_proxy_ranger_evaluations_total` counts Apache Ranger policy evaluations grouped by `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`), and `result` (`allowed`, `denied`)
-- `hms_proxy_ranger_evaluation_duration_seconds` measures Apache Ranger policy evaluation duration in seconds grouped by `catalog` and `resource_type`
-- `hms_proxy_ranger_filtered_objects_total` counts databases and tables hidden by Ranger authorization filters during listing RPCs grouped by `catalog` and `resource_type`
-- `hms_proxy_ranger_plugin_info` is an info gauge exposing the active Ranger plugin configuration (`catalog`, `service_name`, `service_type`, `app_id`)
-- `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes`, and `hms_proxy_jvm_memory_max_bytes` report JVM memory usage in bytes by memory `area` (`heap` or `nonheap`)
-- `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes`, and `hms_proxy_jvm_memory_pool_max_bytes` track memory across individual JVM memory pools (`pool`, `area`)
-- `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes`, and `hms_proxy_jvm_buffer_pool_count` report NIO buffer pool usage by `pool` (`direct` or `mapped`)
+- `status` в `hms_proxy_requests_total` принимает значения `ok`, `error`, `fallback` или `throttled`
+- `catalog=all, backend=fanout` означает, что запрос был отправлен сразу в несколько backend
+- `hms_proxy_backend_failures_total` считает backend-side ошибки вызова с группировкой по backend и exception type
+- `hms_proxy_backend_fallback_total` считает compatibility fallback, которые proxy вернул после backend failures
+- `hms_proxy_routing_ambiguous_total` считает запросы, которые proxy безопасно отклонил из-за conflicting namespace hints вместо угадывания маршрута
+- `hms_proxy_default_catalog_routed_total` считает запросы, которые ушли в default catalog из-за отсутствия явного catalog namespace
+- `hms_proxy_lock_request_split_total` считает lock-запросы, назвавшие несколько каталогов и ушедшие в один из них, — компоненты остальных каталогов из запроса к backend удалены
+- `hms_proxy_rate_limited_total` считает запросы, отклонённые overload protection, с лейблами по limiting dimension, configured scope, method family и resolved catalog
+- `hms_proxy_filtered_objects_total` считает базы или таблицы, скрытые selective federation rules до возврата клиенту
+- `hms_proxy_synthetic_read_lock_events_total` отражает lifecycle synthetic lock shim: `acquire`, `check_lock`, `heartbeat`, `unlock`, `release_txn`, `cleanup`
+- `hms_proxy_synthetic_read_lock_store_failures_total` считает ошибки in-memory или ZooKeeper store с группировкой по операции и exception type
+- `hms_proxy_synthetic_read_lock_handoffs_total` считает случаи, когда synthetic lock, открытый через один proxy instance, продолжает обслуживаться через другой instance
+- `hms_proxy_synthetic_read_locks_active` показывает текущее число synthetic lock, видимых из выбранного store backend; значение правится инкрементально на каждом acquire/release и ресинхронизируется со store фоновым expiry sweep (раз в 30s), поэтому lock-операции не платят за листинг всего store
+- `hms_proxy_synthetic_read_lock_store_info` это constant-info gauge, который помечает, работает ли proxy с `in_memory` или `zookeeper` storage для synthetic lock
+- `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для админских реконнектов, которым не удалось quiesce пул
+- `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
+- `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
+- `hms_proxy_iceberg_pointer_guard_events_total` считает решения Iceberg pointer guard по `alter_table`: `repaired` (запрос стёр бы Iceberg-состояние записи, поэтому был слит поверх неё), `forward_commit` (Iceberg-коммит, построенный на текущем указателе, пропущен как есть), `not_iceberg` (в записи нет указателя, имя запомнено как не-Iceberg), `cache_suppressed` (ответ из этой памяти, без чтения бэкенда), `read_failed` (запись прочитать не удалось, alter пропущен как есть). Всё, кроме `cache_suppressed`, стоило одного `get_table`, поэтому по одной метрике видно и добавленные round trip, и hit rate кэша
+- `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
+- `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
+- `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
+- `hms_proxy_cache_requests_total` считает обращения к кэшу метаданных с группировкой по `cache` (`database_list`, `database_metadata`), `catalog` и `result` (`hit`, `miss`)
+- `hms_proxy_cache_entries` отслеживает текущее число записей в кэшах метаданных с группировкой по `cache` и `catalog`
+- `hms_proxy_cache_invalidations_total` считает инвалидации записей кэша с группировкой по `cache`, `catalog` и `reason` (`write`, `catalog`, `prune`, `all`)
+- `hms_proxy_ranger_evaluations_total` считает проверки политик Apache Ranger с группировкой по `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`) и `result` (`allowed`, `denied`)
+- `hms_proxy_ranger_evaluation_duration_seconds` измеряет длительность вычисления политик Ranger в секундах с группировкой по `catalog` и `resource_type`
+- `hms_proxy_ranger_filtered_objects_total` считает базы и таблицы, скрытые фильтрами Ranger при multi-object listing с группировкой по `catalog` и `resource_type`
+- `hms_proxy_ranger_plugin_info` это info gauge с конфигурацией активных плагинов Ranger (`catalog`, `service_name`, `service_type`, `app_id`)
+- `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes` и `hms_proxy_jvm_memory_max_bytes` отражают использование памяти JVM в байтах по области памяти `area` (`heap` или `nonheap`)
+- `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes` и `hms_proxy_jvm_memory_pool_max_bytes` отслеживают память по отдельным пулам памяти JVM (`pool`, `area`)
+- `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes` и `hms_proxy_jvm_buffer_pool_count` отображают использование пулов NIO-буферов (`pool`: `direct` или `mapped`)
 
-Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
-non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.
+Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
+допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default
+catalog.
 
-The bundled Grafana dashboard at `monitoring/grafana/hms-proxy-dashboard.json` includes panels for
-synthetic lock activity, handoffs, store failures, and active lock counts, plus a `store_mode`
-templating variable for quickly switching between `in_memory` and `zookeeper` views.
+В комплектный Grafana dashboard `monitoring/grafana/hms-proxy-dashboard.json` добавлены панели по
+synthetic lock activity, handoff, store failures и active lock counts, а также template variable
+`store_mode` для быстрого переключения между режимами `in_memory` и `zookeeper`.
 
 ### Structured audit log
 
-The proxy emits one structured audit log record per request through the logger
-`io.github.mmalykhin.hmsproxy.audit`. Each record is a single-line JSON object with fields such as
+Proxy также пишет один structured audit log на каждый запрос через logger
+`io.github.mmalykhin.hmsproxy.audit`. Каждая запись представляет собой single-line JSON с полями
 `requestId`, `method`, `operationClass`, `catalog`, `backend`, `status`, `durationMs`,
-`remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback`, and
+`remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback` и
 `defaultCatalogRouted`.
 
-Client-controlled values (`authenticatedUser`, `remoteAddress`) are JSON-escaped, including every
-control character below `0x20`, so a hostile principal or address cannot break the record for log
-collectors. Non-ASCII characters are emitted verbatim as UTF-8.
+Значения, которые приходят от клиента (`authenticatedUser`, `remoteAddress`), экранируются по
+правилам JSON, включая все управляющие символы ниже `0x20`, поэтому враждебный principal или адрес
+не сломает разбор записи в log collector. Не-ASCII символы выводятся как есть, в UTF-8.
 
-Example:
+Пример:
 
 ```json
 {"event":"hms_proxy_audit","requestId":42,"method":"get_table","operationClass":"metadata_read","catalog":"catalog1","backend":"catalog1","status":"ok","durationMs":8,"routed":true,"fanout":false,"fallback":false,"defaultCatalogRouted":false,"remoteAddress":"10.20.30.40","authenticatedUser":"alice@EXAMPLE.COM"}
 ```
 
-The bundled `log4j.properties` routes this logger to its own appender, `logs/hms-proxy-audit.log`
-(rolling at 100MB with 10 backups), with no layout prefix so the file stays valid JSON lines, and
-with additivity off so audit records do not mix into the general log. Point it somewhere else, or
-ship it to your log pipeline, by overriding the `auditFile` appender in your own
-`log4j.properties`. Silencing the logger below `INFO` also skips building the record, so nothing is
-computed for output nobody reads.
+В комплектном `log4j.properties` этот logger направлен в собственный appender
+`logs/hms-proxy-audit.log` (rolling по 100MB, 10 backup), без префикса layout — чтобы файл оставался
+валидным JSON lines, и с выключенной additivity — чтобы audit-записи не смешивались с общим логом.
+Чтобы писать в другое место или отправлять записи в свой log pipeline, переопредели appender
+`auditFile` в собственном `log4j.properties`. Если приглушить logger ниже `INFO`, запись вообще не
+строится — ничего не вычисляется ради вывода, который никто не читает.
 
 ### Grafana dashboard
 
-A ready-to-import Grafana dashboard is included in
-`monitoring/grafana/hms-proxy-dashboard.json`. It covers request rate, latency, backend failures,
-fallbacks, default-catalog routing, and ambiguous routing events, plus an Iceberg REST row
-(request rate, error ratio and latency quantiles of the REST listener, breakdowns by HTTP status,
-catalog prefix and route, and a listener-up stat), and a dedicated JVM Memory row: heap memory usage,
-max, and utilization percentage, non-heap memory, individual memory pools, and direct/mapped NIO buffer pools.
+Готовый Grafana dashboard лежит в
+`monitoring/grafana/hms-proxy-dashboard.json`. В нём уже есть панели по request rate, latency,
+backend failures, fallbacks, default-catalog routing и ambiguous routing, ряд Iceberg
+REST (request rate, error ratio и квантили латентности REST-listener'а, разбивки по HTTP-статусу,
+catalog prefix и route, и stat «listener up»), а также отдельная секция JVM Memory:
+использование heap-памяти, предел и процент утилизации, non-heap память, детальная разбивка
+по пулам памяти и NIO buffer pools (direct и mapped буферы).
 
 ### Selective federation exposure
 
-You can publish only part of a backend namespace while keeping routing and write policy unchanged.
-This is useful for gradual migration, safer multi-tenant rollout, and avoiding accidental metadata
-exposure.
+Можно публиковать только часть namespace backend-каталога, не меняя routing и write-policy.
+Это удобно для постепенной миграции, безопасного multi-tenant rollout и снижения риска
+случайного раскрытия метаданных.
 
-Per catalog:
+На каталог:
 
 ```properties
-# Backward-compatible default
+# Обратная совместимость по умолчанию
 catalog.catalog1.expose-mode=ALLOW_ALL
 
-# Safer rollout mode: only matched objects are visible
+# Более безопасный rollout: видны только объекты, попавшие в allowlist
 catalog.catalog1.expose-mode=DENY_BY_DEFAULT
 catalog.catalog1.expose-db-patterns=sales,finance_.*
 catalog.catalog1.expose-table-patterns.sales=orders_.*,events
 catalog.catalog1.expose-table-patterns.finance_.*=audit_.*
 ```
 
-Rules:
+Правила:
 
-- regexes are matched case-insensitively
-- matching is done against backend names, not externalized proxy names
-- matching uses the whole string; `sales` matches only `sales`, while `sales_.*` matches `sales_eu`
-- `catalog.<name>.expose-db-patterns` is an allowlist for backend database names inside that catalog
-- `catalog.<name>.expose-table-patterns.<dbRegex>` is an allowlist for table names inside databases whose backend db name matches `<dbRegex>`
-- table rules narrow visibility for matching databases; unmatched tables are filtered out
-- with `DENY_BY_DEFAULT`, databases without a matching db rule or table rule are hidden
-- a matching table rule can expose a database even when no db-level rule is present, but only matching tables inside that database stay visible
+- regex сопоставляются case-insensitively
+- матчинг идёт по backend names, а не по externalized proxy names
+- сопоставление делается по всей строке: `sales` совпадает только с `sales`, а `sales_.*` совпадёт с `sales_eu`
+- `catalog.<name>.expose-db-patterns` задаёт allowlist для backend database names внутри каталога
+- `catalog.<name>.expose-table-patterns.<dbRegex>` задаёт allowlist для таблиц внутри баз, чьё backend db name совпало с `<dbRegex>`
+- table rules сужают видимость таблиц внутри совпавших баз; unmatched tables отфильтровываются
+- при `DENY_BY_DEFAULT` базы без совпавшего db rule или table rule скрываются
+- совпавший table rule может сделать базу видимой даже без db-level rule, но внутри неё будут видны только совпавшие таблицы
 
-The filter is applied on metadata read paths such as `get_all_databases`, `get_databases`,
-`get_table*`, `get_tables*`, `get_table_meta`, and Hortonworks `get_tables_ext`.
+Фильтр применяется на metadata read-path’ах вроде `get_all_databases`, `get_databases`,
+`get_table*`, `get_tables*`, `get_table_meta` и Hortonworks `get_tables_ext`.
 
-Behavior by API shape:
+Поведение по типу API:
 
-- list-style RPCs such as `get_all_databases`, `get_all_tables`, `get_tables`, `get_table_meta`, and `get_tables_ext` silently drop hidden objects from the response
-- direct lookups such as `get_database`, `get_table`, and `get_table_req` fail as "not found" when the target object is filtered out
-- `hms_proxy_filtered_objects_total{method,catalog,object_type}` counts both hidden databases and hidden tables
+- list-style RPC вроде `get_all_databases`, `get_all_tables`, `get_tables`, `get_table_meta` и `get_tables_ext` молча убирают скрытые объекты из ответа
+- direct lookup вроде `get_database`, `get_table` и `get_table_req` возвращает "not found", если целевой объект отфильтрован
+- `hms_proxy_filtered_objects_total{method,catalog,object_type}` считает и скрытые базы, и скрытые таблицы
 
-Examples:
+Примеры:
 
 ```properties
-# 1. Publish only one database during migration
+# 1. Во время миграции публикуем только одну базу
 catalog.catalog1.expose-mode=DENY_BY_DEFAULT
 catalog.catalog1.expose-db-patterns=sales
 
-# 2. Publish one database, but only selected tables inside it
+# 2. Публикуем одну базу, но только часть таблиц внутри неё
 catalog.catalog1.expose-mode=DENY_BY_DEFAULT
 catalog.catalog1.expose-table-patterns.sales=orders_.*,customers
 
-# 3. Keep the catalog open by default, but narrow one sensitive database
+# 3. Каталог по умолчанию открыт, но одну чувствительную базу сужаем
 catalog.catalog1.expose-mode=ALLOW_ALL
 catalog.catalog1.expose-table-patterns.audit=.*_public
 ```
 
-What those examples mean:
+Что это означает:
 
-- example 1 exposes only backend db `sales`
-- example 2 makes backend db `sales` visible and exposes only tables matching `orders_.*` plus `customers`
-- example 3 leaves all databases visible, but in backend db `audit` returns only tables matching `.*_public`
+- в примере 1 видна только backend db `sales`
+- в примере 2 backend db `sales` становится видимой, но внутри неё доступны только таблицы, совпавшие с `orders_.*`, плюс `customers`
+- в примере 3 все базы остаются видимыми, но в backend db `audit` возвращаются только таблицы, совпавшие с `.*_public`
 
-For non-default catalogs, remember that filters still use backend db names such as `sales`, not
-external names like `catalog2__sales`.
+Для non-default catalog помните, что фильтры всё равно матчятся по backend db names вроде `sales`,
+а не по внешним именам вроде `catalog2__sales`.
 
-## Transactional DDL guard
+## Guard для transactional DDL
 
-You can ask the proxy to protect table creation or table alteration when the incoming table
-metadata marks a managed table as transactional:
+Proxy можно настроить так, чтобы он защищал создание и изменение managed-таблиц, если во входящем
+metadata таблица помечена как transactional:
 
 - `transactional=true`
-- any non-empty `transactional_properties`
+- любое непустое значение `transactional_properties`
 
-The rule applies to every `create_table*` and `alter_table*` RPC, including
-`create_table_with_environment_context` (the call `HiveMetaStoreClient` actually sends for
-`createTable`), `create_table_with_constraints`, and `alter_table_with_cascade`. The `*_req`
-wrappers from Hive 4 and Hortonworks front doors are unwrapped into these RPCs before the guard
-runs, so they are covered too. It is evaluated only for `MANAGED_TABLE`. External tables are left
-unchanged.
+Правило применяется ко всем RPC `create_table*` и `alter_table*`, включая
+`create_table_with_environment_context` (именно этот вызов `HiveMetaStoreClient` реально
+отправляет для `createTable`), `create_table_with_constraints` и `alter_table_with_cascade`.
+Обёртки `*_req` из front door Hive 4 и Hortonworks разворачиваются в эти RPC до срабатывания
+guard, поэтому они тоже покрыты. Оно срабатывает только для `MANAGED_TABLE`. External-таблицы
+остаются без изменений.
 
-Reject mode:
+Режим reject:
 
 ```properties
 guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 ```
 
-Rewrite mode:
+Режим rewrite:
 
 ```properties
 guard.transactional-ddl.mode=REWRITE_TRANSACTIONAL_TO_EXTERNAL
 ```
 
-In rewrite mode the proxy rewrites the incoming table to `EXTERNAL_TABLE`, adds
-`external.table.purge=true`, and removes `transactional` plus `transactional_properties`.
-If you also need physical file deletion on Apache `3.1.3` backends, combine this with
-`federation.external-table-drop-purge.mode=BEST_EFFORT` and a per-catalog allowlist via
+В режиме rewrite proxy переписывает входящую таблицу в `EXTERNAL_TABLE`, добавляет
+`external.table.purge=true` и удаляет `transactional` и `transactional_properties`.
+Если нужен ещё и физический delete файлов на backend Apache `3.1.3`, это надо комбинировать с
+`federation.external-table-drop-purge.mode=BEST_EFFORT` и per-catalog allowlist через
 `catalog.<name>.conf.hms.proxy.external-table-drop-purge.allowed-prefixes`.
 
-You can also scope it to specific client IPs or CIDR ranges:
+Также можно ограничить его конкретными IP-адресами или CIDR-масками:
 
 ```properties
 guard.transactional-ddl.mode=REJECT_TRANSACTIONAL
 guard.transactional-ddl.client-addresses=10.10.0.15,10.20.0.0/16,2001:db8::/64
 ```
 
-If `guard.transactional-ddl.client-addresses` is set, the rule is evaluated only for matching
-clients. If it is omitted, all clients are covered.
+Если `guard.transactional-ddl.client-addresses` задан, проверка применяется только к совпавшим
+клиентам. Если не задан, проверка действует для всех клиентов.
 
 ## Rate limiting / overload protection
 
-The proxy can also reject bursts before they become backend overload. This protection is local to
-each proxy instance and uses token-bucket limits with:
+Proxy также умеет отсеивать bursts до того, как они превратятся в backend overload. Эта защита
+работает локально на каждом proxy instance и использует token-bucket лимиты с:
 
-- a steady refill rate via `requests-per-second`
-- an optional short burst allowance via `burst`
-- independent buckets, so a request must pass every configured scope that applies to it
+- постоянной скоростью пополнения через `requests-per-second`
+- опциональным allowance для короткого burst через `burst`
+- независимыми bucket, так что запрос должен пройти все настроенные scope, которые к нему относятся
 
-Supported scopes:
+Поддерживаемые scope:
 
 - per authenticated client principal: `rate-limit.principal.*`
 - per exact source IP: `rate-limit.source.*`
@@ -688,7 +692,7 @@ Supported scopes:
 - per logical catalog: `rate-limit.catalog.<catalog>.*`
 - per high-risk RPC class: `rate-limit.rpc-class.<class>.*`
 
-Supported method families:
+Поддерживаемые method families:
 
 - `metadata_read`
 - `metadata_write`
@@ -699,23 +703,23 @@ Supported method families:
 - `admin_introspection`
 - `compatibility_only_rpc`
 
-Supported RPC classes:
+Поддерживаемые RPC classes:
 
 - `write`
 - `ddl`
 - `txn`
 - `lock`
 
-Important behavior:
+Важное поведение:
 
-- per-principal limits apply only when the front door exposes an authenticated user, for example Kerberos/SASL
-- `rate-limit.source-cidr.<name>` is an aggregate bucket for the whole configured CIDR rule, not a separate bucket per IP
-- if one source IP matches several CIDR rules, all matching rules are enforced
-- per-catalog limits are enforced when the request actually resolves or touches a catalog/backend; fanout reads can therefore consume more than one catalog bucket
-- one RPC can match several classes at once, for example a lock/txn write can count toward `write`, `txn`, and `lock`
-- when a limit is exceeded the client receives a `MetaException` and the request is recorded with `status="throttled"`
+- per-principal лимиты срабатывают только когда front door даёт authenticated user, например через Kerberos/SASL
+- `rate-limit.source-cidr.<name>` это aggregate bucket на всё правило CIDR, а не отдельный bucket на каждый IP
+- если один source IP совпал сразу с несколькими CIDR rule, применяются все совпавшие rule
+- per-catalog лимиты срабатывают в момент, когда запрос реально resolve'ится или касается конкретного catalog/backend; значит fanout read может расходовать несколько catalog bucket
+- один RPC может одновременно попасть в несколько classes, например lock/txn write может считаться сразу в `write`, `txn` и `lock`
+- при превышении лимита клиент получает `MetaException`, а запрос записывается со `status="throttled"`
 
-Example:
+Пример:
 
 ```properties
 # Per authenticated principal
@@ -726,12 +730,12 @@ rate-limit.principal.burst=120
 rate-limit.source.requests-per-second=30
 rate-limit.source.burst=60
 
-# Aggregate bucket for a whole subnet or pool
+# Aggregate bucket на целую подсеть или клиентский pool
 rate-limit.source-cidr.hs2-pool.cidrs=10.10.0.0/16,10.20.0.0/16
 rate-limit.source-cidr.hs2-pool.requests-per-second=200
 rate-limit.source-cidr.hs2-pool.burst=300
 
-# Method-family shaping
+# Shaping по семейству методов
 rate-limit.method-family.metadata_read.requests-per-second=600
 rate-limit.method-family.metadata_read.burst=1000
 
@@ -739,47 +743,47 @@ rate-limit.method-family.metadata_read.burst=1000
 rate-limit.catalog.catalog1.requests-per-second=300
 rate-limit.catalog.catalog2.requests-per-second=120
 
-# Extra protection for high-risk RPC classes
+# Дополнительная защита для high-risk RPC classes
 rate-limit.rpc-class.write.requests-per-second=80
 rate-limit.rpc-class.ddl.requests-per-second=15
 rate-limit.rpc-class.txn.requests-per-second=30
 rate-limit.rpc-class.lock.requests-per-second=50
 ```
 
-Recommended production starting point:
+Нормальная production starting point:
 
-- use `principal` for runaway HS2 sessions or bad end users
-- use `source` and `source-cidr` for tooling, scanners, or large client pools
-- use `method-family.metadata_read` to cap scan-heavy metadata discovery
-- use `catalog.<name>` to keep one hot catalog from starving the others
-- keep stricter limits on `ddl`, `txn`, and `lock` than on plain metadata reads
+- используй `principal` против runaway HS2 session или плохих end-user
+- используй `source` и `source-cidr` против tooling, scanner и больших client pool
+- используй `method-family.metadata_read`, чтобы ограничить scan-heavy metadata discovery
+- используй `catalog.<name>`, чтобы один hot catalog не выедал остальные
+- для `ddl`, `txn` и `lock` обычно стоит держать лимиты строже, чем для обычных metadata read
 
-You can also choose which HMS version the proxy advertises on the front door:
+## Frontend profile и runtime jars
+
+Можно выбрать, какую версию HMS proxy объявляет наружу:
 
 ```properties
 compatibility.frontend-profile=APACHE_3_1_3
 ```
 
-or for Hortonworks clients:
+или для Hortonworks клиентов:
 
 ```properties
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 ```
 
-or for HDP `3.1.0.3.1.5.6150-1` clients:
+или для клиентов HDP `3.1.0.3.1.5.6150-1`:
 
 ```properties
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 ```
 
-That changes the value returned by `getVersion()` while keeping the same proxy routing logic.
+### Несколько front-end listener'ов на разных портах
 
-### Multiple front-end listeners on different ports
-
-The Thrift protocol has no version-negotiation handshake, so the proxy cannot tell which Hive
-version a client speaks from the first request (much like HiveServer2's split between binary
-and HTTP protocols). When two different client populations need different `getVersion()`
-identities or different runtime jars, run **multiple Thrift listeners on different ports**:
+В Thrift-протоколе нет version-negotiation handshake, поэтому proxy не может по первому
+запросу определить версию клиента (так же как HiveServer2 разделяет binary и HTTP по портам).
+Когда нужны два разных типа клиентов с разными `getVersion()` identity или разными runtime
+jars — поднимаем **несколько Thrift listener'ов на разных портах**:
 
 ```properties
 server.port=9083
@@ -791,68 +795,65 @@ additional-frontends.hdp.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 additional-frontends.hdp.standalone-metastore-jar=hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
-The primary listener stays on `server.port` with its own `compatibility.frontend-profile`.
-Each `additional-frontends.<name>.*` block defines an independent listener:
+Primary listener живёт на `server.port` со своим `compatibility.frontend-profile`. Каждый
+блок `additional-frontends.<name>.*` задаёт независимый listener:
 
-| Key | Required | Default |
+| Ключ | Обязательный | По умолчанию |
 | --- | --- | --- |
-| `additional-frontends.<name>.port` | yes | — |
-| `additional-frontends.<name>.frontend-profile` | yes | — |
-| `additional-frontends.<name>.standalone-metastore-jar` | yes for non-`APACHE_3_1_3` | — |
-| `additional-frontends.<name>.bind-host` | no | `server.bind-host` |
-| `additional-frontends.<name>.min-worker-threads` | no | `server.min-worker-threads` |
-| `additional-frontends.<name>.max-worker-threads` | no | `server.max-worker-threads` |
-| `additional-frontends.<name>.client-socket-timeout-ms` | no | `server.client-socket-timeout-ms` |
-| `additional-frontends.<name>.tcp-keepalive` | no | `server.tcp-keepalive` |
-| `additional-frontends.<name>.tcp-keepalive-idle-seconds` | no | `server.tcp-keepalive-idle-seconds` |
-| `additional-frontends.<name>.tcp-keepalive-interval-seconds` | no | `server.tcp-keepalive-interval-seconds` |
-| `additional-frontends.<name>.tcp-keepalive-count` | no | `server.tcp-keepalive-count` |
+| `additional-frontends.<name>.port` | да | — |
+| `additional-frontends.<name>.frontend-profile` | да | — |
+| `additional-frontends.<name>.standalone-metastore-jar` | да для не-`APACHE_3_1_3` | — |
+| `additional-frontends.<name>.bind-host` | нет | `server.bind-host` |
+| `additional-frontends.<name>.min-worker-threads` | нет | `server.min-worker-threads` |
+| `additional-frontends.<name>.max-worker-threads` | нет | `server.max-worker-threads` |
+| `additional-frontends.<name>.client-socket-timeout-ms` | нет | `server.client-socket-timeout-ms` |
+| `additional-frontends.<name>.tcp-keepalive` | нет | `server.tcp-keepalive` |
+| `additional-frontends.<name>.tcp-keepalive-idle-seconds` | нет | `server.tcp-keepalive-idle-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-interval-seconds` | нет | `server.tcp-keepalive-interval-seconds` |
+| `additional-frontends.<name>.tcp-keepalive-count` | нет | `server.tcp-keepalive-count` |
 
-All listeners share the same `RoutingMetaStoreProxy`, federation, security (`FrontDoorSecurity`
-including SASL/Kerberos), audit and Prometheus metrics. Only the wire-level Thrift API
-differs per port.
+Все listener'ы используют один `RoutingMetaStoreProxy`, federation, security
+(`FrontDoorSecurity` включая SASL/Kerberos), audit и Prometheus метрики. Отличается
+только wire-level Thrift API на конкретном порту.
 
-Additional listeners run on daemon threads and are stopped before the router and the front-door
-security are closed, so a failure while starting one listener cannot leave the JVM alive with a
-port still held. See [Front-door socket lifetime and shutdown](#front-door-socket-lifetime-and-shutdown).
+Дополнительные listener'ы работают на daemon-потоках и останавливаются раньше, чем
+закрываются router и front-door security, поэтому авария при старте одного listener'а не
+оставит JVM живой с занятым портом. См.
+[Жизненный цикл front-door сокетов и shutdown](#жизненный-цикл-front-door-сокетов-и-shutdown).
 
-Every listener must own its `host:port`. Startup fails when an additional frontend collides with
-the primary listener, with another additional frontend, or with the management listener — including
-the management default `server.port + 1000` — and a wildcard bind host such as `0.0.0.0` counts as a
-collision with any host on the same port.
+У каждого listener должен быть собственный `host:port`. Старт падает, если additional frontend
+конфликтует с основным listener, с другим additional frontend или с management-листенером —
+включая дефолтный `server.port + 1000`, — а wildcard bind host вроде `0.0.0.0` считается
+конфликтом с любым хостом на том же порту.
 
-For a real Hortonworks front door, point the proxy to an HDP `standalone-metastore` jar:
+Для полноценного Hortonworks frontend нужно указать HDP `standalone-metastore` jar:
 
 ```properties
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_0_78
 compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
-For HDP `3.1.0.3.1.5.6150-1`, point the proxy to the matching jar:
+Для HDP `3.1.0.3.1.5.6150-1` используй соответствующий jar:
 
 ```properties
 compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
-For isolated Hortonworks backend runtimes, you can also point the proxy to a backend jar explicitly:
+Для isolated Hortonworks backend runtime можно указать backend jar:
 
 ```properties
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
-or:
+или:
 
 ```properties
 compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
-For Hortonworks backend runtimes the proxy forces `hive.metastore.uri.selection=SEQUENTIAL`
-inside the isolated metastore client. This avoids a known HDP 3.1.0.x client bug in the
-random URI selection path when `HiveMetaStoreClient` resolves backend metastore URIs.
-
-Backend runtime is configured explicitly per catalog. If `catalog.<name>.runtime-profile` is not
-set, the proxy uses `APACHE_3_1_3` for that catalog:
+Backend runtime задаётся явно по каталогу. Если `catalog.<name>.runtime-profile` не указан, для
+этого каталога используется `APACHE_3_1_3`:
 
 ```properties
 catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_0_78
@@ -861,22 +862,21 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 catalog.apache.runtime-profile=APACHE_3_1_3
 ```
 
-For HDP `3.1.0.3.1.5.6150-1`, configure the catalog the same way:
+Для HDP `3.1.0.3.1.5.6150-1` профиль и jar задаются аналогично:
 
 ```properties
 catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 ```
 
-With that jar present, the proxy can open the selected Hortonworks backend runtime in an isolated
-classloader. Runtime choice is not autodetected from the backend server version; it follows the
-configured `catalog.<name>.runtime-profile`.
+С этим jar proxy может открыть выбранный Hortonworks backend runtime в isolated classloader.
+Выбор runtime не autodetect'ится по версии backend сервера, а берётся из
+`catalog.<name>.runtime-profile`.
 
-For the front door, the proxy instantiates the Hortonworks thrift `Processor` in an isolated
-classloader and bridges overlapping RPCs to the internal Apache `3.1.3` handler automatically.
-Selected HDP-only methods are also adapted to Apache equivalents:
+Для front door proxy поднимает Hortonworks thrift `Processor` в isolated classloader и автоматически
+бриджит общие RPC в внутренний Apache `3.1.3` handler. Поддержанные HDP-only методы:
 
-- `get_database_req` -> `get_database` for HDP `3.1.0.3.1.5.6150-1`
+- `get_database_req` -> `get_database` для HDP `3.1.0.3.1.5.6150-1`
 - `create_table_req` -> `create_table` / `create_table_with_environment_context` / `create_table_with_constraints`
 - `truncate_table_req` -> `truncate_table`
 - `alter_table_req` -> `alter_table` / `alter_table_with_environment_context`
@@ -885,356 +885,357 @@ Selected HDP-only methods are also adapted to Apache equivalents:
 - `get_partitions_by_names_req` -> `get_partitions_by_names`
 - `update_table_column_statistics_req` -> `set_aggr_stats_for`
 - `update_partition_column_statistics_req` -> `set_aggr_stats_for`
-- `add_write_notification_log` -> direct Hortonworks passthrough only to a Hortonworks backend
-- `get_tables_ext` -> direct Hortonworks passthrough only to a Hortonworks `3.1.0.3.1.5.6150-1` backend
-- `get_all_materialized_view_objects_for_rewriting` -> direct Hortonworks passthrough only to a Hortonworks `3.1.0.3.1.5.6150-1` backend via `routing.default-catalog`
+- `add_write_notification_log` -> прямой Hortonworks passthrough только в Hortonworks backend
+- `get_tables_ext` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1`
+- `get_all_materialized_view_objects_for_rewriting` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1` через `routing.default-catalog`
 
-Some HDP-only methods still do not have a safe Apache mapping, so they remain unsupported and fail
-explicitly rather than returning a misleading success response.
+Замечания по view / materialized view:
+- переписывание SQL работает только при `federation.view-text-rewrite.mode=REWRITE`
+- rewrite сделан intentionally parser-less: лексический сканер отслеживает table-позиции
+  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) и переписывает только database-квалификатор ссылки,
+  стоящей в такой позиции; полный Hive SQL grammar не разбирается
+- string literals, комментарии `--` и `/* */`, числа и идентификаторы в backquote пропускаются,
+  поэтому их содержимое никогда не переписывается; квалификаторы колонок и алиасы таблиц
+  (`t.col` в `select t.col from sales.orders t`) не трогаются, даже если совпадают с именем БД
+- ссылки вида `catalog.db.table` сохраняют catalog-префикс: на выходе схлопывается только
+  `<backend catalog>.<db>.<table>` в имя внешней БД, а любой другой catalog-префикс остаётся
+  нетронутым, а не переписывается молча на другой namespace
+- входящие cross-catalog ссылки вроде `catalog2__dim.table_x` internalize'ятся для backend, но на
+  выходе гарантированно переписывается только namespace текущей таблицы
+- всё, что нельзя разрешить однозначно, остаётся нетронутым и логируется на уровне `DEBUG` в
+  `ViewDefinitionCompatibility`; непереписанная ссылка проявится как явная ошибка backend, а не
+  как молча испорченное определение вью
+- по умолчанию переписывается только `viewExpandedText`
+  (`federation.view-text-rewrite.preserve-original-text=true`), то есть клиентский
+  `viewOriginalText` не мутируется; поставь `false`, если нужно переписывать и сохранённый
+  оригинальный SQL
+- диалектные конструкции (подстановки вроде `${hiveconf:db}`, макросы, engine-specific hints) вне
+  области rewrite — их по-прежнему стоит проверить отдельным smoke тестом в вашей среде
 
-View/materialized-view notes:
-- the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=REWRITE`
-- rewrite is intentionally parser-less and conservative: a lexical scanner tracks table positions
-  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) and rewrites only the database qualifier of a
-  reference standing in one of them; it does not parse the full Hive SQL grammar
-- string literals, `--` and `/* */` comments, numbers and backquoted identifiers are skipped, so
-  their content is never rewritten; column qualifiers and table aliases (`t.col` in
-  `select t.col from sales.orders t`) are left alone even when they collide with a database name
-- `catalog.db.table` references keep their catalog qualifier: outbound rewrite collapses
-  `<backend catalog>.<db>.<table>` into the external database name, and any other catalog prefix is
-  left untouched instead of being silently retargeted
-- cross-catalog references in inbound SQL like `catalog2__dim.table_x` are internalized for the
-  backend, but outbound rewrite is only guaranteed for the current table namespace
-- whatever cannot be resolved unambiguously stays untouched and is logged at `DEBUG` by
-  `ViewDefinitionCompatibility`; an unrewritten reference surfaces as an explicit backend error
-  rather than as a silently corrupted view definition
-- by default only `viewExpandedText` is rewritten
-  (`federation.view-text-rewrite.preserve-original-text=true`), so the client-facing
-  `viewOriginalText` is never mutated; set it to `false` if you also want the stored original SQL
-  translated
-- dialect-specific text (variable substitution such as `${hiveconf:db}`, macros, engine-specific
-  hints) is out of scope and still needs validation in your environment
+## ACID / txn / lock policy
 
-## Logging
+- request-based ACID методы с routable namespace в payload, например
+  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
+  `add_dynamic_partitions`, `fire_listener_event`, `repl_tbl_writeid_state`,
+  маршрутизируются по payload
+- id-only lifecycle методы, например `open_txns`, `commit_txn`, `abort_txn`,
+  `abort_txns`, `check_lock`, `unlock`, `heartbeat`, `heartbeat_txn_range`,
+  привязаны к `routing.default-catalog`
+- это осознанная модель: proxy не пытается быть distributed ACID coordinator между
+  несколькими backend metastore
 
-The bundled `log4j.properties` is the default configuration, and the proxy bootstraps it at runtime
-if no appenders are configured, so a plain `java -jar ...` launch still gets logs. Defaults:
+## Логирование
 
-- root logger at `INFO`, writing to stderr and to `logs/hms-proxy.log` (rolling at 50MB, 10 backups)
-- the proxy package `io.github.mmalykhin.hmsproxy` at `INFO`
-- the audit logger `io.github.mmalykhin.hmsproxy.audit` at `INFO` into its own
+Комплектный `log4j.properties` — это конфигурация по умолчанию; proxy подхватывает её в runtime,
+если appender'ы не сконфигурированы, так что обычный запуск `java -jar ...` тоже пишет логи.
+Дефолты:
+
+- root logger на `INFO`, вывод в stderr и в `logs/hms-proxy.log` (rolling по 50MB, 10 backup)
+- пакет proxy `io.github.mmalykhin.hmsproxy` на `INFO`
+- audit logger `io.github.mmalykhin.hmsproxy.audit` на `INFO` в отдельный
   `logs/hms-proxy-audit.log`
 
-Override any of it with your own `log4j.properties` on the classpath.
+Любую часть можно переопределить своим `log4j.properties` на classpath.
 
-The binding is `slf4j-reload4j`. reload4j is a drop-in fork of the EOL log4j 1.2.17 with the known
-CVEs removed, so the configuration format stays log4j 1.x and existing `log4j.properties` files keep
-working unchanged. The pieces reload4j dropped — `org.apache.log4j.jmx.*`, the `lf5` viewer and
-`NTEventLogAppender` — are the only things a hand-written configuration can no longer reference.
+Binding — `slf4j-reload4j`. reload4j это drop-in форк EOL-версии log4j 1.2.17 с вырезанными
+известными CVE, поэтому формат конфигурации остаётся log4j 1.x и существующие `log4j.properties`
+продолжают работать без изменений. Единственное ограничение: то, что из reload4j убрали —
+`org.apache.log4j.jmx.*`, viewer `lf5` и `NTEventLogAppender`, — в своей конфигурации больше
+использовать нельзя.
 
 ### Debug tracing
 
-Per-request debug tracing is **off by default**: it renders every request argument and every backend
-response through `DebugLogUtil`, which costs real CPU and allocation on each RPC. Turn it on
-deliberately, per environment or per incident:
+Per-request debug tracing **по умолчанию выключен**: он рендерит через `DebugLogUtil` все аргументы
+запроса и все backend-ответы, а это реальные CPU и аллокации на каждый RPC. Включай его осознанно —
+для конкретного окружения или на время инцидента:
 
 ```properties
 log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG
 ```
 
-With it enabled, each client call gets a `requestId`, and the logs include:
+Когда он включён, каждый клиентский вызов получает `requestId`, а в логах есть:
 
-- incoming HMS request method and arguments
-- selected backend catalog
-- proxied thrift method and rewritten arguments
-- backend response or backend error
-- final client response or client-visible error
+- входящий HMS method и аргументы
+- выбранный backend catalog
+- proxied thrift method и переписанные аргументы
+- backend response или backend error
+- итоговый client response или client-visible error
 
-Rendered values are bounded (10 elements per collection, 3 levels deep, ~4000 characters per
-record), but the volume is still substantial on a busy proxy. Turn it back to `INFO` when done.
+Рендер значений ограничен (10 элементов на коллекцию, глубина 3, ~4000 символов на запись), но на
+нагруженном proxy объём всё равно заметный. По окончании возвращай уровень на `INFO`.
 
-Note that `INFO` on the proxy package already keeps the `trace stage=client-request` /
-`backend-request` write-path trace lines, so most operational debugging does not need `DEBUG`.
+Учти, что на `INFO` для пакета proxy остаются trace-строки write-пути
+`trace stage=client-request` / `backend-request`, поэтому для большинства операционных разборов
+`DEBUG` не нужен.
 
 ## HiveServer2
 
-Point HiveServer2 `hive.metastore.uris` to this proxy instead of a single backend HMS.
-For multi-catalog deployments, prefer Hive versions and clients that preserve catalog fields.
-If your clients are older, use `catalog<separator>db.table` naming consistently, with
-`<separator>` taken from `routing.catalog-db-separator`.
+Укажи в HiveServer2 `hive.metastore.uris` на proxy вместо одного backend HMS.
+Для multi-catalog deployment лучше использовать Hive/клиентов, которые сохраняют catalog fields.
 
-For Beeline/HS2 SQL workloads, a non-dot separator is usually easier to use than `.`.
-Recommended example:
+Для Beeline/HS2 обычно удобнее separator `__`, чем `.`:
 
 ```properties
 routing.catalog-db-separator=__
 ```
 
-This only changes the external legacy spelling from the canonical routing model above.
+Это меняет только внешний legacy формат имени из канонической модели маршрутизации выше.
 
-If HiveServer2 metadata writes behave differently through the proxy than directly against the
-backend HMS, try enabling:
+Если metadata writes через proxy ведут себя не так, как напрямую против backend HMS, можно
+попробовать:
 
 ```properties
 federation.preserve-backend-catalog-name=true
 ```
 
-This only changes the returned `catName`/`catalogName`, typically to backend values such as
-`hive`. Backend selection still follows the canonical routing model above.
+Это меняет только возвращаемые `catName`/`catalogName`, обычно на backend-значения вроде `hive`.
+Выбор backend по-прежнему следует канонической модели маршрутизации выше.
 
-If your workloads depend on Hive views or materialized views across multiple catalogs, also test
-with:
+Если нагрузки используют Hive views или materialized views между несколькими catalog, имеет смысл
+сразу прогонять и такой режим:
 
 ```properties
 federation.view-text-rewrite.mode=REWRITE
 ```
 
-That rewrites view SQL between external and internal names. `viewOriginalText` is preserved by
-default (`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` only if the
-stored original SQL must be translated as well. Neither switch changes backend selection for the
-RPC itself.
+Это переписывает SQL внутри view между внешними и внутренними именами. `viewOriginalText` по
+умолчанию сохраняется (`federation.view-text-rewrite.preserve-original-text=true`); ставь `false`
+только если нужно переписывать и сохранённый оригинальный SQL. На выбор backend для самого RPC ни
+одна из настроек не влияет.
 
-If you need the proxy to physically delete external-table data on Apache `3.1.3` backends after
-`DROP TABLE`, enable:
+Если нужно, чтобы proxy физически удалял данные external table на backend Apache `3.1.3`
+после `DROP TABLE`, включи:
 
 ```properties
 federation.external-table-drop-purge.mode=BEST_EFFORT
 catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs://ns-catalog2/tmp/,hdfs://ns-catalog2/data/external/
 ```
 
-This hook currently applies only to `drop_table` and `drop_table_with_environment_context`, only
-for backend runtime `APACHE_3_1_3`, only when the table is already `EXTERNAL_TABLE` with
-`external.table.purge=true`, and only when the qualified `LOCATION` matches the configured
-allowlist. The proxy deletes data only after the backend metastore drop succeeds; purge failures
-are logged and do not roll back the metadata delete. Keep the allowlist narrow because matching
-locations are deleted recursively through Hadoop `FileSystem`.
+Сейчас этот хук работает только для `drop_table` и `drop_table_with_environment_context`,
+только для backend runtime `APACHE_3_1_3`, только если таблица уже `EXTERNAL_TABLE` с
+`external.table.purge=true`, и только если квалифицированный `LOCATION` попадает в allowlist.
+Удаление данных происходит только после успешного удаления метаданных в backend metastore;
+ошибка purge логируется и не откатывает metadata delete. Allowlist лучше держать узким, потому
+что подходящие пути удаляются рекурсивно через Hadoop `FileSystem`.
 
-The recursive delete runs on a small background worker pool (threads named
-`hms-proxy-drop-purge-*`), so `drop_table` returns as soon as the metadata delete succeeds and does
-not hold a Thrift worker for the whole delete. A successful `DROP TABLE` therefore does not
-guarantee that the data is already gone — watch the proxy log for the purge outcome. Pending purges
-are awaited during proxy shutdown; purges still queued after that are logged and skipped.
-
-Then a non-default catalog is used through the external database name:
-
-```sql
-USE catalog2__sales;
-SHOW TABLES IN catalog2__sales;
-SELECT * FROM `catalog2__sales`.orders LIMIT 10;
-```
-
-If you keep the default separator `.`, older Hive SQL clients can treat `catalog.db.table`
-ambiguously, so `__` is usually the safer choice.
+Рекурсивное удаление выполняется в небольшом фоновом пуле (потоки с именами
+`hms-proxy-drop-purge-*`), поэтому `drop_table` отвечает сразу после удаления метаданных и не
+держит Thrift worker всё время удаления. Значит, успешный `DROP TABLE` ещё не гарантирует, что
+данные уже удалены — результат purge смотри в логе proxy. При остановке proxy запущенные purge
+дожидаются завершения; оставшиеся в очереди логируются и пропускаются.
 
 ## Iceberg REST Catalog frontend
 
-The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
-Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
-front door. Status: **experimental**; the full write surface `RESTCatalogAdapter`
-exposes - table writes (create, commit, drop, rename, register), view writes
-(create, commit, drop, rename) and namespace DDL (create, update properties,
-drop), plus multi-table transaction commit - is supported, but **only when the
-target namespace resolves to `routing.default-catalog`**. Iceberg clients
-(PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load
-Iceberg tables stored in HMS via the standard `metadata_location` table
-parameter.
+Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
+Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
+Thrift HMS front door. Статус: **экспериментально**; вся write-поверхность,
+которую выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
+rename, register), write view (create, commit, drop, rename) и namespace DDL
+(create, update properties, drop), а также multi-table transaction commit —
+поддержана, но **только когда целевой namespace резолвится в
+`routing.default-catalog`**. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
+Trino `iceberg-rest`) могут discover и load Iceberg-таблицы, хранящиеся в HMS
+через стандартный параметр `metadata_location`.
 
-Table writes and the default-catalog-only gate landed first; view writes and
-multi-table transaction commit were already reachable at that point too - the
-REST dispatch path for them shares the same generic `RoutingHiveCatalog`/
-`RoutingMetaStoreClient` plumbing table writes use, and `WriteRouteGate`
-already classified all thirteen routes as writes - they were simply not yet
-advertised in `GET /v1/config` or covered by smoke. Namespace DDL is genuinely
-new: `RoutingMetaStoreClient` did not implement `createDatabase`,
-`alterDatabase` or `dropDatabase` until now, so `POST /v1/{prefix}/namespaces`
-and friends answered `UnsupportedOperationException` regardless of catalog.
+Write таблиц и gate «только default-каталог» появились первыми; write view и
+multi-table transaction commit к этому моменту уже были достижимы — их
+REST-путь идёт через тот же общий `RoutingHiveCatalog`/`RoutingMetaStoreClient`,
+которым пользуется write таблиц, и `WriteRouteGate` уже классифицировал все
+тринадцать роутов как write — их просто ещё не объявляли в `GET /v1/config` и
+не покрывали smoke. Namespace DDL — по-настоящему новое: `RoutingMetaStoreClient`
+не реализовывал `createDatabase`, `alterDatabase` и `dropDatabase` до сих пор,
+поэтому `POST /v1/{prefix}/namespaces` и соседние роуты отвечали
+`UnsupportedOperationException` независимо от каталога.
 
-**Why writes are default-catalog only:** only the default catalog's tables
-are backed by a real HMS lock (see [ZooKeeper storage for synthetic read
-locks](#zookeeper-storage-for-synthetic-read-locks)); every other
-catalog is served by the synthetic lock shim, which grants an `EXCLUSIVE`
-lock unconditionally with no conflict checking. A commit routed there would
-believe it owns the table while silently racing - and possibly losing to - a
-concurrent writer, corrupting `metadata.json` without ever reporting a
-conflict. `WriteRouteGate` enforces this on the **resolved** catalog, not on
-the request's own URL prefix: the default catalog's own prefix also exposes
-every other catalog's databases as federated `<catalog><separator><db>`
-names (see [Supported endpoints](#supported-endpoints) below), so a create
-under `/v1/{default-prefix}/namespaces/apache__default/tables` is refused
-exactly like a direct create under `/v1/apache/namespaces/default/tables` -
-both resolve to the `apache` catalog and get the same `403`
-(`ForbiddenException`) with a message naming the resolved catalog. This
-applies uniformly to every one of the thirteen write routes below - table,
-view and namespace DDL, and transaction commit alike. `GET /v1/config` and
-`GET /v1/{prefix}/config` advertise this asymmetry directly: the default
-catalog's `endpoints` list carries all thirteen write routes below, every
-other catalog's carries only the nine read routes, so a spec-compliant client
-discovers the restriction instead of learning about it from a failed request.
+**Почему writes работают только в default-каталоге:** реальным HMS-локом
+подкреплены только таблицы дефолтного каталога (см. [ZooKeeper storage для
+synthetic read locks](#zookeeper-storage-для-synthetic-read-locks));
+любой другой каталог обслуживается синтетическим lock shim, который выдаёт
+`EXCLUSIVE`-лок безусловно, без проверки конфликтов. Commit, направленный
+туда, решил бы, что владеет таблицей, молча гоняясь наперегонки с — и,
+возможно, проигрывая — конкурентным writer'ом, что портит `metadata.json` без
+единого сообщения о конфликте. `WriteRouteGate` проверяет это на
+**резолвленном** каталоге, а не на prefix из URL запроса: prefix дефолтного
+каталога тоже выставляет базы всех остальных каталогов под federated-именами
+`<catalog><separator><db>` (см. [Поддерживаемые endpoint'ы](#поддерживаемые-endpointы)
+ниже), так что create по
+`/v1/{default-prefix}/namespaces/apache__default/tables` отказывается точно
+так же, как прямой create по `/v1/apache/namespaces/default/tables` — оба
+резолвятся в каталог `apache` и получают один и тот же `403`
+(`ForbiddenException`). Это касается всех тринадцати write-роутов из таблицы
+ниже одинаково — write таблиц, view и namespace DDL, transaction commit.
+`GET /v1/config` и `GET /v1/{prefix}/config` объявляют эту асимметрию
+напрямую: в `endpoints` дефолтного каталога перечислены все тринадцать
+write-роутов из таблицы ниже, у любого другого каталога — только девять
+read-роутов, так что спецификация-совместимый клиент узнаёт об ограничении
+из discovery, а не из проваленного запроса.
 
-Enable it via:
+Включается так:
 
 ```properties
 rest-catalog.enabled=true
 rest-catalog.port=9183
-# Optional but recommended for production: SPNEGO. Requires security.mode=KERBEROS.
+# Опционально, но рекомендуется для прода: SPNEGO. Требует security.mode=KERBEROS.
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
-# Optional: bound what a purge may delete (see the purge section below).
+# Опционально: ограничить то, что вправе удалить purge (см. раздел про purge ниже).
 rest-catalog.purge.mode=ALLOWLIST
 rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
 ```
 
-`rest-catalog.purge.allowed-prefixes` is required by `ALLOWLIST` and rejected
-with the other two modes; both contradictions fail the proxy at startup rather
-than being ignored.
+`rest-catalog.purge.allowed-prefixes` обязателен для `ALLOWLIST` и отвергается
+при двух других режимах; обе противоречивые комбинации роняют прокси на старте,
+а не игнорируются.
 
-### Keeping an Iceberg table readable by Hive
+### Как сохранить Iceberg-таблицу читаемой для Hive
 
-Iceberg writes one of two storage descriptors on every commit. With the Hive
-engine enabled it writes `storage_handler` and the concrete
-`HiveIcebergInputFormat`/`OutputFormat`/`SerDe`; with it disabled it writes the
-abstract `FileInputFormat`/`FileOutputFormat`/`LazySimpleSerDe` and removes
-`storage_handler`. Which one it picks comes from the table's own
-`engine.hive.enabled` property and, when the table sets none, from
-`iceberg.engine.hive.enabled` in the committing engine's configuration.
+Iceberg на каждом коммите пишет один из двух storage descriptor'ов. С включённым
+Hive-движком — `storage_handler` и конкретные
+`HiveIcebergInputFormat`/`OutputFormat`/`SerDe`; с выключенным — абстрактные
+`FileInputFormat`/`FileOutputFormat`/`LazySimpleSerDe`, а `storage_handler`
+удаляет. Выбор определяется свойством самой таблицы `engine.hive.enabled`, а
+если таблица его не задаёт — значением `iceberg.engine.hive.enabled` в
+конфигурации того движка, который коммитит.
 
-A table created by Hive 4's `STORED BY ICEBERG` sets no such property, so a
-single commit could leave it unreadable by Hive 3.1 clients, which fail with
-`Cannot create an instance of InputFormat class
-org.apache.hadoop.mapred.FileInputFormat`. Two settings prevent that, one per
-write path, and both default to on:
+Таблица, созданная через `STORED BY ICEBERG` в Hive 4, такого свойства не несёт,
+поэтому один-единственный коммит мог оставить её нечитаемой для клиентов Hive
+3.1: они падают с `Cannot create an instance of InputFormat class
+org.apache.hadoop.mapred.FileInputFormat`. Этому мешают две настройки, по одной
+на каждый путь записи, обе включены по умолчанию:
 
-| Key | Path it covers |
+| Ключ | Какой путь закрывает |
 | --- | --- |
-| `rest-catalog.hive-engine-descriptor` | The proxy's own REST commits: they write the Hive-engine descriptor. A table that sets `engine.hive.enabled` itself always wins over this, and an explicit `catalog.<name>.conf.iceberg.engine.hive.enabled` is respected rather than overwritten. |
-| `routing.iceberg-pointer-guard.hive-engine-descriptor` | Commits arriving over Thrift from an engine the proxy cannot configure - a Hive 3.1 `INSERT`, for instance. The pointer guard keeps the descriptor the metastore record already holds instead of letting the request blank it. |
+| `rest-catalog.hive-engine-descriptor` | Собственные REST-коммиты прокси: они пишут Hive-совместимый дескриптор. Таблица, задавшая `engine.hive.enabled` сама, всегда перевешивает эту настройку, а явный `catalog.<name>.conf.iceberg.engine.hive.enabled` уважается, а не перетирается. |
+| `routing.iceberg-pointer-guard.hive-engine-descriptor` | Коммиты, приходящие по Thrift от движка, который прокси настроить не может, — например `INSERT` от Hive 3.1. Pointer guard сохраняет дескриптор, уже лежащий в записи метастора, вместо того чтобы дать запросу его обнулить. |
 
-The guard only ever *keeps* a descriptor, never imposes one: a record without
-`storage_handler` is a table with no Hive descriptor to lose, and its alters
-pass through untouched. A table degraded before these settings existed repairs
-itself on its next commit.
+Guard дескриптор только **сохраняет** и никогда не навязывает: запись без
+`storage_handler` — это таблица, которой нечего терять, и её alter'ы проходят
+нетронутыми. Таблица, испорченная до появления этих настроек, чинится сама на
+следующем же коммите.
 
-Requests to this listener are covered by the Prometheus metrics described in
-[Prometheus metrics](#prometheus-metrics): `hms_proxy_rest_requests_total`,
-`hms_proxy_rest_request_duration_seconds`, and `hms_proxy_rest_listener_info`.
+Запросы к этому listener'у покрыты Prometheus-метриками из раздела
+[Prometheus-метрики](#prometheus-метрики): `hms_proxy_rest_requests_total`,
+`hms_proxy_rest_request_duration_seconds` и `hms_proxy_rest_listener_info`.
 
-### Supported endpoints
+### Поддерживаемые endpoint'ы
 
-| Endpoint                                              | Status                          |
-| ----------------------------------------------------- | ------------------------------- |
-| `GET /v1/config`                                      | supported                       |
-| `GET /v1/{prefix}/config`                             | supported                       |
-| `GET /v1/{prefix}/namespaces`                         | supported                       |
-| `GET /v1/{prefix}/namespaces/{ns}`                    | supported                       |
-| `GET /v1/{prefix}/namespaces/{ns}/tables`             | supported (Iceberg tables only) |
-| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported (Iceberg tables only) |
-| `GET /v1/{prefix}/namespaces/{ns}/views`              | supported (real listing, empty unless Iceberg views exist) |
-| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported (Iceberg views only)  |
-| `HEAD /v1/{prefix}/namespaces/{ns}`                    | supported (204 if exists, 404 if not) |
-| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | supported (204 if exists, 404 if not) |
-| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | supported (204 if exists, 404 if not) |
-| `POST /v1/{prefix}/namespaces/{ns}/tables`             | supported for the default catalog only (create); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | supported for the default catalog only (commit/update); `403` elsewhere |
-| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | supported for the default catalog only (drop, including `?purgeRequested=true`); `403` elsewhere |
-| `POST /v1/{prefix}/tables/rename`                      | supported for the default catalog only (rename); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces/{ns}/register`           | supported for the default catalog only (register); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces/{ns}/views`               | supported for the default catalog only (create); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | supported for the default catalog only (commit/update); `403` elsewhere |
-| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | supported for the default catalog only (drop); `403` elsewhere |
-| `POST /v1/{prefix}/views/rename`                        | supported for the default catalog only (rename); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces`                          | supported for the default catalog only (create); `403` elsewhere |
-| `POST /v1/{prefix}/namespaces/{ns}/properties`          | supported for the default catalog only (update properties); `403` elsewhere |
-| `DELETE /v1/{prefix}/namespaces/{ns}`                   | supported for the default catalog only (drop); `403` elsewhere |
-| `POST /v1/{prefix}/transactions/commit`                 | supported for the default catalog only (multi-table commit); `403` elsewhere |
+| Endpoint                                              | Статус                                  |
+| ----------------------------------------------------- | --------------------------------------- |
+| `GET /v1/config`                                      | поддержан                               |
+| `GET /v1/{prefix}/config`                             | поддержан                               |
+| `GET /v1/{prefix}/namespaces`                         | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}`                    | поддержан                               |
+| `GET /v1/{prefix}/namespaces/{ns}/tables`             | поддержан (только Iceberg-таблицы)      |
+| `GET /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан (только Iceberg-таблицы)      |
+| `GET /v1/{prefix}/namespaces/{ns}/views`              | поддержан (реальный листинг; пустой, если Iceberg-view нет) |
+| `GET /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан (только Iceberg-view)          |
+| `HEAD /v1/{prefix}/namespaces/{ns}`                    | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/tables/{tbl}`      | поддержан (204, если существует, 404 — если нет) |
+| `HEAD /v1/{prefix}/namespaces/{ns}/views/{view}`      | поддержан (204, если существует, 404 — если нет) |
+| `POST /v1/{prefix}/namespaces/{ns}/tables`             | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/tables/{tbl}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/tables/{tbl}`    | поддержан только для дефолтного каталога (drop, включая `?purgeRequested=true`); иначе `403` |
+| `POST /v1/{prefix}/tables/rename`                      | поддержан только для дефолтного каталога (rename); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/register`           | поддержан только для дефолтного каталога (register); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/views`               | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/views/{view}`       | поддержан только для дефолтного каталога (commit/update); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}/views/{view}`     | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/views/rename`                        | поддержан только для дефолтного каталога (rename); иначе `403` |
+| `POST /v1/{prefix}/namespaces`                          | поддержан только для дефолтного каталога (create); иначе `403` |
+| `POST /v1/{prefix}/namespaces/{ns}/properties`          | поддержан только для дефолтного каталога (update properties); иначе `403` |
+| `DELETE /v1/{prefix}/namespaces/{ns}`                   | поддержан только для дефолтного каталога (drop); иначе `403` |
+| `POST /v1/{prefix}/transactions/commit`                 | поддержан только для дефолтного каталога (multi-table commit); иначе `403` |
 
-`{prefix}` is any catalog listed in `catalogs=`: every configured catalog is
-exposed as its own REST prefix, `/v1/<catalog>/...`. `GET /v1/config` supports
-warehouse discovery: pass `?warehouse=<catalog>` and the response's
-`overrides.prefix` names that catalog, so a client can bind itself to the
-right prefix without hardcoding it (see the client examples below). Without
-`warehouse`, `/v1/config` advertises `routing.default-catalog`, matching
-phase-1 behavior; an unknown `warehouse` value returns HTTP 400
-(`BadRequestException`). The response's `endpoints` field lists the nine
-read routes above for every catalog (list/load namespace + namespace-exists,
-list/load table + table-exists, list/load view + view-exists); the default
-catalog's `endpoints` additionally carry all thirteen write routes above
-(table, view and namespace DDL, transaction commit), so a modern client can
-discover the write/read asymmetry between catalogs instead of learning about
-it from a failed request. `GET /v1/{prefix}/config`
-answers the same way from the proxy's own handler — `overrides.prefix` names
-the catalog from the path segment instead of the `warehouse` query param —
-and an unknown prefix there is still a 404.
+`{prefix}` — любой каталог, перечисленный в `catalogs=`: каждый настроенный
+каталог получает собственный REST prefix, `/v1/<catalog>/...`. `GET
+/v1/config` поддерживает warehouse discovery: передайте `?warehouse=<catalog>`,
+и в ответе `overrides.prefix` назовёт этот каталог, так что клиент может
+привязаться к нужному prefix, не зашивая его в конфигурацию (см. примеры
+клиентов ниже). Без `warehouse` `/v1/config` объявляет `routing.default-catalog`
+— как и в phase 1; неизвестное значение `warehouse` возвращает HTTP 400
+(`BadRequestException`). Поле `endpoints` в ответе перечисляет девять
+read-роутов из таблицы выше для любого каталога (list/load namespace +
+namespace-exists, list/load table + table-exists, list/load view +
+view-exists); у дефолтного каталога `endpoints` дополнительно несёт все
+тринадцать write-роутов из таблицы выше (write таблиц, view и namespace DDL,
+transaction commit), так что современный клиент может обнаружить
+write/read-асимметрию между каталогами через discovery, а не из
+провалившегося запроса. `GET /v1/{prefix}/config` отвечает так же, но из
+собственного handler'а прокси — `overrides.prefix` называет каталог из
+сегмента пути, а не из query-параметра `warehouse`, — и неизвестный prefix
+здесь по-прежнему даёт 404.
 
-A refused write answers `403` (`ForbiddenException`) with a message naming
-the resolved catalog, for example: `Writes are only supported in the
-default catalog 'hdp'; namespace 'apache__default' belongs to catalog
-'apache', which is served by the synthetic lock shim and provides no writer
-isolation.` This is enforced on the namespace the request **resolves** to,
-not on the URL prefix it arrived under - see [Why writes are default-catalog
-only](#iceberg-rest-catalog-frontend) above.
+Отказ в write отвечает `403` (`ForbiddenException`) с сообщением, называющим
+резолвленный каталог, например: `Writes are only supported in the default
+catalog 'hdp'; namespace 'apache__default' belongs to catalog 'apache',
+which is served by the synthetic lock shim and provides no writer
+isolation.` Это проверяется на namespace, в который запрос **резолвится**, а
+не на prefix из URL — см. [Почему writes работают только в
+default-каталоге](#iceberg-rest-catalog-frontend) выше.
 
-`DELETE .../tables/{tbl}?purgeRequested=true` is served as a real purge, the
-way Iceberg's own REST catalog serves it: the proxy drops the table in the
-metastore and then deletes the table's data and metadata files itself, walking
-the table's manifests to find them. That deletion runs inside the proxy's JVM
-under the proxy's own credentials and finishes before the `204` is sent. The
-write gate keeps it inside the default catalog: a purge whose namespace resolves
-elsewhere is refused with the same `403` as any other write, before any file is
-touched.
+`DELETE .../tables/{tbl}?purgeRequested=true` обслуживается как настоящий
+purge — так же, как его обслуживает собственный REST-каталог Iceberg: прокси
+дропает таблицу в metastore, а затем сам удаляет её data- и metadata-файлы,
+обходя манифесты таблицы, чтобы их найти. Удаление идёт внутри JVM прокси под
+его собственными credentials и завершается до отправки `204`. Write-гейт
+удерживает purge внутри дефолтного каталога: purge, чей namespace резолвится в
+другой каталог, отказывается тем же `403`, что и любой другой write, до того как
+будет тронут хоть один файл.
 
-What it may delete inside that catalog is bounded by `rest-catalog.purge.mode`:
+Что именно purge вправе удалить внутри этого каталога, ограничивает
+`rest-catalog.purge.mode`:
 
-| Mode | Behaviour |
+| Режим | Поведение |
 | --- | --- |
-| `ALLOW` (default) | Deletes whatever the table's metadata and manifests point at, the way Iceberg REST catalogs do. Unchanged from earlier versions. |
-| `ALLOWLIST` | Purges only under `rest-catalog.purge.allowed-prefixes`. |
-| `REFUSE` | Answers `403` to every purge; a `DELETE` without `purgeRequested` still drops the table and leaves its files. |
+| `ALLOW` (по умолчанию) | Удаляет всё, на что указывают метаданные и манифесты таблицы, — так же, как REST-каталоги Iceberg. Поведение прежних версий не меняется. |
+| `ALLOWLIST` | Purge разрешён только под префиксами `rest-catalog.purge.allowed-prefixes`. |
+| `REFUSE` | Отвечает `403` на любой purge; `DELETE` без `purgeRequested` по-прежнему дропает таблицу и оставляет её файлы. |
 
-A purge the policy does not permit is refused **before the table is dropped**,
-so a refusal leaves both the table and its files intact and the client can retry
-without `purgeRequested`.
+Purge, который политика не разрешает, отклоняется **до дропа таблицы**, поэтому
+после отказа целы и таблица, и её файлы, а клиент может повторить запрос без
+`purgeRequested`.
 
-`ALLOWLIST` enforces the boundary twice. Before the drop, the table's location
-and its `metadata.json` are matched against the prefixes; either outside them
-answers `403`. During the deletion, every path Iceberg asks to delete — data
-files, delete files, manifests, manifest lists, metadata files — is matched
-again, and a path outside the prefixes is skipped and logged at WARN instead of
-deleted. The second check is the one that matters for untrusted clients: in the
-REST protocol the client writes the manifests, so a commit can point a snapshot
-at files in another tree, and those paths only become known while walking the
-manifests — after the pre-flight check has already passed.
+`ALLOWLIST` проверяет границу дважды. До дропа с префиксами сверяются location
+таблицы и её `metadata.json`; выход за границу любого из них даёт `403`. Во
+время удаления каждый путь, который Iceberg просит удалить — data-файлы,
+delete-файлы, манифесты, manifest list, metadata-файлы, — сверяется снова, и
+путь вне префиксов пропускается с WARN вместо удаления. Именно вторая проверка
+важна для недоверенных клиентов: в REST-протоколе манифесты пишет клиент,
+поэтому коммит может указать снапшот на файлы в чужом дереве, а эти пути
+становятся известны только при обходе манифестов — уже после того, как
+предварительная проверка прошла.
 
-Error responses carry the mapped HTTP status, `type` and `message` but never
-a server stack trace, since this listener can be reached without
-authentication. A request body that fails to parse answers 400
-(`BadRequestException`) instead of falling through to a 500; this applies to
-every route that takes a body. A `HEAD` response never writes a body, per RFC
-9110 — including on an error status — so an exists-check against a missing
-namespace, table or view returns a plain 404 with no body, not a 404 with a
-JSON payload. The request dispatcher catches `Throwable`, not just
-`Exception`: any `Error` that escapes handling (for example a dependency-
-version `NoSuchMethodError` surfacing deep inside a write) is mapped to the
-usual error response instead of unwinding past the handler and leaving the
-client's connection to hang forever with no response at all.
+Error-ответы несут смапленный HTTP-статус, `type` и `message`, но никогда —
+server stack trace, потому что этот listener может быть доступен без
+аутентификации. Тело запроса, которое не удаётся распарсить, отвечает 400
+(`BadRequestException`) вместо падения в 500; это касается любого роута,
+принимающего тело. `HEAD`-ответ никогда не пишет тело, как того требует RFC
+9110, — включая error-статусы, — так что exists-check на отсутствующий
+namespace, таблицу или view возвращает обычный 404 без тела, а не 404 с
+JSON-телом. Диспетчер запросов ловит `Throwable`, а не только `Exception`:
+любой `Error`, который ускользнул бы из обработки (например,
+`NoSuchMethodError` от несовпадения версий зависимостей, всплывший глубоко
+внутри write), теперь маппится в обычный error-ответ, а не улетает мимо
+handler'а, оставляя соединение клиента висеть без ответа навсегда.
 
-The default catalog's prefix keeps the phase-1 federated view: its own
-databases plus every other catalog's databases under their
-`<catalog><separator><db>` names (see [HiveServer2](#hiveserver2) above).
-Every other prefix is a clean view: only that catalog's own databases, under
-their internal names — the federated `<catalog><separator><db>` names never
-leak into a non-default prefix. An unknown prefix still returns 404
-(`NoSuchCatalogException`).
+Prefix дефолтного каталога сохраняет federated-представление из phase 1: его
+собственные базы плюс базы всех остальных каталогов под именами
+`<catalog><separator><db>` (см. [HiveServer2](#hiveserver2) выше). Любой
+другой prefix — чистое представление: только собственные базы этого
+каталога, под их внутренними именами — federated-имена
+`<catalog><separator><db>` в non-default prefix не просачиваются. На
+неизвестный prefix по-прежнему отвечает 404 (`NoSuchCatalogException`).
 
-### SPNEGO setup
+### Настройка SPNEGO
 
-SPNEGO is an HTTP RFC requirement: the principal must be `HTTP/<host>@REALM`.
-This is a **separate** principal from `security.server-principal` (which is
-usually `hms/<host>@REALM` for the Thrift listener). Both can live in the same
-keytab file or in two separate keytabs. The REST listener calls
-`UserGroupInformation.loginUserFromKeytabAndReturnUGI` to acquire its own UGI
-without overwriting the Thrift one, so they coexist in the same JVM.
+SPNEGO по RFC требует principal вида `HTTP/<host>@REALM`. Это **отдельный**
+principal от `security.server-principal` (обычно `hms/<host>@REALM` для
+Thrift listener). Оба могут лежать в одном keytab или в двух разных. REST
+listener делает `UserGroupInformation.loginUserFromKeytabAndReturnUGI`, чтобы
+получить отдельный UGI и не перезаписать Thrift'овый — оба сосуществуют в
+одном JVM.
 
-### Client examples
+### Примеры клиентов
 
 PyIceberg:
 
@@ -1253,9 +1254,9 @@ spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog
 spark.sql.catalog.my_catalog.uri=http://hms-proxy:9183
 ```
 
-To target a non-default catalog, pass `warehouse=<catalog>`; the client sends
-it to `GET /v1/config` during discovery and binds itself to that catalog's
-prefix for every following request:
+Чтобы обратиться к non-default каталогу, передайте `warehouse=<catalog>`:
+клиент отправит его в `GET /v1/config` при discovery и привяжется к prefix
+этого каталога для всех последующих запросов:
 
 ```python
 catalog = RestCatalog("sales-catalog", **{
@@ -1268,47 +1269,45 @@ catalog = RestCatalog("sales-catalog", **{
 spark.sql.catalog.sales_catalog.warehouse=sales
 ```
 
-### Caveats
+### Особенности и ограничения
 
-- Iceberg REST is **Iceberg-spec only** by design. Non-Iceberg Hive tables
-  (parquet/orc/text without `metadata_location`) are filtered out by HiveCatalog
-  and stay invisible through REST. Continue to use the Thrift listener for
-  native Hive tables.
-- `RoutingHiveCatalog` uses reflection on Iceberg's private `HiveCatalog.clients`
-  field, pinned to Iceberg `1.9.2`. Bumping the Iceberg version requires
-  running `RoutingHiveCatalogTest` to confirm the inject still works.
-- A table write opens an HDFS output stream (`metadata.json`) from inside the
-  proxy's own JVM - the first code path in the proxy to do so; reads use a
-  different, unaffected class path. This requires `hadoop-hdfs` and
-  `hadoop-common` to be the same version in the dependency tree. Maven's
-  mediation never compared them (they are different artifact IDs), so
-  `orc-core` (pulled in transitively by `hive-standalone-metastore`) was
-  dragging a stale `hadoop-hdfs:2.2.0` alongside `hadoop-common:2.6.0`
-  elsewhere in the tree, and every write failed with `NoSuchMethodError:
-  FSOutputSummer.<init>` deep inside `DFSOutputStream`. `pom.xml` now
-  excludes that transitive `hadoop-hdfs` and depends on `hadoop-hdfs:2.6.0`
-  directly, to match `hadoop-common`. Keep the two aligned if you ever
-  override either version.
-- A purge reads the table's manifests through Avro. `iceberg-core:1.9.2` is
-  compiled against `avro:1.12.0`, while `hadoop-mapreduce-client-core:2.6.5`
-  drags `avro:1.7.4` in at the same depth of the tree - Maven picked 1.7.4 by
-  declaration order and every purge died with `NoClassDefFoundError:
-  org/apache/avro/LogicalTypes`. `pom.xml` pins `avro:1.12.0`; nothing else on
-  this classpath calls the Avro API. Avro's snappy, xz and zstd codecs are
-  optional dependencies and deliberately stay out of the fat jar: a manifest is
-  always written with deflate, which Avro handles with the JDK's own Deflater.
-  `write.avro.compression-codec` does not change that - it drives data files and
-  delete files, which this proxy never reads, and Iceberg's `ManifestWriter`
-  never applies table properties to the manifest appender. A test pins that
-  (`dropTableWithPurgeReadsManifestsOfATableAskingForSnappy`), so if a future
-  Iceberg starts honouring the property for manifests it fails there rather
-  than in production.
+- Iceberg REST по дизайну работает **только с Iceberg-таблицами**. Native
+  Hive-таблицы (parquet/orc/text без `metadata_location`) HiveCatalog
+  отфильтровывает, и через REST их не видно. Для native Hive продолжайте
+  использовать Thrift listener.
+- `RoutingHiveCatalog` использует reflection на private поле
+  `HiveCatalog.clients`, привязанное к Iceberg `1.9.2`. При апгрейде Iceberg
+  обязательно прогнать `RoutingHiveCatalogTest`, чтобы убедиться, что inject
+  ещё работает.
+- Write таблицы открывает output stream в HDFS (`metadata.json`) прямо из
+  JVM прокси — это первый путь в прокси, который так делает; чтение идёт по
+  другому, незатронутому classpath. Это требует, чтобы `hadoop-hdfs` и
+  `hadoop-common` были одной версии в дереве зависимостей. Мавеновская
+  медиация никогда их не сравнивала (это разные artifact ID), поэтому
+  `orc-core` (приходит транзитивно через `hive-standalone-metastore`) тянул
+  устаревший `hadoop-hdfs:2.2.0` рядом с `hadoop-common:2.6.0` в другом месте
+  дерева, и каждый write падал с `NoSuchMethodError:
+  FSOutputSummer.<init>` глубоко внутри `DFSOutputStream`. `pom.xml` теперь
+  исключает этот транзитивный `hadoop-hdfs` и напрямую зависит от
+  `hadoop-hdfs:2.6.0`, чтобы совпасть с `hadoop-common`. Держите обе версии
+  согласованными, если переопределяете любую из них.
+- Purge читает манифесты таблицы через Avro. `iceberg-core:1.9.2` собран
+  против `avro:1.12.0`, а `hadoop-mapreduce-client-core:2.6.5` тянет
+  `avro:1.7.4` на той же глубине дерева — Maven выбирал 1.7.4 по порядку
+  объявления, и любой purge падал с `NoClassDefFoundError:
+  org/apache/avro/LogicalTypes`. `pom.xml` пинит `avro:1.12.0`; больше никто на
+  этом classpath не вызывает Avro API. Кодеки snappy, xz и zstd объявлены в
+  Avro как optional и в fat jar намеренно не попадают: манифест всегда пишется
+  с deflate, который Avro сжимает штатным JDK-шным Deflater. Свойство
+  `write.avro.compression-codec` этого не меняет — оно управляет data-файлами и
+  delete-файлами, которые прокси не читает, а `ManifestWriter` в Iceberg вообще
+  не передаёт свойства таблицы в writer манифеста. Это закреплено тестом
+  (`dropTableWithPurgeReadsManifestsOfATableAskingForSnappy`): если будущий
+  Iceberg начнёт учитывать свойство для манифестов, упадёт тест, а не прод.
 
-## Security
+## Безопасность
 
-### Without Kerberos
-
-The default mode. No keytab or principals required:
+### Без Kerberos
 
 ```properties
 server.port=9083
@@ -1319,183 +1318,149 @@ catalog.warehouse.conf.hive.metastore.uris=thrift://hms-backend:9083
 routing.default-catalog=warehouse
 ```
 
-### With Kerberos
+### С Kerberos
 
-Security is configured in two independent parts: the front door (clients → proxy) and the
-backend connections (proxy → HMS).
+Безопасность делится на две независимые части: front door (клиенты -> proxy) и backend
+connections (proxy -> HMS).
 
-**Front door** — proxy listens with SASL:
+**Front door**:
 
 ```properties
 security.mode=KERBEROS
 security.server-principal=hive/_HOST@REALM.COM
 security.keytab=/etc/security/keytabs/hms-proxy.keytab
-
-# Optional: principal used when connecting to backends.
-# Defaults to server-principal if not set.
 security.client-principal=hive/_HOST@REALM.COM
-
-# Optional: dedicated keytab used when connecting to backend metastores.
-# Defaults to security.keytab if not set.
 security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 ```
 
-`security.server-principal` and `security.keytab` are required when `security.mode=KERBEROS`.
-The keytab must exist and be readable — the proxy will fail to start otherwise.
-`_HOST` is replaced with the proxy machine's canonical hostname before Kerberos login. If your DNS
-canonical name differs from the keytab/KDC principal name, use the explicit FQDN instead.
+`security.server-principal` и `security.keytab` обязательны при `security.mode=KERBEROS`.
+`_HOST` разворачивается в каноническое имя хоста proxy перед Kerberos login. Если DNS-имя
+хоста не совпадает с principal в keytab/KDC, используй явный FQDN.
 
-When Kerberos is enabled on the front door, delegation-token methods
+Когда Kerberos включён на фронте, delegation-token методы
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
-are served locally by the proxy's own token manager instead of being forwarded
-to backend metastores.
+обслуживаются локально самим proxy.
 
-That also means proxy-user authorization for service principals such as HiveServer2 must be
-configured on the proxy front door itself, not only on backend HMS instances. If HiveServer2
-connects as `hive/_HOST@REALM.COM` and requests `get_delegation_token("alice", ...)`, the proxy
-must see matching `hadoop.proxyuser.hive.*` rules through `core-site.xml` or
-`security.front-door-conf.*` overrides.
+### Front-door proxy-user rules для delegation-token issuance
 
-The proxy reads delegation-token store settings from the usual Hive configuration
-resources visible to the proxy process through `HiveConf`, typically `hive-site.xml`.
-You can also set them directly in `hms-proxy.properties` via
-`security.front-door-conf.<hive-conf-key>=...`, which is often simpler when the
-launcher script does not put `hive-site.xml` on the proxy classpath.
-If no persistent token store is configured, Hive falls back to
-`org.apache.hadoop.hive.metastore.security.MemoryTokenStore`, and then a proxy
-restart invalidates existing HiveServer2 delegation tokens.
+`hadoop.proxyuser.<service>.*` не относится к подключению к ZooKeeper. Эта настройка нужна только
+в сценарии, когда service principal вроде HiveServer2 просит proxy выдать delegation token для
+конечного пользователя через `get_delegation_token("alice", ...)`.
 
-### Front-door proxy-user rules for delegation-token issuance
-
-`hadoop.proxyuser.<service>.*` is not related to ZooKeeper transport. It is only needed when a
-service principal such as HiveServer2 asks the proxy to issue an end-user delegation token via
-`get_delegation_token("alice", ...)`.
-
-Example:
+Пример:
 
 ```properties
-# Allow HiveServer2's Kerberos principal to request end-user delegation tokens from the proxy.
 security.front-door-conf.hadoop.proxyuser.hive.hosts=hs2-1.example.com,hs2-2.example.com
 security.front-door-conf.hadoop.proxyuser.hive.groups=*
 ```
 
 ### ZooKeeper token storage
 
-Example with `ZooKeeperTokenStore` configured directly in the proxy config:
+Для persistent storage delegation tokens можно включить `ZooKeeperTokenStore` через обычный
+`HiveConf` или напрямую в `hms-proxy.properties`:
 
 ```properties
 security.front-door-conf.hive.cluster.delegation.token.store.class=org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString=zk1:2181,zk2:2181,zk3:2181
 security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.znode=/hms-proxy-delegation-tokens
-# Optional: ACL applied to newly created ZooKeeper nodes for the token store.
+# Опционально: ACL для новых znode, которые создаёт token store.
 # security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.acl=sasl:hive:cdrwa
-# Optional: token max lifetime in milliseconds.
+# Опционально: максимальный lifetime токена в миллисекундах.
 # security.front-door-conf.hive.cluster.delegation.token.max-lifetime=604800000
 ```
 
-When `ZooKeeperTokenStore` is enabled and `security.mode=KERBEROS`, the proxy now also
-auto-populates `hive.metastore.kerberos.principal` and `hive.metastore.kerberos.keytab.file`
-for the front-door `HiveConf` from `security.server-principal` and `security.keytab`. That lets
-Hive's built-in `ZooKeeperTokenStore` client authenticate to ZooKeeper over SASL/Kerberos
-without requiring a separate JAAS file in the common case. If you need different credentials for
-ZooKeeper, set those `hive.metastore.kerberos.*` keys explicitly through `security.front-door-conf.*`.
+Если при этом включён `security.mode=KERBEROS`, proxy автоматически прокинет
+`hive.metastore.kerberos.principal` и `hive.metastore.kerberos.keytab.file` в front-door `HiveConf`
+из `security.server-principal` и `security.keytab`, чтобы встроенный `ZooKeeperTokenStore`
+аутентифицировался в ZooKeeper по SASL/Kerberos. Если для ZooKeeper нужны отдельные credentials,
+задай эти `hive.metastore.kerberos.*` явно через `security.front-door-conf.*`.
 
-In other words, the default ZooKeeper client credentials are:
+То есть по умолчанию для подключения к ZooKeeper используются:
 
 - principal: `security.server-principal`
 - keytab: `security.keytab`
 
-These are the front-door service credentials. They are not taken from
-`security.client-principal` or `security.client-keytab`, which are used for outbound backend HMS
-connections instead.
+Это именно front-door credentials proxy. Они не берутся из
+`security.client-principal` и `security.client-keytab`, потому что те параметры относятся к
+исходящим подключениям proxy к backend HMS.
 
-At startup the proxy also pre-configures Hive's `HiveZooKeeperClient` JAAS entry for the
-front-door token store from those same credentials before starting the local delegation-token
-manager. In the usual setup that means you do not need a separate `-Djava.security.auth.login.config`
-file just for ZooKeeper SASL.
+При старте proxy также заранее настраивает JAAS entry `HiveZooKeeperClient` для front-door
+token store из этих же credentials до запуска локального delegation-token manager. Обычно это
+означает, что отдельный `-Djava.security.auth.login.config` только для ZooKeeper не нужен.
 
-If ZooKeeper must use different credentials from the proxy front door, override them explicitly:
+Если для ZooKeeper нужен другой principal/keytab, их можно переопределить явно:
 
 ```properties
 security.front-door-conf.hive.metastore.kerberos.principal=hive-zk/_HOST@REALM.COM
 security.front-door-conf.hive.metastore.kerberos.keytab.file=/etc/security/keytabs/hms-proxy-zk.keytab
 ```
 
-On startup the proxy logs which `HiveConf` resources it found and which front-door
-overrides were applied. If you see `Found configuration file null` from Hive or the
-proxy warns that it is using `MemoryTokenStore`, the process did not see a persistent
-delegation-token store config. If `get_delegation_token` fails with
-`User: hive/... is not allowed to impersonate alice`, the proxy is missing front-door
-`hadoop.proxyuser.<service>.hosts/groups` rules for that Kerberos caller.
+### ZooKeeper storage для synthetic read locks
 
-### ZooKeeper storage for synthetic read locks
+У proxy есть узкий synthetic lock shim для non-default catalog. Он покрывает non-ACID
+`SHARED_READ` `SELECT` lock, допустимые non-transactional `NO_TXN` DDL lock вроде
+`CREATE TABLE` и partition rename/drop, которые Hive всё равно ведёт через txn/lock API, и
+non-transactional write lock (`INSERT`, `UPDATE`, `DELETE`) — те самые, которые Hive берёт на
+`INSERT` в non-ACID таблицу non-default каталога. Такие lock proxy обслуживает локально, когда
+backend txn id рассинхронизированы между каталогами. Это не превращает proxy в distributed ACID
+coordinator.
 
-The proxy also has a narrow synthetic lock shim for non-default catalogs. It covers
-non-ACID `SHARED_READ` `SELECT` locks, eligible non-transactional `NO_TXN` DDL locks
-such as `CREATE TABLE` and partition rename/drop flows that Hive still runs through the
-txn/lock APIs, and non-transactional write locks (`INSERT`, `UPDATE`, `DELETE`) — the locks
-Hive takes for an `INSERT` into a non-ACID table of a non-default catalog. The proxy serves
-those locks locally when backend txn ids do not line up across catalogs. This does not turn
-the proxy into a distributed ACID coordinator.
+Write lock не ограничены по типу лока: при дефолтном `hive.txn.strict.locking.mode=true` Hive
+берёт на `INSERT` в non-ACID таблицу `EXCLUSIVE` lock, `SHARED_WRITE` — только при выключенном
+strict locking, а `INSERT OVERWRITE` всегда `EXCLUSIVE`. Компонент с `isTransactional=true`
+никогда не обслуживается синтетически: он относится к ACID-таблице, write id для которой умеет
+выдавать только TxnHandler default-каталога, поэтому запрос уходит в backend и падает там. ACID
+таблиц в non-default каталоге всё равно быть не может — proxy отклоняет `create_table` с
+`transactional=true` вне default-каталога и не пропускает `allocate_table_write_ids` /
+`get_valid_write_ids` для non-default каталогов.
 
-Write locks are not restricted by lock type: with Hive's default
-`hive.txn.strict.locking.mode=true` an `INSERT` into a non-ACID table takes an `EXCLUSIVE`
-lock, `SHARED_WRITE` only when strict locking is off, and `INSERT OVERWRITE` is always
-`EXCLUSIVE`. A component that declares `isTransactional=true` is never synthesized: it belongs
-to an ACID table, whose write ids only the default catalog's TxnHandler can allocate, so the
-request is left to the backend and fails there. ACID tables cannot exist in a non-default
-catalog anyway — the proxy rejects `create_table` with `transactional=true` outside the default
-catalog and refuses `allocate_table_write_ids` / `get_valid_write_ids` for non-default catalogs.
+**Shim выдаёт локи, не проверяя их конфликты.** Он сразу отвечает `ACQUIRED` и не смотрит на
+другие живые локи, поэтому параллельные `INSERT`, `INSERT OVERWRITE` и DDL по одной таблице
+non-default каталога не сериализуются друг относительно друга — как и клиенты, которые ходят в
+этот metastore мимо proxy. То есть non-default каталог не даёт ни ACID-гарантий, ни изоляции
+писателей; если нагрузке нужно взаимное исключение, держите её в `routing.default-catalog` или
+сериализуйте писателей сами. Access mode каталога при этом соблюдается: write lock для
+`READ_ONLY` каталога или для базы вне `catalog.<name>.write-db-whitelist` отклоняется
+`MetaException`, а не синтезируется.
 
-**The shim grants locks without checking whether they conflict.** It answers `ACQUIRED`
-immediately and never inspects other live locks, so concurrent `INSERT`, `INSERT OVERWRITE` and
-DDL statements against the same table of a non-default catalog are not serialized against each
-other, and neither are clients that reach that metastore without passing through the proxy. A
-non-default catalog therefore gives no ACID or writer-isolation guarantees; if a workload needs
-mutual exclusion, keep it in `routing.default-catalog` or serialize the writers yourself. The
-catalog access mode is still enforced: a write lock for a `READ_ONLY` catalog, or for a database
-outside `catalog.<name>.write-db-whitelist`, is rejected with a `MetaException` instead of being
-synthesized.
+Пригодность определяется по всем `LockComponent` запроса, а не только по первому. Вызов `lock`
+берётся, маршрутизируется и подтверждается целиком и возвращает один lock id, поэтому его нельзя
+переслать больше чем в один backend. Но запрос, читающий несколько каталогов — или всего лишь две
+базы одного каталога, — приходит именно в таком виде: одним запросом, компоненты которого
+принадлежат разным namespace. Proxy расщепляет его: компоненты одного каталога уходят в его
+metastore, каждый переписанный в свою backend-базу, а компоненты остальных каталогов из запроса к
+backend удаляются.
 
-Eligibility is decided over every `LockComponent` of the request, not just the first one. A
-`lock` call is acquired, routed, and acknowledged as a single unit and yields one lock id, so it
-cannot be forwarded to more than one backend. A query that reads across catalogs - or merely
-across two databases of one catalog - nevertheless arrives as exactly that: one request whose
-components resolve to different namespaces. The proxy splits it. Components of one catalog are
-routed to that catalog's metastore, each rewritten to its own backend database, and components of
-the other catalogs are dropped from the request that reaches the backend.
+Целью маршрутизации выбирается default catalog, если он присутствует: ему принадлежит TxnHandler,
+и его локи — настоящие. Отброшенные компоненты при этом не теряют ничего, что было бы удержано:
+non-default каталог обслуживается описанным выше shim, который записывает лок и сразу отвечает
+`ACQUIRED`, ни разу не проверив конфликт. Отброшенный компонент теряет запись в этом журнале, а не
+гарантию. Проверка access mode за решением о маршрутизации не следует — запись в `READ_ONLY`
+каталог отклоняется независимо от того, пережил ли её компонент расщепление. Каждое расщепление
+пишется в лог и считается метрикой `hms_proxy_lock_request_split_total`.
 
-The default catalog is chosen as the routing target whenever it is present, because it owns the
-TxnHandler and its locks are the real ones. Dropping the rest costs nothing that was ever held:
-a non-default catalog is served by the shim described above, which records a lock and reports it
-as acquired without ever testing for a conflict. What a dropped component loses is an entry in
-that ledger, not a guarantee. Access-mode enforcement does not travel with the routing decision -
-a write into a `READ_ONLY` catalog is still refused whether or not its component survived the
-split. Each split is logged and counted by `hms_proxy_lock_request_split_total`.
+Единственное исключение — плейсхолдер Hive для `INSERT ... VALUES` (`_dummy_database`/
+`_dummy_table`, константа `SemanticAnalyzer.DUMMY_DATABASE`): он не существует ни в одном
+metastore и не относится ни к какому каталогу, поэтому его компоненты не выбирают каталог, не
+считаются вторым namespace и не переписываются в реальную backend-базу. Запрос, состоящий
+только из таких компонентов, уходит в default catalog, которому принадлежит TxnHandler.
+Единственное исключение — псевдоисточник Hive `_dummy_database._dummy_table`: `INSERT ... VALUES`
+и запросы без `FROM` берут lock на нём вместе с реальной целевой таблицей, поэтому такой запрос
+всегда называет две базы. Этой псевдотаблицы нет ни в одном metastore и блокировать на ней нечего,
+поэтому proxy пропускает её и при выборе namespace, и при проверке пригодности для shim. Запрос,
+в котором есть только псевдоисточник, по-прежнему идёт по пину в default catalog.
 
-Hive's `INSERT ... VALUES` placeholder (`_dummy_database`/`_dummy_table`, the
-`SemanticAnalyzer.DUMMY_DATABASE` constant) is the one exception: it exists in no metastore and
-belongs to no catalog, so its components neither select a catalog, nor count as a second
-namespace, nor get rewritten into a real backend database. A request made only of placeholder
-components goes to the default catalog that owns the TxnHandler.
-Hive's `_dummy_database._dummy_table` pseudo source is the one exception: `INSERT ... VALUES`
-and FROM-less queries lock it next to the real target table, so such a request always names two
-databases. That pseudo table exists in no metastore and there is nothing to lock on it, so the
-proxy skips it when it decides both the namespace and the shim eligibility of a lock request. A
-request that names only the pseudo source still follows the default-catalog pin.
+`synthetic-read-lock.store.mode` обязан быть задан явно — default'а нет. Используйте `IN_MEMORY`
+для одиночного инстанса proxy (synthetic-локи на non-default каталогах теряются при рестарте или
+failover через load balancer, и proxy пишет `WARN` в лог на старте, чтобы это было видно), либо
+`ZOOKEEPER` для HA / load-balanced deployment, чтобы `check_lock`, `unlock`, `heartbeat`,
+`commit_txn` и `abort_txn` продолжали работать через соседний proxy после падения первого.
 
-`synthetic-read-lock.store.mode` must be set explicitly — there is no default. Use `IN_MEMORY`
-for single-instance deployments (non-default catalog synthetic locks are lost on proxy restart or
-load-balancer failover, and the proxy logs a `WARN` on startup to surface that), or `ZOOKEEPER`
-for HA / load-balanced deployments so `check_lock`, `unlock`, `heartbeat`, `commit_txn`, and
-`abort_txn` can continue through a different proxy instance after the first one dies.
+`mode=IN_MEMORY` вместе с любым заданным `synthetic-read-lock.store.zookeeper.*` — ошибка старта:
+ZooKeeper-настройки были бы проигнорированы, а локи молча остались бы в памяти. Обратное
+направление сохранено: ZooKeeper-ключи без явного `mode` включают `ZOOKEEPER`.
 
-`mode=IN_MEMORY` together with any configured `synthetic-read-lock.store.zookeeper.*` property is a
-startup error: the ZooKeeper settings would be ignored and locks would silently stay in memory. The
-opposite direction is preserved — ZooKeeper properties without an explicit `mode` select
-`ZOOKEEPER`.
-
-Example:
+Пример:
 
 ```properties
 synthetic-read-lock.store.mode=ZOOKEEPER
@@ -1507,109 +1472,89 @@ synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 # synthetic-read-lock.store.zookeeper.max-retries=3
 ```
 
-When `security.mode=KERBEROS`, the synthetic read-lock store uses the same
-`security.server-principal` and `security.keytab` credentials for ZooKeeper SASL/Kerberos
-as the front door by default, similar to the delegation-token store setup above.
+Если включён `security.mode=KERBEROS`, synthetic read-lock store по умолчанию использует те же
+`security.server-principal` и `security.keytab` для ZooKeeper SASL/Kerberos, что и front door,
+по той же модели, что и delegation-token store выше.
 
-The store keeps two subtrees under the configured znode:
+Store держит под настроенным znode два поддерева:
 
 ```
-/hms-proxy-synthetic-read-locks/locks/lock-<sequence>   serialized lock state, keyed by lock id
-/hms-proxy-synthetic-read-locks/txns/<txnId>/<lockId>   empty pointer node, keyed by transaction
+/hms-proxy-synthetic-read-locks/locks/lock-<sequence>   сериализованное состояние lock, ключ - lock id
+/hms-proxy-synthetic-read-locks/txns/<txnId>/<lockId>   пустая нода-указатель, ключ - транзакция
 ```
 
-`check_lock`, `unlock`, and `heartbeat` only carry a lock id, so lock state has to stay keyed by
-lock id; the `txns` subtree is the secondary index that lets `commit_txn` and `abort_txn` release a
-transaction's locks with a single `getChildren` instead of scanning every live lock. A commit for a
-transaction that never took a synthetic lock costs one `getChildren` that returns `NoNode`.
+`check_lock`, `unlock` и `heartbeat` приходят только с lock id, поэтому состояние lock обязано
+храниться с ключом по lock id; поддерево `txns` - вторичный индекс, который позволяет `commit_txn`
+и `abort_txn` освободить локи транзакции одним `getChildren` вместо скана всех живых lock. Коммит
+транзакции, которая не брала synthetic lock, стоит один `getChildren` с ответом `NoNode`.
 
-Expired locks are collected by a background sweep every 30s (never on a client request thread), and
-that sweep also removes index entries whose lock node is gone and empty per-transaction parents.
-Locks are always written before their index entry, so a half-finished create can never hide a lock
-from `commit_txn`.
+Истёкшие lock убирает фоновый sweep раз в 30s (никогда не в потоке клиентского запроса); он же
+удаляет индексные записи, у которых пропала lock-нода, и пустые per-transaction каталоги. Lock
+всегда пишется раньше своей индексной записи, поэтому недоделанный create не может спрятать lock
+от `commit_txn`.
 
-Rolling upgrade: locks written by a proxy older than this layout have no index entry, so a newer
-instance will not release them on `commit_txn`/`abort_txn` — they expire through the sweep within
-`metastore.txn.timeout` instead. Synthetic locks do not block anything on the backend, so the only
-cost is a znode that lives slightly longer. No manual migration or downtime is required, and mixed
-old/new instances can run against the same znode.
+Rolling upgrade: у lock, записанных proxy старее этого layout, индексной записи нет, поэтому новый
+инстанс не освободит их по `commit_txn`/`abort_txn` - вместо этого они истекут через sweep за
+`metastore.txn.timeout`. Synthetic lock ничего не блокирует на backend, так что вся цена - znode,
+живущий чуть дольше. Ручная миграция и downtime не нужны, старые и новые инстансы могут работать
+против одного znode одновременно.
 
-The lock timeout is derived from `metastore.txn.timeout` of the default catalog and accepts Hive's
-canonical suffixed form (`600s`, `10m`); a bare number is still read as seconds. An unparsable value
-falls back to 300s and is logged as a `WARN` at startup.
+Таймаут lock берётся из `metastore.txn.timeout` default-каталога и понимает каноническую форму Hive
+с суффиксом (`600s`, `10m`); голое число по-прежнему читается как секунды. Нераспознанное значение
+откатывается к 300s и логируется как `WARN` на старте.
 
 ### Kerberos impersonation
 
-If you want backend HMS calls to execute as the authenticated front-door Kerberos user instead of
-the proxy service principal, enable:
+Если хочешь, чтобы backend HMS вызовы выполнялись от имени аутентифицированного пользователя, а не
+от service principal proxy:
 
 ```properties
 security.impersonation-enabled=true
 ```
 
-When enabled, the proxy derives the caller identity from the inbound Kerberos/SASL session and
-keeps a separate cached backend HMS client per user and per catalog, issuing `set_ugi()` once when
-that cached client is opened. This avoids leaking one user's identity into another user's requests
-while also avoiding a full backend reconnect on every RPC.
-
-You can also override this per backend:
+Или только для конкретных backend:
 
 ```properties
-# Global default for catalogs that do not specify their own setting.
+# Дефолт для каталогов, у которых нет собственной настройки.
 security.impersonation-enabled=false
 
 catalog.catalog1.impersonation-enabled=true
 catalog.catalog2.impersonation-enabled=false
 ```
 
-This lets you enable caller impersonation only for selected backends while leaving the others on
-the proxy service principal. The global key acts purely as that default: at runtime impersonation
-is driven by the per-catalog flag, which inherits the global value when it is not set explicitly.
+Глобальный ключ работает именно как дефолт `catalog.<name>.impersonation-enabled`: в рантайме
+имперсонацию включает per-catalog флаг, который наследует глобальное значение, если не задан явно.
 
-When caller impersonation is active in Kerberos mode, the proxy establishes outbound connections
-to the backend HMS using its client Kerberos principal (`security.client-principal` with keytab) and
-manages per-user backend session pools (`ImpersonationClient`). On secure backends with Kerberos/SASL
-enabled, the Hive Metastore uses `TUGIAssumingProcessor` (which ignores `set_ugi()`); in this mode,
-the proxy automatically requests a backend delegation token (`get_delegation_token`) on behalf of the
-caller and establishes impersonated sessions using SASL DIGEST-MD5. The metastore executes operations
-under `createProxyUser(caller, loginUser).doAs(...)`, ensuring HDFS file operations (such as `wh.mkdirs`
-during table creation) run under the end user instead of `hive:hadoop`. On unsecure backends or in fallback
-mode, `set_ugi(user, groups)` is sent upon session initialization (`TUGIBasedProcessor`).
+При включённой имперсонации прокси открывает соединения с бэкендом HMS под собственным клиентским
+Kerberos-принципалом (`security.client-principal` с keytab) и ведёт пул пользовательских сессий
+(`ImpersonationClient`). На защищённых Kerberos/SASL бэкендах Hive Metastore использует `TUGIAssumingProcessor`
+(который игнорирует `set_ugi()`); в этом режиме прокси автоматически получает бэкенд delegation token
+(`get_delegation_token`) от имени вызывающего пользователя и открывает сессию через SASL DIGEST-MD5.
+Метастор выполняет вызовы под `createProxyUser(caller, loginUser).doAs(...)`, благодаря чему операции в HDFS
+(такие как `wh.mkdirs` при создании таблиц) выполняются от имени конечного пользователя, а не `hive:hadoop`.
+На незащищённых бэкендах или в режиме fallback при инициализации сессии по-прежнему отправляется
+`set_ugi(user, groups)` (`TUGIBasedProcessor`).
 
-Additionally, when a front-door client (HiveServer2, Spark, etc.) calls `set_ugi(user, groups)` on the proxy listener,
-the proxy binds this user identity to the client connection (transport), ensuring that all subsequent operations
-within that connection run with the end user's identity.
+Кроме того, когда клиент (HiveServer2, Spark и др.) вызывает `set_ugi(user, groups)` на listener прокси,
+прокси привязывает указанную пользовательскую идентичность к клиентскому соединению (транспорту). Все
+последующие операции этого соединения обслуживаются от имени конечного пользователя.
 
-If internal HiveServer2 traffic works as user `hive`, but your personal Kerberos user fails even
-with admin SQL privileges, that usually means backend impersonation is working as designed:
+Это требует:
 
-- service traffic from `hive` is allowed to continue on the proxy service principal
-- real end users are sent to the backend through `set_ugi()` and therefore need backend Hadoop
-  proxy-user permission for `security.client-principal`
-- SQL admin rights in Hive do not replace Hadoop proxy-user authorization
+- `security.mode=KERBEROS` на фронте
+- proxy-user impersonation rules на backend HMS и NameNode для `security.client-principal` (`hadoop.proxyuser.<user>.hosts=*`, `hadoop.proxyuser.<user>.groups=*`)
 
-In that case either allow proxy-user impersonation on the backend HMS for the proxy outbound
-principal, or disable impersonation for that specific backend with
-`catalog.<name>.impersonation-enabled=false`.
-
-**Backend connections** — you can set shared defaults for all backend thrift clients via
-`backend.conf.*`, then override per catalog via `catalog.<name>.conf.*`:
+Если backend HMS настроен на Kerberos/SASL:
 
 ```properties
-backend.conf.hive.metastore.client.socket.timeout=45s
-backend.conf.hive.metastore.execute.setugi=true
-backend.conf.hive.metastore.uris=thrift://shared-hms.internal:9083
-```
-
-Per-catalog values win over shared backend defaults:
-
-```properties
-catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
 catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
 
-Per catalog you can also restrict write traffic:
+Когда для любого backend включён `hive.metastore.sasl.enabled=true`, proxy открывает outbound HMS
+соединения под `security.client-principal` и `security.client-keytab`.
+
+Для каждого каталога можно отдельно ограничить write RPC:
 
 ```properties
 catalog.catalog1.access-mode=READ_ONLY
@@ -1617,14 +1562,14 @@ catalog.catalog2.access-mode=READ_WRITE_DB_WHITELIST
 catalog.catalog2.write-db-whitelist=sales,analytics
 ```
 
-Per catalog you can also define a latency budget for the latency-aware routing layer:
+Для каждого каталога можно отдельно задать latency budget для latency-aware routing слоя:
 
 ```properties
 catalog.catalog1.latency-budget-ms=1500
 catalog.catalog2.latency-budget-ms=5000
 ```
 
-And you can independently restrict which metadata is visible from each backend:
+И независимо от write-policy можно ограничить видимость метаданных:
 
 ```properties
 catalog.catalog1.expose-mode=DENY_BY_DEFAULT
@@ -1632,28 +1577,25 @@ catalog.catalog1.expose-db-patterns=sales
 catalog.catalog1.expose-table-patterns.sales=orders_.*,events
 ```
 
-Supported modes:
+Поддерживаются режимы:
 
-- `READ_WRITE`: default behavior
-- `READ_ONLY`: only read RPCs are allowed for that catalog
-- `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
+- `READ_WRITE`: поведение по умолчанию
+- `READ_ONLY`: для каталога разрешены только read RPC
+- `READ_WRITE_DB_WHITELIST`: write RPC разрешены только для баз из
   `catalog.<name>.write-db-whitelist`
 
-`access-mode` and `write-db-whitelist` must be configured together. A whitelist under any other
-access mode, or `READ_WRITE_DB_WHITELIST` without a whitelist, is a startup error rather than a
-catalog that silently allows every write.
+`access-mode` и `write-db-whitelist` задаются только вместе. Whitelist при любом другом
+access-mode, как и `READ_WRITE_DB_WHITELIST` без whitelist, — ошибка старта, а не каталог, который
+молча разрешает любую запись.
 
-Exposure modes:
+Режимы selective exposure:
 
-- `ALLOW_ALL`: default metadata exposure behavior for `catalog.<name>.expose-mode`
-- `DENY_BY_DEFAULT`: metadata is hidden unless matched by `catalog.<name>.expose-db-patterns` or
-  `catalog.<name>.expose-table-patterns.<dbRegex>`
+- `ALLOW_ALL`: поведение по умолчанию для `catalog.<name>.expose-mode`
+- `DENY_BY_DEFAULT`: metadata скрывается, если объект не совпал с
+  `catalog.<name>.expose-db-patterns` или `catalog.<name>.expose-table-patterns.<dbRegex>`
 
-This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
-the metastore URI and Kerberos settings.
-
-**Latency-aware routing** — optional backend-state polling, adaptive timeouts, circuit breaking,
-safe hedged fanout reads, and degraded omission are configured with `routing.*` properties:
+Latency-aware routing, background backend polling, adaptive timeout, circuit breaker, safe hedged
+fanout read и degraded omission настраиваются через `routing.*` properties:
 
 ```properties
 routing.backend-state-polling.enabled=true
@@ -1682,40 +1624,41 @@ routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
-The adaptive timeout starts from `routing.adaptive-timeout.initial-ms`, then follows backend
-latency EWMA within the configured min/max bounds. Each timeout change reconnects the shared
-backend client and evicts cached impersonation clients (Kerberos re-login), so the proxy
-applies hysteresis (`max(2s, 25 % of the current value)`) and a cooldown
-(`routing.adaptive-timeout.reconnect-cooldown-ms`, default 30 s) before reconnecting again. The
-counters `hms_proxy_adaptive_timeout_reconnect_total` and
-`hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` expose how
-often reconnects fire vs. are suppressed. A reconnect that cannot quiesce the shared pool in time
-rolls the client socket timeout back to the value the live sessions use and still starts the
-cooldown, so an overloaded backend is not re-quiesced on every following request. Transport
-failures and latency-budget breaches
-count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
-the proxy fails fast for that backend until the open window expires, then lets one half-open retry
-decide whether to close or reopen the circuit.
+Adaptive timeout стартует с `routing.adaptive-timeout.initial-ms`, затем следует за backend
+latency EWMA в заданных min/max пределах. Каждое изменение таймаута приводит к reconnect
+shared backend client и сбросу кэша impersonation-клиентов (Kerberos re-login), поэтому proxy
+применяет hysteresis (`max(2s, 25 % от текущего значения)`) и cooldown
+(`routing.adaptive-timeout.reconnect-cooldown-ms`, по умолчанию 30 s) перед повторным
+реконнектом. Счётчики `hms_proxy_adaptive_timeout_reconnect_total` и
+`hms_proxy_adaptive_timeout_reconnect_skipped_total{reason="hysteresis"|"cooldown"}` показывают,
+сколько реконнектов сработало и сколько было подавлено троттлингом. Если reconnect не успел
+квиесцировать shared pool, client socket timeout откатывается к значению, с которым работают живые
+сессии, и cooldown всё равно запускается — перегруженный backend не квиесцируется заново на каждом
+следующем запросе. Transport failure и превышение latency budget
+учитываются в circuit breaker. Когда backend достигает
+`routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
+open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
+открывает его.
 
-### Apache Ranger authorization and global shared metadata cache
+### Авторизация через Apache Ranger и общий глобальный кэш метаданных
 
-When multiple users query the metastore (for example via HiveServer2, Trino, or Spark), caching metadata separately per user leads to redundant metastore RPCs, increased latency, and high cache memory footprint.
+Когда множество пользователей обращаются к метастору (например, через HiveServer2, Trino или Spark), кэширование метаданных раздельно для каждого пользователя приводит к дублированию RPC-запросов в бэкенд-метасторы, росту задержек и увеличению расхода памяти на кэш.
 
-`hms-proxy` includes an embedded **Apache Ranger** authorization plugin (`ranger-plugins-common` 2.5.0) that can evaluate policies locally inside the proxy. This enables a **global shared metadata cache**:
+В `hms-proxy` встроен плагин авторизации **Apache Ranger** (`ranger-plugins-common` 2.5.0), который вычисляет политики доступа локально в процессе прокси. Это открывает возможность использовать **общий глобальный кэш метаданных**:
 
 - `routing.database-list-cache.shared-across-users=true`
 - `routing.database-metadata-cache.shared-across-users=true`
 
-With `shared-across-users=true`, cache keys omit user/group identities, allowing `SHOW DATABASES`, `SHOW TABLES`, and `get_database`/`get_table*` calls across all users to hit a single cache populated once from backend metastores. Before returning metadata to the caller, the proxy's embedded Ranger authorizer filters databases, tables, and views according to each caller's Ranger permissions. If authorization is not configured (`NoOpMetadataAuthorizer`), all metadata is returned directly without overhead.
+При `shared-across-users=true` ключи кэша не привязываются к пользователю и группам, благодаря чему вызовы `SHOW DATABASES`, `SHOW TABLES` и `get_database`/`get_table*` от любых пользователей попадают в единый кэш, единожды заполненный из бэкенд-метасторов. Перед выдачей клиенту встроенный Ranger-авторизатор фильтрует базы данных, таблицы и представления в соответствии с правами конкретного вызывающего пользователя. При выключенном Ranger (`NoOpMetadataAuthorizer`) проверка прав пропускается с нулевым оверхедом.
 
 ```properties
-# Enable embedded Ranger policy evaluation
+# Включение встроенного Ranger-плагина
 ranger.enabled=true
 ranger.policy.rest.url=http://ranger-admin.internal:6080
 ranger.service-name=hms_proxy_hive
 ranger.service-type=hive
 ranger.app-id=hms-proxy
-# Optional local policy cache and polling interval
+# Опциональный локальный кэш политик и интервал опроса
 # ranger.policy.cache.dir=/var/cache/hms-proxy/ranger
 # ranger.policy.poll-interval-ms=30000
 # ranger.policy.connection-timeout-ms=5000
@@ -1725,49 +1668,50 @@ ranger.app-id=hms-proxy
 # ranger.config-dir=/etc/ranger/hms-proxy
 # ranger.audit.enabled=false
 
-# Global shared metadata caches:
+# Общий кэш метаданных:
 routing.database-list-cache.ttl-ms=10000
 routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=10000
 routing.database-metadata-cache.shared-across-users=true
 
-# Per-catalog Ranger overrides (e.g. separate Ranger service or Admin per catalog):
+# Переопределения для отдельных каталогов (отдельный сервис Ranger для каталога):
 catalog.catalog1.ranger.enabled=true
 catalog.catalog1.ranger.service-name=c1_hive_service
 catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
 
-#### How Schemas and Tables Are Evaluated in Ranger
+#### Обработка схем (баз данных) и таблиц в Ranger
 
-1. **Namespace Translation and Resource Matching**:
-   The proxy translates federated namespaces to backend-native names before evaluating Ranger policies:
-   - For a request to `apache__marketing.campaigns` (catalog `apache`, backend database `marketing`), the Ranger resource is evaluated as:
+1. **Трансляция пространств имён и сопоставление ресурсов**:
+   Перед проверкой прав в Ranger прокси транслирует федеративные имена во внутренние имена бэкенда:
+   - При запросе к `apache__marketing.campaigns` (каталог `apache`, база `marketing`), в Ranger проверяется ресурс:
      - `database` = `marketing`
      - `table` = `campaigns`
-   - For a request to `sales.orders` in the default catalog, the Ranger resource is evaluated as:
+   - При запросе к `sales.orders` дефолтного каталога, в Ranger проверяется:
      - `database` = `sales`
      - `table` = `orders`
-   Policies in Apache Ranger Admin should always be defined against native backend database names without proxy catalog prefixes.
+   Политики в Apache Ranger Admin всегда настраиваются на оригинальные имена баз и таблиц бэкенда (без федеративных префиксов прокси).
 
-2. **Global vs. Per-Catalog Ranger Configuration**:
-   - **Global Ranger (`ranger.*`)**: All catalogs share a single Ranger service instance (e.g., `hive`). A policy defined on `database=sales` applies to database `sales` across any catalog governed by that global service.
-   - **Per-Catalog Ranger (`catalog.<name>.ranger.*`)**: Each catalog initializes an independent `RangerBasePlugin` pointing to its own Ranger service (e.g., `onprem_hive`, `cloud_hive`) or distinct Ranger Admin URL. Policies are strictly isolated per catalog: database `sales` in catalog `catalog1` and database `sales` in catalog `catalog2` are evaluated against their respective, independent Ranger policy sets.
+2. **Общий (Global) vs. Раздельные (Per-Catalog) Ranger**:
+   - **Общий Ranger (`ranger.*`)**: Все каталоги используют один общий сервис Ranger (например, `hive`). Политика на `database=sales` применяется к базе `sales` во всех каталогах, использующих этот глобальный сервис.
+   - **Раздельные Ranger для каталогов (`catalog.<name>.ranger.*`)**: Для каждого каталога создаётся изолированный экземпляр `RangerBasePlugin`, подключенный к собственному сервису (например, `onprem_hive`, `cloud_hive`) или отдельному инстансу Ranger Admin. Политики полностью изолированы: база `sales` в `catalog1` и база `sales` в `catalog2` авторизуются по своим собственным независимым наборам правил.
 
-3. **Filtering Lifecycle**:
-   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
-   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`.
-   - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. If the caller lacks permission, `NoSuchObjectException` is thrown to hide the existence of unauthorized objects.
+3. **Жизненный цикл фильтрации**:
+   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
+   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`.
+   - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав выбрасывается `NoSuchObjectException`, скрывая сам факт существования недоступных объектов.
 
-**Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
-`alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
-and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the
-request omits is erased - `metadata_location` first of all. The proxy is the only place the Hive
-and Iceberg write paths meet, so it merges such an alter over the record the metastore currently
-holds instead of forwarding it as sent; an honest Iceberg commit, recognised by a
-`previous_metadata_location` equal to the current pointer, is passed through untouched. On Hive 4
-backends the repaired alter also carries `expected_parameter_key`/`expected_parameter_value`, which
-makes the metastore apply it only while the pointer is still the one that was read.
+**Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
+`alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
+метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в
+записи и отсутствует в запросе, — в первую очередь `metadata_location`. Прокси — единственное
+место, где встречаются Hive- и Iceberg-пути записи, поэтому такой alter сливается поверх записи,
+которую метастор держит сейчас, а не пересылается как есть; честный Iceberg-коммит опознаётся по
+`previous_metadata_location`, равному текущему указателю, и пропускается без изменений. На Hive
+4-бэкендах починенный alter дополнительно несёт
+`expected_parameter_key`/`expected_parameter_value` — метастор применит его только пока указатель
+всё ещё тот, который был прочитан.
 
 ```properties
 routing.iceberg-pointer-guard.enabled=true
@@ -1777,81 +1721,86 @@ routing.iceberg-pointer-guard.lock-enabled=true
 routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 ```
 
-Reading the record and writing the alter are two calls, so a repair holds the table lock Iceberg
-itself takes (EXCLUSIVE, table level - the request shape of
-`org.apache.iceberg.hive.MetastoreLock`) across the re-read, the merge and the backend's
-`alter_table`. The lock is requested **only when a repair is needed**: an honest Iceberg commit
-sends its `alter_table` from inside that very lock, so asking for it before deciding would wait on
-the caller of the call being served. A lock that is not granted within `lock-acquire-timeout-ms`
-never refuses the write - the alter goes through repaired but unprotected, counted as
-`repair_lock_timeout` - because failing an ordinary Hive write whenever the metastore's lock table
-hiccups is worse than the race being closed. `0` means one attempt and no waiting. Non-default
-catalogs are never locked: their writers are served by the synthetic lock shim, which grants locks
-without checking conflicts, so nothing contends for the object the lock would hold.
+Чтение записи и запись alter'а — два разных вызова, поэтому починка держит тот самый табличный
+лок, который берёт сам Iceberg (EXCLUSIVE, уровень таблицы — форма запроса из
+`org.apache.iceberg.hive.MetastoreLock`), на всё перечитывание, слияние и `alter_table` бэкенда.
+Лок запрашивается **только когда починка действительно нужна**: честный Iceberg-коммит шлёт свой
+`alter_table` изнутри этого же лока, поэтому запрос лока до решения означал бы ожидание того, кто
+ждёт ответа на обслуживаемый вызов. Не полученный за `lock-acquire-timeout-ms` лок никогда не
+отменяет запись — alter уходит починенным, но без защиты, и это считается как
+`repair_lock_timeout`: уронить обычную запись Hive из-за икоты таблицы локов метастора хуже, чем
+оставить окно открытым. `0` означает одну попытку без ожидания. Non-default каталоги не блокируются
+никогда: их писателей обслуживает synthetic lock shim, который выдаёт локи без проверки конфликтов,
+поэтому за объект этого лока никто не борется.
 
-Whether a table is an Iceberg table is decided from the metastore's record, not from the request -
-the shape HiveServer2 sends carries no Iceberg key at all - which costs one `get_table` per
-`alter_table`. `table-cache-ttl-ms` bounds that: a name the metastore answered is not an Iceberg
-table is remembered for that long, so ordinary Hive tables (where the `alter_table` volume is) pay
-one read and then nothing. Iceberg tables are never cached, because their current pointer has to be
-read fresh; `0` disables the cache entirely. A table that becomes an Iceberg table outside the
-proxy is unprotected for at most one TTL - a `create_table` or an `alter_table` that carries a
-pointer drops the remembered answer immediately. `hms_proxy_iceberg_pointer_guard_events_total`
-exposes both the repairs and the reads the cache saved.
+Iceberg-ность таблицы определяется по записи метастора, а не по запросу — в форме, которую
+присылает HiveServer2, нет ни одного Iceberg-ключа, — и это стоит одного `get_table` на каждый
+`alter_table`. `table-cache-ttl-ms` ограничивает цену: имя, про которое метастор ответил, что это
+не Iceberg-таблица, запоминается на это время, поэтому обычные Hive-таблицы (где и сосредоточен
+объём `alter_table`) платят одно чтение и дальше ничего. Iceberg-таблицы не кэшируются никогда —
+их текущий указатель обязан читаться заново; `0` полностью отключает кэш. Таблица, ставшая
+Iceberg-таблицей вне прокси, не защищена не дольше одного TTL: `create_table` или `alter_table` с
+указателем сбрасывает запомненный ответ сразу. `hms_proxy_iceberg_pointer_guard_events_total`
+показывает и починки, и сэкономленные кэшем чтения.
 
-When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
-connections using `security.client-principal` and `security.client-keytab`. If those are omitted,
-it falls back to `security.server-principal` and `security.keytab`.
-
-Front and backend security are independent: you can run the front door without Kerberos and
-still connect to Kerberos-protected backends, or vice versa. In that case, set
-`security.mode=NONE` and provide `security.client-principal` plus `security.client-keytab`.
-
-**Full example:**
+## Пример mixed config: Hortonworks front + hdp backend + apache backend + Kerberos
 
 ```properties
-server.port=9083
+server.name=hms-proxy
 server.bind-host=0.0.0.0
+server.port=9083
+
+routing.default-catalog=hdp
+routing.catalog-db-separator=__
+
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 
 security.mode=KERBEROS
-security.server-principal=hive/_HOST@REALM.COM
+security.server-principal=hive/_HOST@EXAMPLE.COM
 security.keytab=/etc/security/keytabs/hms-proxy.keytab
-security.client-principal=hive/_HOST@REALM.COM
+security.client-principal=hive/_HOST@EXAMPLE.COM
 security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
+security.impersonation-enabled=true
 
-catalogs=catalog1,catalog2
-routing.default-catalog=catalog1
+catalogs=hdp,apache
 routing.backend-state-polling.enabled=true
 routing.adaptive-timeout.enabled=true
 routing.circuit-breaker.enabled=true
 routing.hedged-read.enabled=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 
-catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
-catalog.catalog1.conf.hive.metastore.sasl.enabled=true
-catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
-catalog.catalog1.latency-budget-ms=1500
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+catalog.hdp.impersonation-enabled=true
+catalog.hdp.conf.hive.metastore.uris=thrift://hdp-hms.example.com:9083
+catalog.hdp.conf.hive.metastore.sasl.enabled=true
+catalog.hdp.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.hdp.latency-budget-ms=1500
 
-catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
-catalog.catalog2.conf.hive.metastore.sasl.enabled=true
-catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
-catalog.catalog2.latency-budget-ms=5000
+catalog.apache.runtime-profile=APACHE_3_1_3
+catalog.apache.impersonation-enabled=true
+catalog.apache.conf.hive.metastore.uris=thrift://apache-hms.example.com:9083
+catalog.apache.conf.hive.metastore.sasl.enabled=true
+catalog.apache.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.apache.latency-budget-ms=5000
 ```
 
-## Manual HMS smoke client
+## Ручной HMS smoke client
 
-For the scenarios in [SMOKE.md](SMOKE.md), the repo now includes a runnable direct HMS API smoke
-client:
+Для сценариев из [SMOKE.md](SMOKE.md) в репозитории теперь есть runnable-клиент прямых HMS
+RPC:
 
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli txn`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli notification`
 
-When a `txn` or `lock` run fails after `open_txns`, the client issues a best-effort `abort_txn`
-before propagating the error, `--close-txn none` included: a failed smoke run must not leave a
-transaction holding back the `ValidTxnList` watermark until the heartbeat timeout expires.
+Если прогон `txn` или `lock` падает уже после `open_txns`, клиент делает best-effort `abort_txn`
+перед пробросом ошибки, в том числе при `--close-txn none`: упавший smoke не должен оставлять
+транзакцию, удерживающую watermark `ValidTxnList` до истечения heartbeat-timeout.
 
-The current smoke coverage is summarized in the [SMOKE.md](SMOKE.md) test matrix by:
+Текущее smoke-покрытие сведено в test matrix в [SMOKE.md](SMOKE.md) по полям:
 
 - client version
 - front-door profile
@@ -1860,13 +1809,13 @@ The current smoke coverage is summarized in the [SMOKE.md](SMOKE.md) test matrix
 - method families
 - expected result
 
-Build the jar first:
+Сначала собери jar:
 
 ```bash
 mvn -DskipTests package
 ```
 
-For Java 17+ with Kerberos and Hadoop 2.x libraries, use the same JVM flags as the proxy:
+Для Java 17+ в Kerberos-окружении с Hadoop 2.x используй те же JVM-флаги, что и для proxy:
 
 ```bash
 java \
@@ -1884,7 +1833,7 @@ java \
   --table smoke_txn_tbl
 ```
 
-That mode performs:
+Этот режим последовательно вызывает:
 
 - `open_txns`
 - `allocate_table_write_ids`
@@ -1893,11 +1842,12 @@ That mode performs:
 - `get_valid_write_ids`
 - `commit_txn`
 
-The `lock` mode is for direct lock lifecycle smoke, especially the synthetic shim on
-non-default catalogs. It opens one txn, acquires the requested lock, runs `check_lock`,
-optionally sends `heartbeat`, optionally calls `unlock`, and then aborts or commits the txn.
+Режим `lock` нужен для прямой проверки lock lifecycle, в первую очередь synthetic shim на
+non-default catalog. Он открывает один txn, берет запрошенный lock, вызывает `check_lock`,
+при необходимости делает `heartbeat`, при необходимости вызывает `unlock`, а затем завершает
+txn через `abort` или `commit`.
 
-Example `CREATE TABLE`-style DB lock on a non-default catalog:
+Пример DB lock в стиле `CREATE TABLE` на non-default catalog:
 
 ```bash
 java \
@@ -1913,7 +1863,7 @@ java \
   --transactional false
 ```
 
-Example partition rename/drop style lock on a non-default catalog:
+Пример partition lock в стиле rename/drop на non-default catalog:
 
 ```bash
 java \
@@ -1931,8 +1881,8 @@ java \
   --transactional false
 ```
 
-The `notification` mode is for Hortonworks-only `add_write_notification_log`, so it also needs
-the HDP standalone metastore jar:
+Режим `notification` нужен для Hortonworks-only RPC `add_write_notification_log`, поэтому ему
+дополнительно нужен HDP standalone metastore jar:
 
 ```bash
 java \
@@ -1954,47 +1904,46 @@ java \
   --hdp-standalone-metastore-jar /opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
-Useful notes:
+Что важно:
 
-- `--server-principal` must be the proxy front-door principal, not the backend HMS principal
-- `--client-principal` and `--keytab` are the Kerberos credentials used by this smoke client
-- extra HiveConf overrides can be passed via repeated `--conf key=value`
-- `lock` is the quickest way to reproduce non-default catalog `NO_TXN` shim cases such as
-  `CREATE TABLE` and partition rename/drop without going through Beeline
-- `notification` should succeed for a Hortonworks-routed catalog and fail with
-  `requires a Hortonworks backend runtime` for an Apache-routed catalog
+- `--server-principal` должен указывать на front-door principal самого proxy, а не backend HMS
+- `--client-principal` и `--keytab` это Kerberos credentials клиента, которым запускается smoke
+- дополнительные HiveConf overrides можно передавать через повторяющийся `--conf key=value`
+- `lock` это самый короткий путь воспроизвести non-default catalog `NO_TXN` shim кейсы вроде
+  `CREATE TABLE` и partition rename/drop без Beeline
+- `notification` должен проходить для Hortonworks-routed каталога и падать с
+  `requires a Hortonworks backend runtime` для Apache-routed каталога
 
 ### Automated Real-installation Smoke
 
-For repeated checks on a real proxy installation, use separate runners for `simple` and `kerberos`
-front doors:
+Для регулярных проверок на реальной инсталляции теперь есть два отдельных runner'а:
 
 - [`scripts/run-real-installation-smoke-simple.sh`](scripts/run-real-installation-smoke-simple.sh)
 - [`scripts/run-real-installation-smoke-kerberos.sh`](scripts/run-real-installation-smoke-kerberos.sh)
 
-They wrap the same smoke client and run a fail-fast scenario of:
+Это обёртки над тем же smoke client, которые fail-fast запускают сценарий из:
 
-- optional Beeline / HiveServer2 SQL smoke from [SMOKE.md](SMOKE.md)
+- optional Beeline / HiveServer2 SQL smoke из [SMOKE.md](SMOKE.md)
 - direct txn/ACID smoke
-- non-default catalog DB lock smoke
+- DB lock smoke на non-default catalog
 - optional partition lock smoke
 - optional Hortonworks notification smoke
 
-Start from the matching example config:
+Стартовать удобнее с соответствующего example-конфига:
 
 ```bash
 cp scripts/hms-real-installation-smoke.simple.env.example scripts/hms-real-installation-smoke.simple.env
 cp scripts/hms-real-installation-smoke.kerberos.env.example scripts/hms-real-installation-smoke.kerberos.env
 ```
 
-Then edit the relevant `HMS_SMOKE_*` values and run:
+Дальше поправь `HMS_SMOKE_*` значения и запускай:
 
 ```bash
 scripts/run-real-installation-smoke-simple.sh --scenario all
 scripts/run-real-installation-smoke-kerberos.sh --scenario all
 ```
 
-Or run a narrower slice:
+Либо более узкий прогон:
 
 ```bash
 scripts/run-real-installation-smoke-simple.sh --scenario sql
@@ -2002,15 +1951,15 @@ scripts/run-real-installation-smoke-simple.sh --scenario locks
 scripts/run-real-installation-smoke-kerberos.sh --scenario notification
 ```
 
-Notes:
+Что важно:
 
-- by default the runner picks the newest `target/hms-proxy-*-fat.jar`
-- you can override the jar path with `HMS_SMOKE_FAT_JAR`
-- if `HMS_SMOKE_BEELINE_JDBC_URL` is configured, `all` also runs the Beeline / HiveServer2 SQL smoke from `SMOKE.md`
-- SQL smoke uses `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE`, validates view rewrite and permanent UDFs by default, and can optionally run transactional SQL and materialized-view checks
-- set `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false` if the proxy is intentionally started without `federation.view-text-rewrite.mode=REWRITE`; set `HMS_SMOKE_SQL_RUN_UDF=false` or override `HMS_SMOKE_SQL_UDF_CLASS` together with `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT` when the HS2 classpath differs
-- if `HMS_SMOKE_TXN_SECONDARY_DB` and `HMS_SMOKE_TXN_SECONDARY_TABLE` are set, the runner executes a second direct txn smoke target
-- if `HMS_SMOKE_NOTIFICATION_*` is not configured, the notification step is skipped in `all`
-- if `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE` are set, the runner also executes the negative Apache-backend notification check from `SMOKE.md`
-- the simple runner auto-loads `scripts/hms-real-installation-smoke.simple.env` when it exists
-- the Kerberos runner auto-loads `scripts/hms-real-installation-smoke.kerberos.env` when it exists
+- по умолчанию runner берёт самый свежий `target/hms-proxy-*-fat.jar`
+- путь к jar можно переопределить через `HMS_SMOKE_FAT_JAR`
+- если задан `HMS_SMOKE_BEELINE_JDBC_URL`, в `all` дополнительно запускается Beeline / HiveServer2 SQL smoke из `SMOKE.md`
+- SQL smoke использует `HMS_SMOKE_HDP_READ_TABLE` / `HMS_SMOKE_APACHE_READ_TABLE`, по умолчанию проверяет view rewrite и permanent UDF, а при необходимости умеет запускать transactional SQL и materialized-view checks
+- если proxy специально поднят без `federation.view-text-rewrite.mode=REWRITE`, выставь `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=false`; для UDF можно выставить `HMS_SMOKE_SQL_RUN_UDF=false` или переопределить `HMS_SMOKE_SQL_UDF_CLASS` вместе с `HMS_SMOKE_SQL_UDF_EXPECTED_RESULT`, если HS2 classpath отличается
+- если заданы `HMS_SMOKE_TXN_SECONDARY_DB` и `HMS_SMOKE_TXN_SECONDARY_TABLE`, runner делает второй direct txn smoke
+- если `HMS_SMOKE_NOTIFICATION_*` не настроены, notification шаг в `all` будет пропущен
+- если заданы `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`, runner дополнительно запускает negative notification check для Apache backend из `SMOKE.md`
+- simple runner автоматически подхватывает `scripts/hms-real-installation-smoke.simple.env`
+- Kerberos runner автоматически подхватывает `scripts/hms-real-installation-smoke.kerberos.env`

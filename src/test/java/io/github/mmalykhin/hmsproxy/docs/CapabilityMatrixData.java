@@ -17,9 +17,9 @@ import org.yaml.snakeyaml.Yaml;
 final class CapabilityMatrixData {
   static final Path MATRIX_PATH = Path.of("capabilities.yaml");
   static final Path README_PATH = Path.of("README.md");
-  static final Path README_RU_PATH = Path.of("README.ru.md");
+  static final Path README_EN_PATH = Path.of("README.en.md");
   static final Path COMPATIBILITY_DOC_PATH = Path.of("COMPATIBILITY.md");
-  static final Path COMPATIBILITY_DOC_RU_PATH = Path.of("COMPATIBILITY.ru.md");
+  static final Path COMPATIBILITY_DOC_EN_PATH = Path.of("COMPATIBILITY.en.md");
   static final String BEGIN_MARKER = "<!-- BEGIN GENERATED: capability-matrix -->";
   static final String END_MARKER = "<!-- END GENERATED: capability-matrix -->";
   static final String METHOD_BEGIN_MARKER = "<!-- BEGIN GENERATED: method-compatibility-matrix -->";

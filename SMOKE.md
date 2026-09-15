@@ -1,7 +1,7 @@
-**Beeline Smoke**
+**Smoke-тест для Beeline и HMS clients**
 
-Replace `jdbc:hive2://...` with your actual connection string and add `principal=...` if needed.
-Assume:
+Подставь свой `jdbc:hive2://...` и при необходимости `principal=...`.
+Предположим:
 
 - separator: `__`
 - Hortonworks backend catalog: `hdp`
@@ -13,42 +13,44 @@ Assume:
 
 ## Test matrix
 
-Use this matrix as the operational checklist for smoke coverage. It makes explicit which client /
-front-door / backend / auth combinations are expected to work, degrade, or fail before you start
-running the detailed Beeline or direct HMS steps below.
+Используй эту матрицу как короткий operational checklist для smoke-покрытия. Она заранее
+показывает, какие комбинации client / front-door / backend / auth должны работать, работать в
+degraded-режиме или падать явно, ещё до детальных шагов ниже.
 
 | Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
 | --- | --- | --- | --- | --- | --- |
-| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | reads, namespace switching, DDL/DML | Should pass through one proxy endpoint with correct cross-catalog routing. |
-| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | reads, namespace switching, DDL/DML | Same as above, plus front-door SASL/Kerberos must succeed. |
-| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | views, cross-catalog view rewrite, permanent UDFs, materialized views | Should pass when view rewrite is enabled and the chosen UDF class is available on the HS2 classpath; unsupported MV backends must fail explicitly. |
-| Hortonworks HiveServer2 (vendor `3.1.0.3.1.0.0-78`) | `HORTONWORKS_*` on its own listener | mixed `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` or `KERBEROS` | reads, DDL/DML, ACID writes, cross-catalog join, `add_write_notification_log` sent by Hive itself | Should pass. An HDP client cannot use the Apache listener — Thrift has no version negotiation — so this is the only setup that covers the Hortonworks front door with a real client. Set `HMS_SMOKE_BEELINE_HDP_JDBC_URL` and the runner repeats the whole SQL suite against it. |
-| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Hortonworks-routed traffic. |
-| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Should pass; confirms default-catalog txn path for Apache-routed traffic. |
-| Direct HMS smoke CLI `txn` | any | mixed backends | `KERBEROS` | same txn family plus authenticated front door | Should pass when Kerberos login and, if enabled, backend impersonation are configured correctly. |
-| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `SHARED_READ` + `DB` + `NO_TXN` | Should pass; confirms the synthetic shim for `CREATE TABLE`-style non-transactional DDL locks. |
-| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
-| Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
-| Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner in metadata and on HDFS (`owner:group`), and audit logs record `authenticatedUser`. |
-| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
-| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
-| Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | read, namespace switching, DDL/DML | Должно проходить через один proxy endpoint с корректным cross-catalog routing. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | read, namespace switching, DDL/DML | То же самое, плюс должен успешно проходить front-door SASL/Kerberos. |
+| Beeline / HiveServer2 SQL client | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | view, cross-catalog view rewrite, permanent UDF, materialized views | Должно проходить при включённом view rewrite и наличии выбранного UDF-класса на HS2 classpath; backend без MV support должен падать явно. |
+| Hortonworks HiveServer2 (вендорский `3.1.0.3.1.0.0-78`) | `HORTONWORKS_*` на отдельном listener | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | read, DDL/DML, ACID-запись, кросс-каталожный join, `add_write_notification_log` от самого Hive | Должно проходить. HDP-клиент не может пользоваться Apache-listener — Thrift не умеет договариваться о версии, — поэтому только так Hortonworks front door проверяется настоящим клиентом. Задайте `HMS_SMOKE_BEELINE_HDP_JDBC_URL`, и раннер прогонит весь SQL-набор ещё раз против него. |
+| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | Hortonworks `3.1.0.x` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Должно проходить; это проверка default-catalog txn path для Hortonworks-routed трафика. |
+| Direct HMS smoke CLI `txn` | `APACHE_3_1_3` | `APACHE_3_1_3` default catalog | `NONE` | `open_txns`, `allocate_table_write_ids`, `lock`, `check_lock`, `get_valid_write_ids`, `commit_txn` | Должно проходить; это проверка default-catalog txn path для Apache-routed трафика. |
+| Direct HMS smoke CLI `txn` | любой | смешанные backend | `KERBEROS` | то же txn family + аутентифицированный фронт | Должно проходить, если корректно настроены Kerberos login и, при необходимости, backend impersonation. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `SHARED_READ` + `DB` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле `CREATE TABLE`. |
+| Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле partition rename/drop. |
+| Direct HMS smoke CLI `lock` с `--second-db` | `APACHE_3_1_3` | default catalog плюс non-default | `NONE` или `KERBEROS` | один `lock`, компоненты которого называют два каталога, затем `check_lock`, `heartbeat`, `abort_txn` | Должно проходить; proxy маршрутизирует запрос по default catalog и отбрасывает остальные компоненты. Обратите внимание на `--unlock false`: уцелевший лок настоящий и принадлежит транзакции, а такие метастор снимать через `unlock` не даёт. |
+| Direct HMS smoke CLI `impersonation` | любой | default catalog backend | `NONE` или `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Должно проходить; подтверждает, что `set_ugi` привязывает пользователя к соединению, таблица создается с ожидаемым владельцем в метаданных и на HDFS (`owner:group`), а в audit log пишется `authenticatedUser`. |
+| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно проходить только если и front door, и routed backend имеют совместимый Hortonworks runtime. |
+| Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать. Причину называет лог прокси (`requires a Hortonworks backend runtime`), клиент видит только `Internal error processing add_write_notification_log`: Hive IDL не объявляет исключений для этого метода. |
+| Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
 
-Practical automation:
-- for the Beeline / HS2 blocks below, you can automate them with `scripts/run-real-installation-smoke-simple.sh --scenario sql`
-- for the Beeline / HS2 blocks below with Kerberos, use `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+Практическая автоматизация:
+- для Beeline / HS2 шагов ниже можно использовать `scripts/run-real-installation-smoke-simple.sh --scenario sql`
+- для Beeline / HS2 шагов ниже с Kerberos используй `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
 
-**1. Basic Front-Door Check**
+**1. Базовая проверка фронта**
+
 ```sql
 set -v;
 show databases;
 ```
 
-Expected:
-- databases are visible as `hdp__...` and `apache__...`
-- the connection succeeds through the proxy
+Ожидание:
+- видны базы в формате `hdp__...` и `apache__...`
+- подключение идёт через proxy без ошибок
 
 **2. Read path: Hortonworks backend**
+
 ```sql
 use hdp__default;
 show tables;
@@ -57,6 +59,7 @@ select * from some_table limit 5;
 ```
 
 **3. Read path: Apache backend**
+
 ```sql
 use apache__default;
 show tables;
@@ -65,6 +68,7 @@ select * from some_table limit 5;
 ```
 
 **4. Переключение между backend в одной сессии**
+
 ```sql
 use hdp__default;
 show tables;
@@ -76,11 +80,12 @@ use hdp__default;
 show tables;
 ```
 
-Expected:
-- there is no backend “stickiness”
-- routing stays correct
+Ожидание:
+- нет “залипания” одного backend
+- routing остаётся корректным
 
 **5. DDL: Hortonworks backend**
+
 ```sql
 use hdp__default;
 
@@ -144,6 +149,7 @@ drop table smoke_txn_tbl;
 ```
 
 **6. DDL: Apache backend**
+
 ```sql
 use apache__default;
 
@@ -206,22 +212,23 @@ select * from smoke_txn_tbl where id=1;
 drop table smoke_txn_tbl;
 ```
 
-Expected:
-- managed DDL/DML works for the routed backend, including create table, insert + select, and partition rename
-- on a non-default catalog, `CREATE TABLE` and partition rename exercise the synthetic `NO_TXN`
-  lock shim, so failures there should be investigated as lock-routing issues rather than SQL parsing
-- `external` tables keep an explicit custom `LOCATION`
-- `external` and `transactional='true'` variants also allow insert + select where supported
-- `transactional='true'` tables are accepted only where the backend supports ACID table creation
-- table type and key properties are visible in `describe formatted`
+Ожидание:
+- managed DDL/DML проходит в нужный routed backend, включая create table, insert + select и rename partition
+- на non-default catalog `CREATE TABLE` и rename partition проходят через synthetic `NO_TXN`
+  lock shim, поэтому их падение стоит трактовать как проблему lock routing, а не SQL parser
+- у `external` таблиц сохраняется явно заданный `LOCATION`
+- для `external` и `transactional='true'` тоже есть явная проверка insert + select там, где backend это поддерживает
+- таблицы с `transactional='true'` создаются только там, где backend поддерживает ACID
+- тип таблицы и ключевые properties видны в `describe formatted`
 
-Note:
-- In Beeline / HiveServer2 SQL flows, an unqualified `LOCATION '/tmp/...'` is resolved by the connected
-  HiveServer2 `fs.defaultFS`, not by the routed HMS backend. If different proxy catalogs should write to
-  different HDFS namespaces, use fully qualified per-catalog URIs such as `hdfs://nameservice-hdp/tmp/...`
-  and `hdfs://nameservice-apache/tmp/...`.
+Примечание:
+- В Beeline / HiveServer2 SQL сценариях неqualified `LOCATION '/tmp/...'` резолвится через `fs.defaultFS`
+  того HiveServer2, к которому подключён клиент, а не через routed HMS backend. Если разные proxy catalog
+  должны писать в разные HDFS namespace, указывай fully qualified URI для каждого catalog, например
+  `hdfs://nameservice-hdp/tmp/...` и `hdfs://nameservice-apache/tmp/...`.
 
-**7. Mixed Negative Check**
+**7. Mixed negative-check**
+
 ```sql
 use hdp__default;
 show tables;
@@ -230,30 +237,30 @@ use apache__default;
 select count(*) from some_table;
 ```
 
-Expected:
-- commands reach the correct backend without namespace errors
+Ожидание:
+- команды идут в правильный backend
+- namespace не ломается
 
-**8. Views, Materialized Views, and UDFs**
+**8. Views, materialized views и UDF**
 
-Run this block with `federation.view-text-rewrite.mode=REWRITE`. The original client SQL stays
-byte-for-byte visible through HMS by default
-(`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` if the stored
-`viewOriginalText` must be rewritten too.
+Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Оригинальный клиентский
+SQL по умолчанию остаётся видимым в HMS без изменений
+(`federation.view-text-rewrite.preserve-original-text=true`); поставь `false`, если сохранённый
+`viewOriginalText` тоже нужно переписывать.
 
-The automated runner keeps the view block enabled by default with
-`HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
-`HMS_SMOKE_SQL_RUN_UDF=true` and uses `HMS_SMOKE_SQL_UDF_CLASS`
-(default: `org.apache.hadoop.hive.ql.udf.UDFReverse`).
+В automated runner view-блок включён по умолчанию через `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`.
+Проверка permanent UDF тоже включена по умолчанию через `HMS_SMOKE_SQL_RUN_UDF=true` и использует
+`HMS_SMOKE_SQL_UDF_CLASS` (по умолчанию `org.apache.hadoop.hive.ql.udf.UDFReverse`).
 
-Two joins exercise the lock path that a single-namespace statement never reaches, because Hive
-locks every table of a statement in one request:
+Два join'а проверяют путь локов, до которого не добраться запросом в одном namespace: Hive берёт
+лок на все таблицы выражения одним запросом.
 
-- `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default `true`) joins the two read tables across
-  catalogs. The proxy routes that lock request by one catalog and drops the other components;
-  a proxy that cannot split it fails the query with `Error in acquiring locks`.
-- `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default `false`) joins two databases of one catalog,
-  where both components reach the same backend and each must be rewritten to its own database. It
-  is off by default because, unlike every other block here, it creates a database.
+- `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (по умолчанию `true`) джойнит read-таблицы двух каталогов.
+  Proxy маршрутизирует такой lock-запрос по одному каталогу и отбрасывает остальные компоненты;
+  proxy, который не умеет его расщеплять, роняет запрос с `Error in acquiring locks`.
+- `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (по умолчанию `false`) джойнит две базы одного каталога —
+  оба компонента доходят до одного backend, и каждый должен быть переписан в свою базу. Выключен по
+  умолчанию, потому что, в отличие от остальных блоков, создаёт базу данных.
 
 ```sql
 use hdp__default;
@@ -272,7 +279,7 @@ show create table smoke_view_cross;
 select * from smoke_view_cross limit 5;
 ```
 
-For a permanent UDF on a non-default catalog, also run:
+Для permanent UDF на non-default catalog дополнительно проверить:
 
 ```sql
 use apache__default;
@@ -284,7 +291,7 @@ select smoke_udf_reverse('proxy') as smoke_udf_reverse_value;
 drop function if exists smoke_udf_reverse;
 ```
 
-If your backend supports materialized views, also run:
+Если backend поддерживает materialized views, дополнительно проверить:
 
 ```sql
 use hdp__default;
@@ -297,29 +304,29 @@ describe formatted smoke_mv_local;
 drop materialized view if exists smoke_mv_local;
 ```
 
-Expected:
-- `show create table` / HMS `get_table` return proxy namespaces like `hdp__default`
-- with `preserve-original-text=true`, `viewOriginalText` keeps the client SQL while
-  `viewExpandedText` still routes correctly on the backend
-- cross-catalog references like `apache__default.some_table` are stored in backend-compatible form
-  and stay queryable through the proxy
-- a permanent UDF created on `apache__default` is visible in `show functions`, callable in the same
-  session, and returns the expected value such as `yxorp` for `UDFReverse('proxy')`
-- if the backend does not support materialized views, the failure is explicit rather than silent
+Ожидание:
+- `show create table` / HMS `get_table` возвращают proxy namespace вида `hdp__default`
+- при `preserve-original-text=true` `viewOriginalText` остаётся пользовательским, а
+  `viewExpandedText` всё ещё корректно маршрутизируется для backend
+- cross-catalog ссылки вроде `apache__default.some_table` сохраняются в backend-compatible форме
+  и продолжают работать через proxy
+- permanent UDF, созданная в `apache__default`, видна в `show functions`, вызывается в той же
+  сессии и возвращает ожидаемое значение, например `yxorp` для `UDFReverse('proxy')`
+- если backend не поддерживает materialized views, ошибка явная, без silent success
 
 **9. Direct Synthetic Lock Smoke**
 
-These checks complement the Beeline DDL steps above and reproduce the problematic cross-catalog
-lock lifecycle directly through HMS thrift. Run them against a catalog that is non-default from the
-proxy point of view. In the examples below, assume `apache` is not `routing.default-catalog`.
+Эти проверки дополняют Beeline DDL шаги выше и напрямую воспроизводят проблемный
+cross-catalog lock lifecycle через HMS thrift. Запускать их нужно на каталоге, который для
+proxy является non-default. Ниже для примера считается, что `apache` не равен `routing.default-catalog`.
 
-Practical runner:
-- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario locks`
-- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
-- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
-- see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
+Практически:
+- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario locks`
+- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
+- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
+- примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.md](README.md)
 
-Create-table style DB lock:
+DB lock в стиле `CREATE TABLE`:
 
 ```bash
 java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
@@ -332,7 +339,7 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
   --transactional false
 ```
 
-Partition rename/drop style lock:
+Partition lock в стиле rename/drop:
 
 ```bash
 java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)-fat.jar \
@@ -347,39 +354,38 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
   --transactional false
 ```
 
-Expected:
-- the client prints `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, and `abort_txn`
-- the lock is returned as `ACQUIRED` or at worst `WAITING`, but not with `NoSuchTxnException`
-- the second command should be run after the managed-table DDL block created and renamed the partition
+Ожидание:
+- клиент печатает `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock` и `abort_txn`
+- lock возвращается как `ACQUIRED` или в худшем случае `WAITING`, но не падает с `NoSuchTxnException`
+- второй запуск имеет смысл делать после managed-table сценария выше, где уже созданы таблица и partition
 
-**10. Notification/ACID path**
+**10. Notification / ACID path**
 
-These checks are best done not only through Beeline, but also through a direct HMS thrift client,
-because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
+Эти проверки лучше делать не только через Beeline, но и прямым HMS thrift client, потому что
+`add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
 
-Practical runner:
-- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario all`
-- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
-- set `HMS_SMOKE_TXN_SECONDARY_*` if you want the runner to validate both default Hortonworks and default Apache txn targets
-- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
-- `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
+Практически это можно запускать готовым клиентом из репозитория:
+- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario all`
+- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
+- если нужно провалидировать и default Hortonworks, и default Apache txn target, задай `HMS_SMOKE_TXN_SECONDARY_*`
+- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- режим `txn` покрывает `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
-- `notification` mode covers Hortonworks-only `add_write_notification_log`
-- `add_write_notification_log` exists only on a Hortonworks front door, and Thrift has no version
-  negotiation, so that interface usually listens on a port of its own: point the notification
-  scenario at it with `HMS_SMOKE_NOTIFICATION_URI`, which overrides `HMS_SMOKE_URI` for this
-  scenario only
-- the target table must already exist on the backend: the RPC resolves it before writing the log
-  entry, and a missing table fails the same way any other backend error does
-- see the "Manual HMS smoke client" section in [README.md](README.md) for Kerberos launch examples
+- режим `notification` покрывает Hortonworks-only `add_write_notification_log`
+- `add_write_notification_log` есть только у Hortonworks front door, а Thrift не умеет
+  согласовывать версии, поэтому такой интерфейс обычно слушает отдельный порт: задай его через
+  `HMS_SMOKE_NOTIFICATION_URI` — он переопределяет `HMS_SMOKE_URI` только для этого сценария
+- таблица должна уже существовать в backend: RPC резолвит её перед записью в лог, а отсутствующая
+  таблица падает так же, как любая другая ошибка backend
+- примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.md](README.md)
 
-Important:
-- lifecycle RPCs without `dbName` / `fullTableName`
+Важно:
+- lifecycle RPC без `dbName` / `fullTableName`
   (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`)
-  are intentionally pinned to `routing.default-catalog`
-- multi-catalog ACID routing is expected only where namespace can be extracted from the request payload
+  сознательно привязаны к `routing.default-catalog`
+- multi-catalog routing для ACID ожидается только там, где namespace можно вытащить из payload
 
-Check for the Hortonworks backend:
+Проверить для Hortonworks backend:
 - `open_txns`
 - `allocate_table_write_ids`
 - `lock`
@@ -387,91 +393,93 @@ Check for the Hortonworks backend:
 - `get_valid_write_ids`
 - `add_write_notification_log`
 
-Expected:
-- `open_txns` / `commit_txn` and other id-only lifecycle RPCs go to `routing.default-catalog`
-- request-based ACID methods (`allocate_table_write_ids`, `get_valid_write_ids`) are routed by payload
-- `add_write_notification_log` works only for the Hortonworks backend catalog
-- proxy logs contain `trace stage=backend-request` / `backend-response` for `add_write_notification_log`
+Ожидание:
+- `open_txns` / `commit_txn` и другие id-only lifecycle RPC идут в `routing.default-catalog`
+- request-based ACID методы вроде `allocate_table_write_ids` и `get_valid_write_ids`
+  маршрутизируются по payload
+- `add_write_notification_log` проходит только в Hortonworks backend
+- в логах proxy видны `trace stage=backend-request` / `backend-response` для
+  `add_write_notification_log`
 
 **11. Negative check: Hortonworks front -> Apache backend notification path**
 
-Send `add_write_notification_log` through an HMS thrift client to a database/table that routes to
-the Apache backend.
-
-Expected:
-- there is no silent success
-- no side notification traffic appears on the Apache backend
-- the proxy log states the reason: `requires a Hortonworks backend runtime`
-- the client sees only `TApplicationException: Internal error processing
-  add_write_notification_log`. The Hive IDL declares no exceptions for this method (3.1.x and 4.x
-  alike), so libthrift 0.9.3 replaces every server-side failure with that fixed message. A real
-  Hortonworks metastore hides its own errors behind the same text, so the client cannot tell the
-  refusal apart from any other backend failure — read the proxy log for that.
-
-Practical runner:
-- set `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` and `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
-- then run `scripts/run-real-installation-smoke-simple.sh --scenario notification` or
+Практически:
+- задай `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
+- затем запусти `scripts/run-real-installation-smoke-simple.sh --scenario notification` или
   `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
-**12. Mixed Runtime Switching Check**
+Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
+маршрутизируется в Apache backend.
 
-In a single client session, run in sequence:
-- read/DDL on `hdp__default`
-- read/DDL on `apache__default`
-- `add_write_notification_log` on `hdp__default`
-- another read on `apache__default`
+Ожидание:
+- нет silent success
+- в Apache backend не появляется побочный notification traffic
+- причину называет лог proxy: `requires a Hortonworks backend runtime`
+- клиент видит только `TApplicationException: Internal error processing
+  add_write_notification_log`. Hive IDL не объявляет исключений для этого метода (и в 3.1.x, и в
+  4.x), поэтому libthrift 0.9.3 подменяет любую серверную ошибку этим фиксированным текстом.
+  Настоящий Hortonworks metastore точно так же прячет за ним свои ошибки, поэтому со стороны
+  клиента отказ неотличим от любого другого сбоя backend — смотри лог proxy.
 
-Expected:
-- one catalog runtime does not “stick” to another
-- namespace rewrite remains correct after notification/ACID calls
+**12. Проверка после mixed runtime переключений**
 
-**13. Graceful shutdown check**
+В одной клиентской сессии последовательно выполнить:
+- read/DDL на `hdp__default`
+- read/DDL на `apache__default`
+- `add_write_notification_log` на `hdp__default`
+- повторный read на `apache__default`
 
-With at least one `additional-frontends.*` listener configured, start the proxy, open a client
-session against each listener, then send `SIGTERM` to the proxy process (`kill <pid>`, not
-`kill -9`).
+Ожидание:
+- runtime одного каталога не “залипает” на другой
+- namespace rewrite остаётся корректным после notification/ACID вызова
 
-Expected:
-- the log shows `Shutdown requested, stopping HMS proxy` followed by `HMS proxy stopped`
-- the process exits well within `server.shutdown-timeout-seconds` (default 30s)
-- every listening port — primary, additional frontends, management — is released after exit
-  (`ss -ltnp | grep <port>` returns nothing)
-- no `did not finish within` / `did not leave the Thrift accept loop` warnings
-- no leftover JVM process holding ports (`ps` + `ss` after exit)
+**13. Проверка graceful shutdown**
 
-Also check the failure path once: configure an additional frontend on a port that is already
-taken, start the proxy, and confirm it exits instead of leaving a JVM alive with the other
-listener's port still bound.
+Настроить хотя бы один listener `additional-frontends.*`, запустить proxy, открыть клиентскую
+сессию на каждый listener, затем послать процессу `SIGTERM` (`kill <pid>`, не `kill -9`).
 
-**14. Impersonation and HDFS Table Ownership Check**
+Ожидание:
+- в логе видно `Shutdown requested, stopping HMS proxy`, затем `HMS proxy stopped`
+- процесс завершается с заметным запасом до `server.shutdown-timeout-seconds` (по умолчанию 30s)
+- после выхода освобождены все слушающие порты — primary, дополнительные фронтенды, management
+  (`ss -ltnp | grep <port>` ничего не находит)
+- нет предупреждений `did not finish within` / `did not leave the Thrift accept loop`
+- не остаётся живого JVM-процесса, удерживающего порты (`ps` + `ss` после выхода)
 
-Validates that end-user identity passed through `--user <name>` and `set_ugi` is properly propagated
-to backend metastores and the underlying file system (HDFS):
-- All smoke CLI operations run with impersonation enabled by default (`HMS_SMOKE_IMPERSONATION_ENABLED=true`).
-- In scenario `impersonation` (included in `--scenario all`), the CLI creates a table under `--user smoke-user`.
-- The runner verifies:
-  1. Table owner in HMS metadata equals `smoke-user`.
-  2. The table directory created on HDFS (e.g., `/warehouse/hdp/<table_name>`) is owned by `smoke-user` (`smoke-user:supergroup`).
-  3. Audit log records `authenticatedUser=smoke-user`.
-  4. The table is cleanly dropped afterwards.
+Отдельно проверить аварийный путь: настроить дополнительный frontend на уже занятый порт,
+запустить proxy и убедиться, что он завершается, а не остаётся живой JVM с занятым портом
+второго листенера.
 
-Practical runner:
+**14. Проверка имперсонации и владельца таблицы на HDFS**
+
+Проверяет, что идентификатор конечного пользователя, переданный через `--user <name>` и `set_ugi`,
+корректно транслируется в backend metastore и нижележащую файловую систему (HDFS):
+- Все операции smoke CLI выполняются с включенной имперсонацией по умолчанию (`HMS_SMOKE_IMPERSONATION_ENABLED=true`).
+- В сценарии `impersonation` (включенном в `--scenario all`) CLI создает таблицу от имени `--user smoke-user`.
+- Раннер проверяет:
+  1. Владелец таблицы в метаданных HMS равен `smoke-user`.
+  2. Директория таблицы, созданная на HDFS (например, `/warehouse/hdp/<table_name>`), принадлежит `smoke-user` (`smoke-user:supergroup`).
+  3. В audit log фиксируется `authenticatedUser=smoke-user`.
+  4. Таблица корректно удаляется после проверки.
+
+Запуск сценария:
 ```bash
 scripts/run-real-installation-smoke-simple.sh --scenario impersonation
-# or with Kerberos:
+# или с Kerberos:
 scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
 ```
 
-**15. What To Watch In Proxy Logs**
-Look for:
+**15. Что смотреть в логах proxy**
+
+Ищи:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
-- `runs on a platform without per-socket TCP keepalive tuning` (expected only on exotic platforms)
+- `runs on a platform without per-socket TCP keepalive tuning` (ожидаемо только на экзотических платформах)
 - `Routing config: defaultCatalog=...`
 - `Compatibility config: frontendProfile=..., frontendVersion=...`
 - `Backend catalog '...' selected runtimeProfile=... compatibilityProfile=...`
 - `backend-request catalog=... method=...`
-- repeated `UNKNOWN_METHOD`
-- `Unsupported Hortonworks frontend method` errors
-- `requires a Hortonworks backend runtime` errors
-- trace entries for `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`
+- повторяющиеся `UNKNOWN_METHOD`
+- ошибки `Unsupported Hortonworks frontend method`
+- ошибки `requires a Hortonworks backend runtime`
+- trace-записи для `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`
