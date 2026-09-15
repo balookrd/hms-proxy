@@ -240,13 +240,19 @@ public final class FrontDoorSecurity implements AutoCloseable {
       Supplier<String> remoteUserSupplier
   ) {
     TProcessor contextAware = (in, out) -> {
+      org.apache.thrift.transport.TTransport transport = in != null ? in.getTransport() : null;
+      org.apache.thrift.transport.TTransport previousTransport = ClientRequestContext.setCurrentTransport(transport);
       String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddressSupplier.get());
-      String previousRemoteUser = ClientRequestContext.setRemoteUser(remoteUserSupplier.get());
+      String effectiveUser = ClientRequestContext.connectionUgi(transport)
+          .map(io.github.mmalykhin.hmsproxy.backend.ImpersonationContext::userName)
+          .orElseGet(remoteUserSupplier);
+      String previousRemoteUser = ClientRequestContext.setRemoteUser(effectiveUser);
       try {
         return processor.process(in, out);
       } finally {
         ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
         ClientRequestContext.restoreRemoteUser(previousRemoteUser);
+        ClientRequestContext.restoreCurrentTransport(previousTransport);
       }
     };
     return saslWrapper.apply(contextAware);

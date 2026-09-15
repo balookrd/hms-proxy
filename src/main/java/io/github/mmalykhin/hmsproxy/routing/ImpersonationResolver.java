@@ -28,6 +28,12 @@ final class ImpersonationResolver {
       return Optional.empty();
     }
     try {
+      Optional<ImpersonationContext> connUgi = io.github.mmalykhin.hmsproxy.security.ClientRequestContext.currentTransport()
+          .flatMap(io.github.mmalykhin.hmsproxy.security.ClientRequestContext::connectionUgi);
+      if (connUgi.isPresent()) {
+        return connUgi;
+      }
+
       String remoteUser = io.github.mmalykhin.hmsproxy.security.ClientRequestContext.remoteUser().orElse(null);
       UserGroupInformation currentUser = null;
       String userName = null;

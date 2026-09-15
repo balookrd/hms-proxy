@@ -20,8 +20,9 @@ final class SetUgiHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     java.util.List<String> groups = new java.util.ArrayList<>();
-    if (args != null && args.length > 0 && args[0] instanceof String requestedUser && !requestedUser.isBlank()) {
-      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setRemoteUser(requestedUser);
+    String requestedUser = null;
+    if (args != null && args.length > 0 && args[0] instanceof String u && !u.isBlank()) {
+      requestedUser = u;
       if (args.length > 1 && args[1] instanceof java.util.List<?> requestedGroups) {
         for (Object g : requestedGroups) {
           if (g != null) {
@@ -30,17 +31,22 @@ final class SetUgiHandler implements SpecialCaseHandler {
         }
       }
     }
-    if (!support.router.defaultBackend().impersonationEnabled()) {
+
+    if (requestedUser != null) {
+      ImpersonationContext impersonation = new ImpersonationContext(requestedUser, groups);
+      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.currentTransport()
+          .ifPresent(t -> io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setConnectionUgi(t, impersonation));
+      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setRemoteUser(requestedUser);
+      LOG.info("requestId={} connection set_ugi user '{}' with groups {}",
+          RequestContext.currentRequestId(), requestedUser, groups);
+    }
+
+    if (support.router == null || support.router.defaultBackend() == null || !support.router.defaultBackend().impersonationEnabled()) {
       return groups;
     }
+
     ImpersonationContext impersonation = support.impersonationResolver.resolve().orElseThrow(() ->
-        new MetaException("Kerberos caller identity is unavailable for impersonation"));
-    if (args != null && args.length > 0 && args[0] instanceof String requestedUser
-        && !requestedUser.isBlank()
-        && !requestedUser.equals(impersonation.userName())) {
-      LOG.warn("requestId={} ignoring client-requested set_ugi user '{}' and using authenticated user '{}'",
-          RequestContext.currentRequestId(), requestedUser, impersonation.userName());
-    }
+        new MetaException("Caller identity is unavailable for impersonation"));
     return fallback.invokeGlobal(method, new Object[]{impersonation.userName(), impersonation.groupNames()});
   }
 }

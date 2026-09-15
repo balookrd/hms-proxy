@@ -206,13 +206,8 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     // The isolated runtime has its own UserGroupInformation class, so health probes track the
     // login subject, which stays a shared JDK type.
     BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(childUgi));
-    Object effectiveUgi = childUgi;
-    if (impersonatedUser != null && !impersonatedUser.isBlank()) {
-      Method createProxyUser = childUgiClass.getMethod("createProxyUser", String.class, childUgiClass);
-      effectiveUgi = createProxyUser.invoke(null, impersonatedUser, childUgi);
-    }
     Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
-    return doAs.invoke(effectiveUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
+    return doAs.invoke(childUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
         withContextClassLoader(classLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
   }

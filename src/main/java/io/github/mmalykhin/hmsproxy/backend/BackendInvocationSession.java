@@ -282,12 +282,10 @@ public final class BackendInvocationSession implements AutoCloseable {
     try {
       UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
       BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(ugi));
-      UserGroupInformation effectiveUgi = ugi;
-      if (impersonatedUser != null && !impersonatedUser.isBlank()) {
-        effectiveUgi = UserGroupInformation.createProxyUser(impersonatedUser, ugi);
-      }
-      return effectiveUgi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+      return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
     } catch (Exception e) {
+      LOG.error("Failed to open backend metastore client for catalog '{}' with Kerberos principal {}",
+          catalogConfig.name(), principal, e);
       MetaException metaException = new MetaException(
           "Unable to open backend metastore client for catalog "
               + catalogConfig.name()

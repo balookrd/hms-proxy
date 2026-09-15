@@ -1566,15 +1566,15 @@ This lets you enable caller impersonation only for selected backends while leavi
 the proxy service principal. The global key acts purely as that default: at runtime impersonation
 is driven by the per-catalog flag, which inherits the global value when it is not set explicitly.
 
-When caller impersonation is active in Kerberos mode, outbound backend sessions are opened as
-a Hadoop Kerberos Proxy User (`UserGroupInformation.createProxyUser`), establishing caller identity
-directly during the SASL socket handshake. This ensures that in distributions like Hortonworks HDP
-(where the server-side `TUGIAssumingProcessor` derives UGI straight from the SASL transport), HDFS
-operations (such as `wh.mkdirs` during table creation) run under the authenticated user instead of `hive:hadoop`.
+When caller impersonation is active in Kerberos mode, the proxy establishes outbound Kerberos/SASL
+connections to the backend HMS using its own client Kerberos principal (`security.client-principal` with keytab)
+and manages per-user backend sessions (`ImpersonationClient`) where `set_ugi(user, groups)` is sent upon
+initialization. The backend metastore handler (`TUGIBasedProcessor`) binds the user's UGI to that session,
+ensuring HDFS file operations (such as `wh.mkdirs` during table creation) run under the end user instead of `hive:hadoop`.
 
-This mode requires `security.mode=KERBEROS` on the proxy listener. If a legacy client explicitly
-calls `set_ugi`, the proxy will ignore the requested username and use the authenticated Kerberos
-caller instead.
+Additionally, when a front-door client (HiveServer2, Spark, etc.) calls `set_ugi(user, groups)` on the proxy listener,
+the proxy binds this user identity to the client connection (transport), ensuring that all subsequent operations
+within that connection run with the end user's identity.
 
 If internal HiveServer2 traffic works as user `hive`, but your personal Kerberos user fails even
 with admin SQL privileges, that usually means backend impersonation is working as designed:
