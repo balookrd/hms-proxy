@@ -973,6 +973,17 @@ routing.catalog-db-separator=__
 
 This only changes the external legacy spelling from the canonical routing model above.
 
+### Working with GUI Clients (DBeaver, Hue, DataGrip)
+
+When using HiveServer2 JDBC drivers, graphical tools query schemas and tables via `DatabaseMetaData.getTables(catalog, schemaPattern, tableNamePattern, ...)`.
+
+Internally, HiveServer2's `MetadataOperation.convertSchemaPattern` translates SQL LIKE schema patterns into regular expressions by replacing unescaped underscores `_` with dots `.`. Consequently, when using the canonical `__` separator, a schema name like `remote__default` is queried as pattern `remote..default` (and catalogs containing underscores, such as `remote_hdp__sales`, become `remote.hdp..sales`).
+
+The proxy handles this transparently:
+- `CatalogRouter` matches schema pattern prefixes both in their literal form (`catalog__`) and in HiveServer2's converted form (`catalog.replace('_', '.') + '..'`).
+- Metadata requests (`get_table_meta`, `get_databases`) with patterns like `catalog..*` or `catalog..db` are accurately routed to the target backend catalog with the stripped backend pattern (e.g. `db` or `*`).
+- Returned objects (`TableMeta`, database names) are dynamically externalized using the configured separator (`catalog__db`), ensuring tables and schemas across remote catalogs populate seamlessly in DBeaver and Hue navigator trees.
+
 If HiveServer2 metadata writes behave differently through the proxy than directly against the
 backend HMS, try enabling:
 

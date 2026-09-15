@@ -657,6 +657,7 @@ method_matrix:
         backend names
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAccessControlTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTableMetaRoutesConvertedDoubleDotSchemaPatternToRemoteCatalog
 
   - id: apache_request_wrappers_to_hdp_backend
     method:

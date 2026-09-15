@@ -41,6 +41,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Database Cache Background Refresh Parameter Cascading**:
+  - Fixed parsing of `activityWindowMs` and `intervalMs` in `LatencyRoutingConfigParser`: avoided integer division truncation to zero when inheriting default millisecond durations.
+- **Stand Smoke Scripts Robustness**:
+  - Fixed `get_database` output parsing markers in `smoke-stand/run-database-cache-smoke.sh` and `smoke-stand/run-ranger-shared-cache-smoke.sh`, safeguarded metric sum aggregation under `pipefail` on empty grep results, and added `--force-recreate` flag when restarting proxy container in Docker Compose.
 - **HiveServer2 / JDBC Schema Pattern Routing (DBeaver, Hue)**:
   - Fixed an issue where remote catalog tables were hidden in metadata navigators of DBeaver, Hue, and DataGrip: HiveServer2 translates unescaped underscores in LIKE patterns to dots (`convertSchemaPattern`), turning the default catalog separator `__` into `..`.
   - Added support for converted schema prefix patterns (including catalogs with underscores in their names) in `CatalogRouter.resolvePattern`, ensuring accurate routing of `get_table_meta` and `get_databases` RPCs to the target backend instead of dropping into empty fanout.

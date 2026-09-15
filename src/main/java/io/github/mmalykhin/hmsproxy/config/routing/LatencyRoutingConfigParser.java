@@ -106,14 +106,26 @@ public final class LatencyRoutingConfigParser {
     boolean enabled = reader.getBoolean(
         prefix + ".background-refresh.enabled",
         defaultRefresh.enabled());
-    long intervalMs = reader.getNonNegativeLong(
-        prefix + ".background-refresh.interval-ms",
-        reader.getNonNegativeLong(prefix + ".background-refresh.interval-seconds", defaultRefresh.intervalMs() / 1000L) * 1000L);
-    long activityWindowMs = reader.getNonNegativeLong(
-        prefix + ".background-refresh.activity-window-ms",
-        reader.getNonNegativeLong(
-            prefix + ".background-refresh.activity-window-seconds",
-            reader.getNonNegativeLong(prefix + ".background-refresh.activity-window-minutes", defaultRefresh.activityWindowMs() / 60000L) * 60L) * 1000L);
+    long defaultIntervalMs = defaultRefresh.intervalMs();
+    long intervalMs;
+    if (reader.has(prefix + ".background-refresh.interval-ms")) {
+      intervalMs = reader.getNonNegativeLong(prefix + ".background-refresh.interval-ms", defaultIntervalMs);
+    } else if (reader.has(prefix + ".background-refresh.interval-seconds")) {
+      intervalMs = reader.getNonNegativeLong(prefix + ".background-refresh.interval-seconds", defaultIntervalMs / 1000L) * 1000L;
+    } else {
+      intervalMs = defaultIntervalMs;
+    }
+    long defaultActivityWindowMs = defaultRefresh.activityWindowMs();
+    long activityWindowMs;
+    if (reader.has(prefix + ".background-refresh.activity-window-ms")) {
+      activityWindowMs = reader.getNonNegativeLong(prefix + ".background-refresh.activity-window-ms", defaultActivityWindowMs);
+    } else if (reader.has(prefix + ".background-refresh.activity-window-seconds")) {
+      activityWindowMs = reader.getNonNegativeLong(prefix + ".background-refresh.activity-window-seconds", defaultActivityWindowMs / 1000L) * 1000L;
+    } else if (reader.has(prefix + ".background-refresh.activity-window-minutes")) {
+      activityWindowMs = reader.getNonNegativeLong(prefix + ".background-refresh.activity-window-minutes", defaultActivityWindowMs / 60000L) * 60000L;
+    } else {
+      activityWindowMs = defaultActivityWindowMs;
+    }
     if (!enabled) {
       return DatabaseCacheBackgroundRefreshConfig.disabled();
     }

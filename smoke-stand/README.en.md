@@ -514,6 +514,20 @@ The scenario exercises the refresher lifecycle (`DatabaseCacheRefresher`) agains
 - Pauses requests past the activity window (`activity-window-ms=10000`) and asserts idle sleep: refresh metrics cease incrementing.
 - Sends fresh client requests and verifies awakening: background refreshes resume.
 
+## Converted Schema Patterns for DBeaver / Hue (`run-schema-pattern-smoke.sh`)
+
+Validates resolution of converted schema patterns passed by JDBC GUI clients (DBeaver, Hue, DataGrip) via HiveServer2:
+
+```bash
+cd smoke-stand && ./prepare.sh
+./run-schema-pattern-smoke.sh
+```
+
+The scenario exercises:
+- `get_databases` with patterns `hdp..*` and `apache..*`, verifying accurate routing and externalization (`hdp__default`, `apache__default`).
+- `get_table_meta` with patterns `hdp..*` and `apache..default`, asserting that table metadata is fetched from the targeted remote backend.
+- Negative checks (queries against non-existent catalogs like `nonexistent..*` return no matches).
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

@@ -88,7 +88,7 @@ if echo "${BOB_DBS}" | grep -q "sales"; then
 fi
 
 log "=== 4. Alice accesses get_database and get_all_tables ==="
-run_cli alice --op get_database --db sales | grep -q "database.name=sales" || fail "Alice get_database(sales) failed"
+run_cli alice --op get_database --db sales | grep -q "database=sales" || fail "Alice get_database(sales) failed"
 ALICE_TABLES=$(run_cli alice --op get_all_tables --db sales)
 log "Alice tables in sales: ${ALICE_TABLES}"
 echo "${ALICE_TABLES}" | grep -q "orders" || fail "Alice expected to see orders"
@@ -102,7 +102,7 @@ else
 fi
 
 log "=== 6. Bob accesses get_database and get_all_tables on finance ==="
-run_cli bob --op get_database --db finance | grep -q "database.name=finance" || fail "Bob get_database(finance) failed"
+run_cli bob --op get_database --db finance | grep -q "database=finance" || fail "Bob get_database(finance) failed"
 BOB_TABLES=$(run_cli bob --op get_all_tables --db finance)
 log "Bob tables in finance: ${BOB_TABLES}"
 echo "${BOB_TABLES}" | grep -q "reports" || fail "Bob expected to see reports"

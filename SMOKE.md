@@ -469,7 +469,20 @@ scripts/run-real-installation-smoke-simple.sh --scenario impersonation
 scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
 ```
 
-**15. Что смотреть в логах proxy**
+**15. Проверка транслированных шаблонов схем (DBeaver / Hue)**
+
+Проверяет корректность маршрутизации запросов `get_databases` и `get_table_meta` при использовании шаблонов схем с транслированными разделителями (`catalog..*`, `catalog..default`), генерируемых HiveServer2 для JDBC GUI-клиентов (DBeaver, Hue):
+- Раннер запрашивает `get_databases` с шаблоном `${apache_catalog}..default` и проверяет экстернализацию результата в `${apache_catalog}__default`.
+- Раннер вызывает `get_table_meta` с шаблоном `${apache_catalog}..default` и фильтром таблиц `.*`, подтверждая возврат метаданных таблиц удалённого каталога.
+
+Запуск сценария:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario schema_pattern
+# или с Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario schema_pattern
+```
+
+**16. Что смотреть в логах proxy**
 
 Ищи:
 - `Starting HMS proxy`

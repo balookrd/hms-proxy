@@ -58,21 +58,27 @@ get_metric_sum() {
   local pattern="$1"
   local metrics
   metrics=$(get_metrics)
-  echo "${metrics}" | grep -E "^${pattern}" | awk '{s+=$2} END {print s+0}'
+  local matched
+  matched=$(echo "${metrics}" | grep -E "^${pattern}" || true)
+  if [[ -z "${matched}" ]]; then
+    echo "0"
+  else
+    echo "${matched}" | awk '{s+=$2} END {print s+0}'
+  fi
 }
 
 cleanup() {
   log "Cleaning up test database and restoring proxy configuration..."
   run_cli admin --op drop_database --db "${TEST_DB}" --cascade true 2>/dev/null || true
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
-    (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy.properties docker compose up -d proxy >/dev/null 2>&1) || true
+    (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1) || true
   fi
 }
 trap cleanup EXIT
 
 if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
   log "Restarting proxy with hms-proxy-db-cache.properties..."
-  (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy-db-cache.properties docker compose up -d proxy >/dev/null 2>&1)
+  (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy-db-cache.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1)
   sleep 4
 fi
 
@@ -85,7 +91,7 @@ DBS=$(run_cli admin --op get_all_databases)
 echo "${DBS}" | grep -q "${TEST_DB}" || fail "Created database ${TEST_DB} not found in get_all_databases"
 
 DB_INFO=$(run_cli admin --op get_database --db "${TEST_DB}")
-echo "${DB_INFO}" | grep -q "database.name=${TEST_DB}" || fail "get_database for ${TEST_DB} failed"
+echo "${DB_INFO}" | grep -q "database=${TEST_DB}" || fail "get_database for ${TEST_DB} failed"
 
 log "=== 3. Measure initial background refresh metrics ==="
 INIT_LIST_REFRESH=$(get_metric_sum 'hms_proxy_cache_refreshes_total\{.*cache="database_list".*result="success".*\}')
