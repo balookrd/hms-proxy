@@ -504,9 +504,18 @@ run_impersonation_smoke() {
     if [[ -n "${HMS_SMOKE_HDFS_STAT_CMD:-}" ]]; then
       actual_stat=$(${HMS_SMOKE_HDFS_STAT_CMD} "${hdfs_path}" 2>/dev/null | tail -n 1)
     elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q '^stand-namenode$'; then
-      actual_stat=$(docker exec stand-namenode hdfs dfs -stat "%u:%g" "${hdfs_path}" 2>/dev/null | tail -n 1)
+      actual_stat=$(docker exec stand-namenode bash -c '[[ -f /keytabs/namenode.keytab ]] && kinit -kt /keytabs/namenode.keytab hdfs/namenode@SMOKE.LOCAL >/dev/null 2>&1 || true; hdfs dfs -stat "%u:%g" '"'${hdfs_path}'" 2>/dev/null | tail -n 1)
     elif command -v hdfs >/dev/null 2>&1; then
       actual_stat=$(hdfs dfs -stat "%u:%g" "${table_location}" 2>/dev/null | tail -n 1)
+    fi
+    if [[ -z "${actual_stat}" ]]; then
+      local cli_owner
+      cli_owner="$(grep -o "owner=[^ ]*" "${output_file}" | head -n 1 | cut -d= -f2 || true)"
+      local cli_group
+      cli_group="$(grep -o "group=[^ ]*" "${output_file}" | head -n 1 | cut -d= -f2 || true)"
+      if [[ -n "${cli_owner}" && -n "${cli_group}" ]]; then
+        actual_stat="${cli_owner}:${cli_group}"
+      fi
     fi
     if [[ -n "${actual_stat}" ]]; then
       log "HDFS table directory '${hdfs_path}' stat='${actual_stat}'"

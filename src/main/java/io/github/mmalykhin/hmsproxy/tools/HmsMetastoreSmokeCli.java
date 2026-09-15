@@ -50,6 +50,7 @@ public final class HmsMetastoreSmokeCli {
   private static final String TXN_CLOSE_ABORT = "abort";
   private static final String TXN_CLOSE_COMMIT = "commit";
   private static final String TXN_CLOSE_NONE = "none";
+  private static volatile UserGroupInformation kerberosUgi;
 
   private HmsMetastoreSmokeCli() {
   }
@@ -514,29 +515,45 @@ public final class HmsMetastoreSmokeCli {
                   + "', but got '" + created.getOwner() + "'");
             }
           }
-          if (location != null && cli.getBoolean("check-hdfs-owner", false)) {
+          if (cli.getBoolean("check-hdfs-owner", false) && location != null && !location.isBlank()) {
             try {
               org.apache.hadoop.fs.Path p = new org.apache.hadoop.fs.Path(location);
-              org.apache.hadoop.fs.FileSystem fs = p.getFileSystem(conf);
-              if (fs.exists(p)) {
-                org.apache.hadoop.fs.FileStatus st = fs.getFileStatus(p);
-                System.out.println("table.hdfs.path=" + location + " owner=" + st.getOwner() + " group=" + st.getGroup());
-                String expectedHdfsOwner = cli.getOrDefault("expected-hdfs-owner", expectedOwner);
-                if (expectedHdfsOwner != null && !expectedHdfsOwner.equals(st.getOwner())) {
-                  throw new IllegalStateException("HDFS owner mismatch on " + location + ": expected '"
-                      + expectedHdfsOwner + "', but got '" + st.getOwner() + "'");
-                }
-                String expectedHdfsGroup = cli.get("expected-hdfs-group");
-                if (expectedHdfsGroup != null && !expectedHdfsGroup.equals(st.getGroup())) {
-                  throw new IllegalStateException("HDFS group mismatch on " + location + ": expected '"
-                      + expectedHdfsGroup + "', but got '" + st.getGroup() + "'");
+              String nnHost = p.toUri().getHost();
+              if (nnHost != null && !nnHost.isBlank()) {
+                String serverPrincipal = cli.get("server-principal");
+                if (serverPrincipal != null && serverPrincipal.contains("@")) {
+                  String realm = serverPrincipal.substring(serverPrincipal.indexOf('@') + 1);
+                  conf.set("dfs.namenode.kerberos.principal", "hdfs/" + nnHost + "@" + realm);
                 }
               }
+              conf.set("fs.hdfs.impl.disable.cache", "true");
+              UserGroupInformation ugi = AUTH_KERBEROS.equals(cli.getOrDefault("auth", AUTH_SIMPLE))
+                  ? (kerberosUgi != null ? kerberosUgi : UserGroupInformation.getLoginUser())
+                  : UserGroupInformation.getCurrentUser();
+              ugi.doAs((PrivilegedExceptionAction<Void>) () -> {
+                org.apache.hadoop.fs.FileSystem fs = p.getFileSystem(conf);
+                if (fs.exists(p)) {
+                  org.apache.hadoop.fs.FileStatus st = fs.getFileStatus(p);
+                  System.out.println("table.hdfs.path=" + location + " owner=" + st.getOwner() + " group=" + st.getGroup());
+                  String expectedHdfsOwner = cli.getOrDefault("expected-hdfs-owner", expectedOwner);
+                  if (expectedHdfsOwner != null && !expectedHdfsOwner.equals(st.getOwner())) {
+                    throw new IllegalStateException("HDFS owner mismatch on " + location + ": expected '"
+                        + expectedHdfsOwner + "', but got '" + st.getOwner() + "'");
+                  }
+                  String expectedHdfsGroup = cli.get("expected-hdfs-group");
+                  if (expectedHdfsGroup != null && !expectedHdfsGroup.equals(st.getGroup())) {
+                    throw new IllegalStateException("HDFS group mismatch on " + location + ": expected '"
+                        + expectedHdfsGroup + "', but got '" + st.getGroup() + "'");
+                  }
+                }
+                return null;
+              });
             } catch (Exception e) {
-              if (e instanceof IllegalStateException ise) {
+              Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ite ? ite.getCause() : e;
+              if (cause instanceof IllegalStateException ise) {
                 throw ise;
               }
-              System.err.println("warning: could not directly verify HDFS owner on " + location + ": " + e.getMessage());
+              System.err.println("warning: could not directly verify HDFS owner on " + location + ": " + cause.getMessage());
             }
           }
         }
@@ -567,8 +584,8 @@ public final class HmsMetastoreSmokeCli {
     configureKerberosAuthentication();
     String principal = resolvePrincipal(cli.required("client-principal"));
     String keytab = cli.required("keytab");
-    UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
-    return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+    kerberosUgi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
+    return kerberosUgi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
   }
 
   private static void maybeSendSetUgi(CliArgs cli, ThriftHiveMetastore.Iface thriftClient) throws Exception {
@@ -665,7 +682,14 @@ public final class HmsMetastoreSmokeCli {
     if (AUTH_KERBEROS.equals(auth)) {
       setConf(conf, "hive.metastore.sasl.enabled", "true");
       setConf(conf, "hadoop.security.authentication", "kerberos");
-      setConf(conf, "hive.metastore.kerberos.principal", cli.required("server-principal"));
+      String serverPrincipal = cli.required("server-principal");
+      setConf(conf, "hive.metastore.kerberos.principal", serverPrincipal);
+      setConf(conf, "dfs.namenode.kerberos.principal.pattern", "*");
+      int atIndex = serverPrincipal.indexOf('@');
+      if (atIndex > 0) {
+        String realm = serverPrincipal.substring(atIndex + 1);
+        setConf(conf, "dfs.namenode.kerberos.principal", "hdfs/_HOST@" + realm);
+      }
     } else {
       setConf(conf, "hive.metastore.sasl.enabled", "false");
       setConf(conf, "hadoop.security.authentication", "simple");

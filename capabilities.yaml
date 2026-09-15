@@ -445,11 +445,11 @@ capabilities:
       en:
         - front-door SASL
         - local delegation-token issuance
-        - backend Hadoop proxy-user and `set_ugi()` impersonation
+        - backend Hadoop proxy-user, delegation tokens, and `set_ugi()` impersonation
       ru:
         - front-door SASL
         - local delegation-token issuance
-        - backend Hadoop proxy-user и `set_ugi()` impersonation
+        - backend Hadoop proxy-user, delegation tokens и `set_ugi()` имперсонация
     expected_result:
       en: >-
         Supported when proxy-user rules and backend impersonation permissions

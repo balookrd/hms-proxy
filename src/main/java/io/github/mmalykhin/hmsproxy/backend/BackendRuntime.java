@@ -16,6 +16,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class BackendRuntime implements AutoCloseable {
@@ -208,15 +209,33 @@ public final class BackendRuntime implements AutoCloseable {
     return adapter.backendVersion();
   }
 
+  public String getDelegationToken(String userName, String renewer) throws Throwable {
+    return (String) invokeSharedByName(
+        "get_delegation_token",
+        new Class<?>[] {String.class, String.class},
+        new Object[] {userName, renewer});
+  }
+
   public BackendInvocationSession openImpersonationSession(
       MetastoreRuntimeProfile runtimeProfile,
       String userName,
       List<String> groupNames
   ) throws MetaException {
     ensureOpen();
+    String delegationToken = null;
+    if (backendKerberosEnabled) {
+      String renewer = KerberosPrincipalUtil.resolveForLocalHost(proxyConfig.security().outboundPrincipal());
+      try {
+        delegationToken = getDelegationToken(userName, renewer);
+        LOG.info("Acquired backend delegation token for user '{}' in catalog '{}'", userName, catalogConfig.name());
+      } catch (Throwable t) {
+        LOG.warn("Failed to acquire backend delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
+            userName, catalogConfig.name(), t);
+      }
+    }
     return sessionFactory.openImpersonating(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-        isolatedClassLoader);
+        isolatedClassLoader, delegationToken);
   }
 
   public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
@@ -515,6 +534,22 @@ public final class BackendRuntime implements AutoCloseable {
       return openImpersonating(
           proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames);
     }
+
+    default BackendInvocationSession openImpersonating(
+        ProxyConfig proxyConfig,
+        CatalogConfig catalogConfig,
+        HiveConf hiveConf,
+        boolean backendKerberosEnabled,
+        MetastoreRuntimeProfile runtimeProfile,
+        String userName,
+        List<String> groupNames,
+        ClassLoader isolatedClassLoader,
+        String delegationToken
+    ) throws MetaException {
+      return openImpersonating(
+          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
+          isolatedClassLoader);
+    }
   }
 
   private static final class DefaultSessionFactory implements SessionFactory {
@@ -572,9 +607,26 @@ public final class BackendRuntime implements AutoCloseable {
         List<String> groupNames,
         ClassLoader isolatedClassLoader
     ) throws MetaException {
+      return openImpersonating(
+          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
+          isolatedClassLoader, null);
+    }
+
+    @Override
+    public BackendInvocationSession openImpersonating(
+        ProxyConfig proxyConfig,
+        CatalogConfig catalogConfig,
+        HiveConf hiveConf,
+        boolean backendKerberosEnabled,
+        MetastoreRuntimeProfile runtimeProfile,
+        String userName,
+        List<String> groupNames,
+        ClassLoader isolatedClassLoader,
+        String delegationToken
+    ) throws MetaException {
       return BackendInvocationSession.openImpersonating(
           proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-          isolatedClassLoader);
+          isolatedClassLoader, delegationToken);
     }
   }
 }

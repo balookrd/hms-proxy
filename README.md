@@ -135,7 +135,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | Hortonworks clients that call HDP-only thrift request-wrapper methods | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | HDP-only passthrough methods such as `add_write_notification_log` | Rejected explicitly when the target backend does not provide a compatible Hortonworks runtime. |
 | HiveServer2 / Beeline SQL workloads across multiple catalogs | `APACHE_3_1_3` or `HORTONWORKS_*` | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | reads, DDL/DML, namespace rewrite, optional view rewrite | Supported as long as routing can resolve the target catalog. |
 | HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without namespace in the payload | any | mixed Apache + Hortonworks backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: pinned to `routing.default-catalog`; eligible non-ACID `SELECT`, `NO_TXN` DDL and non-transactional write (`INSERT`/`UPDATE`/`DELETE`) locks can still be synthesized on non-default catalogs, but otherwise treat this as a single-catalog control plane unless you validated otherwise. |
-| Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user and `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
+| Kerberized HiveServer2 / HMS clients that require end-user identity on the backend | any | any | `KERBEROS` with optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user, delegation tokens, and `set_ugi()` impersonation | Supported when proxy-user rules and backend impersonation permissions are configured correctly. |
 | Clients attempting mutations without explicit namespace ownership or dynamic catalog registry management | any | any | `NONE` or `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Safely failed by design to preserve deterministic routing, explicit namespace ownership, and no silent split-brain writes. |
 | HiveServer2 / HMS clients with end-user impersonation or Kerberos identity querying metadata | any | any | `NONE` or `KERBEROS` | metadata reads (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), shared global metadata caching across users, per-catalog Ranger policy engine evaluation | Metadata is cached once across users when `shared-across-users=true`, and embedded Apache Ranger plugins filter database and table listings per user without redundant backend metastore RPCs. |
 <!-- END GENERATED: capability-matrix -->
@@ -1566,11 +1566,15 @@ This lets you enable caller impersonation only for selected backends while leavi
 the proxy service principal. The global key acts purely as that default: at runtime impersonation
 is driven by the per-catalog flag, which inherits the global value when it is not set explicitly.
 
-When caller impersonation is active in Kerberos mode, the proxy establishes outbound Kerberos/SASL
-connections to the backend HMS using its own client Kerberos principal (`security.client-principal` with keytab)
-and manages per-user backend sessions (`ImpersonationClient`) where `set_ugi(user, groups)` is sent upon
-initialization. The backend metastore handler (`TUGIBasedProcessor`) binds the user's UGI to that session,
-ensuring HDFS file operations (such as `wh.mkdirs` during table creation) run under the end user instead of `hive:hadoop`.
+When caller impersonation is active in Kerberos mode, the proxy establishes outbound connections
+to the backend HMS using its client Kerberos principal (`security.client-principal` with keytab) and
+manages per-user backend session pools (`ImpersonationClient`). On secure backends with Kerberos/SASL
+enabled, the Hive Metastore uses `TUGIAssumingProcessor` (which ignores `set_ugi()`); in this mode,
+the proxy automatically requests a backend delegation token (`get_delegation_token`) on behalf of the
+caller and establishes impersonated sessions using SASL DIGEST-MD5. The metastore executes operations
+under `createProxyUser(caller, loginUser).doAs(...)`, ensuring HDFS file operations (such as `wh.mkdirs`
+during table creation) run under the end user instead of `hive:hadoop`. On unsecure backends or in fallback
+mode, `set_ugi(user, groups)` is sent upon session initialization (`TUGIBasedProcessor`).
 
 Additionally, when a front-door client (HiveServer2, Spark, etc.) calls `set_ugi(user, groups)` on the proxy listener,
 the proxy binds this user identity to the client connection (transport), ensuring that all subsequent operations

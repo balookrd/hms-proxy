@@ -73,6 +73,20 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       String impersonatedUser,
       Configuration conf
   ) throws Exception {
+    return open(config, catalogConfig, runtimeProfile, classLoader, principal, keytab, impersonatedUser, null, conf);
+  }
+
+  static IsolatedMetastoreClient open(
+      ProxyConfig config,
+      CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader classLoader,
+      String principal,
+      String keytab,
+      String impersonatedUser,
+      String delegationToken,
+      Configuration conf
+  ) throws Exception {
     ClassLoader effectiveClassLoader = classLoader == null
         ? newIsolatedClassLoader(config, catalogConfig, runtimeProfile)
         : classLoader;
@@ -88,10 +102,10 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     }
     applyHortonworksCompatibilityWorkarounds(isolatedConf, childConfigurationClass, runtimeProfile);
     Class<?> clientClass = Class.forName(HIVE_METASTORE_CLIENT_CLASS, true, effectiveClassLoader);
-    Object client = principal == null || keytab == null
+    Object client = (principal == null || keytab == null) && (delegationToken == null || delegationToken.isBlank())
         ? withContextClassLoader(effectiveClassLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf))
-        : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab, impersonatedUser);
+        : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab, impersonatedUser, delegationToken);
     return attachBridge(client, clientClass, effectiveClassLoader);
   }
 
@@ -193,13 +207,32 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       Object isolatedConf,
       String principal,
       String keytab,
-      String impersonatedUser
+      String impersonatedUser,
+      String delegationToken
   ) throws Exception {
     Class<?> childUgiClass = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader);
     Method set = childConfigurationClass.getMethod("set", String.class, String.class);
     set.invoke(isolatedConf, "hadoop.security.authentication", "kerberos");
     Method setConfiguration = childUgiClass.getMethod("setConfiguration", childConfigurationClass);
     setConfiguration.invoke(null, isolatedConf);
+
+    if (delegationToken != null && !delegationToken.isBlank()) {
+      Class<?> childTokenClass = Class.forName("org.apache.hadoop.security.token.Token", true, classLoader);
+      Object childToken = childTokenClass.getConstructor().newInstance();
+      Method decodeFromUrlString = childTokenClass.getMethod("decodeFromUrlString", String.class);
+      decodeFromUrlString.invoke(childToken, delegationToken);
+
+      Method createRemoteUser = childUgiClass.getMethod("createRemoteUser", String.class);
+      Object tokenUgi = createRemoteUser.invoke(null, impersonatedUser);
+      Method addToken = childUgiClass.getMethod("addToken", childTokenClass);
+      addToken.invoke(tokenUgi, childToken);
+
+      Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
+      return doAs.invoke(tokenUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
+          withContextClassLoader(classLoader, () ->
+              clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
+    }
+
     Method loginUserFromKeytabAndReturnUgi =
         childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
     Object childUgi = loginUserFromKeytabAndReturnUgi.invoke(null, principal, keytab);
