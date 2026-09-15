@@ -171,6 +171,7 @@ When enabled, the proxy can:
 - run safe read-only fanout RPCs in parallel across multiple catalogs
 - optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms` (or `ttl-seconds`)
 - optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
+- proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
 - immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
 - omit degraded backends from safe fanout reads when
@@ -1678,6 +1679,9 @@ routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
 routing.database-metadata-cache.shared-across-users=true
+routing.database-cache.background-refresh.enabled=true
+routing.database-cache.background-refresh.interval-ms=60000
+routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
@@ -1730,6 +1734,10 @@ routing.database-list-cache.ttl-ms=10000
 routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=10000
 routing.database-metadata-cache.shared-across-users=true
+# Proactive background refresh for active database cache entries:
+routing.database-cache.background-refresh.enabled=true
+routing.database-cache.background-refresh.interval-ms=60000
+routing.database-cache.background-refresh.activity-window-ms=3600000
 
 # Per-catalog Ranger overrides (e.g. separate Ranger service or Admin per catalog):
 catalog.catalog1.ranger.enabled=true

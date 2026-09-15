@@ -179,6 +179,8 @@ public class PrometheusMetricsTest {
     metrics.setCacheEntries("database_metadata", "hdp", 45L);
     metrics.recordCacheInvalidation("database_list", "hdp", "write", 3L);
     metrics.recordCacheInvalidation("database_metadata", "all", "prune", 10L);
+    metrics.recordCacheRefresh("database_list", "hdp", "success", 2L);
+    metrics.recordCacheRefresh("database_metadata", "hdp", "failure", 1L);
 
     metrics.recordRangerEvaluation("hdp", "database", "select", "allowed", 0.00025);
     metrics.recordRangerEvaluation("hdp", "table", "select", "denied", 0.00035);
@@ -200,6 +202,10 @@ public class PrometheusMetricsTest {
         "hms_proxy_cache_invalidations_total{cache=\"database_list\",catalog=\"hdp\",reason=\"write\"} 3"));
     Assert.assertTrue(rendered.contains(
         "hms_proxy_cache_invalidations_total{cache=\"database_metadata\",catalog=\"all\",reason=\"prune\"} 10"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_refreshes_total{cache=\"database_list\",catalog=\"hdp\",result=\"success\"} 2"));
+    Assert.assertTrue(rendered.contains(
+        "hms_proxy_cache_refreshes_total{cache=\"database_metadata\",catalog=\"hdp\",result=\"failure\"} 1"));
 
     Assert.assertTrue(rendered.contains(
         "hms_proxy_ranger_evaluations_total{catalog=\"hdp\",resource_type=\"database\",access_type=\"select\",result=\"allowed\"} 1"));

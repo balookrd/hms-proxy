@@ -10,6 +10,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Database Cache Background Auto-Refresh**:
+  - Implemented `DatabaseCacheRefresher` coordinator performing proactive periodic background refreshing of `DatabaseListCache` and `DatabaseMetadataCache` (`get_database` / `get_database_req`), maintaining hot caches without backend query latency for clients.
+  - Added configurable activity window (`activity-window-ms`, default 1 hour): background refreshes actively poll metastores only while client requests are observed, automatically going idle after inactivity.
+  - Built-in fault tolerance: backend errors preserve existing cached entries without propagating failures to clients, recording errors in `result="failure"` metrics and warnings in logs.
+  - Exported `hms_proxy_cache_refreshes_total{cache, catalog, result}` Prometheus metrics, added monitoring panels to Grafana Dashboard, and added `smoke-stand/run-database-cache-smoke.sh` scenario to Docker stand.
 - **Apache Ranger Authorization & Shared Metadata Cache**:
   - Integrated Apache Ranger authorization plugin (`ranger-plugins-common` 2.5.0) to enforce database- and table-level access control directly at proxy Thrift RPC boundaries.
   - Added global shared metadata cache mode (`shared-across-users=true` for database lists and catalog metadata), enabling secure reuse of cached metastore objects across users filtered by Ranger policies.

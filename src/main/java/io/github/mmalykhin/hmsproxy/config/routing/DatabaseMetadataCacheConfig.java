@@ -9,10 +9,15 @@ package io.github.mmalykhin.hmsproxy.config.routing;
 public record DatabaseMetadataCacheConfig(
     long ttlMs,
     int maxEntries,
-    boolean sharedAcrossUsers
+    boolean sharedAcrossUsers,
+    DatabaseCacheBackgroundRefreshConfig backgroundRefresh
 ) {
+  public DatabaseMetadataCacheConfig(long ttlMs, int maxEntries, boolean sharedAcrossUsers) {
+    this(ttlMs, maxEntries, sharedAcrossUsers, DatabaseCacheBackgroundRefreshConfig.disabled());
+  }
+
   public DatabaseMetadataCacheConfig(long ttlMs, int maxEntries) {
-    this(ttlMs, maxEntries, false);
+    this(ttlMs, maxEntries, false, DatabaseCacheBackgroundRefreshConfig.disabled());
   }
 
   public DatabaseMetadataCacheConfig {
@@ -22,9 +27,10 @@ public record DatabaseMetadataCacheConfig(
     if (maxEntries < 1) {
       throw new IllegalArgumentException("routing.database-metadata-cache.max-entries must be >= 1, got: " + maxEntries);
     }
+    backgroundRefresh = backgroundRefresh == null ? DatabaseCacheBackgroundRefreshConfig.disabled() : backgroundRefresh;
   }
 
   public static DatabaseMetadataCacheConfig disabled() {
-    return new DatabaseMetadataCacheConfig(0L, 1_000, false);
+    return new DatabaseMetadataCacheConfig(0L, 1_000, false, DatabaseCacheBackgroundRefreshConfig.disabled());
   }
 }

@@ -30,6 +30,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
   private final ProxyObservability observability;
   private final SyntheticReadLockManager syntheticReadLockManager;
   private final BackendRoutingController backendRoutingController;
+  private final DatabaseCacheRefresher databaseCacheRefresher;
   private final RoutingHandler routingHandler;
   private final InvocationHandler chain;
 
@@ -71,16 +72,28 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       RoutingHandler routingHandler,
       InvocationHandler chain
   ) {
+    this(observability, syntheticReadLockManager, backendRoutingController, null, routingHandler, chain);
+  }
+
+  RoutingMetaStoreProxy(
+      ProxyObservability observability,
+      SyntheticReadLockManager syntheticReadLockManager,
+      BackendRoutingController backendRoutingController,
+      DatabaseCacheRefresher databaseCacheRefresher,
+      RoutingHandler routingHandler,
+      InvocationHandler chain
+  ) {
     this.observability = observability;
     this.syntheticReadLockManager = syntheticReadLockManager;
     this.backendRoutingController = backendRoutingController;
+    this.databaseCacheRefresher = databaseCacheRefresher;
     this.routingHandler = routingHandler;
     this.chain = chain;
   }
 
   private RoutingMetaStoreProxy(ProxyObservability observability, RoutingPipelineFactory.Pipeline pipeline) {
     this(observability, pipeline.syntheticReadLockManager(), pipeline.backendRoutingController(),
-        pipeline.routingHandler(), pipeline.chain());
+        pipeline.databaseCacheRefresher(), pipeline.routingHandler(), pipeline.chain());
   }
 
   @SuppressWarnings("unchecked")
@@ -173,6 +186,9 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     routingHandler.close();
     syntheticReadLockManager.close();
     backendRoutingController.close();
+    if (databaseCacheRefresher != null) {
+      databaseCacheRefresher.close();
+    }
   }
 
   @Override

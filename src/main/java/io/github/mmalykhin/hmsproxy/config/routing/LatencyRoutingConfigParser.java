@@ -33,6 +33,12 @@ public final class LatencyRoutingConfigParser {
     long hedgedReadFanoutTimeoutMs = reader.getPositiveLong("routing.hedged-read.fanout-timeout-ms", 30_000L);
     DegradedRoutingPolicy degradedRoutingPolicy = parseDegradedRoutingPolicy(
         reader.getOrNull("routing.degraded-routing-policy"));
+    DatabaseCacheBackgroundRefreshConfig defaultRefresh = parseBackgroundRefresh(
+        reader, "routing.database-cache", DatabaseCacheBackgroundRefreshConfig.disabled());
+    DatabaseCacheBackgroundRefreshConfig listRefresh = parseBackgroundRefresh(
+        reader, "routing.database-list-cache", defaultRefresh);
+    DatabaseCacheBackgroundRefreshConfig metaRefresh = parseBackgroundRefresh(
+        reader, "routing.database-metadata-cache", defaultRefresh);
     long dbListTtlMs = reader.getNonNegativeLong(
         "routing.database-list-cache.ttl-ms",
         reader.getNonNegativeLong("routing.database-list-cache.ttl-seconds", 0L) * 1000L);
@@ -40,7 +46,8 @@ public final class LatencyRoutingConfigParser {
     DatabaseListCacheConfig databaseListCache = new DatabaseListCacheConfig(
         dbListTtlMs,
         reader.getPositiveInt("routing.database-list-cache.max-entries", 1_000),
-        dbListShared);
+        dbListShared,
+        listRefresh);
     long dbMetaTtlMs = reader.getNonNegativeLong(
         "routing.database-metadata-cache.ttl-ms",
         reader.getNonNegativeLong("routing.database-metadata-cache.ttl-seconds", 0L) * 1000L);
@@ -48,7 +55,8 @@ public final class LatencyRoutingConfigParser {
     DatabaseMetadataCacheConfig databaseMetadataCache = new DatabaseMetadataCacheConfig(
         dbMetaTtlMs,
         reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000),
-        dbMetaShared);
+        dbMetaShared,
+        metaRefresh);
     boolean refreshPrivilegesSyntheticSuccess =
         reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
         || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));
@@ -88,5 +96,27 @@ public final class LatencyRoutingConfigParser {
         value,
         "routing.degraded-routing-policy",
         DegradedRoutingPolicy.STRICT);
+  }
+
+  private static DatabaseCacheBackgroundRefreshConfig parseBackgroundRefresh(
+      PropertyReader reader,
+      String prefix,
+      DatabaseCacheBackgroundRefreshConfig defaultRefresh
+  ) {
+    boolean enabled = reader.getBoolean(
+        prefix + ".background-refresh.enabled",
+        defaultRefresh.enabled());
+    long intervalMs = reader.getNonNegativeLong(
+        prefix + ".background-refresh.interval-ms",
+        reader.getNonNegativeLong(prefix + ".background-refresh.interval-seconds", defaultRefresh.intervalMs() / 1000L) * 1000L);
+    long activityWindowMs = reader.getNonNegativeLong(
+        prefix + ".background-refresh.activity-window-ms",
+        reader.getNonNegativeLong(
+            prefix + ".background-refresh.activity-window-seconds",
+            reader.getNonNegativeLong(prefix + ".background-refresh.activity-window-minutes", defaultRefresh.activityWindowMs() / 60000L) * 60L) * 1000L);
+    if (!enabled) {
+      return DatabaseCacheBackgroundRefreshConfig.disabled();
+    }
+    return new DatabaseCacheBackgroundRefreshConfig(enabled, intervalMs, activityWindowMs);
   }
 }

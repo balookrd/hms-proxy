@@ -498,6 +498,22 @@ The scenario exercises multi-user authorization and global caching against the r
 - Asserts that `bob` is rejected when accessing `sales` and `alice` is rejected when accessing `finance`.
 - Asserts that unauthorized user `eve` cannot access any private namespaces, while `admin` sees all namespaces and cleans up.
 
+## Database Cache Background Auto-Refresh (`run-database-cache-smoke.sh`)
+
+Validates background periodic auto-refresh of database list (`DatabaseListCache`) and metadata (`DatabaseMetadataCache`) caches while active client traffic is observed:
+
+```bash
+cd smoke-stand && ./prepare.sh
+./run-database-cache-smoke.sh
+```
+
+The scenario exercises the refresher lifecycle (`DatabaseCacheRefresher`) against a running proxy with `hms-proxy-db-cache.properties`:
+- Creates isolated test database `db_cache_smoke_test`.
+- Executes warmup `get_all_databases` and `get_database` calls, priming the caches and establishing access timestamps.
+- Verifies background polling by asserting that `hms_proxy_cache_refreshes_total` increments for both `database_list` and `database_metadata` within the active window.
+- Pauses requests past the activity window (`activity-window-ms=10000`) and asserts idle sleep: refresh metrics cease incrementing.
+- Sends fresh client requests and verifies awakening: background refreshes resume.
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

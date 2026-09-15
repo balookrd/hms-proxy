@@ -16,6 +16,7 @@ final class RoutingPipelineFactory {
   record Pipeline(
       SyntheticReadLockManager syntheticReadLockManager,
       BackendRoutingController backendRoutingController,
+      DatabaseCacheRefresher databaseCacheRefresher,
       RoutingHandler routingHandler,
       InvocationHandler chain
   ) {}
@@ -39,6 +40,11 @@ final class RoutingPipelineFactory {
         new DatabaseListCache(config.latencyRouting().databaseListCache(), observability.metrics());
     DatabaseMetadataCache databaseMetadataCache =
         new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache, observability.metrics());
+    DatabaseCacheRefresher databaseCacheRefresher = new DatabaseCacheRefresher(
+        databaseListCache,
+        databaseMetadataCache,
+        config.latencyRouting().databaseListCache().backgroundRefresh(),
+        config.latencyRouting().databaseMetadataCache().backgroundRefresh());
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
         compatibilityLayer, admissionGate, observability, fanoutExecutor);
     long aliveSince = System.currentTimeMillis() / 1000L;
@@ -64,6 +70,6 @@ final class RoutingPipelineFactory {
     LockHandler lockHandler = new LockHandler(
         config, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
     InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
-    return new Pipeline(syntheticReadLockManager, backendRoutingController, routingHandler, chain);
+    return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, chain);
   }
 }

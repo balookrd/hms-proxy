@@ -174,6 +174,7 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - запускать в parallel безопасные read-only fanout RPC между несколькими каталогами
 - опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms` (или `ttl-seconds`)
 - опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
+- упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
 - мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
 - исключать degraded backend из таких safe fanout read при
@@ -1620,6 +1621,9 @@ routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=5000
 routing.database-metadata-cache.max-entries=1000
 routing.database-metadata-cache.shared-across-users=true
+routing.database-cache.background-refresh.enabled=true
+routing.database-cache.background-refresh.interval-ms=60000
+routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
@@ -1673,6 +1677,10 @@ routing.database-list-cache.ttl-ms=10000
 routing.database-list-cache.shared-across-users=true
 routing.database-metadata-cache.ttl-ms=10000
 routing.database-metadata-cache.shared-across-users=true
+# Фоновое автообновление активных записей кэшей баз данных:
+routing.database-cache.background-refresh.enabled=true
+routing.database-cache.background-refresh.interval-ms=60000
+routing.database-cache.background-refresh.activity-window-ms=3600000
 
 # Переопределения для отдельных каталогов (отдельный сервис Ranger для каталога):
 catalog.catalog1.ranger.enabled=true

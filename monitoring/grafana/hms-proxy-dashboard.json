@@ -4560,7 +4560,7 @@
       },
       "id": 1009,
       "panels": [],
-      "title": "Metadata Cache  (hms_proxy_cache_requests_total, hms_proxy_cache_entries, hms_proxy_cache_invalidations_total)",
+      "title": "Metadata Cache  (hms_proxy_cache_requests_total, hms_proxy_cache_entries, hms_proxy_cache_invalidations_total, hms_proxy_cache_refreshes_total)",
       "type": "row"
     },
     {
@@ -5056,12 +5056,151 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Total rate of background database cache refresh operations per second.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 201
+      },
+      "id": 308,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(hms_proxy_cache_refreshes_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "refreshes/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Background Refresh Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate of background database cache refreshes by cache type, catalog, and result (success/failure).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 201
+      },
+      "id": 309,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.1.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (cache, catalog, result) (rate(hms_proxy_cache_refreshes_total{catalog=~\"$catalog\"}[$__rate_interval]))",
+          "legendFormat": "{{cache}} [{{catalog}}] — {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Background Cache Refreshes by Result",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 201
+        "y": 209
       },
       "id": 1010,
       "panels": [],
@@ -5097,7 +5236,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 202
+        "y": 210
       },
       "id": 401,
       "options": {
@@ -5164,7 +5303,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 202
+        "y": 210
       },
       "id": 402,
       "options": {
@@ -5231,7 +5370,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 202
+        "y": 210
       },
       "id": 403,
       "options": {
@@ -5298,7 +5437,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 202
+        "y": 210
       },
       "id": 404,
       "options": {
@@ -5377,7 +5516,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 206
+        "y": 214
       },
       "id": 405,
       "options": {
@@ -5457,7 +5596,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 206
+        "y": 214
       },
       "id": 406,
       "options": {
@@ -5551,7 +5690,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 206
+        "y": 214
       },
       "id": 407,
       "options": {
@@ -5617,7 +5756,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 214
+        "y": 222
       },
       "id": 408,
       "options": {
@@ -5673,7 +5812,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 220
+        "y": 228
       },
       "id": 1012,
       "panels": [],
@@ -5709,7 +5848,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 221
+        "y": 229
       },
       "id": 501,
       "options": {
@@ -5768,7 +5907,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 221
+        "y": 229
       },
       "id": 502,
       "options": {
@@ -5835,7 +5974,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 221
+        "y": 229
       },
       "id": 503,
       "options": {
@@ -5894,7 +6033,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 221
+        "y": 229
       },
       "id": 504,
       "options": {
@@ -5973,7 +6112,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 225
+        "y": 233
       },
       "id": 505,
       "options": {
@@ -6067,7 +6206,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 225
+        "y": 233
       },
       "id": 506,
       "options": {
@@ -6161,7 +6300,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 233
+        "y": 241
       },
       "id": 507,
       "options": {
@@ -6241,7 +6380,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 233
+        "y": 241
       },
       "id": 508,
       "options": {

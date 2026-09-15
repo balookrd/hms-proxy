@@ -1278,6 +1278,38 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void databaseCacheBackgroundRefreshSettingsCanBeConfiguredGloballyAndPerCache() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-bg-refresh", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          routing.database-cache.background-refresh.enabled=true
+          routing.database-cache.background-refresh.interval-ms=45000
+          routing.database-cache.background-refresh.activity-window-ms=1800000
+          routing.database-metadata-cache.background-refresh.interval-ms=30000
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      // List cache inherits global
+      var listRefresh = config.latencyRouting().databaseListCache().backgroundRefresh();
+      Assert.assertTrue(listRefresh.enabled());
+      Assert.assertEquals(45_000L, listRefresh.intervalMs());
+      Assert.assertEquals(1_800_000L, listRefresh.activityWindowMs());
+
+      // Metadata cache overrides interval-ms
+      var metaRefresh = config.latencyRouting().databaseMetadataCache().backgroundRefresh();
+      Assert.assertTrue(metaRefresh.enabled());
+      Assert.assertEquals(30_000L, metaRefresh.intervalMs());
+      Assert.assertEquals(1_800_000L, metaRefresh.activityWindowMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void frontDoorSocketSettingsDefaultToBoundedLifetime() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

@@ -8,24 +8,39 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.function.LongSupplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class DatabaseListCache {
+  private static final Logger LOG = LoggerFactory.getLogger(DatabaseListCache.class);
+
   private final long ttlMs;
   private final int maxEntries;
   private final boolean sharedAcrossUsers;
   private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
+  private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<List<String>>> inFlight = new ConcurrentHashMap<>();
 
   DatabaseListCache(DatabaseListCacheConfig config) {
-    this(config, null);
+    this(config, null, System::currentTimeMillis);
   }
 
   DatabaseListCache(DatabaseListCacheConfig config, io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics) {
+    this(config, metrics, System::currentTimeMillis);
+  }
+
+  DatabaseListCache(
+      DatabaseListCacheConfig config,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics,
+      LongSupplier clock
+  ) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
     this.sharedAcrossUsers = config.sharedAcrossUsers();
     this.metrics = metrics;
+    this.clock = clock == null ? System::currentTimeMillis : clock;
   }
 
   List<String> get(
@@ -38,10 +53,11 @@ final class DatabaseListCache {
     if (ttlMs == 0L) {
       return loader.load();
     }
-    long nowMs = System.currentTimeMillis();
+    long nowMs = clock.getAsLong();
     Key key = Key.of(methodName, catalogName, pattern, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
+      cached.recordAccess(nowMs, loader);
       if (metrics != null) {
         metrics.recordCacheRequest("database_list", catalogName, "hit");
       }
@@ -53,6 +69,10 @@ final class DatabaseListCache {
     if (existing != null) {
       try {
         List<String> result = existing.get();
+        cached = entries.get(key);
+        if (cached != null) {
+          cached.recordAccess(nowMs, loader);
+        }
         if (metrics != null) {
           metrics.recordCacheRequest("database_list", catalogName, "hit");
         }
@@ -65,6 +85,7 @@ final class DatabaseListCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
+        cached.recordAccess(nowMs, loader);
         if (metrics != null) {
           metrics.recordCacheRequest("database_list", catalogName, "hit");
         }
@@ -77,7 +98,7 @@ final class DatabaseListCache {
       }
       List<String> loaded = loader.load();
       if (loaded != null) {
-        put(key, loaded, System.currentTimeMillis() + ttlMs);
+        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loader);
       }
       future.complete(loaded);
       return loaded == null ? null : new ArrayList<>(loaded);
@@ -129,9 +150,9 @@ final class DatabaseListCache {
     }
   }
 
-  private void put(Key key, List<String> databases, long expiresAtMs) {
+  private void put(Key key, List<String> databases, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
     pruneIfFull();
-    entries.put(key, new Entry(List.copyOf(databases), expiresAtMs));
+    entries.put(key, new Entry(List.copyOf(databases), expiresAtMs, lastAccessedAtMs, loader));
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(key.catalogName())
           && (sharedAcrossUsers || entry.getKey().userName().equals(key.userName()))) {
@@ -143,11 +164,65 @@ final class DatabaseListCache {
     }
   }
 
+  int refreshActiveEntries(long nowMs, long activityWindowMs) {
+    if (ttlMs == 0L) {
+      return 0;
+    }
+    int refreshed = 0;
+    for (var mapEntry : entries.entrySet()) {
+      Key key = mapEntry.getKey();
+      Entry entry = mapEntry.getValue();
+      if (nowMs - entry.lastAccessedAtMs() > activityWindowMs) {
+        continue;
+      }
+      Loader loader = entry.loader();
+      if (loader == null) {
+        continue;
+      }
+      CompletableFuture<List<String>> future = new CompletableFuture<>();
+      CompletableFuture<List<String>> existing = inFlight.putIfAbsent(key, future);
+      if (existing != null) {
+        continue;
+      }
+      try {
+        List<String> loaded = loader.load();
+        if (loaded != null) {
+          entry.update(loaded, nowMs + ttlMs);
+          if (metrics != null) {
+            metrics.recordCacheRefresh("database_list", key.catalogName(), "success");
+            metrics.setCacheEntries("database_list", key.catalogName(), countEntries(key.catalogName()));
+          }
+          refreshed++;
+        }
+        future.complete(loaded);
+      } catch (Throwable t) {
+        future.completeExceptionally(t);
+        LOG.warn("Background refresh failed for database list of catalog {}: {}", key.catalogName(), t.toString());
+        if (metrics != null) {
+          metrics.recordCacheRefresh("database_list", key.catalogName(), "failure");
+        }
+      } finally {
+        inFlight.remove(key, future);
+      }
+    }
+    return refreshed;
+  }
+
+  long lastAccessedAtMs(String catalogName) {
+    long latest = 0L;
+    for (var entry : entries.entrySet()) {
+      if (entry.getKey().catalogName().equals(catalogName)) {
+        latest = Math.max(latest, entry.getValue().lastAccessedAtMs());
+      }
+    }
+    return latest;
+  }
+
   private void pruneIfFull() {
     if (entries.size() < maxEntries) {
       return;
     }
-    long nowMs = System.currentTimeMillis();
+    long nowMs = clock.getAsLong();
     int before = entries.size();
     entries.entrySet().removeIf(entry -> entry.getValue().expiresAtMs() <= nowMs);
     int pruned = before - entries.size();
@@ -201,12 +276,16 @@ final class DatabaseListCache {
   }
 
   private static final class Entry {
-    private final List<String> databases;
+    private volatile List<String> databases;
     private volatile long expiresAtMs;
+    private volatile long lastAccessedAtMs;
+    private volatile Loader loader;
 
-    Entry(List<String> databases, long expiresAtMs) {
+    Entry(List<String> databases, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
       this.databases = databases;
       this.expiresAtMs = expiresAtMs;
+      this.lastAccessedAtMs = lastAccessedAtMs;
+      this.loader = loader;
     }
 
     List<String> databases() {
@@ -215,6 +294,26 @@ final class DatabaseListCache {
 
     long expiresAtMs() {
       return expiresAtMs;
+    }
+
+    long lastAccessedAtMs() {
+      return lastAccessedAtMs;
+    }
+
+    Loader loader() {
+      return loader;
+    }
+
+    void recordAccess(long accessedAtMs, Loader currentLoader) {
+      this.lastAccessedAtMs = accessedAtMs;
+      if (currentLoader != null) {
+        this.loader = currentLoader;
+      }
+    }
+
+    void update(List<String> newDatabases, long newExpiresAtMs) {
+      this.databases = List.copyOf(newDatabases);
+      this.expiresAtMs = newExpiresAtMs;
     }
 
     void extendExpiration(long newExpiresAtMs) {

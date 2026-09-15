@@ -165,6 +165,10 @@ public final class PrometheusMetrics {
       "hms_proxy_cache_invalidations_total",
       "Metadata cache entry invalidations grouped by cache type, catalog, and reason",
       List.of("cache", "catalog", "reason"));
+  private final Counter cacheRefreshesTotal = new Counter(
+      "hms_proxy_cache_refreshes_total",
+      "Metadata cache background refresh executions grouped by cache type, catalog, and result (success or failure)",
+      List.of("cache", "catalog", "result"));
   private final Counter rangerEvaluationsTotal = new Counter(
       "hms_proxy_ranger_evaluations_total",
       "Total Apache Ranger policy evaluations grouped by catalog, resource type, access type, and result",
@@ -400,6 +404,14 @@ public final class PrometheusMetrics {
     cacheInvalidationsTotal.add(labels("cache", cache, "catalog", catalog, "reason", reason), count);
   }
 
+  public void recordCacheRefresh(String cache, String catalog, String result) {
+    recordCacheRefresh(cache, catalog, result, 1L);
+  }
+
+  public void recordCacheRefresh(String cache, String catalog, String result, long count) {
+    cacheRefreshesTotal.add(labels("cache", cache, "catalog", catalog, "result", result), count);
+  }
+
   public void recordRangerEvaluation(
       String catalog,
       String resourceType,
@@ -512,6 +524,7 @@ public final class PrometheusMetrics {
       cacheRequestsTotal,
       cacheEntries,
       cacheInvalidationsTotal,
+      cacheRefreshesTotal,
       rangerEvaluationsTotal,
       rangerEvaluationDurationSeconds,
       rangerFilteredObjectsTotal,
