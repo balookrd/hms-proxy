@@ -38,6 +38,8 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - Русскоязычная документация переведена в основной статус без языкового суффикса (`README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`), а англоязычные версии получили суффикс `.en.md` (`README.en.md`, `CHANGELOG.en.md` и др.).
 - **Регламент сообщений коммитов**:
   - В `AGENTS.md` и памяти проекта закреплено обязательное требование: сообщения коммитов в git оформляются строго на английском языке.
+- **Документация по GUI-клиентам и шаблонам схем**:
+  - В `README.md`, `SMOKE.md`, `smoke-stand/README.md` и `capabilities.yaml` документировано взаимодействие с DBeaver, Hue и DataGrip, трансляция шаблонов схем HiveServer2 и сценарий smoke-проверки `schema_pattern`.
 
 ### Исправлено
 

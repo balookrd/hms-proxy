@@ -38,6 +38,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Russian documentation is now primary without language suffix (`README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`), while English versions use the `.en.md` suffix (`README.en.md`, `CHANGELOG.en.md`, etc.).
 - **Commit Message Policy**:
   - Enforced strict rule in `AGENTS.md` and project memory: all git commit messages must be written in English.
+- **GUI Clients and Schema Pattern Documentation**:
+  - Documented DBeaver, Hue, and DataGrip interoperability, HiveServer2 schema pattern translation mechanics, and the `schema_pattern` smoke scenario in `README.en.md`, `SMOKE.en.md`, `smoke-stand/README.en.md`, and `capabilities.yaml`.
 
 ### Fixed
 
