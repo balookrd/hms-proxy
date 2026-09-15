@@ -40,6 +40,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Enforced strict rule in `AGENTS.md` and project memory: all git commit messages must be written in English.
 - **GUI Clients and Schema Pattern Documentation**:
   - Documented DBeaver, Hue, and DataGrip interoperability, HiveServer2 schema pattern translation mechanics, and the `schema_pattern` smoke scenario in `README.en.md`, `SMOKE.en.md`, `smoke-stand/README.en.md`, and `capabilities.yaml`.
+- **Documentation and Changelog Commit Policy**:
+  - Enforced mandatory rule in `AGENTS.md` and project memory: any code changes must be committed synchronously with relevant documentation updates (RU/EN) and changelogs.
 
 ### Fixed
 
