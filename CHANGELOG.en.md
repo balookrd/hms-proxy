@@ -1,10 +1,102 @@
 # Changelog
 
-This changelog summarizes the full commit history of the repository from the first commit through
-`2026-07-25`. Entries are grouped by commit date and focused on user-visible changes. The first
-tagged release, `v1.0.0`, was cut on 2026-04-29.
+All notable changes to this project will be documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
+
+## [Unreleased]
+
+### Added
+
+- **Apache Ranger Authorization & Shared Metadata Cache**:
+  - Integrated Apache Ranger authorization plugin (`ranger-plugins-common` 2.5.0) to enforce database- and table-level access control directly at proxy Thrift RPC boundaries.
+  - Added global shared metadata cache mode (`shared-across-users=true` for database lists and catalog metadata), enabling secure reuse of cached metastore objects across users filtered by Ranger policies.
+  - Exported Ranger and cache metrics to Prometheus, added monitoring panels to Grafana dashboard.
+- **Kerberos Impersonation via Delegation Tokens**:
+  - Implemented end-to-end impersonation: the proxy requests a delegation token (`get_delegation_token`) from the secured HMS backend and connects client sessions using SASL DIGEST-MD5 under `createProxyUser(user).doAs(...)`.
+  - All HDFS filesystem objects (database directories, tables, partitions) are created with ownership belonging to the client request's actual user instead of the proxy service user.
+- **JVM Memory Metrics**:
+  - Added metrics for heap/non-heap memory usage, JVM memory pools, and direct buffer pools (`jvm_memory_used_bytes`, `jvm_memory_committed_bytes`, `jvm_buffer_pool_used_bytes`).
+  - Added JVM resource monitoring section to the Grafana dashboard.
+- **Java AST Index Tooling**:
+  - Added `scripts/build-java-ast-index.sh` and `scripts/java-index-query.sh` based on `ast-grep` for fast structural search of classes, methods, and call hierarchies without context token overhead.
+- **Fault Tolerance Documentation (`FAILOVER.en.md`)**:
+  - Authored comprehensive guide detailing backend failure modes, timeouts, degraded reads, and failover recovery procedures.
+
+### Changed
+
+- **Documentation Primary Locale**:
+  - Russian documentation is now primary without language suffix (`README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`), while English versions use the `.en.md` suffix (`README.en.md`, `CHANGELOG.en.md`, etc.).
+- **Commit Message Policy**:
+  - Enforced strict rule in `AGENTS.md` and project memory: all git commit messages must be written in English.
+
+### Fixed
+
+- **Prevent Thrift User Context Leak**:
+  - Bound `UserGroupInformation` in `set_ugi` to connection transport context (`ClientRequestContext.setConnectionUgi`), eliminating authentication context bleed across `TThreadPoolServer` worker threads.
+- **Thrift RPC Exception Normalization**:
+  - Unified and properly mapped infrastructure `TException` instances across all backend adapter invocation paths (both direct invocation and reflection).
+
+---
+
+## [v1.2.1] - 2026-09-01
+
+### Added
+
+- **Sliding Batch Cache Expiration**:
+  - Implemented sliding batch expiration for database list and metadata caches to prevent stampede effects and smooth backend request spikes during concurrent periodic polling.
+- **Synthetic Response for `refresh_privileges`**:
+  - Added `routing.refresh-privileges.synthetic-success` configuration setting to quickly and safely respond to frequent privilege invalidation calls from HiveServer2/Ranger without burdening backends.
+  - Supported `ttl-seconds` alias for cache time-to-live configuration options.
+- **Release Notes Automation**:
+  - Added `cliff.toml` configuration and `git-cliff` integration to generate release notes from git history automatically.
+
+### Optimized
+
+- **Single-Flight Coalescing & Fanout Acceleration**:
+  - Implemented single-flight coalescing for concurrent identical metadata lookups, eliminating redundant backend RPC calls.
+  - Accelerated parallel fanout listing queries (`get_all_databases`) across registered catalogs.
+
+### Fixed
+
+- Fixed `refresh_privileges` RPC routing and proper handling of `READ_ONLY` catalogs.
+
+---
+
+## [v1.2.0] - 2026-08-05
+
+## 2026-08-05
+
+### Tests & Verification
+
+- **Full SQL Data Path Coverage**:
+  - Covered data-moving and data-modifying operations on the live stand: `CTAS` (CREATE TABLE AS SELECT), `INSERT OVERWRITE`, `LOAD DATA`, and table conversion `managed <-> external` (matrix row C12).
+- **`MSCK REPAIR TABLE` Coverage**:
+  - Implemented smoke scenario verifying partition recovery by traversing HDFS directories and registering partitions in the metastore via the proxy.
+
+## 2026-08-04
+
+### Added
+
+- **Backend Container Builds on Hadoop 3.1 & Vendor Hadoop**:
+  - Rebuilt Apache Metastore image on Hadoop 3.1 and Hortonworks Metastore image on vendor Hadoop distribution.
+  - Added `hms/override-{hdp,apache}` classpath override slot ahead of Maven dependencies, fixing `TRUNCATE` failures caused by `HdfsAdmin` API incompatibility.
+- **Strict Table Truncate Verification**:
+  - `TRUNCATE` smoke checks now assert actual data emptiness in HDFS rather than merely the absence of RPC errors.
+- **Valid Iceberg Tables for Hive 3.1 Line**:
+  - Created Hive 3.1 Iceberg tables as `EXTERNAL TABLE` in smoke scenarios, preventing deadlock conflicts under `DbTxnManager`.
+
+## 2026-08-03
+
+### Tests & Verification
+
+- **Full SQL Layer Verification in Kerberos**:
+  - Validated both front door pairings (Apache and Hortonworks) in a secured Kerberos environment.
+- **Front-Door Pair Configuration**:
+  - Configured and tested each front door against its own metastore as the default catalog, alongside remote catalogs.
+  - Confirmed preservation of transaction Write IDs through the proxy (matrix row C6).
 
 ## 2026-07-31
 
@@ -282,6 +374,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   indefinitely with no timeout on the server side. The catch-all is now
   `Throwable`, so such failures map to the usual error response like any
   other failure instead of hanging the caller.
+
+---
+
+## [v1.1.0] - 2026-07-27
 
 ## 2026-07-27
 
@@ -658,6 +754,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 - `hadoop-minikdc` test dependency was added so the SPNEGO handshake can be
   validated end-to-end inside a single JVM (`SpnegoIntegrationTest`).
 
+---
+
+## [v1.0.1] - 2026-05-19
+
 ## 2026-05-19
 
 ### Changed
@@ -768,6 +868,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 - `IsolatedInvocationBridge` and `TBase` cross-classloader conversion now cache `Method` and
   `Constructor` lookups, eliminating repeated `getMethod`/`getConstructor` reflection on hot
   paths.
+
+---
+
+## [v1.0.0] - 2026-04-29
 
 ## 2026-04-29
 
@@ -1196,3 +1300,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 - Initial repository bootstrap.
 - First working implementation commit.
+
+[Unreleased]: https://github.com/balookrd/hms-proxy/compare/v1.2.1...HEAD
+[v1.2.1]: https://github.com/balookrd/hms-proxy/compare/v1.2.0...v1.2.1
+[v1.2.0]: https://github.com/balookrd/hms-proxy/compare/v1.1.0...v1.2.0
+[v1.1.0]: https://github.com/balookrd/hms-proxy/compare/v1.0.1...v1.1.0
+[v1.0.1]: https://github.com/balookrd/hms-proxy/compare/v1.0.0...v1.0.1
+[v1.0.0]: https://github.com/balookrd/hms-proxy/releases/tag/v1.0.0
+
