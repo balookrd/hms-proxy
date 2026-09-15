@@ -38,12 +38,6 @@ public final class SecurityConfigParser {
       ConfigParsing.requireNonBlank(keytab, "security.keytab");
       ConfigParsing.requireReadableFile(keytab, "security.keytab");
     }
-    if (catalogs.values().stream().anyMatch(CatalogConfig::impersonationEnabled)
-        && securityMode != SecurityMode.KERBEROS) {
-      throw new IllegalArgumentException(
-          "security.impersonation-enabled and catalog.<name>.impersonation-enabled "
-              + "require security.mode=KERBEROS so the proxy can derive the caller identity from SASL");
-    }
     if (catalogs.values().stream().anyMatch(catalog -> backendKerberosEnabled(catalog.hiveConf()))) {
       ConfigParsing.requireNonBlank(clientPrincipal, "security.client-principal");
       ConfigParsing.requireNonBlank(clientKeytab, "security.client-keytab");

@@ -905,7 +905,7 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
-  public void rejectsImpersonationWithoutKerberosFrontDoor() throws Exception {
+  public void allowsImpersonationWithoutKerberosFrontDoor() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
@@ -916,12 +916,9 @@ public class ProxyConfigLoaderTest {
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
 
-      try {
-        ProxyConfigLoader.load(file);
-        Assert.fail("Expected IllegalArgumentException for impersonation without Kerberos");
-      } catch (IllegalArgumentException e) {
-        Assert.assertTrue(e.getMessage().contains("impersonation"));
-      }
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertTrue(config.security().impersonationEnabled());
+      Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
     } finally {
       Files.deleteIfExists(file);
     }
@@ -984,7 +981,7 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
-  public void rejectsCatalogLevelImpersonationWithoutKerberosFrontDoor() throws Exception {
+  public void allowsCatalogLevelImpersonationWithoutKerberosFrontDoor() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
@@ -996,12 +993,9 @@ public class ProxyConfigLoaderTest {
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
           """);
 
-      try {
-        ProxyConfigLoader.load(file);
-        Assert.fail("Expected IllegalArgumentException for catalog-level impersonation without Kerberos");
-      } catch (IllegalArgumentException e) {
-        Assert.assertTrue(e.getMessage().contains("impersonation"));
-      }
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertFalse(config.security().impersonationEnabled());
+      Assert.assertTrue(config.catalogs().get("catalog1").impersonationEnabled());
     } finally {
       Files.deleteIfExists(file);
     }

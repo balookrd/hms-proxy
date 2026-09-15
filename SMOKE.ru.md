@@ -29,7 +29,7 @@ degraded-режиме или падать явно, ещё до детальны
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `SHARED_READ` + `DB` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле `CREATE TABLE`. |
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Должно проходить; это проверка synthetic shim для non-transactional DDL lock в стиле partition rename/drop. |
 | Direct HMS smoke CLI `lock` с `--second-db` | `APACHE_3_1_3` | default catalog плюс non-default | `NONE` или `KERBEROS` | один `lock`, компоненты которого называют два каталога, затем `check_lock`, `heartbeat`, `abort_txn` | Должно проходить; proxy маршрутизирует запрос по default catalog и отбрасывает остальные компоненты. Обратите внимание на `--unlock false`: уцелевший лок настоящий и принадлежит транзакции, а такие метастор снимать через `unlock` не даёт. |
-| Direct HMS smoke CLI `impersonation` | любой | default catalog backend | `NONE` или `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Должно проходить; подтверждает, что `set_ugi` привязывает пользователя к соединению, таблица создается с ожидаемым владельцем (owner), а в audit log пишется `authenticatedUser`. |
+| Direct HMS smoke CLI `impersonation` | любой | default catalog backend | `NONE` или `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Должно проходить; подтверждает, что `set_ugi` привязывает пользователя к соединению, таблица создается с ожидаемым владельцем в метаданных и на HDFS (`owner:group`), а в audit log пишется `authenticatedUser`. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно проходить только если и front door, и routed backend имеют совместимый Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать. Причину называет лог прокси (`requires a Hortonworks backend runtime`), клиент видит только `Internal error processing add_write_notification_log`: Hive IDL не объявляет исключений для этого метода. |
 | Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
@@ -448,9 +448,28 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 
 Отдельно проверить аварийный путь: настроить дополнительный frontend на уже занятый порт,
 запустить proxy и убедиться, что он завершается, а не остаётся живой JVM с занятым портом
-второго listener'а.
+второго листенера.
 
-**14. Что смотреть в логах proxy**
+**14. Проверка имперсонации и владельца таблицы на HDFS**
+
+Проверяет, что идентификатор конечного пользователя, переданный через `--user <name>` и `set_ugi`,
+корректно транслируется в backend metastore и нижележащую файловую систему (HDFS):
+- Все операции smoke CLI выполняются с включенной имперсонацией по умолчанию (`HMS_SMOKE_IMPERSONATION_ENABLED=true`).
+- В сценарии `impersonation` (включенном в `--scenario all`) CLI создает таблицу от имени `--user smoke-user`.
+- Раннер проверяет:
+  1. Владелец таблицы в метаданных HMS равен `smoke-user`.
+  2. Директория таблицы, созданная на HDFS (например, `/warehouse/hdp/<table_name>`), принадлежит `smoke-user` (`smoke-user:supergroup`).
+  3. В audit log фиксируется `authenticatedUser=smoke-user`.
+  4. Таблица корректно удаляется после проверки.
+
+Запуск сценария:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario impersonation
+# или с Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
+```
+
+**15. Что смотреть в логах proxy**
 
 Ищи:
 - `Starting HMS proxy`

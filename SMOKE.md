@@ -29,7 +29,7 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `SHARED_READ` + `DB` + `NO_TXN` | Should pass; confirms the synthetic shim for `CREATE TABLE`-style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
-| Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner, and audit logs record `authenticatedUser`. |
+| Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner in metadata and on HDFS (`owner:group`), and audit logs record `authenticatedUser`. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
@@ -443,7 +443,26 @@ Also check the failure path once: configure an additional frontend on a port tha
 taken, start the proxy, and confirm it exits instead of leaving a JVM alive with the other
 listener's port still bound.
 
-**14. What To Watch In Proxy Logs**
+**14. Impersonation and HDFS Table Ownership Check**
+
+Validates that end-user identity passed through `--user <name>` and `set_ugi` is properly propagated
+to backend metastores and the underlying file system (HDFS):
+- All smoke CLI operations run with impersonation enabled by default (`HMS_SMOKE_IMPERSONATION_ENABLED=true`).
+- In scenario `impersonation` (included in `--scenario all`), the CLI creates a table under `--user smoke-user`.
+- The runner verifies:
+  1. Table owner in HMS metadata equals `smoke-user`.
+  2. The table directory created on HDFS (e.g., `/warehouse/hdp/<table_name>`) is owned by `smoke-user` (`smoke-user:supergroup`).
+  3. Audit log records `authenticatedUser=smoke-user`.
+  4. The table is cleanly dropped afterwards.
+
+Practical runner:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario impersonation
+# or with Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
+```
+
+**15. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`

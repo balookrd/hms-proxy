@@ -85,6 +85,7 @@ public final class HmsMetastoreSmokeCli {
 
     try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
       ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+      maybeSendSetUgi(cli, thriftClient);
       OpenTxnRequest openReq = new OpenTxnRequest(1, user, host);
       openReq.setAgentInfo(agentInfo);
       OpenTxnsResponse openResp = thriftClient.open_txns(openReq);
@@ -166,6 +167,7 @@ public final class HmsMetastoreSmokeCli {
 
     try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
       ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+      maybeSendSetUgi(cli, thriftClient);
       OpenTxnRequest openReq = new OpenTxnRequest(1, user, host);
       openReq.setAgentInfo(agentInfo);
       OpenTxnsResponse openResp = thriftClient.open_txns(openReq);
@@ -421,18 +423,7 @@ public final class HmsMetastoreSmokeCli {
     try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
       ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
 
-      boolean sendSetUgi = cli.getBoolean("set-ugi", false);
-      String setUgiUser = cli.get("set-ugi-user");
-      if (setUgiUser == null && sendSetUgi) {
-        setUgiUser = cli.get("user");
-      }
-      if (setUgiUser != null && !setUgiUser.isBlank()) {
-        List<String> groups = cli.get("groups") != null
-            ? List.of(cli.get("groups").split(","))
-            : List.of("hadoop");
-        thriftClient.set_ugi(setUgiUser, groups);
-        System.out.println("executed set_ugi user=" + setUgiUser + " groups=" + groups);
-      }
+      maybeSendSetUgi(cli, thriftClient);
 
       switch (op.toLowerCase(Locale.ROOT)) {
         case "get_all_databases" -> {
@@ -499,8 +490,9 @@ public final class HmsMetastoreSmokeCli {
           newTable.setTableName(table);
           newTable.setTableType("EXTERNAL_TABLE");
           String owner = cli.get("owner");
-          if (owner == null && setUgiUser != null && !setUgiUser.isBlank()) {
-            owner = setUgiUser;
+          String effectiveUser = cli.get("set-ugi-user") != null ? cli.get("set-ugi-user") : cli.get("user");
+          if (owner == null && effectiveUser != null && !effectiveUser.isBlank()) {
+            owner = effectiveUser;
           }
           if (owner != null) {
             newTable.setOwner(owner);
@@ -513,12 +505,38 @@ public final class HmsMetastoreSmokeCli {
           newTable.setSd(sd);
           thriftClient.create_table(newTable);
           org.apache.hadoop.hive.metastore.api.Table created = thriftClient.get_table(db, table);
-          System.out.println("created table=" + db + "." + table + " owner=" + created.getOwner());
+          String location = created.getSd() != null ? created.getSd().getLocation() : null;
+          System.out.println("created table=" + db + "." + table + " owner=" + created.getOwner() + " location=" + location);
           String expectedOwner = cli.get("expected-owner");
           if (expectedOwner != null && !expectedOwner.isBlank()) {
             if (!expectedOwner.equals(created.getOwner())) {
               throw new IllegalStateException("Table owner mismatch: expected '" + expectedOwner
                   + "', but got '" + created.getOwner() + "'");
+            }
+          }
+          if (location != null && cli.getBoolean("check-hdfs-owner", false)) {
+            try {
+              org.apache.hadoop.fs.Path p = new org.apache.hadoop.fs.Path(location);
+              org.apache.hadoop.fs.FileSystem fs = p.getFileSystem(conf);
+              if (fs.exists(p)) {
+                org.apache.hadoop.fs.FileStatus st = fs.getFileStatus(p);
+                System.out.println("table.hdfs.path=" + location + " owner=" + st.getOwner() + " group=" + st.getGroup());
+                String expectedHdfsOwner = cli.getOrDefault("expected-hdfs-owner", expectedOwner);
+                if (expectedHdfsOwner != null && !expectedHdfsOwner.equals(st.getOwner())) {
+                  throw new IllegalStateException("HDFS owner mismatch on " + location + ": expected '"
+                      + expectedHdfsOwner + "', but got '" + st.getOwner() + "'");
+                }
+                String expectedHdfsGroup = cli.get("expected-hdfs-group");
+                if (expectedHdfsGroup != null && !expectedHdfsGroup.equals(st.getGroup())) {
+                  throw new IllegalStateException("HDFS group mismatch on " + location + ": expected '"
+                      + expectedHdfsGroup + "', but got '" + st.getGroup() + "'");
+                }
+              }
+            } catch (Exception e) {
+              if (e instanceof IllegalStateException ise) {
+                throw ise;
+              }
+              System.err.println("warning: could not directly verify HDFS owner on " + location + ": " + e.getMessage());
             }
           }
         }
@@ -551,6 +569,21 @@ public final class HmsMetastoreSmokeCli {
     String keytab = cli.required("keytab");
     UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
     return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+  }
+
+  private static void maybeSendSetUgi(CliArgs cli, ThriftHiveMetastore.Iface thriftClient) throws Exception {
+    boolean sendSetUgi = cli.getBoolean("set-ugi", false);
+    String setUgiUser = cli.get("set-ugi-user");
+    if (setUgiUser == null && sendSetUgi) {
+      setUgiUser = cli.get("user");
+    }
+    if (setUgiUser != null && !setUgiUser.isBlank()) {
+      List<String> groups = cli.get("groups") != null
+          ? List.of(cli.get("groups").split(","))
+          : List.of("hadoop");
+      thriftClient.set_ugi(setUgiUser, groups);
+      System.out.println("executed set_ugi user=" + setUgiUser + " groups=" + groups);
+    }
   }
 
   private static ThriftHiveMetastore.Iface extractThriftClient(HiveMetaStoreClient client) {

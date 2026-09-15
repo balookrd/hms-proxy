@@ -306,6 +306,13 @@ build_common_args() {
       [[ -n "${conf_entry}" ]] && COMMON_ARGS+=("--conf" "${conf_entry}")
     done < <(split_semicolon_list "${HMS_SMOKE_EXTRA_CONF}")
   fi
+
+  local impersonation="${HMS_SMOKE_IMPERSONATION_ENABLED:-true}"
+  if [[ "${impersonation}" == "true" ]]; then
+    local user="${HMS_SMOKE_IMPERSONATION_USER:-${HMS_SMOKE_USER:-smoke-user}}"
+    COMMON_ARGS+=("--user" "${user}")
+    COMMON_ARGS+=("--set-ugi" "true")
+  fi
 }
 
 run_txn_smoke_target() {
@@ -481,8 +488,37 @@ run_impersonation_smoke() {
   create_args+=("--user" "${user}")
   create_args+=("--set-ugi" "true")
   create_args+=("--expected-owner" "${user}")
+  create_args+=("--check-hdfs-owner" "true")
+  create_args+=("--expected-hdfs-owner" "${user}")
 
-  run_cli "impersonation table create" "metadata" "${create_args[@]}"
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-impersonation-XXXXXX.log")"
+  run_cli "impersonation table create" "metadata" "${create_args[@]}" | tee "${output_file}"
+
+  local table_location
+  table_location="$(grep -o "location=[^ ]*" "${output_file}" | head -n 1 | cut -d= -f2 || true)"
+  if [[ -n "${table_location}" ]]; then
+    local hdfs_path="${table_location#hdfs://*/}"
+    hdfs_path="/${hdfs_path}"
+    local actual_stat=""
+    if [[ -n "${HMS_SMOKE_HDFS_STAT_CMD:-}" ]]; then
+      actual_stat=$(${HMS_SMOKE_HDFS_STAT_CMD} "${hdfs_path}" 2>/dev/null | tail -n 1)
+    elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q '^stand-namenode$'; then
+      actual_stat=$(docker exec stand-namenode hdfs dfs -stat "%u:%g" "${hdfs_path}" 2>/dev/null | tail -n 1)
+    elif command -v hdfs >/dev/null 2>&1; then
+      actual_stat=$(hdfs dfs -stat "%u:%g" "${table_location}" 2>/dev/null | tail -n 1)
+    fi
+    if [[ -n "${actual_stat}" ]]; then
+      log "HDFS table directory '${hdfs_path}' stat='${actual_stat}'"
+      local actual_owner="${actual_stat%%:*}"
+      if [[ "${actual_owner}" != "${user}" ]]; then
+        rm -f "${output_file}"
+        fail "HDFS table directory '${hdfs_path}' owner mismatch: expected '${user}', but got '${actual_owner}' (stat: '${actual_stat}')"
+      fi
+      log "successfully verified HDFS table directory owner '${user}'"
+    fi
+  fi
+  rm -f "${output_file}"
 
   local -a drop_args=()
   drop_args+=("--op" "drop_table")
