@@ -30,8 +30,12 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           resolved.catalogName(),
           "table",
           backendResults,
-          result -> support.federationLayer.isTableExposed(resolved, result.getTableName()),
-          result -> support.federationLayer.externalizeTableMeta(result, resolved));
+          result -> support.federationLayer.isTableExposed(
+              resolved.catalogName(), result.getDbName(), result.getTableName()),
+          result -> NamespaceTranslator.externalizeTableMeta(
+              result,
+              support.router.resolveCatalog(resolved.catalogName(), result.getDbName()),
+              support.federationLayer.preserveBackendCatalogName()));
     }
 
     RequestContext.currentObservation().recordFanout();

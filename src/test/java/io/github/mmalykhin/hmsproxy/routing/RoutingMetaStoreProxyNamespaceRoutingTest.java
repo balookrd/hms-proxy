@@ -435,4 +435,103 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals("sales", table.getDbName());
   }
 
+  @Test
+  public void getTableMetaRoutesConvertedDoubleDotSchemaPatternToRemoteCatalog() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_table_meta".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        Assert.assertEquals("sales", args[0]);
+        Assert.assertEquals(".*", args[1]);
+        return List.of(new TableMeta("sales", "orders", "MANAGED_TABLE"));
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog1 should not be invoked");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_table_meta", String.class, String.class, List.class);
+
+    @SuppressWarnings("unchecked")
+    List<TableMeta> result = (List<TableMeta>) handler.invoke(null, method, new Object[] {"catalog2..sales", ".*", List.of()});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals(1, result.size());
+    Assert.assertEquals("catalog2__sales", result.get(0).getDbName());
+    Assert.assertEquals("orders", result.get(0).getTableName());
+  }
+
+  @Test
+  public void getDatabasesRoutesConvertedDoubleDotSchemaPatternToRemoteCatalog() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_databases".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        Assert.assertEquals("sales", args[0]);
+        return List.of("sales");
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog1 should not be invoked");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_databases", String.class);
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[] {"catalog2..sales"});
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals(1, result.size());
+    Assert.assertEquals("catalog2__sales", result.get(0));
+  }
 }

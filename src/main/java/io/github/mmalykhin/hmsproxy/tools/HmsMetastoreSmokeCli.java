@@ -456,6 +456,15 @@ public final class HmsMetastoreSmokeCli {
           List<String> tables = thriftClient.get_tables(db, pattern != null ? pattern : ".*");
           System.out.println("tables=" + tables);
         }
+        case "get_table_meta" -> {
+          List<org.apache.hadoop.hive.metastore.api.TableMeta> metas =
+              thriftClient.get_table_meta(pattern != null ? pattern : ".*", table != null ? table : ".*", List.of());
+          List<String> formatted = new ArrayList<>();
+          for (org.apache.hadoop.hive.metastore.api.TableMeta tm : metas) {
+            formatted.add(tm.getDbName() + "." + tm.getTableName() + ":" + tm.getTableType());
+          }
+          System.out.println("table_meta=" + formatted);
+        }
         case "get_table" -> {
           if (db == null || table == null) {
             throw new IllegalArgumentException("--db and --table are required for get_table");
@@ -754,11 +763,11 @@ public final class HmsMetastoreSmokeCli {
           --conf key=value                      repeatable extra HiveConf override
 
         metadata mode:
-          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|create_database|drop_database|create_table|drop_table
+          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|get_table_meta|create_database|drop_database|create_table|drop_table
           --user alice                          optional impersonation user for simple auth
           --db db_name                          optional database name
           --table table_name                    optional table name
-          --pattern pattern                     optional pattern for get_databases / get_tables
+          --pattern pattern                     optional pattern for get_databases / get_tables / get_table_meta
 
         txn mode:
           --db hdp__default

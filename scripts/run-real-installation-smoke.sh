@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,13 +23,14 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke
+  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
   impersonation run only the table creation user impersonation smoke
   txn           run only the direct ACID/txn smoke
   locks         run only the non-default catalog lock smoke
   notification  run only Hortonworks add_write_notification_log smoke
   rest          run only the Iceberg REST catalog smoke (HTTP, via curl)
+  schema_pattern run only the DBeaver/Hue converted schema pattern smoke
 
 Important env vars:
   HMS_SMOKE_URI
@@ -492,7 +493,7 @@ run_impersonation_smoke() {
   create_args+=("--expected-hdfs-owner" "${user}")
 
   local output_file
-  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-impersonation-XXXXXX.log")"
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-impersonation.XXXXXX")"
   run_cli "impersonation table create" "metadata" "${create_args[@]}" | tee "${output_file}"
 
   local table_location
@@ -535,6 +536,34 @@ run_impersonation_smoke() {
   drop_args+=("--table" "${table}")
 
   run_cli "impersonation table cleanup" "metadata" "${drop_args[@]}"
+}
+
+run_schema_pattern_smoke() {
+  local hdp_catalog="${HMS_SMOKE_HDP_CATALOG:-hdp}"
+  local apache_catalog="${HMS_SMOKE_APACHE_CATALOG:-apache}"
+
+  log "running schema pattern smoke (DBeaver/Hue converted pattern support)"
+
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-schema-pattern.XXXXXX")"
+
+  local -a db_args=()
+  db_args+=("--op" "get_databases")
+  db_args+=("--pattern" "${apache_catalog}..default")
+  run_cli "get_databases with double-dot pattern" "metadata" "${db_args[@]}" | tee "${output_file}"
+  grep -q "${apache_catalog}__default" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_databases with pattern '${apache_catalog}..default' did not return '${apache_catalog}__default'"; }
+
+  local -a meta_args=()
+  meta_args+=("--op" "get_table_meta")
+  meta_args+=("--pattern" "${apache_catalog}..default")
+  meta_args+=("--table" ".*")
+  run_cli "get_table_meta with double-dot pattern" "metadata" "${meta_args[@]}" | tee "${output_file}"
+  grep -q "table_meta=\[" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_table_meta with pattern '${apache_catalog}..default' failed"; }
+
+  rm -f "${output_file}"
+  log "schema pattern smoke passed"
 }
 
 notification_is_configured() {
@@ -2206,6 +2235,7 @@ main() {
       run_cross_catalog_lock_smoke
       run_notification_smoke
       run_rest_smoke
+      run_schema_pattern_smoke
       ;;
     sql)
       run_sql_smoke_all
@@ -2227,8 +2257,11 @@ main() {
     rest)
       run_rest_smoke
       ;;
+    schema_pattern)
+      run_schema_pattern_smoke
+      ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern"
       ;;
   esac
 

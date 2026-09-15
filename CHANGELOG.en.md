@@ -41,6 +41,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **HiveServer2 / JDBC Schema Pattern Routing (DBeaver, Hue)**:
+  - Fixed an issue where remote catalog tables were hidden in metadata navigators of DBeaver, Hue, and DataGrip: HiveServer2 translates unescaped underscores in LIKE patterns to dots (`convertSchemaPattern`), turning the default catalog separator `__` into `..`.
+  - Added support for converted schema prefix patterns (including catalogs with underscores in their names) in `CatalogRouter.resolvePattern`, ensuring accurate routing of `get_table_meta` and `get_databases` RPCs to the target backend instead of dropping into empty fanout.
+  - Updated `GetTableMetaHandler` to dynamically externalize table metadata using each table's actual backend database name (`result.getDbName()`), ensuring correct database naming for wildcard queries like `catalog..*`.
 - **Prevent Thrift User Context Leak**:
   - Bound `UserGroupInformation` in `set_ugi` to connection transport context (`ClientRequestContext.setConnectionUgi`), eliminating authentication context bleed across `TThreadPoolServer` worker threads.
 - **Thrift RPC Exception Normalization**:

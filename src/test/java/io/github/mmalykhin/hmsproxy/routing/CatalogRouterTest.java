@@ -269,4 +269,63 @@ public class CatalogRouterTest {
     Assert.assertEquals("*", result.get().backendDbName());
     Assert.assertEquals("catalog1__*", result.get().externalDbName());
   }
+
+  @Test
+  public void resolvePatternRoutesConvertedSchemaPatternWithDoubleDotToMatchingCatalog() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Optional<CatalogRouter.ResolvedNamespace> result = router.resolvePattern("catalog2..sales");
+
+    Assert.assertTrue(result.isPresent());
+    Assert.assertEquals("catalog2", result.get().catalogName());
+    Assert.assertEquals("sales", result.get().backendDbName());
+    Assert.assertEquals("catalog2__sales", result.get().externalDbName());
+  }
+
+  @Test
+  public void resolvePatternRoutesConvertedSchemaWildcardPatternToMatchingCatalog() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Optional<CatalogRouter.ResolvedNamespace> result = router.resolvePattern("catalog2..*");
+
+    Assert.assertTrue(result.isPresent());
+    Assert.assertEquals("catalog2", result.get().catalogName());
+    Assert.assertEquals("*", result.get().backendDbName());
+    Assert.assertEquals("catalog2__*", result.get().externalDbName());
+  }
+
+  @Test
+  public void resolvePatternRoutesConvertedSchemaPatternForCatalogWithUnderscores() {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "remote_hdp", new CatalogConfig(
+                "remote_hdp", "c2", "file:///c2", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    CatalogRouter router = routerFor(config);
+
+    Optional<CatalogRouter.ResolvedNamespace> result = router.resolvePattern("remote.hdp..sales");
+
+    Assert.assertTrue(result.isPresent());
+    Assert.assertEquals("remote_hdp", result.get().catalogName());
+    Assert.assertEquals("sales", result.get().backendDbName());
+    Assert.assertEquals("remote_hdp__sales", result.get().externalDbName());
+  }
+
+  @Test
+  public void resolvePatternReturnsEmptyForUnknownConvertedCatalog() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Optional<CatalogRouter.ResolvedNamespace> result = router.resolvePattern("unknown..sales");
+
+    Assert.assertFalse(result.isPresent());
+  }
 }

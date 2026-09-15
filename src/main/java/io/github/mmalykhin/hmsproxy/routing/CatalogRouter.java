@@ -3,8 +3,11 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -13,10 +16,12 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 public final class CatalogRouter implements AutoCloseable {
   private final ProxyConfig config;
   private final Map<String, CatalogBackend> backends;
+  private final List<CatalogPrefix> patternPrefixes;
 
   CatalogRouter(ProxyConfig config, Map<String, CatalogBackend> backends) {
     this.config = config;
     this.backends = backends;
+    this.patternPrefixes = buildPatternPrefixes(config, backends.keySet());
   }
 
   public static CatalogRouter open(ProxyConfig config) throws MetaException {
@@ -94,13 +99,12 @@ public final class CatalogRouter implements AutoCloseable {
     if (normalizedDbPattern == null || normalizedDbPattern.isBlank()) {
       return Optional.empty();
     }
-    String prefixedCatalog = prefixedCatalog(normalizedDbPattern);
-    if (prefixedCatalog != null) {
-      return Optional.of(
-          resolveCatalog(
-              prefixedCatalog,
-              normalizedDbPattern.substring(prefixedCatalog.length() + config.catalogDbSeparator().length()),
-              normalizedDbPattern));
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (normalizedDbPattern.startsWith(candidate.prefix())) {
+        String remainder = normalizedDbPattern.substring(candidate.prefix().length());
+        String externalDbName = candidate.catalogName() + config.catalogDbSeparator() + remainder;
+        return Optional.of(resolveCatalog(candidate.catalogName(), remainder, externalDbName));
+      }
     }
     return Optional.empty();
   }
@@ -141,8 +145,7 @@ public final class CatalogRouter implements AutoCloseable {
     if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
       return normalizeExternalDbName(dbName.substring(hash + 1));
     }
-    int separator = dbName.indexOf(config.catalogDbSeparator());
-    if (separator > 0 && backends.containsKey(dbName.substring(0, separator))) {
+    if (looksLikeExternalDbName(dbName)) {
       return dbName;
     }
 
@@ -161,9 +164,34 @@ public final class CatalogRouter implements AutoCloseable {
   }
 
   private boolean looksLikeExternalDbName(String dbName) {
-    int separator = dbName.indexOf(config.catalogDbSeparator());
-    return separator > 0 && backends.containsKey(dbName.substring(0, separator));
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (dbName.startsWith(candidate.prefix())) {
+        return true;
+      }
+    }
+    return false;
   }
+
+  private static List<CatalogPrefix> buildPatternPrefixes(
+      ProxyConfig config,
+      Collection<String> catalogNames
+  ) {
+    List<CatalogPrefix> prefixes = new ArrayList<>();
+    String literalSeparator = config.catalogDbSeparator();
+    String patternSeparator = literalSeparator.replace('_', '.');
+    for (String catalog : catalogNames) {
+      String literalPrefix = catalog + literalSeparator;
+      prefixes.add(new CatalogPrefix(literalPrefix, catalog));
+      String patternPrefix = catalog.replace('_', '.') + patternSeparator;
+      if (!patternPrefix.equals(literalPrefix)) {
+        prefixes.add(new CatalogPrefix(patternPrefix, catalog));
+      }
+    }
+    prefixes.sort((a, b) -> Integer.compare(b.prefix().length(), a.prefix().length()));
+    return Collections.unmodifiableList(prefixes);
+  }
+
+  private record CatalogPrefix(String prefix, String catalogName) {}
 
   MetaException metaException(String message) {
     return new MetaException(message);
