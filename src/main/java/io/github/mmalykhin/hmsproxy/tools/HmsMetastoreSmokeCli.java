@@ -420,6 +420,20 @@ public final class HmsMetastoreSmokeCli {
 
     try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
       ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
+
+      boolean sendSetUgi = cli.getBoolean("set-ugi", false);
+      String setUgiUser = cli.get("set-ugi-user");
+      if (setUgiUser == null && sendSetUgi) {
+        setUgiUser = cli.get("user");
+      }
+      if (setUgiUser != null && !setUgiUser.isBlank()) {
+        List<String> groups = cli.get("groups") != null
+            ? List.of(cli.get("groups").split(","))
+            : List.of("hadoop");
+        thriftClient.set_ugi(setUgiUser, groups);
+        System.out.println("executed set_ugi user=" + setUgiUser + " groups=" + groups);
+      }
+
       switch (op.toLowerCase(Locale.ROOT)) {
         case "get_all_databases" -> {
           List<String> databases = thriftClient.get_all_databases();
@@ -434,7 +448,7 @@ public final class HmsMetastoreSmokeCli {
             throw new IllegalArgumentException("--db is required for get_database");
           }
           org.apache.hadoop.hive.metastore.api.Database database = thriftClient.get_database(db);
-          System.out.println("database.name=" + database.getName() + " description=" + database.getDescription());
+          System.out.println("database=" + database.getName() + " location=" + database.getLocationUri());
         }
         case "get_all_tables" -> {
           if (db == null) {
@@ -454,8 +468,8 @@ public final class HmsMetastoreSmokeCli {
           if (db == null || table == null) {
             throw new IllegalArgumentException("--db and --table are required for get_table");
           }
-          org.apache.hadoop.hive.metastore.api.Table tbl = thriftClient.get_table(db, table);
-          System.out.println("table.name=" + tbl.getTableName() + " type=" + tbl.getTableType());
+          org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
+          System.out.println("table=" + t.getDbName() + "." + t.getTableName() + " owner=" + t.getOwner() + " type=" + t.getTableType());
         }
         case "create_database" -> {
           if (db == null) {
@@ -463,7 +477,7 @@ public final class HmsMetastoreSmokeCli {
           }
           org.apache.hadoop.hive.metastore.api.Database newDb = new org.apache.hadoop.hive.metastore.api.Database();
           newDb.setName(db);
-          newDb.setDescription(cli.getOrDefault("description", "Created by smoke CLI"));
+          newDb.setDescription("Smoke test database");
           thriftClient.create_database(newDb);
           System.out.println("created database=" + db);
         }
@@ -484,6 +498,13 @@ public final class HmsMetastoreSmokeCli {
           newTable.setDbName(db);
           newTable.setTableName(table);
           newTable.setTableType("EXTERNAL_TABLE");
+          String owner = cli.get("owner");
+          if (owner == null && setUgiUser != null && !setUgiUser.isBlank()) {
+            owner = setUgiUser;
+          }
+          if (owner != null) {
+            newTable.setOwner(owner);
+          }
           org.apache.hadoop.hive.metastore.api.StorageDescriptor sd = new org.apache.hadoop.hive.metastore.api.StorageDescriptor();
           sd.setCols(List.of(new org.apache.hadoop.hive.metastore.api.FieldSchema("id", "int", "identifier")));
           org.apache.hadoop.hive.metastore.api.SerDeInfo serde = new org.apache.hadoop.hive.metastore.api.SerDeInfo();
@@ -491,7 +512,15 @@ public final class HmsMetastoreSmokeCli {
           sd.setSerdeInfo(serde);
           newTable.setSd(sd);
           thriftClient.create_table(newTable);
-          System.out.println("created table=" + db + "." + table);
+          org.apache.hadoop.hive.metastore.api.Table created = thriftClient.get_table(db, table);
+          System.out.println("created table=" + db + "." + table + " owner=" + created.getOwner());
+          String expectedOwner = cli.get("expected-owner");
+          if (expectedOwner != null && !expectedOwner.isBlank()) {
+            if (!expectedOwner.equals(created.getOwner())) {
+              throw new IllegalStateException("Table owner mismatch: expected '" + expectedOwner
+                  + "', but got '" + created.getOwner() + "'");
+            }
+          }
         }
         case "drop_table" -> {
           if (db == null || table == null) {

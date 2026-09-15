@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|txn|locks|notification|rest]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,8 +23,9 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke
+  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
+  impersonation run only the table creation user impersonation smoke
   txn           run only the direct ACID/txn smoke
   locks         run only the non-default catalog lock smoke
   notification  run only Hortonworks add_write_notification_log smoke
@@ -465,6 +466,30 @@ run_partition_lock_smoke() {
   fi
 
   run_cli "partition lock smoke" "lock" "${args[@]}"
+}
+
+run_impersonation_smoke() {
+  local user="${HMS_SMOKE_IMPERSONATION_USER:-${HMS_SMOKE_USER:-smoke-user}}"
+  local db="${HMS_SMOKE_TXN_DB:-hdp__default}"
+  local table="smoke_impersonation_$(date +%s)"
+
+  log "running impersonation table creation smoke (user='${user}', db='${db}', table='${table}')"
+  local -a create_args=()
+  create_args+=("--op" "create_table")
+  create_args+=("--db" "${db}")
+  create_args+=("--table" "${table}")
+  create_args+=("--user" "${user}")
+  create_args+=("--set-ugi" "true")
+  create_args+=("--expected-owner" "${user}")
+
+  run_cli "impersonation table create" "metadata" "${create_args[@]}"
+
+  local -a drop_args=()
+  drop_args+=("--op" "drop_table")
+  drop_args+=("--db" "${db}")
+  drop_args+=("--table" "${table}")
+
+  run_cli "impersonation table cleanup" "metadata" "${drop_args[@]}"
 }
 
 notification_is_configured() {
@@ -2129,6 +2154,7 @@ main() {
   case "${SCENARIO}" in
     all)
       run_sql_smoke_all
+      run_impersonation_smoke
       run_txn_smoke
       run_db_lock_smoke
       run_partition_lock_smoke
@@ -2138,6 +2164,9 @@ main() {
       ;;
     sql)
       run_sql_smoke_all
+      ;;
+    impersonation)
+      run_impersonation_smoke
       ;;
     txn)
       run_txn_smoke
@@ -2154,7 +2183,7 @@ main() {
       run_rest_smoke
       ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, txn, locks, notification, rest"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest"
       ;;
   esac
 

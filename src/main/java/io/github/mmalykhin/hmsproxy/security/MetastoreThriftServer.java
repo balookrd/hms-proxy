@@ -61,6 +61,13 @@ public final class MetastoreThriftServer {
       processor = frontDoorSecurity.wrapProcessor(processor);
       LOG.info("Kerberos/SASL enabled with principal {}", config.security().serverPrincipal());
       LOG.info("Front door delegation-token DIGEST auth is enabled");
+    } else {
+      processor = FrontDoorSecurity.wrapWithClientRequestContext(
+          processor,
+          java.util.function.UnaryOperator.identity(),
+          () -> null,
+          () -> null
+      );
     }
 
     TThreadPoolServer.Args args = new TThreadPoolServer.Args(serverSocket)

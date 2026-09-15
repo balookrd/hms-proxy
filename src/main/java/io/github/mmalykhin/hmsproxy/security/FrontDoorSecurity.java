@@ -233,7 +233,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
    * them, so reading them before that call returns the identity left behind by whichever
    * connection previously used this pooled worker thread.
    */
-  static TProcessor wrapWithClientRequestContext(
+  public static TProcessor wrapWithClientRequestContext(
       TProcessor processor,
       UnaryOperator<TProcessor> saslWrapper,
       Supplier<String> remoteAddressSupplier,

@@ -24,6 +24,7 @@ public class ConnectionUgiTest {
   @Test
   public void setUgiBindsIdentityToCurrentTransportAndResolves() throws Throwable {
     TTransport transport = new TMemoryBuffer(1024);
+    String prevUser = ClientRequestContext.remoteUser().orElse(null);
     TTransport prevTransport = ClientRequestContext.setCurrentTransport(transport);
     try {
       Method setUgiMethod = ThriftHiveMetastore.Iface.class.getMethod("set_ugi", String.class, List.class);
@@ -88,6 +89,43 @@ public class ConnectionUgiTest {
       Assert.assertEquals(List.of("hadoop"), resolved.get().groupNames());
     } finally {
       ClientRequestContext.restoreCurrentTransport(prevTransport);
+      ClientRequestContext.restoreRemoteUser(prevUser);
+      ClientRequestContext.setConnectionUgi(transport, null);
+    }
+  }
+
+  @Test
+  public void setUgiPreservesUserAcrossFrontDoorRequestsForCreateTable() throws Exception {
+    TTransport transport = new TMemoryBuffer(1024);
+    org.apache.thrift.protocol.TProtocol protocol = new org.apache.thrift.protocol.TBinaryProtocol(transport);
+
+    java.util.concurrent.atomic.AtomicReference<String> seenUserInCreateTable = new java.util.concurrent.atomic.AtomicReference<>();
+    org.apache.thrift.TProcessor innerProcessor = (in, out) -> {
+      seenUserInCreateTable.set(ClientRequestContext.remoteUser().orElse(null));
+      return true;
+    };
+
+    java.util.function.Supplier<String> saslRemoteUser = () -> "hive";
+    org.apache.thrift.TProcessor wrapped = io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity.wrapWithClientRequestContext(
+        innerProcessor,
+        p -> p,
+        () -> "127.0.0.1",
+        saslRemoteUser
+    );
+
+    try {
+      // 1. Client calls set_ugi on this transport
+      ImpersonationContext impersonation = new ImpersonationContext("iabunakov", List.of("hadoop"));
+      ClientRequestContext.setConnectionUgi(transport, impersonation);
+
+      // 2. Client calls create_table on the same connection.
+      // Even though saslRemoteUser returns "hive", the effective user must be "iabunakov".
+      wrapped.process(protocol, protocol);
+
+      Assert.assertEquals("iabunakov", seenUserInCreateTable.get());
+      Assert.assertEquals(Optional.empty(), ClientRequestContext.remoteUser());
+    } finally {
+      ClientRequestContext.setConnectionUgi(transport, null);
     }
   }
 }

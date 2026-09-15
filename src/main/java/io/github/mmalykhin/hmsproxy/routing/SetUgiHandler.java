@@ -36,7 +36,6 @@ final class SetUgiHandler implements SpecialCaseHandler {
       ImpersonationContext impersonation = new ImpersonationContext(requestedUser, groups);
       io.github.mmalykhin.hmsproxy.security.ClientRequestContext.currentTransport()
           .ifPresent(t -> io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setConnectionUgi(t, impersonation));
-      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setRemoteUser(requestedUser);
       LOG.info("requestId={} connection set_ugi user '{}' with groups {}",
           RequestContext.currentRequestId(), requestedUser, groups);
     }
