@@ -136,7 +136,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | HDP-only passthrough методы вроде `add_write_notification_log` | Явно отклоняется, если target backend не даёт совместимый Hortonworks runtime. |
 | HiveServer2 / Beeline SQL workloads через несколько каталогов | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | read, DDL/DML, namespace rewrite, optional view rewrite | Поддержано, пока routing может однозначно вычислить целевой каталог. |
 | HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC без namespace в payload | любой | смешанные Apache + Hortonworks backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: идут в `routing.default-catalog`; допустимые non-ACID `SELECT`, `NO_TXN` DDL и non-transactional write (`INSERT`/`UPDATE`/`DELETE`) lock всё же могут синтетически обслуживаться на non-default catalog, но в остальном это стоит считать single-catalog control plane, пока не проведена отдельная валидация. |
-| Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend `set_ugi()` impersonation | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
+| Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity на backend | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user и `set_ugi()` impersonation | Поддержано, если правильно настроены proxy-user rules и backend impersonation permissions. |
 | Клиенты, которые пытаются делать mutation без explicit namespace ownership или динамически управлять registry каталогов | любой | любой | `NONE` или `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Безопасно отклоняется по design, чтобы сохранить deterministic routing, explicit namespace ownership и не допустить silent split-brain writes. |
 | HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные | любой | любой | `NONE` или `KERBEROS` | чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), общий глобальный кэш метаданных для всех пользователей, вычисление политик Ranger отдельно по каталогам | Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC. |
 <!-- END GENERATED: capability-matrix -->
@@ -1525,10 +1525,16 @@ catalog.catalog2.impersonation-enabled=false
 Глобальный ключ работает именно как дефолт `catalog.<name>.impersonation-enabled`: в рантайме
 имперсонацию включает per-catalog флаг, который наследует глобальное значение, если не задан явно.
 
+При включённой имперсонации в Kerberos-режиме outbound-сессии к бэкендам открываются как
+Hadoop Kerberos Proxy User (`UserGroupInformation.createProxyUser`), передавая пользователя прямо в
+SASL-хэндшейке сокета. Это гарантирует, что в дистрибутивах вроде Hortonworks HDP (где серверный
+`TUGIAssumingProcessor` считывает UGI из сетевого SASL-сокета) файловые операции в HDFS (включая
+`wh.mkdirs` при создании таблиц) выполняются от имени вызывающего пользователя, а не `hive:hadoop`.
+
 Это требует:
 
 - `security.mode=KERBEROS` на фронте
-- proxy-user impersonation rules на backend HMS для `security.client-principal`
+- proxy-user impersonation rules на backend HMS и NameNode для `security.client-principal` (`hadoop.proxyuser.<user>.hosts=*`, `hadoop.proxyuser.<user>.groups=*`)
 
 Если backend HMS настроен на Kerberos/SASL:
 

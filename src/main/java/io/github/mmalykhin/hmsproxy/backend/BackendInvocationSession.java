@@ -56,9 +56,21 @@ public final class BackendInvocationSession implements AutoCloseable {
       MetastoreRuntimeProfile runtimeProfile,
       ClassLoader isolatedClassLoader
   ) throws MetaException {
+    return open(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader, null);
+  }
+
+  static BackendInvocationSession open(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader isolatedClassLoader,
+      String impersonatedUser
+  ) throws MetaException {
     return runtimeProfile != null && runtimeProfile.requiresIsolation()
-        ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader)
-        : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
+        ? openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader, impersonatedUser)
+        : openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled, impersonatedUser);
   }
 
   public static BackendInvocationSession openImpersonating(
@@ -85,7 +97,7 @@ public final class BackendInvocationSession implements AutoCloseable {
       ClassLoader isolatedClassLoader
   ) throws MetaException {
     BackendInvocationSession session = open(
-        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
+        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader, userName);
     try {
       session.setUgi(userName, groupNames);
       return session;
@@ -151,7 +163,17 @@ public final class BackendInvocationSession implements AutoCloseable {
       HiveConf conf,
       boolean backendKerberosEnabled
   ) throws MetaException {
-    HiveMetaStoreClient client = openApacheClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled);
+    return openApache(proxyConfig, catalogConfig, conf, backendKerberosEnabled, null);
+  }
+
+  private static BackendInvocationSession openApache(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      String impersonatedUser
+  ) throws MetaException {
+    HiveMetaStoreClient client = openApacheClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled, impersonatedUser);
     ThriftHiveMetastore.Iface thriftClient = extractThriftClientOrClose(client);
     return new BackendInvocationSession(client, thriftClient, null);
   }
@@ -163,6 +185,18 @@ public final class BackendInvocationSession implements AutoCloseable {
       boolean backendKerberosEnabled,
       MetastoreRuntimeProfile runtimeProfile,
       ClassLoader isolatedClassLoader
+  ) throws MetaException {
+    return openIsolated(proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader, null);
+  }
+
+  private static BackendInvocationSession openIsolated(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader isolatedClassLoader,
+      String impersonatedUser
   ) throws MetaException {
     if (!backendKerberosEnabled) {
       try {
@@ -181,8 +215,13 @@ public final class BackendInvocationSession implements AutoCloseable {
     SecurityConfig security = proxyConfig.security();
     String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
-    LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
-        catalogConfig.name(), runtimeProfile, principal, keytab);
+    if (impersonatedUser != null && !impersonatedUser.isBlank()) {
+      LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {} impersonating user '{}'",
+          catalogConfig.name(), runtimeProfile, principal, keytab, impersonatedUser);
+    } else {
+      LOG.info("Connecting to backend catalog '{}' with isolated runtime {} using Kerberos principal {} and keytab {}",
+          catalogConfig.name(), runtimeProfile, principal, keytab);
+    }
 
     try {
       IsolatedMetastoreClient isolatedClient = IsolatedMetastoreClient.open(
@@ -192,6 +231,7 @@ public final class BackendInvocationSession implements AutoCloseable {
           isolatedClassLoader,
           principal,
           keytab,
+          impersonatedUser,
           conf);
       return new BackendInvocationSession(null, null, isolatedClient);
     } catch (Exception e) {
@@ -199,7 +239,8 @@ public final class BackendInvocationSession implements AutoCloseable {
           "Unable to open isolated backend metastore client for catalog "
               + catalogConfig.name()
               + " with Kerberos principal "
-              + principal);
+              + principal
+              + (impersonatedUser != null ? " impersonating user '" + impersonatedUser + "'" : ""));
       metaException.initCause(e);
       throw metaException;
     }
@@ -211,6 +252,16 @@ public final class BackendInvocationSession implements AutoCloseable {
       HiveConf conf,
       boolean backendKerberosEnabled
   ) throws MetaException {
+    return openApacheClient(proxyConfig, catalogConfig, conf, backendKerberosEnabled, null);
+  }
+
+  private static HiveMetaStoreClient openApacheClient(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      HiveConf conf,
+      boolean backendKerberosEnabled,
+      String impersonatedUser
+  ) throws MetaException {
     if (!backendKerberosEnabled) {
       return new HiveMetaStoreClient(conf);
     }
@@ -218,21 +269,31 @@ public final class BackendInvocationSession implements AutoCloseable {
     SecurityConfig security = proxyConfig.security();
     String principal = KerberosPrincipalUtil.resolveForLocalHost(security.outboundPrincipal());
     String keytab = security.outboundKeytab();
-    LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
-        catalogConfig.name(), principal, keytab);
+    if (impersonatedUser != null && !impersonatedUser.isBlank()) {
+      LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {} impersonating user '{}'",
+          catalogConfig.name(), principal, keytab, impersonatedUser);
+    } else {
+      LOG.info("Connecting to backend catalog '{}' with Kerberos principal {} using keytab {}",
+          catalogConfig.name(), principal, keytab);
+    }
 
     // The process-wide UGI configuration is installed once at startup (FrontDoorSecurity.open or
     // CatalogBackend.open); replacing it here would race with in-flight SASL handshakes.
     try {
       UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
       BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(ugi));
-      return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
+      UserGroupInformation effectiveUgi = ugi;
+      if (impersonatedUser != null && !impersonatedUser.isBlank()) {
+        effectiveUgi = UserGroupInformation.createProxyUser(impersonatedUser, ugi);
+      }
+      return effectiveUgi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
     } catch (Exception e) {
       MetaException metaException = new MetaException(
           "Unable to open backend metastore client for catalog "
               + catalogConfig.name()
               + " with Kerberos principal "
-              + principal);
+              + principal
+              + (impersonatedUser != null ? " impersonating user '" + impersonatedUser + "'" : ""));
       metaException.initCause(e);
       throw metaException;
     }

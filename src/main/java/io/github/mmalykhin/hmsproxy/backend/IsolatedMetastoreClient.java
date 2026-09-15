@@ -48,7 +48,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       ClassLoader classLoader,
       Configuration conf
   ) throws Exception {
-    return open(config, catalogConfig, runtimeProfile, classLoader, null, null, conf);
+    return open(config, catalogConfig, runtimeProfile, classLoader, null, null, null, conf);
   }
 
   static IsolatedMetastoreClient open(
@@ -58,6 +58,19 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       ClassLoader classLoader,
       String principal,
       String keytab,
+      Configuration conf
+  ) throws Exception {
+    return open(config, catalogConfig, runtimeProfile, classLoader, principal, keytab, null, conf);
+  }
+
+  static IsolatedMetastoreClient open(
+      ProxyConfig config,
+      CatalogConfig catalogConfig,
+      MetastoreRuntimeProfile runtimeProfile,
+      ClassLoader classLoader,
+      String principal,
+      String keytab,
+      String impersonatedUser,
       Configuration conf
   ) throws Exception {
     ClassLoader effectiveClassLoader = classLoader == null
@@ -78,7 +91,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     Object client = principal == null || keytab == null
         ? withContextClassLoader(effectiveClassLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf))
-        : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab);
+        : loginAndOpenClient(effectiveClassLoader, clientClass, childConfigurationClass, isolatedConf, principal, keytab, impersonatedUser);
     return attachBridge(client, clientClass, effectiveClassLoader);
   }
 
@@ -179,7 +192,8 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       Class<?> childConfigurationClass,
       Object isolatedConf,
       String principal,
-      String keytab
+      String keytab,
+      String impersonatedUser
   ) throws Exception {
     Class<?> childUgiClass = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader);
     Method set = childConfigurationClass.getMethod("set", String.class, String.class);
@@ -192,8 +206,13 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     // The isolated runtime has its own UserGroupInformation class, so health probes track the
     // login subject, which stays a shared JDK type.
     BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(childUgi));
+    Object effectiveUgi = childUgi;
+    if (impersonatedUser != null && !impersonatedUser.isBlank()) {
+      Method createProxyUser = childUgiClass.getMethod("createProxyUser", String.class, childUgiClass);
+      effectiveUgi = createProxyUser.invoke(null, impersonatedUser, childUgi);
+    }
     Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
-    return doAs.invoke(childUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
+    return doAs.invoke(effectiveUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
         withContextClassLoader(classLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
   }
