@@ -328,4 +328,48 @@ public class CatalogRouterTest {
 
     Assert.assertFalse(result.isPresent());
   }
+
+  @Test
+  public void resolvesDotSeparatedDatabaseNameInDefaultCatalogWithoutTruncation() throws Exception {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase("smoke.pattern.db");
+
+    Assert.assertEquals("catalog1", namespace.catalogName());
+    Assert.assertEquals("smoke.pattern.db", namespace.backendDbName());
+    Assert.assertEquals("smoke.pattern.db", namespace.externalDbName());
+
+    CatalogRouter.ResolvedNamespace dmpRaw = router.resolveDatabase("dmp.raw");
+    Assert.assertEquals("catalog1", dmpRaw.catalogName());
+    Assert.assertEquals("dmp.raw", dmpRaw.backendDbName());
+    Assert.assertEquals("dmp.raw", dmpRaw.externalDbName());
+  }
+
+  @Test
+  public void canMatchRemoteCatalogsIdentifiesPatternsAccurately() {
+    CatalogRouter router = routerFor(CUSTOM_SEPARATOR_CONFIG);
+
+    Assert.assertFalse(router.canMatchRemoteCatalogs("smoke.pattern.db"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("dmp.raw"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("default"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("smoke*"));
+
+    Assert.assertTrue(router.canMatchRemoteCatalogs("*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs(".*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("%"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs(null));
+    Assert.assertTrue(router.canMatchRemoteCatalogs(""));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2..*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2__sales"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("cat*"));
+  }
+
+  @Test
+  public void canMatchRemoteCatalogsReturnsFalseForSingleCatalog() {
+    CatalogRouter router = routerFor(ONE_CATALOG_CONFIG);
+
+    Assert.assertFalse(router.canMatchRemoteCatalogs("*"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("default"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs(null));
+  }
 }

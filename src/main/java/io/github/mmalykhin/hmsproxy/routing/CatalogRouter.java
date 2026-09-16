@@ -156,11 +156,56 @@ public final class CatalogRouter implements AutoCloseable {
         return remainder;
       }
       String prefixedCatalog = dbName.substring(0, dot);
-      if (!remainder.isBlank() && !backends.containsKey(prefixedCatalog)) {
-        return remainder;
+      if (prefixedCatalog.equalsIgnoreCase("hive") || prefixedCatalog.equalsIgnoreCase("spark_catalog")) {
+        return normalizeExternalDbName(remainder);
       }
     }
     return dbName;
+  }
+
+  public boolean canMatchRemoteCatalogs(String dbPattern) {
+    if (singleCatalog()) {
+      return false;
+    }
+    if (dbPattern == null || dbPattern.isBlank()) {
+      return true;
+    }
+    String normalized = normalizeExternalDbName(dbPattern);
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (candidate.catalogName().equals(config.defaultCatalog())) {
+        continue;
+      }
+      if (normalized.startsWith(candidate.prefix())) {
+        return true;
+      }
+    }
+    int star = normalized.indexOf('*');
+    int percent = normalized.indexOf('%');
+    int wildcardPos;
+    if (star >= 0 && percent >= 0) {
+      wildcardPos = Math.min(star, percent);
+    } else if (star >= 0) {
+      wildcardPos = star;
+    } else {
+      wildcardPos = percent;
+    }
+
+    if (wildcardPos >= 0) {
+      String prefixBeforeWildcard = normalized.substring(0, wildcardPos);
+      if (prefixBeforeWildcard.isEmpty() || prefixBeforeWildcard.equals(".")) {
+        return true;
+      }
+      for (CatalogPrefix candidate : patternPrefixes) {
+        if (candidate.catalogName().equals(config.defaultCatalog())) {
+          continue;
+        }
+        if (candidate.prefix().startsWith(prefixBeforeWildcard)
+            || prefixBeforeWildcard.startsWith(candidate.prefix())) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private boolean looksLikeExternalDbName(String dbName) {

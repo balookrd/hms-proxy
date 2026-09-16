@@ -44,9 +44,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 - **Stand Smoke Scripts Robustness**:
   - Fixed `get_database` output parsing markers in `smoke-stand/run-database-cache-smoke.sh` and `smoke-stand/run-ranger-shared-cache-smoke.sh`, safeguarded metric sum aggregation under `pipefail` on empty grep results, and added `--force-recreate` flag when restarting proxy container in Docker Compose.
 - **HiveServer2 / JDBC Schema Pattern Routing (DBeaver, Hue)**:
-  - Fixed an issue where remote catalog tables were hidden in metadata navigators of DBeaver, Hue, and DataGrip: HiveServer2 translates unescaped underscores in LIKE patterns to dots (`convertSchemaPattern`), turning the default catalog separator `__` into `..`.
-  - Added support for converted schema prefix patterns (including catalogs with underscores in their names) in `CatalogRouter.resolvePattern`, ensuring accurate routing of `get_table_meta` and `get_databases` RPCs to the target backend instead of dropping into empty fanout.
-  - Updated `GetTableMetaHandler` to dynamically externalize table metadata using each table's actual backend database name (`result.getDbName()`), ensuring correct database naming for wildcard queries like `catalog..*`.
+  - Fixed an issue where default and remote catalog tables were hidden or timed out in metadata navigators of DBeaver, Hue, and DataGrip:
+    - HiveServer2 translates unescaped underscores in LIKE patterns within `getTables` to dots (`convertSchemaPattern`), turning `dmp_raw` into `dmp.raw`. In `CatalogRouter.normalizeExternalDbName`, eliminated erroneous truncation of the prefix segment for unregistered catalog names (previously `dmp.raw` was mistakenly stripped down to `raw`).
+    - Added `canMatchRemoteCatalogs(pattern)` check in `GetTableMetaHandler` and `GetDatabasesHandler`: patterns targeting solely the default catalog (e.g., `default`, `dmp.raw`) are routed directly to `defaultBackend()` instead of falling into expensive parallel fanout across remote backends, eliminating 3+ second latencies and timeouts when loading tables in DBeaver.
+    - Added support for converted schema prefix patterns (including catalogs with underscores in their names) in `CatalogRouter.resolvePattern`.
+    - Updated `GetTableMetaHandler` to dynamically externalize table metadata using each table's actual backend database name (`result.getDbName()`), ensuring correct database naming for wildcard queries like `catalog..*`.
 - **Prevent Thrift User Context Leak**:
   - Bound `UserGroupInformation` in `set_ugi` to connection transport context (`ClientRequestContext.setConnectionUgi`), eliminating authentication context bleed across `TThreadPoolServer` worker threads.
 - **Thrift RPC Exception Normalization**:

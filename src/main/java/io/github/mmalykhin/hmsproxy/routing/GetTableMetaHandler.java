@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +36,28 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           result -> NamespaceTranslator.externalizeTableMeta(
               result,
               support.router.resolveCatalog(resolved.catalogName(), result.getDbName()),
+              support.federationLayer.preserveBackendCatalogName()));
+    }
+
+    if (!support.router.canMatchRemoteCatalogs(dbPattern)) {
+      CatalogBackend defaultBackend = support.router.defaultBackend();
+      CatalogRouter.ResolvedNamespace defaultNamespace =
+          support.router.resolveCatalog(defaultBackend.name(), dbPattern);
+      RequestContext.currentObservation().recordNamespace(defaultNamespace);
+      support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbPattern, defaultNamespace);
+      @SuppressWarnings("unchecked")
+      List<TableMeta> backendResults = (List<TableMeta>) support.invokeDirect(
+          defaultBackend, method, new Object[]{dbPattern, tablePattern, tableTypes});
+      return support.filterExposed(
+          method.getName(),
+          defaultNamespace.catalogName(),
+          "table",
+          backendResults,
+          result -> support.federationLayer.isTableExposed(
+              defaultNamespace.catalogName(), result.getDbName(), result.getTableName()),
+          result -> NamespaceTranslator.externalizeTableMeta(
+              result,
+              support.router.resolveCatalog(defaultNamespace.catalogName(), result.getDbName()),
               support.federationLayer.preserveBackendCatalogName()));
     }
 

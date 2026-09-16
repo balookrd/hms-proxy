@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -34,6 +35,30 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
               true,
               true));
       return support.exposedDatabaseNames(method.getName(), resolved.catalogName(), backendDatabases);
+    }
+
+    if (!support.router.canMatchRemoteCatalogs(pattern)) {
+      CatalogBackend defaultBackend = support.router.defaultBackend();
+      CatalogRouter.ResolvedNamespace defaultNamespace =
+          support.router.resolveCatalog(defaultBackend.name(), pattern);
+      RequestContext.currentObservation().recordNamespace(defaultNamespace);
+      support.recordDefaultCatalogRouteIfImplicit(method.getName(), pattern, defaultNamespace);
+      ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+      @SuppressWarnings("unchecked")
+      List<String> backendDatabases = support.databaseListCache.get(
+          method.getName(),
+          defaultBackend.name(),
+          pattern,
+          impersonation,
+          () -> (List<String>) support.dispatcher.invokeDirect(
+              defaultBackend,
+              method,
+              new Object[]{pattern},
+              impersonation,
+              RequestContext.currentRequestId(),
+              true,
+              true));
+      return support.exposedDatabaseNames(method.getName(), defaultNamespace.catalogName(), backendDatabases);
     }
 
     RequestContext.currentObservation().recordFanout();
