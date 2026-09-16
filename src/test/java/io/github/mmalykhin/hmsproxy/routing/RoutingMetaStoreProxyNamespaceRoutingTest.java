@@ -43,6 +43,8 @@ import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
@@ -633,6 +635,143 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals(1, c1Calls.get());
     Assert.assertEquals(1, result.size());
     Assert.assertEquals("smoke_pattern_db", result.get(0));
+  }
+
+  @Test
+  public void getValidWriteIdsWithEmptyTableListRoutesToDefaultBackend() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger c1Calls = new AtomicInteger();
+    BackendInvocationSession session1 = newSession((proxy, method, args) -> {
+      if ("get_valid_write_ids".equals(method.getName())) {
+        c1Calls.incrementAndGet();
+        GetValidWriteIdsRequest req = (GetValidWriteIdsRequest) args[0];
+        Assert.assertTrue(req.getFullTableNames() == null || req.getFullTableNames().isEmpty());
+        return new GetValidWriteIdsResponse(List.of());
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session1));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog2 should not be invoked");
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_valid_write_ids", GetValidWriteIdsRequest.class);
+
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest(List.of(), "1:1::");
+    Object result = handler.invoke(null, method, new Object[] {request});
+
+    Assert.assertNotNull(result);
+    Assert.assertTrue(result instanceof GetValidWriteIdsResponse);
+    Assert.assertEquals(1, c1Calls.get());
+  }
+
+  @Test
+  public void getValidWriteIdsWithDefaultCatalogTableRoutesToDefaultBackend() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger c1Calls = new AtomicInteger();
+    BackendInvocationSession session1 = newSession((proxy, method, args) -> {
+      if ("get_valid_write_ids".equals(method.getName())) {
+        c1Calls.incrementAndGet();
+        GetValidWriteIdsRequest req = (GetValidWriteIdsRequest) args[0];
+        Assert.assertEquals(List.of("sales.events"), req.getFullTableNames());
+        return new GetValidWriteIdsResponse(List.of());
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session1));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog2 should not be invoked");
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_valid_write_ids", GetValidWriteIdsRequest.class);
+
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest(List.of("catalog1__sales.events"), "1:1::");
+    Object result = handler.invoke(null, method, new Object[] {request});
+
+    Assert.assertNotNull(result);
+    Assert.assertEquals(1, c1Calls.get());
+  }
+
+  @Test(expected = MetaException.class)
+  public void getValidWriteIdsWithNonDefaultCatalogTableIsRejected() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog1 should not be invoked");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog2 should not be invoked");
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_valid_write_ids", GetValidWriteIdsRequest.class);
+
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest(List.of("catalog2__sales.events"), "1:1::");
+    handler.invoke(null, method, new Object[] {request});
   }
 }
 

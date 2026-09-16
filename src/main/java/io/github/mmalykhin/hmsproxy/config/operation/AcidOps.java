@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.operation;
 
+import io.github.mmalykhin.hmsproxy.config.catalog.NamespaceStrategy;
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy.Policy;
 
 /** ACID-related RPCs: namespace-bound writes + id-bound txn/lock lifecycle. */
@@ -9,8 +10,13 @@ final class AcidOps {
 
   static void contribute(OperationRegistry r) {
     // Namespace-bound writes: routed by namespace extracted from args.
+    // get_valid_write_ids falls back to the default backend when table list is empty (e.g. SELECT under DbTxnManager).
+    r.op("get_valid_write_ids", o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS)
+        .backend(Policy.TXN_AND_LOCK_LIFECYCLE)
+        .trace());
     r.all(o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE).trace(),
-        "get_valid_write_ids", "allocate_table_write_ids", "lock");
+        "allocate_table_write_ids", "lock");
     r.all(o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE).mutating(),
         "compact", "compact2", "fire_listener_event", "repl_tbl_writeid_state");
     r.op("add_dynamic_partitions", o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE));

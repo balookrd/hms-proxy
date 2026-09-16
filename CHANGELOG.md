@@ -39,6 +39,9 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Маршрутизация `get_valid_write_ids` без namespace на дефолтный каталог**:
+  - Исправлена ошибка `MetaException: Operation get_valid_write_ids requires explicit namespace ownership...` при выполнении запросов на чтение (`SELECT`) в сессиях с включенным транзакционным менеджером Hive ACID (`DbTxnManager`).
+  - HiveServer2 для запросов `SELECT` вызывает `get_valid_write_ids` с пустым списком таблиц (`fullTableNames: []`). Для операции `get_valid_write_ids` настроен fallback на транзакционный бэкенд по умолчанию (`Policy.TXN_AND_LOCK_LIFECYCLE`): если в запросе отсутствуют таблицы, вызов безопасно перенаправляется на бэкенд дефолтного каталога, где функционирует `TxnHandler`, возвращая успешный ответ клиенту.
 - **Каскад параметров фонового обновления кэша баз данных**:
   - Исправлен парсинг `activityWindowMs` и `intervalMs` в `LatencyRoutingConfigParser`: устранена потеря значений при целочисленном делении миллисекундных интервалов по умолчанию.
 - **Стабильность smoke-скриптов стенда**:

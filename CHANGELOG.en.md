@@ -39,6 +39,9 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Routing `get_valid_write_ids` without namespace to default catalog**:
+  - Fixed `MetaException: Operation get_valid_write_ids requires explicit namespace ownership...` on read queries (`SELECT`) executed under Hive ACID transaction manager (`DbTxnManager`).
+  - HiveServer2 issues `get_valid_write_ids` with an empty table list (`fullTableNames: []`) for `SELECT` queries. Configured fallback for `get_valid_write_ids` to the default transactional backend (`Policy.TXN_AND_LOCK_LIFECYCLE`): requests lacking table namespace now safely route to the default catalog backend running `TxnHandler`, returning an empty write ID list successfully.
 - **Database Cache Background Refresh Parameter Cascading**:
   - Fixed parsing of `activityWindowMs` and `intervalMs` in `LatencyRoutingConfigParser`: avoided integer division truncation to zero when inheriting default millisecond durations.
 - **Stand Smoke Scripts Robustness**:

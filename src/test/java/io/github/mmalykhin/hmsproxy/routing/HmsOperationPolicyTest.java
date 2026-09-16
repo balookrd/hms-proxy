@@ -45,6 +45,19 @@ public class HmsOperationPolicyTest {
   }
 
   @Test
+  public void getValidWriteIdsExtractsFromArgsWithDefaultBackendFallback() {
+    OperationMetadata operation = HmsOperationPolicy.describe("get_valid_write_ids");
+
+    Assert.assertEquals(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE, operation.operationClass());
+    Assert.assertEquals(
+        DefaultBackendRoutingPolicy.Policy.TXN_AND_LOCK_LIFECYCLE,
+        operation.defaultBackendPolicy());
+    Assert.assertEquals(NamespaceStrategy.EXTRACT_FROM_ARGS, operation.namespaceStrategy());
+    Assert.assertFalse(operation.mutating());
+    Assert.assertTrue(operation.trace());
+  }
+
+  @Test
   public void compatibilityOnlyMethodsCanStillBeMutating() {
     OperationMetadata operation = HmsOperationPolicy.describe("add_write_notification_log");
 
