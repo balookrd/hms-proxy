@@ -433,6 +433,21 @@ public class NamespaceTranslatorTest {
   }
 
   @Test
+  public void internalizeValidWriteIdListRewritesQualifiedTableName() {
+    ReplTblWriteIdStateRequest request = new ReplTblWriteIdStateRequest();
+    request.setDbName("@hive#catalog1__sales");
+    request.setTableName("events");
+    request.setValidWriteIdlist("catalog1__sales.events:10:5::");
+
+    ReplTblWriteIdStateRequest routed =
+        (ReplTblWriteIdStateRequest) NamespaceTranslator.internalizeArgument(request, NAMESPACE);
+
+    Assert.assertEquals("sales", routed.getDbName());
+    Assert.assertEquals("events", routed.getTableName());
+    Assert.assertEquals("sales.events:10:5::", routed.getValidWriteIdlist());
+  }
+
+  @Test
   public void internalizeSnakeCaseConstraintRequestRewritesDbName() {
     NotNullConstraintsRequest request = new NotNullConstraintsRequest();
     request.setCatName("hive");

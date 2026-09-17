@@ -41,6 +41,12 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Сохранение транзакционного состояния (`writeId`, `validWriteIdList`) при обновлении статистики таблиц (`set_aggr_stats_for`)**:
+  - Исправлена ошибка `MetaException: Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` при выполнении `INSERT INTO <acid_table>` в HiveServer2 на этапе сбора статистики (`StatsTask`).
+  - Ранее запросы `set_aggr_stats_for` и `update_table_column_statistics_req` в `HortonworksFrontendBridge` и `Hive4FrontendBridge` принудительно приводились к типу Apache Hive 3.1.3 `SetPartitionsStatsRequest`, в котором отсутствовали поля `writeId` (field 3) и `validWriteIdList` (field 4), добавленные в HDP 3.1.0 и Hive 4. Из-за этого поля отбрасывались Thrift при десериализации, и бэкенд получал неинициализированное состояние.
+  - Реализован выделенный обработчик `SetAggrStatsForHandler` с вызовом `support.invokeBackendNamed(backend, "set_aggr_stats_for", routedRequest)` без потери специфичных для вендора полей запроса.
+  - В `NamespaceInternalizer` добавлена трансляция составных имен таблиц в строке `validWriteIdList` (`<fullTableName>:<highWatermark>:<minOpenWriteId>:...`), корректно заменяющая клиентское имя базы на имя в бэкенд-метасторе.
+  - В `HortonworksFrontendExtension` и `RoutingMetaStoreProxy` добавлен метод `set_aggr_stats_for(Object request)`, а в `BackendInvocationSession.invokeByName` для неизолированных рантаймов поддержана конвертация аргументов через `ThriftValueConverter`.
 - **Маршрутизация `get_valid_write_ids` без namespace на дефолтный каталог**:
   - Исправлена ошибка `MetaException: Operation get_valid_write_ids requires explicit namespace ownership...` при выполнении запросов на чтение (`SELECT`) в сессиях с включенным транзакционным менеджером Hive ACID (`DbTxnManager`).
   - HiveServer2 для запросов `SELECT` вызывает `get_valid_write_ids` с пустым списком таблиц (`fullTableNames: []`). Для операции `get_valid_write_ids` настроен fallback на транзакционный бэкенд по умолчанию (`Policy.TXN_AND_LOCK_LIFECYCLE`): если в запросе отсутствуют таблицы, вызов безопасно перенаправляется на бэкенд дефолтного каталога, где функционирует `TxnHandler`, возвращая успешный ответ клиенту.

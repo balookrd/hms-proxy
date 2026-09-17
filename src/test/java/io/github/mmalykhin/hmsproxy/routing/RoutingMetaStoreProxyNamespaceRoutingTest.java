@@ -279,6 +279,84 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void setAggrStatsForRoutesToResolvedCatalogAndPreservesWriteState() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("set_aggr_stats_for".equals(method.getName())) {
+            Object req = args[0];
+            List<?> colStats = (List<?>) req.getClass().getMethod("getColStats").invoke(req);
+            if (colStats != null && !colStats.isEmpty()) {
+              Object desc = colStats.get(0).getClass().getMethod("getStatsDesc").invoke(colStats.get(0));
+              capturedDb.set((String) desc.getClass().getMethod("getDbName").invoke(desc));
+            }
+            capturedWriteId.set((Long) req.getClass().getMethod("getWriteId").invoke(req));
+            capturedValidWriteIds.set((String) req.getClass().getMethod("getValidWriteIdList").invoke(req));
+            return true;
+          }
+          if ("getVersion".equals(method.getName())) {
+            return "3.1.0.3.1.0.0-78";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest", true, classLoader);
+    Class<?> colStatsClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.ColumnStatistics", true, classLoader);
+    Class<?> statsDescClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc", true, classLoader);
+    Object statsDesc = statsDescClass.getConstructor(boolean.class, String.class, String.class)
+        .newInstance(true, "catalog2__sales", "events");
+    Object colStats = colStatsClass.getConstructor().newInstance();
+    colStatsClass.getMethod("setStatsDesc", statsDescClass).invoke(colStats, statsDesc);
+    colStatsClass.getMethod("setStatsObj", List.class).invoke(colStats, List.of());
+
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setColStats", List.class).invoke(request, List.of(colStats));
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 42L);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "catalog2__sales.events:42:1::");
+
+    Object response = handler.set_aggr_stats_for(request);
+
+    Assert.assertEquals(Boolean.TRUE, response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals(Long.valueOf(42L), capturedWriteId.get());
+    Assert.assertEquals("sales.events:42:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
   public void getTablesExtRoutesToResolvedCatalogAndRewritesNamespace() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
     AtomicReference<String> capturedCatalog = new AtomicReference<>();

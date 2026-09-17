@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.observability.BackendKerberosLoginTracker;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import io.github.mmalykhin.hmsproxy.security.LoginSubjects;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -178,8 +179,34 @@ public final class BackendInvocationSession implements AutoCloseable {
         ThriftHiveMetastore.Iface.class,
         methodName,
         parameterTypes,
-        () -> ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes));
-    return invoke(method, args);
+        () -> resolveApacheMethod(methodName, parameterTypes));
+    Object[] convertedArgs = convertArgumentsForApache(args, method.getParameterTypes());
+    return invoke(method, convertedArgs);
+  }
+
+  private static Method resolveApacheMethod(String methodName, Class<?>[] parameterTypes) throws NoSuchMethodException {
+    try {
+      return ThriftHiveMetastore.Iface.class.getMethod(methodName, parameterTypes);
+    } catch (NoSuchMethodException ignored) {
+      for (Method candidate : ThriftHiveMetastore.Iface.class.getMethods()) {
+        if (candidate.getName().equals(methodName) && candidate.getParameterCount() == parameterTypes.length) {
+          return candidate;
+        }
+      }
+      throw new NoSuchMethodException(methodName);
+    }
+  }
+
+  private static Object[] convertArgumentsForApache(Object[] args, Class<?>[] targetTypes) throws Exception {
+    if (args == null || args.length == 0) {
+      return args;
+    }
+    Object[] converted = new Object[args.length];
+    for (int i = 0; i < args.length; i++) {
+      converted[i] = ThriftValueConverter.convertValue(args[i], targetTypes[i],
+          BackendInvocationSession.class.getClassLoader());
+    }
+    return converted;
   }
 
   @Override

@@ -112,6 +112,9 @@ final class NamespaceInternalizer {
           && !normalizedFieldName.equals("fulltablename")) {
         return transformFullTableName(stringValue, namespace);
       }
+      if (normalizedFieldName.equals("validwriteidlist")) {
+        return transformValidWriteIdList(stringValue, namespace);
+      }
     }
     if (fieldValue instanceof List<?> listValue
         && NamespaceTranslator.looksLikeFullTableNamesField(fieldId.getFieldName())
@@ -182,6 +185,19 @@ final class NamespaceInternalizer {
         ? namespace.backendDbName()
         : dbName;
     return rewrittenDbName + "." + tableName;
+  }
+
+  static String transformValidWriteIdList(String validWriteIdList, CatalogRouter.ResolvedNamespace namespace) {
+    if (validWriteIdList == null || validWriteIdList.isBlank()) {
+      return validWriteIdList;
+    }
+    int colon = validWriteIdList.indexOf(':');
+    if (colon <= 0) {
+      return validWriteIdList;
+    }
+    String fullTableName = validWriteIdList.substring(0, colon);
+    String remainder = validWriteIdList.substring(colon);
+    return transformFullTableName(fullTableName, namespace) + remainder;
   }
 
   private static List<String> transformFullTableNames(

@@ -152,6 +152,79 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeDelegatesSetAggrStatsForToHortonworksExtensionPreservingWriteState() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("set_aggr_stats_for".equals(method.getName())) {
+        Object request = args[0];
+        try {
+          capturedWriteId.set((Long) request.getClass().getMethod("getWriteId").invoke(request));
+          capturedValidWriteIds.set((String) request.getClass().getMethod("getValidWriteIdList").invoke(request));
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setColStats", List.class).invoke(request, List.of());
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 42L);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "b2b.news:42:1::");
+    Method method = bridge.ifaceClass().getMethod("set_aggr_stats_for", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals(Boolean.TRUE, response);
+    Assert.assertEquals(Long.valueOf(42L), capturedWriteId.get());
+    Assert.assertEquals("b2b.news:42:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
+  public void bridgeDelegatesUpdateTableColumnStatisticsReqToHortonworksExtensionPreservingWriteState() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("set_aggr_stats_for".equals(method.getName())) {
+        Object request = args[0];
+        try {
+          capturedWriteId.set((Long) request.getClass().getMethod("getWriteId").invoke(request));
+          capturedValidWriteIds.set((String) request.getClass().getMethod("getValidWriteIdList").invoke(request));
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setColStats", List.class).invoke(request, List.of());
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 99L);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "b2b.news:99:1::");
+    Method method = bridge.ifaceClass().getMethod("update_table_column_statistics_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.SetPartitionsStatsResponse", response.getClass().getName());
+    Assert.assertEquals(Boolean.TRUE, response.getClass().getMethod("isResult").invoke(response));
+    Assert.assertEquals(Long.valueOf(99L), capturedWriteId.get());
+    Assert.assertEquals("b2b.news:99:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
   public void bridgeDelegatesAddWriteNotificationLogToHortonworksExtension() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();

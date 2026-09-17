@@ -209,6 +209,12 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return invoke(null, method, new Object[0]);
   }
 
+  @Override
+  public Object set_aggr_stats_for(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("set_aggr_stats_for", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
     if (!AUDIT_LOG.isInfoEnabled()) {
       return;

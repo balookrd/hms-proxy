@@ -41,6 +41,12 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Preserve transactional write state (`writeId`, `validWriteIdList`) during column stats update (`set_aggr_stats_for`)**:
+  - Fixed `MetaException: Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` when executing `INSERT INTO <acid_table>` in HiveServer2 during statistics gathering (`StatsTask`).
+  - Previously, `set_aggr_stats_for` and `update_table_column_statistics_req` in `HortonworksFrontendBridge` and `Hive4FrontendBridge` were coerced into Apache Hive 3.1.3 `SetPartitionsStatsRequest`, which lacked `writeId` (field 3) and `validWriteIdList` (field 4) present in HDP 3.1.0 and Hive 4. Consequently, Thrift dropped these fields, causing the backend metastore to reject the update.
+  - Introduced dedicated `SetAggrStatsForHandler` delegating via `support.invokeBackendNamed(backend, "set_aggr_stats_for", routedRequest)` without stripping vendor-specific fields.
+  - Added rewriting of qualified table names in `validWriteIdList` (`<fullTableName>:<highWatermark>:<minOpenWriteId>:...`) within `NamespaceInternalizer` to replace client-facing database names with backend database names.
+  - Added `set_aggr_stats_for(Object request)` to `HortonworksFrontendExtension` and `RoutingMetaStoreProxy`, and enabled argument conversion in `BackendInvocationSession.invokeByName` via `ThriftValueConverter` for non-isolated runtimes.
 - **Routing `get_valid_write_ids` without namespace to default catalog**:
   - Fixed `MetaException: Operation get_valid_write_ids requires explicit namespace ownership...` on read queries (`SELECT`) executed under Hive ACID transaction manager (`DbTxnManager`).
   - HiveServer2 issues `get_valid_write_ids` with an empty table list (`fullTableNames: []`) for `SELECT` queries. Configured fallback for `get_valid_write_ids` to the default transactional backend (`Policy.TXN_AND_LOCK_LIFECYCLE`): requests lacking table namespace now safely route to the default catalog backend running `TxnHandler`, returning an empty write ID list successfully.

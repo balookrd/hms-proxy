@@ -122,6 +122,14 @@ public final class Hive4FrontendBridge {
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
+      if ("set_aggr_stats_for".equals(method.getName()) && extension != null) {
+        try {
+          Object result = extension.set_aggr_stats_for(args == null || args.length == 0 ? null : args[0]);
+          return booleanResponse(method.getReturnType(), (Boolean) result);
+        } catch (Throwable t) {
+          throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+        }
+      }
       if (HIVE4_REQUEST_WRAPPERS.contains(method.getName())) {
         try {
           return invokeHive4Wrapper(method, args);
@@ -404,6 +412,10 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleUpdateColumnStatisticsReq(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        Object result = extension.set_aggr_stats_for(request);
+        return booleanResponse(method.getReturnType(), (Boolean) result);
+      }
       boolean result = apacheHandler.set_aggr_stats_for(
           (SetPartitionsStatsRequest) ThriftValueConverter.convertTBase(request, SetPartitionsStatsRequest.class));
       return booleanResponse(method.getReturnType(), result);
