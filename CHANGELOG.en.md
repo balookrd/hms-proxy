@@ -10,6 +10,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Cross-schema table rename and move (ALTER TABLE ... RENAME TO)**:
+  - Fixed an issue where renaming/moving a table to another database schema (`ALTER TABLE {stg_db}.{table_name} RENAME TO {tgt_db}.{table_name}`) failed to relocate the table, leaving it in the source database `stg_db`.
+  - Previously, `alter_table_req` internalized the entire request using the source table's namespace (`sourceNamespace`), causing `table.setDbName(...)` to unconditionally overwrite the target database with the source database, turning the operation into a no-op intra-schema rename.
+  - Introduced unified `AlterTableHandler` handling `alter_table_req`, `alter_table`, `alter_table_with_environment_context`, and `alter_table_with_cascade`. The handler independently resolves `sourceNamespace` and `targetNamespace`, enforces single-catalog boundaries (rejecting cross-catalog moves with `InvalidOperationException`), validates catalog permissions, preserves the internalized target database on the routed table object, and coordinates with `ExternalTableLocationRewriter` and `IcebergTablePointerGuard`.
 - **Preserve null partNames in TRUNCATE TABLE**:
   - Fixed coercion of `partNames = null` into an empty list `List.of()` in `TruncateTableReqHandler`, `HortonworksFrontendBridge`, and `Hive4FrontendBridge`. Previously, when executing `TRUNCATE TABLE` without a `PARTITION (...)` spec (for unpartitioned tables or entire partitioned tables), the proxy sent an empty partition list `[]` instead of `null` to the backend. In Hive Metastore, passing an empty list means selecting 0 partitions to truncate, causing HMS to return success as a silent no-op without actually deleting data files from the table directory on HDFS.
 - **Ranger table policy enforcement in get_table_meta**:

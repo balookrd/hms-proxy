@@ -473,6 +473,12 @@ final class IcebergTablePointerGuard {
     }
   }
 
+  void invalidate(String catalog, String backendDbName, String tableName) {
+    if (catalog != null && backendDbName != null && tableName != null) {
+      notIcebergUntilNanos.remove(new TableKey(catalog, backendDbName, tableName));
+    }
+  }
+
   private void record(CatalogRouter.ResolvedNamespace namespace, String outcome) {
     support.observability.metrics().recordIcebergPointerGuardEvent(namespace.catalogName(), outcome);
   }

@@ -10,6 +10,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Переименование и перенос таблиц между схемами (ALTER TABLE ... RENAME TO)**:
+  - Исправлена ошибка, из-за которой операция переноса таблицы в другую схему (`ALTER TABLE {stg_db}.{table_name} RENAME TO {tgt_db}.{table_name}`) не перемещала таблицу, оставляя её в исходной схеме `stg_db`.
+  - Ранее обработчик `alter_table_req` интернализовал запрос целиком с использованием пространства имен исходной таблицы (`sourceNamespace`), в результате чего `table.setDbName(...)` перезаписывал целевую базу данных значением исходной базы, превращая вызов в холостое переименование внутри одной схемы.
+  - Реализован комплексный `AlterTableHandler`, поддерживающий `alter_table_req`, `alter_table`, `alter_table_with_environment_context` и `alter_table_with_cascade`. Обработчик независимо разрешает исходное (`sourceNamespace`) и целевое (`targetNamespace`) пространства имен, проверяет принадлежность к одному каталогу (кросс-каталожный перенос отклоняется с `InvalidOperationException`), проверяет права доступа, сохраняет интернализованную целевую схему в объекте таблицы и корректно координируется с `ExternalTableLocationRewriter` и `IcebergTablePointerGuard`.
 - **Сохранение null-значения partNames при TRUNCATE TABLE**:
   - Исправлена подмена `partNames = null` на пустой список `List.of()` в `TruncateTableReqHandler`, `HortonworksFrontendBridge` и `Hive4FrontendBridge`. Ранее при выполнении `TRUNCATE TABLE` без секции `PARTITION (...)` (для непартиционированных таблиц или таблиц целиком) прокси передавал на бэкенд пустой список партиций `[]` вместо `null`. По спецификации Hive Metastore передача пустого списка означает выборку 0 партиций, из-за чего метастор возвращал успешный ответ (no-op), фактически не удаляя файлы данных из директории таблицы на HDFS.
 - **Фильтрация таблиц политиками Ranger в get_table_meta**:

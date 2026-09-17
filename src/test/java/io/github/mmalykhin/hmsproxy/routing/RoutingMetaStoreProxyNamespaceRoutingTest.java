@@ -935,6 +935,398 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void alterTableReqRenamesTableAcrossSchemasInDefaultCatalog() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig(
+                "catalog1", "c1", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("alter_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedSourceDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTableName").invoke(req));
+            Object table = req.getClass().getMethod("getTable").invoke(req);
+            capturedTargetDb.set((String) table.getClass().getMethod("getDbName").invoke(table));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.AlterTableResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          if ("get_table".equals(method.getName()) || "get_table_req".equals(method.getName())) {
+            Object table = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table").getConstructor().newInstance();
+            table.getClass().getMethod("setDbName", String.class).invoke(table, args[0]);
+            table.getClass().getMethod("setTableName", String.class).invoke(table, args[1]);
+            table.getClass().getMethod("setParameters", Map.class).invoke(table, Map.of());
+            return table;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.AlterTableRequest", true, classLoader);
+    Class<?> tableClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader);
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "tgt_db");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "orders");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+
+    // ALTER TABLE stg_db.orders RENAME TO tgt_db.orders
+    Object request = requestClass
+        .getConstructor(String.class, String.class, tableClass)
+        .newInstance("stg_db", "orders", table);
+
+    Object response = handler.alter_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableReqRenamesTableAcrossSchemasInFederatedCatalog() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<String> capturedTargetTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("alter_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedSourceDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTableName").invoke(req));
+            Object table = req.getClass().getMethod("getTable").invoke(req);
+            capturedTargetDb.set((String) table.getClass().getMethod("getDbName").invoke(table));
+            capturedTargetTable.set((String) table.getClass().getMethod("getTableName").invoke(table));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.AlterTableResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          if ("get_table".equals(method.getName()) || "get_table_req".equals(method.getName())) {
+            Object table = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table").getConstructor().newInstance();
+            table.getClass().getMethod("setDbName", String.class).invoke(table, args[0]);
+            table.getClass().getMethod("setTableName", String.class).invoke(table, args[1]);
+            table.getClass().getMethod("setParameters", Map.class).invoke(table, Map.of());
+            return table;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.AlterTableRequest", true, classLoader);
+    Class<?> tableClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader);
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "catalog2__tgt_db");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "renamed_orders");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+
+    // ALTER TABLE catalog2__stg_db.orders RENAME TO catalog2__tgt_db.renamed_orders
+    Object request = requestClass
+        .getConstructor(String.class, String.class, tableClass)
+        .newInstance("catalog2__stg_db", "orders", table);
+
+    Object response = handler.alter_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+    Assert.assertEquals("renamed_orders", capturedTargetTable.get());
+  }
+
+  @Test(expected = MetaException.class)
+  public void alterTableReqCrossCatalogMoveIsRefused() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig(
+                "catalog1", "c1", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend backend1 = newIsolatedHortonworksBackend(
+        config, config.catalogs().get("catalog1"), HDP_JAR, MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> null);
+    CatalogBackend backend2 = newIsolatedHortonworksBackend(
+        config, config.catalogs().get("catalog2"), HDP_JAR, MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> null);
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.AlterTableRequest", true, classLoader);
+    Class<?> tableClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader);
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "catalog2__tgt_db");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "orders");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+
+    // ALTER TABLE catalog1__stg_db.orders RENAME TO catalog2__tgt_db.orders -> Must fail
+    Object request = requestClass
+        .getConstructor(String.class, String.class, tableClass)
+        .newInstance("catalog1__stg_db", "orders", table);
+
+    handler.alter_table_req(request);
+  }
+
+  @Test
+  public void alterTableRenamesTableAcrossSchemasPositional() throws Throwable {
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("alter_table".equals(method.getName())) {
+                capturedSourceDb.set((String) args[0]);
+                capturedTable.set((String) args[1]);
+                Table targetTable = (Table) args[2];
+                capturedTargetDb.set(targetTable.getDbName());
+                return null;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table table = new Table();
+                table.setDbName((String) args[0]);
+                table.setTableName((String) args[1]);
+                table.setParameters(Map.of());
+                return table;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    ThriftHiveMetastore.Iface client = RoutingMetaStoreProxy.newProxy(ThriftHiveMetastore.Iface.class, handler);
+
+    Table targetTable = new Table();
+    targetTable.setDbName("tgt_db");
+    targetTable.setTableName("orders");
+    targetTable.setParameters(Map.of());
+
+    client.alter_table("stg_db", "orders", targetTable);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableWithEnvironmentContextRenamesTableAcrossSchemas() throws Throwable {
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("alter_table_with_environment_context".equals(method.getName())) {
+                capturedSourceDb.set((String) args[0]);
+                capturedTable.set((String) args[1]);
+                Table targetTable = (Table) args[2];
+                capturedTargetDb.set(targetTable.getDbName());
+                return null;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table table = new Table();
+                table.setDbName((String) args[0]);
+                table.setTableName((String) args[1]);
+                table.setParameters(Map.of());
+                return table;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    ThriftHiveMetastore.Iface client = RoutingMetaStoreProxy.newProxy(ThriftHiveMetastore.Iface.class, handler);
+
+    Table targetTable = new Table();
+    targetTable.setDbName("tgt_db");
+    targetTable.setTableName("orders");
+    targetTable.setParameters(Map.of());
+
+    client.alter_table_with_environment_context("stg_db", "orders", targetTable, new EnvironmentContext());
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableWithCascadeRenamesTableAcrossSchemas() throws Throwable {
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("alter_table_with_cascade".equals(method.getName())) {
+                capturedSourceDb.set((String) args[0]);
+                capturedTable.set((String) args[1]);
+                Table targetTable = (Table) args[2];
+                capturedTargetDb.set(targetTable.getDbName());
+                return null;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table table = new Table();
+                table.setDbName((String) args[0]);
+                table.setTableName((String) args[1]);
+                table.setParameters(Map.of());
+                return table;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    ThriftHiveMetastore.Iface client = RoutingMetaStoreProxy.newProxy(ThriftHiveMetastore.Iface.class, handler);
+
+    Table targetTable = new Table();
+    targetTable.setDbName("tgt_db");
+    targetTable.setTableName("orders");
+    targetTable.setParameters(Map.of());
+
+    client.alter_table_with_cascade("stg_db", "orders", targetTable, true);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
   public void truncateTableReqRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();
@@ -1473,6 +1865,287 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertNotNull(maxWriteIdResp);
     long maxWriteId = (long) maxWriteIdResp.getClass().getMethod("getMaxWriteId").invoke(maxWriteIdResp);
     Assert.assertEquals(0L, maxWriteId);
+  }
+
+  @Test
+  public void alterTableReqRenamesTableAcrossSchemasWithApacheBackendFallback() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("alter_table".equals(method.getName())) {
+                capturedSourceDb.set((String) args[0]);
+                capturedTable.set((String) args[1]);
+                Table targetTable = (Table) args[2];
+                capturedTargetDb.set(targetTable.getDbName());
+                return null;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table table = new Table();
+                table.setDbName((String) args[0]);
+                table.setTableName((String) args[1]);
+                table.setParameters(Map.of());
+                return table;
+              }
+              throw new NoSuchMethodException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HDP_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    Class<?> reqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+
+    Object request = reqClass.getConstructor().newInstance();
+    reqClass.getMethod("setDbName", String.class).invoke(request, "stg_db");
+    reqClass.getMethod("setTableName", String.class).invoke(request, "orders");
+
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "tgt_db");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "orders");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+    reqClass.getMethod("setTable", tableClass).invoke(request, table);
+
+    handler.alter_table_req(request);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableReqRenamesTableAcrossSchemasWithHive4Backend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    CatalogBackend backend = newIsolatedHive4Backend(
+        config,
+        config.catalogs().get("catalog1"),
+        HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("alter_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedSourceDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTableName").invoke(req));
+            Object tbl = req.getClass().getMethod("getTable").invoke(req);
+            capturedTargetDb.set((String) tbl.getClass().getMethod("getDbName").invoke(tbl));
+            return method.getReturnType().getConstructor().newInstance();
+          }
+          if ("get_table_req".equals(method.getName())) {
+            Object req = args[0];
+            String db = (String) req.getClass().getMethod("getDbName").invoke(req);
+            String tblName = (String) req.getClass().getMethod("getTblName").invoke(req);
+            Class<?> respClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetTableResult");
+            Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+            Object tbl = tableClass.getConstructor().newInstance();
+            tableClass.getMethod("setDbName", String.class).invoke(tbl, db);
+            tableClass.getMethod("setTableName", String.class).invoke(tbl, tblName);
+            tableClass.getMethod("setParameters", Map.class).invoke(tbl, Map.of());
+            Object resp = respClass.getConstructor().newInstance();
+            respClass.getMethod("setTable", tableClass).invoke(resp, tbl);
+            return resp;
+          }
+          throw new NoSuchMethodException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> reqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+
+    Object request = reqClass.getConstructor().newInstance();
+    reqClass.getMethod("setDbName", String.class).invoke(request, "stg_db");
+    reqClass.getMethod("setTableName", String.class).invoke(request, "orders");
+
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "tgt_db");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "orders");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+    reqClass.getMethod("setTable", tableClass).invoke(request, table);
+
+    handler.alter_table_req(request);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableRenamesTableAcrossSchemasWithHdpBackend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HDP_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    CatalogBackend backend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        (proxy, method, args) -> {
+          if ("alter_table".equals(method.getName())) {
+            capturedSourceDb.set((String) args[0]);
+            capturedTable.set((String) args[1]);
+            Object tbl = args[2];
+            capturedTargetDb.set((String) tbl.getClass().getMethod("getDbName").invoke(tbl));
+            return null;
+          }
+          if ("get_table".equals(method.getName())) {
+            Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+            Object tbl = tableClass.getConstructor().newInstance();
+            tableClass.getMethod("setDbName", String.class).invoke(tbl, (String) args[0]);
+            tableClass.getMethod("setTableName", String.class).invoke(tbl, (String) args[1]);
+            tableClass.getMethod("setParameters", Map.class).invoke(tbl, Map.of());
+            return tbl;
+          }
+          throw new NoSuchMethodException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    ThriftHiveMetastore.Iface client = RoutingMetaStoreProxy.newProxy(ThriftHiveMetastore.Iface.class, handler);
+
+    Table targetTable = new Table();
+    targetTable.setDbName("tgt_db");
+    targetTable.setTableName("orders");
+    targetTable.setParameters(Map.of());
+
+    client.alter_table("stg_db", "orders", targetTable);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+  }
+
+  @Test
+  public void alterTableRenamesTableAcrossSchemasWithHive4Backend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedSourceDb = new AtomicReference<>();
+    AtomicReference<String> capturedTargetDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    CatalogBackend backend = newIsolatedHive4Backend(
+        config,
+        config.catalogs().get("catalog1"),
+        HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("alter_table".equals(method.getName())) {
+            capturedSourceDb.set((String) args[0]);
+            capturedTable.set((String) args[1]);
+            Object tbl = args[2];
+            capturedTargetDb.set((String) tbl.getClass().getMethod("getDbName").invoke(tbl));
+            return null;
+          }
+          if ("get_table_req".equals(method.getName())) {
+            Object req = args[0];
+            String db = (String) req.getClass().getMethod("getDbName").invoke(req);
+            String tblName = (String) req.getClass().getMethod("getTblName").invoke(req);
+            Class<?> respClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetTableResult");
+            Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+            Object tbl = tableClass.getConstructor().newInstance();
+            tableClass.getMethod("setDbName", String.class).invoke(tbl, db);
+            tableClass.getMethod("setTableName", String.class).invoke(tbl, tblName);
+            tableClass.getMethod("setParameters", Map.class).invoke(tbl, Map.of());
+            Object resp = respClass.getConstructor().newInstance();
+            respClass.getMethod("setTable", tableClass).invoke(resp, tbl);
+            return resp;
+          }
+          throw new NoSuchMethodException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    ThriftHiveMetastore.Iface client = RoutingMetaStoreProxy.newProxy(ThriftHiveMetastore.Iface.class, handler);
+
+    Table targetTable = new Table();
+    targetTable.setDbName("tgt_db");
+    targetTable.setTableName("orders");
+    targetTable.setParameters(Map.of());
+
+    client.alter_table("stg_db", "orders", targetTable);
+
+    Assert.assertEquals("stg_db", capturedSourceDb.get());
+    Assert.assertEquals("tgt_db", capturedTargetDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
   }
 }
 
