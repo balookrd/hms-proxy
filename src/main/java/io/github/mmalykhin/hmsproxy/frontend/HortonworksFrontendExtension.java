@@ -18,4 +18,9 @@ public interface HortonworksFrontendExtension {
   Object get_partitions_req(Object request) throws Throwable;
   Object get_partitions_by_names_req(Object request) throws Throwable;
   Object get_partitions_by_filter_req(Object request) throws Throwable;
+  Object get_table_objects_by_name_req(Object request) throws Throwable;
+  Object create_table_req(Object request) throws Throwable;
+  Object delete_column_statistics_req(Object request) throws Throwable;
+  Object get_all_table_constraints(Object request) throws Throwable;
+  Object get_max_allocated_table_write_id(Object request) throws Throwable;
 }

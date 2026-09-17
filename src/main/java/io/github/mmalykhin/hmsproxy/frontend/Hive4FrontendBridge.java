@@ -67,7 +67,14 @@ public final class Hive4FrontendBridge {
       "update_partition_column_statistics_req",
       "add_write_notification_log",
       "get_tables_ext",
-      "get_all_materialized_view_objects_for_rewriting");
+      "get_all_materialized_view_objects_for_rewriting",
+      "get_table_objects_by_name_req",
+      "append_partition_req",
+      "delete_column_statistics_req",
+      "delete_table_column_statistics",
+      "delete_partition_column_statistics",
+      "get_all_table_constraints",
+      "get_max_allocated_table_write_id");
 
   private Hive4FrontendBridge() {
   }
@@ -236,6 +243,46 @@ public final class Hive4FrontendBridge {
               throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
             }
           }
+          case "get_table_objects_by_name_req" -> {
+            try {
+              Object result = extension.get_table_objects_by_name_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "create_table_req" -> {
+            try {
+              Object result = extension.create_table_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "delete_column_statistics_req" -> {
+            try {
+              Object result = extension.delete_column_statistics_req(args == null || args.length == 0 ? null : args[0]);
+              return booleanResponse(method.getReturnType(), (Boolean) result);
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_all_table_constraints" -> {
+            try {
+              Object result = extension.get_all_table_constraints(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_max_allocated_table_write_id" -> {
+            try {
+              Object result = extension.get_max_allocated_table_write_id(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
           default -> {}
         }
       }
@@ -289,6 +336,13 @@ public final class Hive4FrontendBridge {
         case "get_tables_ext" -> handleGetTablesExt(method, request);
         case "get_all_materialized_view_objects_for_rewriting" ->
             handleGetAllMaterializedViewObjectsForRewriting(method);
+        case "get_table_objects_by_name_req" -> handleGetTableObjectsByNameReq(method, request);
+        case "append_partition_req" -> handleAppendPartitionReq(method, request);
+        case "delete_column_statistics_req" -> handleDeleteColumnStatisticsReq(method, request);
+        case "delete_table_column_statistics" -> handleDeleteTableColumnStatistics(method, args);
+        case "delete_partition_column_statistics" -> handleDeletePartitionColumnStatistics(method, args);
+        case "get_all_table_constraints" -> handleGetAllTableConstraints(method, request);
+        case "get_max_allocated_table_write_id" -> handleGetMaxAllocatedTableWriteId(method, request);
         default -> throw new TApplicationException(
             TApplicationException.UNKNOWN_METHOD,
             "Unsupported Hive 4 frontend wrapper: " + methodName);
@@ -317,6 +371,9 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleCreateTableReq(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        return extension.create_table_req(request);
+      }
       Table table = (Table) ThriftValueConverter.convertTBase(invokeNoArgs(request, "getTable"), Table.class);
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvContext"), EnvironmentContext.class);
@@ -421,12 +478,20 @@ public final class Hive4FrontendBridge {
     private Object handleDropPartitionReq(Method method, Object request) throws Throwable {
       String dbName = (String) invokeNoArgs(request, "getDbName");
       String tableName = (String) invokeNoArgs(request, "getTblName");
+      String partName = (String) invokeNoArgs(request, "getPartName");
       List<String> partVals = stringList(invokeNoArgs(request, "getPartVals"));
       boolean deleteData = (boolean) invokeNoArgs(request, "isDeleteData");
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       boolean result;
-      if (environmentContext != null) {
+      if (partVals == null || partVals.isEmpty()) {
+        if (environmentContext != null) {
+          result = apacheHandler.drop_partition_by_name_with_environment_context(
+              dbName, tableName, partName, deleteData, environmentContext);
+        } else {
+          result = apacheHandler.drop_partition_by_name(dbName, tableName, partName, deleteData);
+        }
+      } else if (environmentContext != null) {
         result = apacheHandler.drop_partition_with_environment_context(
             dbName, tableName, partVals, deleteData, environmentContext);
       } else {
@@ -558,6 +623,115 @@ public final class Hive4FrontendBridge {
       }
       Object response = extension.getAllMaterializedViewObjectsForRewriting();
       return convertResult(response, method.getReturnType());
+    }
+
+    private Object handleGetTableObjectsByNameReq(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        Object result = extension.get_table_objects_by_name_req(request);
+        return convertResult(result, method.getReturnType());
+      }
+      String dbName = (String) invokeNoArgs(request, "getDbName");
+      @SuppressWarnings("unchecked")
+      List<String> tblNames = stringList(invokeNoArgs(request, "getTblNames"));
+      List<Table> tables = apacheHandler.get_table_objects_by_name(dbName, tblNames);
+      Object response = emptyResponse(method.getReturnType());
+      response.getClass().getMethod("setTables", List.class).invoke(response, convertList(tables));
+      return response;
+    }
+
+    private Object handleAppendPartitionReq(Method method, Object request) throws Throwable {
+      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String tableName = (String) invokeNoArgs(request, "getTableName");
+      String name = (String) invokeNoArgs(request, "getName");
+      @SuppressWarnings("unchecked")
+      List<String> partVals = stringList(invokeNoArgs(request, "getPartVals"));
+      EnvironmentContext environmentContext =
+          (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
+
+      Partition partition;
+      if (name != null && !name.isEmpty()) {
+        partition = environmentContext != null
+            ? apacheHandler.append_partition_by_name_with_environment_context(dbName, tableName, name, environmentContext)
+            : apacheHandler.append_partition_by_name(dbName, tableName, name);
+      } else {
+        partition = environmentContext != null
+            ? apacheHandler.append_partition_with_environment_context(dbName, tableName, partVals, environmentContext)
+            : apacheHandler.append_partition(dbName, tableName, partVals);
+      }
+      return convertResult(partition, method.getReturnType());
+    }
+
+    private Object handleDeleteTableColumnStatistics(Method method, Object[] args) throws Throwable {
+      String dbName = (String) args[0];
+      String tblName = (String) args[1];
+      String colName = (String) args[2];
+      boolean result = apacheHandler.delete_table_column_statistics(dbName, tblName, colName);
+      return booleanResponse(method.getReturnType(), result);
+    }
+
+    private Object handleDeletePartitionColumnStatistics(Method method, Object[] args) throws Throwable {
+      String dbName = (String) args[0];
+      String tblName = (String) args[1];
+      String partName = (String) args[2];
+      String colName = (String) args[3];
+      boolean result = apacheHandler.delete_partition_column_statistics(dbName, tblName, partName, colName);
+      return booleanResponse(method.getReturnType(), result);
+    }
+
+    private Object handleDeleteColumnStatisticsReq(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        Object result = extension.delete_column_statistics_req(request);
+        return booleanResponse(method.getReturnType(), (Boolean) result);
+      }
+      String dbName = (String) invokeNoArgs(request, "getDb_name");
+      String tblName = (String) invokeNoArgs(request, "getTbl_name");
+      Boolean tableLevel = (Boolean) invokeNoArgs(request, "isTableLevel");
+      @SuppressWarnings("unchecked")
+      List<String> colNames = (List<String>) invokeNoArgs(request, "getCol_names");
+      @SuppressWarnings("unchecked")
+      List<String> partNames = (List<String>) invokeNoArgs(request, "getPart_names");
+
+      boolean allSuccess = true;
+      if (Boolean.TRUE.equals(tableLevel) || partNames == null || partNames.isEmpty()) {
+        if (colNames != null) {
+          for (String col : colNames) {
+            if (!apacheHandler.delete_table_column_statistics(dbName, tblName, col)) {
+              allSuccess = false;
+            }
+          }
+        }
+      } else {
+        if (colNames != null) {
+          for (String part : partNames) {
+            for (String col : colNames) {
+              if (!apacheHandler.delete_partition_column_statistics(dbName, tblName, part, col)) {
+                allSuccess = false;
+              }
+            }
+          }
+        }
+      }
+      return booleanResponse(method.getReturnType(), allSuccess);
+    }
+
+    private Object handleGetAllTableConstraints(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        Object result = extension.get_all_table_constraints(request);
+        return convertResult(result, method.getReturnType());
+      }
+      throw new TApplicationException(
+          TApplicationException.UNKNOWN_METHOD,
+          "Hive 4 method get_all_table_constraints requires proxy extension support");
+    }
+
+    private Object handleGetMaxAllocatedTableWriteId(Method method, Object request) throws Throwable {
+      if (extension != null) {
+        Object result = extension.get_max_allocated_table_write_id(request);
+        return convertResult(result, method.getReturnType());
+      }
+      throw new TApplicationException(
+          TApplicationException.UNKNOWN_METHOD,
+          "Hive 4 method get_max_allocated_table_write_id requires proxy extension support");
     }
 
     private Method findApacheMethod(String methodName, int argumentCount) {

@@ -293,6 +293,36 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return invoke(null, method, new Object[]{request});
   }
 
+  @Override
+  public Object get_table_objects_by_name_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_table_objects_by_name_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object create_table_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("create_table_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object delete_column_statistics_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("delete_column_statistics_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_all_table_constraints(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_all_table_constraints", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_max_allocated_table_write_id(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_max_allocated_table_write_id", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
     if (!AUDIT_LOG.isInfoEnabled()) {
       return;

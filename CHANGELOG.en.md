@@ -10,6 +10,15 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Batch Operations, Constraints, and Extended RPCs for Hive 4 and HDP**:
+  - `get_table_objects_by_name_req`: supported batch table fetching by name list via `GetTablesRequest` with database internalization, exposure filtering, and table externalization in `GetTablesResult`; supported on Hive 4 and Hortonworks front doors as well as Apache, Hortonworks, and Hive 4 backends.
+  - `create_table_req`: end-to-end table creation routing via `CreateTableRequest` for Hive 4 and HDP 6150 backends, preserving concurrent `EnvironmentContext` and all table constraints (primary keys, foreign keys, unique, not null, default, check constraints) with database internalization; graceful fallback to `create_table_with_constraints` / `create_table_with_environment_context` for Apache 3.1.3.
+  - `get_all_table_constraints`: fetches all table constraints via `AllTableConstraintsRequest` -> `AllTableConstraintsResponse` natively for Hive 4, and via fallback aggregation of 6 legacy constraint RPCs (`get_primary_keys`, `get_foreign_keys`, `get_unique_constraints`, `get_not_null_constraints`, `get_default_constraints`, `get_check_constraints`) for Apache 3.1.3 and HDP backends with database externalization across all returned constraints.
+  - `delete_column_statistics_req`: supported column statistics deletion across tables and partitions via `DeleteColumnStatisticsRequest` routed to Hive 4 with fallback to `delete_table_column_statistics` / `delete_partition_column_statistics` for legacy backends.
+  - `get_max_allocated_table_write_id`: retrieves the maximum allocated table write ID via `MaxAllocatedTableWriteIdRequest` -> `MaxAllocatedTableWriteIdResponse` for Hive 4 transaction planning, with graceful fallback to `maxWriteId=0` for non-Hive 4 backends.
+  - `append_partition_req`: supported appending partition by values or by string name via `AppendPartitionRequest` on the Hive 4 front door.
+  - `drop_partition_req`: fixed partition drop handling by string `partName` (when `partVals` is empty) on the Hive 4 front door.
+  - Fixed column statistics deletion signatures on the Hive 4 front door: `delete_table_column_statistics` (4 arguments: `db, tbl, col, engine`) and `delete_partition_column_statistics` (5 arguments: `db, tbl, part, col, engine`).
 - **End-to-End Optimizations and Partition Reading RPCs for Hive 4 and HDP**:
   - `get_table_req`: preserves embedded column statistics (`Table.colStats`), validity flags (`isStatsCompliant=true`), client capabilities (`capabilities`), and transactional state (`validWriteIdList`) when routing to Hive 4 backends, returning responses in the caller's ClassLoader without dropping fields; provides automatic graceful fallback to Apache 3.1.3 `get_table_req` or positional `get_table` for legacy backends.
   - Supported structured partition read calls in Hive 4:

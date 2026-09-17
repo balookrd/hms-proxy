@@ -113,11 +113,11 @@ capabilities:
     method_families:
       en:
         - 199 read/write methods shared with Apache 3.1.3 (binary-compatible)
-        - selected Hive 4-only `*_req` wrappers downgraded to positional Apache 3.1.3 RPCs
+        - selected Hive 4-only `*_req` wrappers downgraded to positional Apache 3.1.3 RPCs (including `create_table_req`, `get_table_objects_by_name_req`, `get_all_table_constraints`, `delete_column_statistics_req`, `get_max_allocated_table_write_id`, `append_partition_req`)
         - "`lock` with the Hive 4-only `EXCL_WRITE` lock type downgraded to `EXCLUSIVE`"
       ru:
         - 199 read/write методов общих с Apache 3.1.3 (binary-compatible)
-        - часть Hive 4-only `*_req` wrappers понижается до позиционных Apache 3.1.3 RPC
+        - часть Hive 4-only `*_req` wrappers понижается до позиционных Apache 3.1.3 RPC (включая `create_table_req`, `get_table_objects_by_name_req`, `get_all_table_constraints`, `delete_column_statistics_req`, `get_max_allocated_table_write_id`, `append_partition_req`)
         - "`lock` с Hive 4-only типом `EXCL_WRITE` понижается до `EXCLUSIVE`"
     expected_result:
       en: >-
@@ -136,6 +136,7 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4ExclWriteLockDowngradesToExclusive
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#partitionRequestsFallbackOnLegacyApacheBackend
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTableReqRoutesToHive4PreservingColStatsAndRewritesDb
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#hive4NewRequestsRouteAndFallbackOnLegacyApacheBackend
   - id: apache_frontdoor_to_hive4_backend_upgrade
     status: degraded
     client:
@@ -686,8 +687,8 @@ method_matrix:
         Нативная обработка Hive 4 request-wrapper методов; `*_req` — каноническая
         форма для Hive 4, доходит до backend через binary-compatible делегацию.
     front_door_support:
-      en: "`APACHE_3_1_3`"
-      ru: "`APACHE_3_1_3`"
+      en: "`APACHE_3_1_3`, `HORTONWORKS_3_1_0`, `HORTONWORKS_3_1_5`, or `APACHE_4_1_0`"
+      ru: "`APACHE_3_1_3`, `HORTONWORKS_3_1_0`, `HORTONWORKS_3_1_5` или `APACHE_4_1_0`"
     routing_mode:
       en: Same namespace routing as the equivalent direct object RPCs.
       ru: Та же namespace-маршрутизация, что и у эквивалентных direct object RPC.

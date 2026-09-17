@@ -528,6 +528,244 @@ public class Hive4FrontendBridgeTest {
   }
 
   @Test
+  public void bridgeDelegatesGetTableObjectsByNameReqViaExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Object> capturedReq = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_objects_by_name_req".equals(method.getName())) {
+        capturedReq.set(args[0]);
+        ClassLoader cl = args[0].getClass().getClassLoader();
+        Class<?> resClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetTablesResult");
+        Object res = resClass.getConstructor().newInstance();
+        resClass.getMethod("setTables", List.class).invoke(res, List.of());
+        return res;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTablesRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTblNames", List.class).invoke(request, List.of("orders"));
+
+    Method method = bridge.ifaceClass().getMethod("get_table_objects_by_name_req", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertNotNull(capturedReq.get());
+    Assert.assertNotNull(result);
+  }
+
+  @Test
+  public void bridgeDelegatesGetTableObjectsByNameReqFallback() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_objects_by_name".equals(method.getName())) {
+        capturedDb.set((String) args[0]);
+        return List.of();
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTablesRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTblNames", List.class).invoke(request, List.of("orders"));
+
+    Method method = bridge.ifaceClass().getMethod("get_table_objects_by_name_req", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(result);
+  }
+
+  @Test
+  public void bridgeDelegatesAppendPartitionReqWithName() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedName = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("append_partition_by_name".equals(method.getName())) {
+        capturedName.set((String) args[2]);
+        org.apache.hadoop.hive.metastore.api.Partition p = new org.apache.hadoop.hive.metastore.api.Partition();
+        p.setDbName((String) args[0]);
+        p.setTableName((String) args[1]);
+        return p;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.AppendPartitionsRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTableName", String.class).invoke(request, "orders");
+    requestClass.getMethod("setName", String.class).invoke(request, "dt=2026-09-17");
+
+    Method method = bridge.ifaceClass().getMethod("append_partition_req", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("dt=2026-09-17", capturedName.get());
+    Assert.assertNotNull(result);
+  }
+
+  @Test
+  public void bridgeDelegatesDropPartitionReqWithPartName() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedPartName = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("drop_partition_by_name".equals(method.getName())) {
+        capturedPartName.set((String) args[2]);
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.DropPartitionRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTblName", String.class).invoke(request, "orders");
+    requestClass.getMethod("setPartName", String.class).invoke(request, "dt=2026-09-17");
+    requestClass.getMethod("setDeleteData", boolean.class).invoke(request, true);
+
+    Method method = bridge.ifaceClass().getMethod("drop_partition_req", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("dt=2026-09-17", capturedPartName.get());
+    Assert.assertEquals(Boolean.TRUE, result);
+  }
+
+  @Test
+  public void bridgeDelegatesDeleteTableColumnStatisticsWithEngine() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedCol = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("delete_table_column_statistics".equals(method.getName())) {
+        capturedCol.set((String) args[2]);
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Method method = bridge.ifaceClass().getMethod("delete_table_column_statistics",
+        String.class, String.class, String.class, String.class);
+    Object result = method.invoke(bridge.handlerProxy(), "sales", "orders", "amount", "hive");
+
+    Assert.assertEquals("amount", capturedCol.get());
+    Assert.assertEquals(Boolean.TRUE, result);
+  }
+
+  @Test
+  public void bridgeDelegatesCreateTableReqViaExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Object> capturedReq = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("create_table_req".equals(method.getName())) {
+        capturedReq.set(args[0]);
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Class<?> envClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.EnvironmentContext");
+
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "orders");
+
+    Object env = envClass.getConstructor().newInstance();
+
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setTable", tableClass).invoke(request, table);
+    requestClass.getMethod("setEnvContext", envClass).invoke(request, env);
+    requestClass.getMethod("setPrimaryKeys", List.class).invoke(request, List.of());
+
+    Method method = bridge.ifaceClass().getMethod("create_table_req", requestClass);
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertNotNull(capturedReq.get());
+  }
+
+  @Test
+  public void bridgeDelegatesGetAllTableConstraintsViaExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Object> capturedReq = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_all_table_constraints".equals(method.getName())) {
+        capturedReq.set(args[0]);
+        ClassLoader cl = args[0].getClass().getClassLoader();
+        Class<?> allClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.SQLAllTableConstraints");
+        Object all = allClass.getConstructor().newInstance();
+        Class<?> resClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.AllTableConstraintsResponse");
+        return resClass.getConstructor(allClass).newInstance(all);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.AllTableConstraintsRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTblName", String.class).invoke(request, "orders");
+
+    Method method = bridge.ifaceClass().getMethod("get_all_table_constraints", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertNotNull(capturedReq.get());
+    Assert.assertNotNull(result);
+  }
+
+  @Test
+  public void bridgeDelegatesGetMaxAllocatedTableWriteIdViaExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Object> capturedReq = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_max_allocated_table_write_id".equals(method.getName())) {
+        capturedReq.set(args[0]);
+        ClassLoader cl = args[0].getClass().getClassLoader();
+        Class<?> resClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.MaxAllocatedTableWriteIdResponse");
+        return resClass.getConstructor(long.class).newInstance(42L);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.MaxAllocatedTableWriteIdRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setDbName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setTableName", String.class).invoke(request, "orders");
+
+    Method method = bridge.ifaceClass().getMethod("get_max_allocated_table_write_id", requestClass);
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertNotNull(capturedReq.get());
+    Assert.assertNotNull(result);
+    Assert.assertEquals(42L, result.getClass().getMethod("getMaxWriteId").invoke(result));
+  }
+
+  @Test
   public void bridgeConvertsApacheThriftExceptionsToHive4Types() throws Exception {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
 

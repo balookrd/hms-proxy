@@ -10,6 +10,15 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Поддержка пакетных операций, ограничений (constraints) и расширенных RPC Hive 4 и HDP**:
+  - `get_table_objects_by_name_req`: поддержано пакетное чтение таблиц по списку имён через `GetTablesRequest` с интернализацией БД, фильтрацией exposure и экстернализацией таблиц в ответе `GetTablesResult`; метод поддержан на фронтендах Hive 4 и Hortonworks, а также на бэкендах Apache, Hortonworks и Hive 4.
+  - `create_table_req`: сквозная маршрутизация создания таблиц через `CreateTableRequest` для Hive 4 и HDP 6150 с сохранением одновременных `EnvironmentContext` и всех табличных ограничений (primary keys, foreign keys, unique, not null, default, check constraints) с интернализацией БД; graceful fallback на `create_table_with_constraints` / `create_table_with_environment_context` для Apache 3.1.3.
+  - `get_all_table_constraints`: получение всех табличных ограничений через `AllTableConstraintsRequest` -> `AllTableConstraintsResponse` нативно для Hive 4 и через fallback-агрегацию 6 legacy constraint RPC (`get_primary_keys`, `get_foreign_keys`, `get_unique_constraints`, `get_not_null_constraints`, `get_default_constraints`, `get_check_constraints`) для Apache 3.1.3 и HDP с экстернализацией БД во всех возвращаемых ограничениях.
+  - `delete_column_statistics_req`: поддержано удаление статистики по колонкам таблиц и партиций через `DeleteColumnStatisticsRequest` с маршрутизацией на Hive 4 и fallback на `delete_table_column_statistics` / `delete_partition_column_statistics` для legacy бэкендов.
+  - `get_max_allocated_table_write_id`: получение максимального выделенного write ID таблицы через `MaxAllocatedTableWriteIdRequest` -> `MaxAllocatedTableWriteIdResponse` для планирования транзакций Hive 4 с fallback на `maxWriteId=0` для non-Hive 4 бэкендов.
+  - `append_partition_req`: поддержано добавление партиции по значениям или по строковому имени через `AppendPartitionRequest` на фронтенде Hive 4.
+  - `drop_partition_req`: исправлена обработка удаления партиции по строковому `partName` (когда `partVals` пустой) на фронтенде Hive 4.
+  - Исправлены сигнатуры удаления колоночной статистики на фронтенде Hive 4: `delete_table_column_statistics` (4 аргумента: `db, tbl, col, engine`) и `delete_partition_column_statistics` (5 аргументов: `db, tbl, part, col, engine`).
 - **Сквозная оптимизация чтения таблиц и партиций Hive 4 и HDP**:
   - `get_table_req`: сохранение встроенной колоночной статистики (`Table.colStats`), флага валидности (`isStatsCompliant=true`), возможностей (`capabilities`) и `validWriteIdList` при маршрутизации на Hive 4 бэкенд с возвратом в вызывающий ClassLoader без потери полей; автоматический graceful fallback на форму `get_table_req` или позиционный `get_table` Apache 3.1.3 для legacy бэкендов.
   - Поддержаны структурные вызовы чтения партиций Hive 4:

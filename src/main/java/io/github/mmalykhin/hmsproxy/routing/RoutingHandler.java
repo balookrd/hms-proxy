@@ -168,6 +168,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler getPartitionsReq = new GetPartitionsReqHandler(support);
     SpecialCaseHandler getPartitionsByNamesReq = new GetPartitionsByNamesReqHandler(support);
     SpecialCaseHandler getPartitionsByFilterReq = new GetPartitionsByFilterReqHandler(support);
+    SpecialCaseHandler createTableReq = new CreateTableReqHandler(support);
+    SpecialCaseHandler deleteColumnStatisticsReq = new DeleteColumnStatisticsReqHandler(support);
+    SpecialCaseHandler getAllTableConstraints = new GetAllTableConstraintsHandler(support);
+    SpecialCaseHandler getMaxAllocatedTableWriteId = new GetMaxAllocatedTableWriteIdHandler(support);
     return Map.ofEntries(
         Map.entry("lock", lock),
         Map.entry("set_ugi", setUgi),
@@ -192,6 +196,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("get_partitions_req", getPartitionsReq),
         Map.entry("get_partitions_by_names_req", getPartitionsByNamesReq),
         Map.entry("get_partitions_by_filter_req", getPartitionsByFilterReq),
+        Map.entry("create_table_req", createTableReq),
+        Map.entry("delete_column_statistics_req", deleteColumnStatisticsReq),
+        Map.entry("get_all_table_constraints", getAllTableConstraints),
+        Map.entry("get_max_allocated_table_write_id", getMaxAllocatedTableWriteId),
         Map.entry("drop_table", dropTable),
         Map.entry("drop_table_with_environment_context", dropTable),
         Map.entry("refresh_privileges", refreshPrivileges)

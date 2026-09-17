@@ -43,8 +43,11 @@ import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
 import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.LockComponent;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
@@ -1255,6 +1258,162 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     List<?> byFilterParts = (List<?>) byFilterResp;
     Assert.assertEquals(1, byFilterParts.size());
     Assert.assertEquals("catalog2__sales", byFilterParts.get(0).getClass().getMethod("getDbName").invoke(byFilterParts.get(0)));
+  }
+
+  @Test
+  public void hive4NewRequestsRouteAndFallbackOnLegacyApacheBackend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("create_table_with_constraints".equals(method.getName())) {
+        Table tbl = (Table) args[0];
+        capturedDb.set(tbl.getDbName());
+        capturedTable.set(tbl.getTableName());
+        return null;
+      }
+      if ("get_table_objects_by_name_req".equals(method.getName())) {
+        GetTablesRequest r = (GetTablesRequest) args[0];
+        capturedDb.set(r.getDbName());
+        Table tbl = new Table();
+        tbl.setDbName(r.getDbName());
+        tbl.setTableName("events");
+        GetTablesResult res = new GetTablesResult();
+        res.setTables(List.of(tbl));
+        return res;
+      }
+      if ("get_primary_keys".equals(method.getName())) {
+        PrimaryKeysRequest r = (PrimaryKeysRequest) args[0];
+        capturedDb.set(r.getDb_name());
+        capturedTable.set(r.getTbl_name());
+        org.apache.hadoop.hive.metastore.api.SQLPrimaryKey pk = new org.apache.hadoop.hive.metastore.api.SQLPrimaryKey();
+        pk.setTable_db(r.getDb_name());
+        pk.setTable_name(r.getTbl_name());
+        pk.setColumn_name("id");
+        return new org.apache.hadoop.hive.metastore.api.PrimaryKeysResponse(List.of(pk));
+      }
+      if ("get_foreign_keys".equals(method.getName())) {
+        return new org.apache.hadoop.hive.metastore.api.ForeignKeysResponse(List.of());
+      }
+      if ("get_unique_constraints".equals(method.getName())) {
+        return new org.apache.hadoop.hive.metastore.api.UniqueConstraintsResponse(List.of());
+      }
+      if ("get_not_null_constraints".equals(method.getName())) {
+        return new org.apache.hadoop.hive.metastore.api.NotNullConstraintsResponse(List.of());
+      }
+      if ("get_default_constraints".equals(method.getName())) {
+        return new org.apache.hadoop.hive.metastore.api.DefaultConstraintsResponse(List.of());
+      }
+      if ("get_check_constraints".equals(method.getName())) {
+        return new org.apache.hadoop.hive.metastore.api.CheckConstraintsResponse(List.of());
+      }
+      if ("delete_table_column_statistics".equals(method.getName())) {
+        capturedDb.set((String) args[0]);
+        capturedTable.set((String) args[1]);
+        return true;
+      }
+      throw new NoSuchMethodException("Method not supported on legacy backend: " + method.getName());
+    });
+    CatalogBackend legacyBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", legacyBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    // 1. create_table_req -> fallback to create_table_with_constraints
+    Class<?> createReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Object createReq = createReqClass.getConstructor().newInstance();
+    Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Object tableObj = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(tableObj, "catalog2__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(tableObj, "events");
+    createReqClass.getMethod("setTable", tableClass).invoke(createReq, tableObj);
+
+    Class<?> pkClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.SQLPrimaryKey");
+    Object pkObj = pkClass.getConstructor().newInstance();
+    pkClass.getMethod("setTable_db", String.class).invoke(pkObj, "catalog2__sales");
+    pkClass.getMethod("setTable_name", String.class).invoke(pkObj, "events");
+    pkClass.getMethod("setColumn_name", String.class).invoke(pkObj, "id");
+    createReqClass.getMethod("setPrimaryKeys", List.class).invoke(createReq, List.of(pkObj));
+
+    handler.create_table_req(createReq);
+    Assert.assertEquals("create_table_with_constraints", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+
+    // 2. get_table_objects_by_name_req -> routed with internalized db, externalized response
+    Class<?> getTablesReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetTablesRequest");
+    Object getTablesReq = getTablesReqClass.getConstructor().newInstance();
+    getTablesReqClass.getMethod("setDbName", String.class).invoke(getTablesReq, "catalog2__sales");
+    getTablesReqClass.getMethod("setTblNames", List.class).invoke(getTablesReq, List.of("events"));
+    Object getTablesResp = handler.get_table_objects_by_name_req(getTablesReq);
+    Assert.assertEquals("get_table_objects_by_name_req", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(getTablesResp);
+    List<?> tables = (List<?>) getTablesResp.getClass().getMethod("getTables").invoke(getTablesResp);
+    Assert.assertEquals(1, tables.size());
+    Assert.assertEquals("catalog2__sales", tables.get(0).getClass().getMethod("getDbName").invoke(tables.get(0)));
+
+    // 3. get_all_table_constraints -> fallback to 6 legacy constraint RPCs with externalized response
+    Class<?> allConstraintsReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.AllTableConstraintsRequest");
+    Object allConstraintsReq = allConstraintsReqClass.getConstructor().newInstance();
+    allConstraintsReqClass.getMethod("setDbName", String.class).invoke(allConstraintsReq, "catalog2__sales");
+    allConstraintsReqClass.getMethod("setTblName", String.class).invoke(allConstraintsReq, "events");
+    Object allConstraintsResp = handler.get_all_table_constraints(allConstraintsReq);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertNotNull(allConstraintsResp);
+    Object allConstraintsObj = allConstraintsResp.getClass().getMethod("getAllTableConstraints").invoke(allConstraintsResp);
+    Assert.assertNotNull(allConstraintsObj);
+    List<?> returnedPks = (List<?>) allConstraintsObj.getClass().getMethod("getPrimaryKeys").invoke(allConstraintsObj);
+    Assert.assertEquals(1, returnedPks.size());
+    Assert.assertEquals("catalog2__sales", returnedPks.get(0).getClass().getMethod("getTable_db").invoke(returnedPks.get(0)));
+
+    // 4. delete_column_statistics_req -> fallback to delete_table_column_statistics
+    Class<?> delColStatsReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.DeleteColumnStatisticsRequest");
+    Object delColStatsReq = delColStatsReqClass.getConstructor().newInstance();
+    delColStatsReqClass.getMethod("setDb_name", String.class).invoke(delColStatsReq, "catalog2__sales");
+    delColStatsReqClass.getMethod("setTbl_name", String.class).invoke(delColStatsReq, "events");
+    delColStatsReqClass.getMethod("setCol_names", List.class).invoke(delColStatsReq, List.of("price"));
+    Object delColStatsResp = handler.delete_column_statistics_req(delColStatsReq);
+    Assert.assertEquals("delete_table_column_statistics", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertEquals(Boolean.TRUE, delColStatsResp);
+
+    // 5. get_max_allocated_table_write_id -> fallback to response with maxWriteId=0
+    Class<?> maxWriteIdReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.MaxAllocatedTableWriteIdRequest");
+    Object maxWriteIdReq = maxWriteIdReqClass.getConstructor().newInstance();
+    maxWriteIdReqClass.getMethod("setDbName", String.class).invoke(maxWriteIdReq, "catalog2__sales");
+    maxWriteIdReqClass.getMethod("setTableName", String.class).invoke(maxWriteIdReq, "events");
+    Object maxWriteIdResp = handler.get_max_allocated_table_write_id(maxWriteIdReq);
+    Assert.assertNotNull(maxWriteIdResp);
+    long maxWriteId = (long) maxWriteIdResp.getClass().getMethod("getMaxWriteId").invoke(maxWriteIdResp);
+    Assert.assertEquals(0L, maxWriteId);
   }
 }
 

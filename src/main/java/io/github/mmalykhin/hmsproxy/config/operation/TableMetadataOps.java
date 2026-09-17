@@ -33,6 +33,12 @@ final class TableMetadataOps {
     r.op("get_table_objects_by_name_req", o -> o.filter(ReadResultFilterKind.TABLE_COLLECTION));
     r.op("get_table_statistics_req", o -> o.cls(HmsOperationClass.METADATA_READ)
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.op("delete_column_statistics_req", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating()
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.op("get_all_table_constraints", o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.op("get_max_allocated_table_write_id", o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
     r.op("refresh_privileges", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating().trace());
   }
 }

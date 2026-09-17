@@ -156,6 +156,22 @@ public final class HortonworksFrontendBridge {
               throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
             }
           }
+          case "get_table_objects_by_name_req" -> {
+            try {
+              Object result = extension.get_table_objects_by_name_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "create_table_req" -> {
+            try {
+              Object result = extension.create_table_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
           default -> {}
         }
       }
@@ -197,6 +213,7 @@ public final class HortonworksFrontendBridge {
             handleUpdateColumnStatisticsReq(method, request);
         case "add_write_notification_log" -> handleAddWriteNotificationLog(method, request);
         case "get_partitions_by_names_req" -> handleGetPartitionsByNamesReq(method, request);
+        case "get_table_objects_by_name_req" -> handleGetTableObjectsByNameReq(method, request);
         case "get_tables_ext" -> handleGetTablesExt(method, request);
         case "get_all_materialized_view_objects_for_rewriting" ->
             handleGetAllMaterializedViewObjectsForRewriting(method);
@@ -347,6 +364,16 @@ public final class HortonworksFrontendBridge {
           stringList(invokeNoArgs(request, "getNames")));
       Object response = emptyResponse(method.getReturnType());
       response.getClass().getMethod("setPartitions", List.class).invoke(response, convertList(partitions));
+      return response;
+    }
+
+    private Object handleGetTableObjectsByNameReq(Method method, Object request) throws Throwable {
+      String dbName = (String) invokeNoArgs(request, "getDbName");
+      @SuppressWarnings("unchecked")
+      List<String> tblNames = stringList(invokeNoArgs(request, "getTblNames"));
+      List<Table> tables = apacheHandler.get_table_objects_by_name(dbName, tblNames);
+      Object response = emptyResponse(method.getReturnType());
+      response.getClass().getMethod("setTables", List.class).invoke(response, convertList(tables));
       return response;
     }
 
