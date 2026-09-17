@@ -528,6 +528,21 @@ The scenario exercises:
 - `get_table_meta` with patterns `hdp..*` and `apache..default`, asserting that table metadata is fetched from the targeted remote backend.
 - Negative checks (queries against non-existent catalogs like `nonexistent..*` return no matches).
 
+## Partitioned Transactional Table Insert (`run-news-txn-smoke.sh`)
+
+Exercises end-to-end `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` writes into partitioned ACID ORC tables from a staging table:
+
+```bash
+cd smoke-stand
+./run-news-txn-smoke.sh
+```
+
+The scenario:
+- Creates a database and staging table `news_crawler_stg`, populated with sample records.
+- Creates a partitioned transactional ORC table `news` (`PARTITIONED BY (source string) CLUSTERED BY (id) INTO 2 BUCKETS STORED AS ORC TBLPROPERTIES ('transactional'='true')`).
+- Executes `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` evaluating SQL expressions (`CAST`, `COALESCE`, `parse_url`, `NULL`).
+- Asserts that the inserted row is read back through the target partition and cleans up test metadata.
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

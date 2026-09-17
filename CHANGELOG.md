@@ -10,6 +10,8 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Smoke-тест вставки в партиционированную транзакционную таблицу (`run-news-txn-smoke.sh`)**:
+  - Добавлен smoke-скрипт `smoke-stand/run-news-txn-smoke.sh`, проверяющий сквозную вставку `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` в транзакционную ACID ORC-таблицу из staging-источника через HiveServer2 на Docker-стенде.
 - **Фоновое автообновление кэша баз данных (Background Cache Refresh)**:
   - Реализован координатор `DatabaseCacheRefresher`, выполняющий упреждающее периодическое автообновление кэшей `DatabaseListCache` и `DatabaseMetadataCache` (`get_database` / `get_database_req`), поддерживая их в горячем состоянии без задержек на опрос бэкендов.
   - Добавлено окно активности (`activity-window-ms`, по умолчанию 1 час): фоновое обновление активно опрашивает метасторы только пока к объектам есть клиентские обращения, и автоматически засыпает при отсутствии запросов.

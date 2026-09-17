@@ -531,6 +531,21 @@ cd smoke-stand && ./prepare.sh
 - `get_table_meta` с шаблонами `hdp..*` и `apache..default`, подтверждая получение метаданных таблиц из удалённого бэкенда.
 - Негативные запросы (несуществующие каталоги `nonexistent..*` не должны отдавать объектов).
 
+## Вставка в партиционированную транзакционную таблицу (`run-news-txn-smoke.sh`)
+
+Проверяет сквозную вставку `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` в транзакционную (ACID) ORC-таблицу из staging-таблицы:
+
+```bash
+cd smoke-stand
+./run-news-txn-smoke.sh
+```
+
+Сценарий:
+- Создаёт базу данных и staging-таблицу `news_crawler_stg`, наполняя её тестовыми строками.
+- Создаёт партиционированную транзакционную ORC-таблицу `news` (`PARTITIONED BY (source string) CLUSTERED BY (id) INTO 2 BUCKETS STORED AS ORC TBLPROPERTIES ('transactional'='true')`).
+- Выполняет `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` с вычислением выражений (`CAST`, `COALESCE`, `parse_url`, `NULL`).
+- Проверяет корректность чтения записанных данных из партиции и удаляет тестовые таблицы.
+
 ## MapReduce под Kerberos
 
 Чтобы керберизованный `INSERT` заработал, нужны две вещи, и `LocalJobRunner` прячет обе за

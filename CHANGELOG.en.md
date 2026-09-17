@@ -10,6 +10,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Partitioned Transactional Table Insert Smoke Test (`run-news-txn-smoke.sh`)**:
+  - Added `smoke-stand/run-news-txn-smoke.sh` smoke script verifying end-to-end `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` operations into partitioned ACID ORC tables from staging sources via HiveServer2 on the Docker stand.
 - **Database Cache Background Auto-Refresh**:
   - Implemented `DatabaseCacheRefresher` coordinator performing proactive periodic background refreshing of `DatabaseListCache` and `DatabaseMetadataCache` (`get_database` / `get_database_req`), maintaining hot caches without backend query latency for clients.
   - Added configurable activity window (`activity-window-ms`, default 1 hour): background refreshes actively poll metastores only while client requests are observed, automatically going idle after inactivity.
