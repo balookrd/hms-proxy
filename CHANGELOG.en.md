@@ -10,6 +10,14 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **End-to-End Optimizations and Partition Reading RPCs for Hive 4 and HDP**:
+  - `get_table_req`: preserves embedded column statistics (`Table.colStats`), validity flags (`isStatsCompliant=true`), client capabilities (`capabilities`), and transactional state (`validWriteIdList`) when routing to Hive 4 backends, returning responses in the caller's ClassLoader without dropping fields; provides automatic graceful fallback to Apache 3.1.3 `get_table_req` or positional `get_table` for legacy backends.
+  - Supported structured partition read calls in Hive 4:
+    - `get_partition_req` (`GetPartitionRequest` -> `GetPartitionResponse`) with fallback to `get_partition`.
+    - `get_partitions_req` (`PartitionsRequest` -> `PartitionsResponse`), preserving parameter key patterns (`includeParamKeyPattern`, `excludeParamKeyPattern`), `skipColumnSchemaForPartition`, `validWriteIdList`, and fallback to `get_partitions`.
+    - `get_partitions_by_names_req` (`GetPartitionsByNamesRequest` -> `GetPartitionsByNamesResult`), preserving `get_col_stats` and embedded column stats in partitions (supported in Hive 4 and HDP 6150) with fallback to `get_partitions_by_names`.
+    - `get_partitions_by_filter_req` (`GetPartitionsByFilterRequest` -> `List<Partition>`), preserving `skipColumnSchemaForPartition`, `validWriteIdList`, and fallback to `get_partitions_by_filter`.
+  - Implemented return value ClassLoader resolution (`resolveReturnClassLoader`) in `IsolatedInvocationBridge` to guarantee Thrift structure integrity across isolated runtime bridges.
 - **Partitioned Transactional Table Insert Smoke Test (`run-news-txn-smoke.sh`)**:
   - Added `smoke-stand/run-news-txn-smoke.sh` smoke script verifying end-to-end `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` operations into partitioned ACID ORC tables from staging sources via HiveServer2 on the Docker stand.
 - **Database Cache Background Auto-Refresh**:

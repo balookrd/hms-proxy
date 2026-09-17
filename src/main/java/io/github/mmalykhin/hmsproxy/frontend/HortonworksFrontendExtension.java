@@ -13,4 +13,9 @@ public interface HortonworksFrontendExtension {
   Object get_partitions_statistics_req(Object request) throws Throwable;
   Object add_partitions_req(Object request) throws Throwable;
   Object add_write_notification_log_in_batch(Object request) throws Throwable;
+  Object get_table_req(Object request) throws Throwable;
+  Object get_partition_req(Object request) throws Throwable;
+  Object get_partitions_req(Object request) throws Throwable;
+  Object get_partitions_by_names_req(Object request) throws Throwable;
+  Object get_partitions_by_filter_req(Object request) throws Throwable;
 }

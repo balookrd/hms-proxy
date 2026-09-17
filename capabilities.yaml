@@ -134,6 +134,8 @@ capabilities:
       - io.github.mmalykhin.hmsproxy.frontend.Hive4FrontendBridgeTest#bridgeRejectsHive4OnlyDataConnectorMethod
       - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4GetPartitionsReqSerializesPartitionsResponse
       - io.github.mmalykhin.hmsproxy.frontend.FrontendBridgeThriftSerializationTest#hive4ExclWriteLockDowngradesToExclusive
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#partitionRequestsFallbackOnLegacyApacheBackend
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTableReqRoutesToHive4PreservingColStatsAndRewritesDb
   - id: apache_frontdoor_to_hive4_backend_upgrade
     status: degraded
     client:

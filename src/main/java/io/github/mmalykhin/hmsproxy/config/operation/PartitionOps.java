@@ -33,5 +33,10 @@ final class PartitionOps {
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
     r.op("add_partitions_req", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating()
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.all(o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace(),
+        "get_partition_req",
+        "get_partitions_req",
+        "get_partitions_by_filter_req");
   }
 }

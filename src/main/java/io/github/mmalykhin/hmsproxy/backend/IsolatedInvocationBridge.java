@@ -35,12 +35,33 @@ public final class IsolatedInvocationBridge {
   Object invokeByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
     Method targetMethod = findMethod(methodName, parameterTypes);
     Object[] convertedArgs = convertArguments(args, targetMethod.getParameterTypes());
+    ClassLoader returnClassLoader = resolveReturnClassLoader(parameterTypes, args);
     try {
       Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
-      return ThriftValueConverter.convertDynamicValue(result, IsolatedInvocationBridge.class.getClassLoader());
+      return ThriftValueConverter.convertDynamicValue(result, returnClassLoader);
     } catch (InvocationTargetException e) {
-      throw ThriftValueConverter.convertThrowable(e.getCause(), IsolatedInvocationBridge.class.getClassLoader());
+      throw ThriftValueConverter.convertThrowable(e.getCause(), returnClassLoader);
     }
+  }
+
+  private ClassLoader resolveReturnClassLoader(Class<?>[] parameterTypes, Object[] args) {
+    if (parameterTypes != null) {
+      for (Class<?> type : parameterTypes) {
+        if (type != null && type.getClassLoader() != null
+            && type.getClassLoader() != IsolatedInvocationBridge.class.getClassLoader()) {
+          return type.getClassLoader();
+        }
+      }
+    }
+    if (args != null) {
+      for (Object arg : args) {
+        if (arg != null && arg.getClass().getClassLoader() != null
+            && arg.getClass().getClassLoader() != IsolatedInvocationBridge.class.getClassLoader()) {
+          return arg.getClass().getClassLoader();
+        }
+      }
+    }
+    return IsolatedInvocationBridge.class.getClassLoader();
   }
 
   private <T> T withContextClassLoader(ThrowingSupplier<T> supplier) throws Exception {

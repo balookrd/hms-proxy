@@ -98,6 +98,8 @@ final class RoutingMetaStoreProxyTestSupport {
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar").toAbsolutePath();
   static final Path HDP_6150_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
+  static final Path HIVE_4_JAR =
+      Path.of("hive-metastore", "hive-standalone-metastore-common-4.1.0.jar").toAbsolutePath();
   static final ProxyConfig CUSTOM_SEPARATOR_CONFIG = ProxyConfig.builder()
       .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
       .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
@@ -185,6 +187,43 @@ final class RoutingMetaStoreProxyTestSupport {
 
     BackendAdapter adapter =
         new TestBackendAdapter(runtimeProfile);
+    return newBackend(proxyConfig, catalogConfig, adapter, newBackendRuntime(proxyConfig, catalogConfig, session));
+  }
+
+  static CatalogBackend newIsolatedHive4Backend(
+      ProxyConfig proxyConfig,
+      CatalogConfig catalogConfig,
+      Path jar,
+      java.lang.reflect.InvocationHandler delegateHandler
+  ) throws Exception {
+    ClassLoader classLoader = MetastoreApiClassLoader.forBackendRuntime(
+        jar, MetastoreRuntimeProfile.APACHE_4_1_0, RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> ifaceClass = Class.forName("org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Iface", true, classLoader);
+    Object delegate = java.lang.reflect.Proxy.newProxyInstance(
+        classLoader,
+        new Class<?>[] {ifaceClass},
+        delegateHandler);
+
+    IsolatedInvocationBridge bridge = new IsolatedInvocationBridge(classLoader, delegate, ifaceClass);
+    Constructor<IsolatedMetastoreClient> isolatedCtor =
+        IsolatedMetastoreClient.class.getDeclaredConstructor(Object.class, IsolatedInvocationBridge.class);
+    isolatedCtor.setAccessible(true);
+    Object closableClient = new Object() {
+      @SuppressWarnings("unused")
+      public void close() {
+      }
+    };
+    IsolatedMetastoreClient isolatedClient =
+        isolatedCtor.newInstance(closableClient, bridge);
+
+    Constructor<BackendInvocationSession> sessionCtor = BackendInvocationSession.class.getDeclaredConstructor(
+        org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+        org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class,
+        IsolatedMetastoreClient.class);
+    sessionCtor.setAccessible(true);
+    BackendInvocationSession session = sessionCtor.newInstance(null, null, isolatedClient);
+
+    BackendAdapter adapter = new TestBackendAdapter(MetastoreRuntimeProfile.APACHE_4_1_0);
     return newBackend(proxyConfig, catalogConfig, adapter, newBackendRuntime(proxyConfig, catalogConfig, session));
   }
 

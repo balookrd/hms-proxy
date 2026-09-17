@@ -164,6 +164,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler tableStatisticsReq = new TableStatisticsReqHandler(support);
     SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support);
     SpecialCaseHandler addWriteNotificationLogBatch = new AddWriteNotificationLogBatchHandler(support);
+    SpecialCaseHandler getPartitionReq = new GetPartitionReqHandler(support);
+    SpecialCaseHandler getPartitionsReq = new GetPartitionsReqHandler(support);
+    SpecialCaseHandler getPartitionsByNamesReq = new GetPartitionsByNamesReqHandler(support);
+    SpecialCaseHandler getPartitionsByFilterReq = new GetPartitionsByFilterReqHandler(support);
     return Map.ofEntries(
         Map.entry("lock", lock),
         Map.entry("set_ugi", setUgi),
@@ -184,6 +188,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("get_partitions_statistics_req", tableStatisticsReq),
         Map.entry("add_partitions_req", addPartitionsReq),
         Map.entry("add_write_notification_log_in_batch", addWriteNotificationLogBatch),
+        Map.entry("get_partition_req", getPartitionReq),
+        Map.entry("get_partitions_req", getPartitionsReq),
+        Map.entry("get_partitions_by_names_req", getPartitionsByNamesReq),
+        Map.entry("get_partitions_by_filter_req", getPartitionsByFilterReq),
         Map.entry("drop_table", dropTable),
         Map.entry("drop_table_with_environment_context", dropTable),
         Map.entry("refresh_privileges", refreshPrivileges)

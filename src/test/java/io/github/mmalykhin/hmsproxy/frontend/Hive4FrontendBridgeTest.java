@@ -65,6 +65,142 @@ public class Hive4FrontendBridgeTest {
   }
 
   @Test
+  public void bridgePreservesHive4GetTableReqOptimizations() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Object> capturedRequest = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        capturedRequest.set(args[0]);
+        ClassLoader cl = args[0].getClass().getClassLoader();
+        Class<?> resClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetTableResult");
+        Class<?> tableClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+        Class<?> colStatsClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.ColumnStatistics");
+        Class<?> colStatsDescClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc");
+
+        Object table = tableClass.getConstructor().newInstance();
+        tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+        tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+
+        Object colStatsDesc = colStatsDescClass.getConstructor(boolean.class, String.class, String.class)
+            .newInstance(true, "sales", "events");
+        Object colStats = colStatsClass.getConstructor(colStatsDescClass, List.class)
+            .newInstance(colStatsDesc, List.of());
+        tableClass.getMethod("setColStats", colStatsClass).invoke(table, colStats);
+
+        Object res = resClass.getConstructor(tableClass).newInstance(table);
+        resClass.getMethod("setIsStatsCompliant", boolean.class).invoke(res, true);
+        return res;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader()
+        .loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    requestClass.getMethod("setGetColumnStats", boolean.class).invoke(request, true);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "sales.events:5:5::");
+
+    Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Object req = capturedRequest.get();
+    Assert.assertNotNull(req);
+    Assert.assertTrue((boolean) req.getClass().getMethod("isGetColumnStats").invoke(req));
+    Assert.assertEquals("sales.events:5:5::", req.getClass().getMethod("getValidWriteIdList").invoke(req));
+
+    Assert.assertNotNull(response);
+    Assert.assertTrue((boolean) response.getClass().getMethod("isIsStatsCompliant").invoke(response));
+    Object table = response.getClass().getMethod("getTable").invoke(response);
+    Assert.assertNotNull(table.getClass().getMethod("getColStats").invoke(table));
+  }
+
+  @Test
+  public void bridgeDelegatesPartitionRequestsToExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<Object> capturedRequest = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      capturedRequest.set(args[0]);
+      ClassLoader cl = args[0].getClass().getClassLoader();
+      return switch (method.getName()) {
+        case "get_partition_req" -> {
+          Class<?> respClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionResponse");
+          yield respClass.getConstructor().newInstance();
+        }
+        case "get_partitions_req" -> {
+          Class<?> respClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.PartitionsResponse");
+          yield respClass.getConstructor().newInstance();
+        }
+        case "get_partitions_by_names_req" -> {
+          Class<?> respClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesResult");
+          yield respClass.getConstructor().newInstance();
+        }
+        case "get_partitions_by_filter_req" -> List.of();
+        default -> throw new UnsupportedOperationException(method.getName());
+      };
+    }, HortonworksFrontendExtension.class);
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+
+    // 1. get_partition_req
+    Class<?> getPartReqClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionRequest");
+    Object getPartReq = getPartReqClass.getConstructor().newInstance();
+    getPartReqClass.getMethod("setDbName", String.class).invoke(getPartReq, "sales");
+    getPartReqClass.getMethod("setTblName", String.class).invoke(getPartReq, "events");
+    getPartReqClass.getMethod("setPartVals", List.class).invoke(getPartReq, List.of("2026-01-01"));
+    getPartReqClass.getMethod("setValidWriteIdList", String.class).invoke(getPartReq, "sales.events:5:5::");
+    Method getPartMethod = bridge.ifaceClass().getMethod("get_partition_req", getPartReqClass);
+    Object partResp = getPartMethod.invoke(bridge.handlerProxy(), getPartReq);
+    Assert.assertEquals("get_partition_req", invokedMethod.get());
+    Assert.assertNotNull(partResp);
+    Assert.assertEquals("sales.events:5:5::", capturedRequest.get().getClass().getMethod("getValidWriteIdList").invoke(capturedRequest.get()));
+
+    // 2. get_partitions_req
+    Class<?> getPartsReqClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.PartitionsRequest");
+    Object getPartsReq = getPartsReqClass.getConstructor().newInstance();
+    getPartsReqClass.getMethod("setDbName", String.class).invoke(getPartsReq, "sales");
+    getPartsReqClass.getMethod("setTblName", String.class).invoke(getPartsReq, "events");
+    getPartsReqClass.getMethod("setSkipColumnSchemaForPartition", boolean.class).invoke(getPartsReq, true);
+    Method getPartsMethod = bridge.ifaceClass().getMethod("get_partitions_req", getPartsReqClass);
+    Object partsResp = getPartsMethod.invoke(bridge.handlerProxy(), getPartsReq);
+    Assert.assertEquals("get_partitions_req", invokedMethod.get());
+    Assert.assertNotNull(partsResp);
+    Assert.assertTrue((boolean) capturedRequest.get().getClass().getMethod("isSkipColumnSchemaForPartition").invoke(capturedRequest.get()));
+
+    // 3. get_partitions_by_names_req
+    Class<?> byNamesReqClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
+    Object byNamesReq = byNamesReqClass.getConstructor().newInstance();
+    byNamesReqClass.getMethod("setDb_name", String.class).invoke(byNamesReq, "sales");
+    byNamesReqClass.getMethod("setTbl_name", String.class).invoke(byNamesReq, "events");
+    byNamesReqClass.getMethod("setNames", List.class).invoke(byNamesReq, List.of("dt=2026-01-01"));
+    byNamesReqClass.getMethod("setGet_col_stats", boolean.class).invoke(byNamesReq, true);
+    Method byNamesMethod = bridge.ifaceClass().getMethod("get_partitions_by_names_req", byNamesReqClass);
+    Object byNamesResp = byNamesMethod.invoke(bridge.handlerProxy(), byNamesReq);
+    Assert.assertEquals("get_partitions_by_names_req", invokedMethod.get());
+    Assert.assertNotNull(byNamesResp);
+    Assert.assertTrue((boolean) capturedRequest.get().getClass().getMethod("isGet_col_stats").invoke(capturedRequest.get()));
+
+    // 4. get_partitions_by_filter_req
+    Class<?> byFilterReqClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByFilterRequest");
+    Object byFilterReq = byFilterReqClass.getConstructor().newInstance();
+    byFilterReqClass.getMethod("setDbName", String.class).invoke(byFilterReq, "sales");
+    byFilterReqClass.getMethod("setTblName", String.class).invoke(byFilterReq, "events");
+    byFilterReqClass.getMethod("setFilter", String.class).invoke(byFilterReq, "dt = '2026-01-01'");
+    byFilterReqClass.getMethod("setSkipColumnSchemaForPartition", boolean.class).invoke(byFilterReq, true);
+    Method byFilterMethod = bridge.ifaceClass().getMethod("get_partitions_by_filter_req", byFilterReqClass);
+    Object byFilterResp = byFilterMethod.invoke(bridge.handlerProxy(), byFilterReq);
+    Assert.assertEquals("get_partitions_by_filter_req", invokedMethod.get());
+    Assert.assertNotNull(byFilterResp);
+    Assert.assertTrue((boolean) capturedRequest.get().getClass().getMethod("isSkipColumnSchemaForPartition").invoke(capturedRequest.get()));
+  }
+
+  @Test
   public void bridgeMapsHive4OnlyGetDatabaseReqToLegacyApacheMethod() throws Exception {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

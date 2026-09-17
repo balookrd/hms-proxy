@@ -10,6 +10,14 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Сквозная оптимизация чтения таблиц и партиций Hive 4 и HDP**:
+  - `get_table_req`: сохранение встроенной колоночной статистики (`Table.colStats`), флага валидности (`isStatsCompliant=true`), возможностей (`capabilities`) и `validWriteIdList` при маршрутизации на Hive 4 бэкенд с возвратом в вызывающий ClassLoader без потери полей; автоматический graceful fallback на форму `get_table_req` или позиционный `get_table` Apache 3.1.3 для legacy бэкендов.
+  - Поддержаны структурные вызовы чтения партиций Hive 4:
+    - `get_partition_req` (`GetPartitionRequest` -> `GetPartitionResponse`) с fallback на `get_partition`.
+    - `get_partitions_req` (`PartitionsRequest` -> `PartitionsResponse`) с сохранением фильтров параметров (`includeParamKeyPattern`, `excludeParamKeyPattern`), `skipColumnSchemaForPartition`, `validWriteIdList` и fallback на `get_partitions`.
+    - `get_partitions_by_names_req` (`GetPartitionsByNamesRequest` -> `GetPartitionsByNamesResult`) с сохранением `get_col_stats` и встроенной статистики в партициях (поддерживается в Hive 4 и HDP 6150) и fallback на `get_partitions_by_names`.
+    - `get_partitions_by_filter_req` (`GetPartitionsByFilterRequest` -> `List<Partition>`) с сохранением `skipColumnSchemaForPartition`, `validWriteIdList` и fallback на `get_partitions_by_filter`.
+  - В `IsolatedInvocationBridge` реализовано определение целевого ClassLoader возвращаемого значения (`resolveReturnClassLoader`), гарантирующее целостность Thrift-структур при вызовах между изолированными рантаймами.
 - **Smoke-тест вставки в партиционированную транзакционную таблицу (`run-news-txn-smoke.sh`)**:
   - Добавлен smoke-скрипт `smoke-stand/run-news-txn-smoke.sh`, проверяющий сквозную вставку `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` в транзакционную ACID ORC-таблицу из staging-источника через HiveServer2 на Docker-стенде.
 - **Фоновое автообновление кэша баз данных (Background Cache Refresh)**:

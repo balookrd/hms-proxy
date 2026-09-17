@@ -1060,5 +1060,201 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals("events", capturedTable.get());
     Assert.assertEquals("sales.events:77:1::", capturedValidWriteIds.get());
   }
+
+  @Test
+  public void getTableReqRoutesToHive4PreservingColStatsAndRewritesDb() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.APACHE_4_1_0, HIVE_4_JAR.toString(), null, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    CatalogBackend hive4Backend = newIsolatedHive4Backend(
+        config,
+        config.catalogs().get("catalog2"),
+        HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("get_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTblName").invoke(req));
+            capturedValidWriteIds.set((String) req.getClass().getMethod("getValidWriteIdList").invoke(req));
+
+            ClassLoader cl = req.getClass().getClassLoader();
+            Class<?> resClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetTableResult");
+            Class<?> tableClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+            Class<?> colStatsClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.ColumnStatistics");
+            Class<?> colStatsDescClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc");
+
+            Object table = tableClass.getConstructor().newInstance();
+            tableClass.getMethod("setDbName", String.class).invoke(table, capturedDb.get());
+            tableClass.getMethod("setTableName", String.class).invoke(table, capturedTable.get());
+
+            Object colStatsDesc = colStatsDescClass.getConstructor(boolean.class, String.class, String.class)
+                .newInstance(true, capturedDb.get(), capturedTable.get());
+            Object colStats = colStatsClass.getConstructor(colStatsDescClass, List.class)
+                .newInstance(colStatsDesc, List.of());
+            tableClass.getMethod("setColStats", colStatsClass).invoke(table, colStats);
+
+            Object res = resClass.getConstructor(tableClass).newInstance(table);
+            resClass.getMethod("setIsStatsCompliant", boolean.class).invoke(res, true);
+            return res;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hive4Backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class)
+        .newInstance("catalog2__sales", "events");
+    requestClass.getMethod("setGetColumnStats", boolean.class).invoke(request, true);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "catalog2__sales.events:77:1::");
+
+    Object response = handler.get_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertEquals("sales.events:77:1::", capturedValidWriteIds.get());
+
+    Assert.assertTrue((boolean) response.getClass().getMethod("isIsStatsCompliant").invoke(response));
+    Object table = response.getClass().getMethod("getTable").invoke(response);
+    Assert.assertEquals("catalog2__sales", table.getClass().getMethod("getDbName").invoke(table));
+    Assert.assertNotNull(table.getClass().getMethod("getColStats").invoke(table));
+  }
+
+  @Test
+  public void partitionRequestsFallbackOnLegacyApacheBackend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      capturedDb.set((String) args[0]);
+      capturedTable.set((String) args[1]);
+      if ("get_partition".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Partition part = new org.apache.hadoop.hive.metastore.api.Partition();
+        part.setDbName((String) args[0]);
+        part.setTableName((String) args[1]);
+        part.setValues((List<String>) args[2]);
+        return part;
+      }
+      if ("get_partitions".equals(method.getName()) || "get_partitions_by_names".equals(method.getName())
+          || "get_partitions_by_filter".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Partition part = new org.apache.hadoop.hive.metastore.api.Partition();
+        part.setDbName((String) args[0]);
+        part.setTableName((String) args[1]);
+        return List.of(part);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend legacyBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", legacyBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+
+    // 1. get_partition_req
+    Class<?> getPartReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionRequest");
+    Object getPartReq = getPartReqClass.getConstructor().newInstance();
+    getPartReqClass.getMethod("setDbName", String.class).invoke(getPartReq, "catalog2__sales");
+    getPartReqClass.getMethod("setTblName", String.class).invoke(getPartReq, "events");
+    getPartReqClass.getMethod("setPartVals", List.class).invoke(getPartReq, List.of("2026-01-01"));
+    Object partResp = handler.get_partition_req(getPartReq);
+    Assert.assertEquals("get_partition", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertNotNull(partResp);
+    Object part = partResp.getClass().getMethod("getPartition").invoke(partResp);
+    Assert.assertEquals("catalog2__sales", part.getClass().getMethod("getDbName").invoke(part));
+
+    // 2. get_partitions_req
+    Class<?> getPartsReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.PartitionsRequest");
+    Object getPartsReq = getPartsReqClass.getConstructor().newInstance();
+    getPartsReqClass.getMethod("setDbName", String.class).invoke(getPartsReq, "catalog2__sales");
+    getPartsReqClass.getMethod("setTblName", String.class).invoke(getPartsReq, "events");
+    getPartsReqClass.getMethod("setMaxParts", short.class).invoke(getPartsReq, (short) 10);
+    Object partsResp = handler.get_partitions_req(getPartsReq);
+    Assert.assertEquals("get_partitions", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(partsResp);
+    List<?> partsList = (List<?>) partsResp.getClass().getMethod("getPartitions").invoke(partsResp);
+    Assert.assertEquals(1, partsList.size());
+    Assert.assertEquals("catalog2__sales", partsList.get(0).getClass().getMethod("getDbName").invoke(partsList.get(0)));
+
+    // 3. get_partitions_by_names_req
+    Class<?> byNamesReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
+    Object byNamesReq = byNamesReqClass.getConstructor().newInstance();
+    byNamesReqClass.getMethod("setDb_name", String.class).invoke(byNamesReq, "catalog2__sales");
+    byNamesReqClass.getMethod("setTbl_name", String.class).invoke(byNamesReq, "events");
+    byNamesReqClass.getMethod("setNames", List.class).invoke(byNamesReq, List.of("dt=2026-01-01"));
+    Object byNamesResp = handler.get_partitions_by_names_req(byNamesReq);
+    Assert.assertEquals("get_partitions_by_names", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(byNamesResp);
+    List<?> byNamesParts = (List<?>) byNamesResp.getClass().getMethod("getPartitions").invoke(byNamesResp);
+    Assert.assertEquals(1, byNamesParts.size());
+    Assert.assertEquals("catalog2__sales", byNamesParts.get(0).getClass().getMethod("getDbName").invoke(byNamesParts.get(0)));
+
+    // 4. get_partitions_by_filter_req
+    Class<?> byFilterReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByFilterRequest");
+    Object byFilterReq = byFilterReqClass.getConstructor().newInstance();
+    byFilterReqClass.getMethod("setDbName", String.class).invoke(byFilterReq, "catalog2__sales");
+    byFilterReqClass.getMethod("setTblName", String.class).invoke(byFilterReq, "events");
+    byFilterReqClass.getMethod("setFilter", String.class).invoke(byFilterReq, "dt = '2026-01-01'");
+    Object byFilterResp = handler.get_partitions_by_filter_req(byFilterReq);
+    Assert.assertEquals("get_partitions_by_filter", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(byFilterResp);
+    List<?> byFilterParts = (List<?>) byFilterResp;
+    Assert.assertEquals(1, byFilterParts.size());
+    Assert.assertEquals("catalog2__sales", byFilterParts.get(0).getClass().getMethod("getDbName").invoke(byFilterParts.get(0)));
+  }
 }
 

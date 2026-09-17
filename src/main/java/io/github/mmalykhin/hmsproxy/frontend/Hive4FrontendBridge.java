@@ -196,6 +196,46 @@ public final class Hive4FrontendBridge {
               throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
             }
           }
+          case "get_table_req" -> {
+            try {
+              Object result = extension.get_table_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_partition_req" -> {
+            try {
+              Object result = extension.get_partition_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_partitions_req" -> {
+            try {
+              Object result = extension.get_partitions_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_partitions_by_names_req" -> {
+            try {
+              Object result = extension.get_partitions_by_names_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
+          case "get_partitions_by_filter_req" -> {
+            try {
+              Object result = extension.get_partitions_by_filter_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hive4ClassLoader);
+            }
+          }
           default -> {}
         }
       }

@@ -263,6 +263,36 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return invoke(null, method, new Object[]{request});
   }
 
+  @Override
+  public Object get_table_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_table_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_partition_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_partition_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_partitions_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_partitions_by_names_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_by_names_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_partitions_by_filter_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_by_filter_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
     if (!AUDIT_LOG.isInfoEnabled()) {
       return;

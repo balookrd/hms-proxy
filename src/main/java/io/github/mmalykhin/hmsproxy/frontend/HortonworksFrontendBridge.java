@@ -148,6 +148,14 @@ public final class HortonworksFrontendBridge {
               throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
             }
           }
+          case "get_partitions_by_names_req" -> {
+            try {
+              Object result = extension.get_partitions_by_names_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
           default -> {}
         }
       }

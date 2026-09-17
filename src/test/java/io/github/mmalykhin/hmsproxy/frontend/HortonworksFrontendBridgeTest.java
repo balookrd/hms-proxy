@@ -527,6 +527,38 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeDelegatesGetPartitionsByNamesReqToExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_partitions_by_names_req".equals(method.getName())) {
+        Object request = args[0];
+        capturedDb.set((String) request.getClass().getMethod("getDb_name").invoke(request));
+        Class<?> resClass = request.getClass().getClassLoader()
+            .loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesResult");
+        return resClass.getConstructor().newInstance();
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass =
+        bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    requestClass.getMethod("setNames", List.class).invoke(request, List.of("ds=2026-04-02"));
+    Method method = bridge.ifaceClass().getMethod("get_partitions_by_names_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(response);
+  }
+
+  @Test
   public void bridgeCoversAllHortonworksOnlyIfaceMethodsForLegacyRuntime() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
 
