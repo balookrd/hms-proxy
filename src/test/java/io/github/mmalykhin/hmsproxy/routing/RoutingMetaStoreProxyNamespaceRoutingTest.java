@@ -2036,20 +2036,16 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of(
-            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_JAR.toString(),
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
                 Map.of("hive.metastore.uris", "thrift://one"))))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
-
-    ClassLoader classLoader = new MetastoreApiClassLoader(
-        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HDP_JAR),
-        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
 
     CatalogBackend backend = newIsolatedHortonworksBackend(
         config,
         config.catalogs().get("catalog1"),
         HDP_JAR,
-        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
         (proxy, method, args) -> {
           if ("alter_table".equals(method.getName())) {
             capturedSourceDb.set((String) args[0]);
@@ -2059,12 +2055,7 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
             return null;
           }
           if ("get_table".equals(method.getName())) {
-            Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
-            Object tbl = tableClass.getConstructor().newInstance();
-            tableClass.getMethod("setDbName", String.class).invoke(tbl, (String) args[0]);
-            tableClass.getMethod("setTableName", String.class).invoke(tbl, (String) args[1]);
-            tableClass.getMethod("setParameters", Map.class).invoke(tbl, Map.of());
-            return tbl;
+            return childTable(proxy.getClass().getClassLoader(), (String) args[0], (String) args[1]);
           }
           throw new NoSuchMethodException(method.getName());
         });

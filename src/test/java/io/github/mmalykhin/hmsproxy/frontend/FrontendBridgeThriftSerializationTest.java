@@ -49,6 +49,8 @@ public class FrontendBridgeThriftSerializationTest {
   private static final String API_PACKAGE = "org.apache.hadoop.hive.metastore.api.";
   private static final Path HIVE_4_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-common-4.1.0.jar").toAbsolutePath();
+  private static final Path HDP_78_JAR =
+      Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar").toAbsolutePath();
   private static final Path HDP_6150_JAR =
       Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
 
@@ -329,6 +331,29 @@ public class FrontendBridgeThriftSerializationTest {
     List<?> partitions = (List<?>) get(response, "getPartitions");
     Assert.assertEquals(1, partitions.size());
     Assert.assertEquals("sales", get(partitions.get(0), "getDbName"));
+  }
+
+  @Test
+  public void hortonworks78TruncateTableReqSerializesResponse() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<List<Object>> captured = new AtomicReference<>();
+    HortonworksFrontendBridge.BridgeBundle bridge = HortonworksFrontendBridge.createBridge(
+        config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
+        proxyHandler((proxy, method, args) -> {
+          if ("truncate_table".equals(method.getName())) {
+            captured.set(args == null ? List.of() : List.of(args));
+            return null;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        }));
+    Object request = newRequest(bridge.classLoader(), "TruncateTableRequest", "sales", "events");
+    set(request, "setPartNames", List.class, List.of("ds=2026-04-02"));
+
+    Object response = roundTrip(bridge.processor(), bridge.classLoader(), "truncate_table_req", request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.TruncateTableResponse", response.getClass().getName());
+    Assert.assertEquals(List.of("sales", "events", List.of("ds=2026-04-02")), captured.get());
   }
 
   private static Object roundTrip(TProcessor processor, ClassLoader classLoader, String methodName, Object request)

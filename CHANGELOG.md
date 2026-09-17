@@ -33,9 +33,15 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - В `SetUgiHandler` исключен вызов `fallback.invokeGlobal` на бэкенд при включенной имперсонации (`security.impersonation-enabled=true`). Защищённый бэкенд открывает соединение с delegation token и отклоняет вызовы `set_ugi`, что приводило к `UndeclaredThrowableException`. Теперь `SetUgiHandler` связывает UGI с клиентским соединением и корректно возвращает группы без сбоев.
 - **Устранение гонки потоков в тесте метрик Iceberg REST**:
   - В тесте `recordsRestRequestMetricsAndListenerInfo` (`IcebergRestEndpointIntegrationTest`) добавлено ожидание обновления асинхронных метрик, записываемых в `finally`-блоке пула потоков HTTP-сервера, предотвращая ложные падения теста на высоконагруженных CI-раннерах GitHub Actions.
+- **Выравнивание версии HDP в тестах и устранение ClassCastException**:
+  - В тесте `alterTableRenamesTableAcrossSchemasWithHdpBackend` (`RoutingMetaStoreProxyNamespaceRoutingTest`) заменен ошибочно указанный профиль `HORTONWORKS_3_1_0_3_1_5_6150_1` на боевой `HORTONWORKS_3_1_0_3_1_0_78`, соответствующий переданному jar-артефакту `HDP_JAR` (`hive-standalone-metastore-3.1.0.3.1.0.0-78.jar`).
+  - Устранен скрытый `ClassCastException` внутри `IcebergTablePointerGuard` при вызове `get_table`, вызванный созданием дублирующего `MetastoreApiClassLoader` в тестовом моке вместо использования classloader'а изолированного бэкенда.
 
 ### Добавлено
 
+- **Покрытие боевой версии HDP 3.1.0.0-78 в тестах Thrift-сериализации и резолвера jar**:
+  - В `FrontendBridgeThriftSerializationTest` добавлен тест `hortonworks78TruncateTableReqSerializesResponse` с константой `HDP_78_JAR`, проверяющий сквозной round-trip через бинарный протокол Thrift для боевого профиля `FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78`.
+  - В `MetastoreRuntimeJarResolverTest` добавлен unit-тест `backendJarResolverUsesHortonworksDefaultJar`, валидирующий разрешение пути по умолчанию для боевого бэкенд-профиля `MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78`.
 - **Автоматическое переписывание ссылок в представлениях (views) для Spark и федеративных каталогов**:
   - Включено автоматическое переписывание SQL-текста представлений по умолчанию (`federation.view-text-rewrite.mode=REWRITE`, `preserve-original-text=false`), что обеспечивает автоматическое добавление префикса каталога прокси (например, `hdp__inrs_dds.inwhs_transaction`) к таблицам при обращении клиентов к view через префикс каталога.
   - Поддержано переписывание как `viewExpandedText`, так и сохранённого `viewOriginalText`, предотвращая ошибки разрешения таблиц в Spark-приложениях (например, падение Spark на кластере Titanium при чтении view над таблицами удаленного HDP-бэкенда `ns-etl`).

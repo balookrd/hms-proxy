@@ -33,9 +33,15 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Avoided backend `fallback.invokeGlobal` call in `SetUgiHandler` when client impersonation is enabled (`security.impersonation-enabled=true`). Secure backends establish connections using delegation tokens and reject `set_ugi`, which previously resulted in `UndeclaredThrowableException`. `SetUgiHandler` now associates the UGI with the client connection and returns groups directly.
 - **Eliminated race condition in Iceberg REST metrics test**:
   - Added polling await in `recordsRestRequestMetricsAndListenerInfo` (`IcebergRestEndpointIntegrationTest`) for asynchronous metrics recorded in the HTTP server thread pool's `finally` block, preventing intermittent test failures on busy GitHub Actions CI runners.
+- **Unified HDP runtime version in routing test and eliminated ClassCastException**:
+  - Replaced incorrect `HORTONWORKS_3_1_0_3_1_5_6150_1` profile with production `HORTONWORKS_3_1_0_3_1_0_78` in `alterTableRenamesTableAcrossSchemasWithHdpBackend` (`RoutingMetaStoreProxyNamespaceRoutingTest`), aligning the profile with the configured `HDP_JAR` (`hive-standalone-metastore-3.1.0.3.1.0.0-78.jar`).
+  - Fixed a hidden `ClassCastException` in `IcebergTablePointerGuard` during `get_table` lookup caused by creating a redundant `MetastoreApiClassLoader` in the test mock instead of reusing the isolated backend class loader.
 
 ### Added
 
+- **Coverage for production HDP 3.1.0.0-78 in Thrift serialization and jar resolver tests**:
+  - Added `hortonworks78TruncateTableReqSerializesResponse` test in `FrontendBridgeThriftSerializationTest` with constant `HDP_78_JAR`, verifying end-to-end binary Thrift protocol round-trip for production `FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78`.
+  - Added `backendJarResolverUsesHortonworksDefaultJar` unit test in `MetastoreRuntimeJarResolverTest`, validating default jar path resolution for production `MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78`.
 - **Automatic View Reference Rewriting for Spark and Federated Catalogs**:
   - Enabled automatic view SQL rewriting by default (`federation.view-text-rewrite.mode=REWRITE`, `preserve-original-text=false`), ensuring catalog prefixes (e.g. `hdp__inrs_dds.inwhs_transaction`) are automatically prepended when clients access views through catalog prefixes.
   - Supported rewriting both `viewExpandedText` and client-facing `viewOriginalText`, preventing table resolution failures in Spark applications (such as Spark queries on cluster Titanium failing to find tables located on the remote HDP backend `ns-etl`).

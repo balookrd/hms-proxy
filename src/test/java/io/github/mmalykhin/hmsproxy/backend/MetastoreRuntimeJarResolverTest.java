@@ -45,6 +45,29 @@ public class MetastoreRuntimeJarResolverTest {
   }
 
   @Test
+  public void backendJarResolverUsesHortonworksDefaultJar() throws Exception {
+    Path jar = Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar").toAbsolutePath();
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", new CatalogConfig(
+            "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
+            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, jar.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    Assert.assertEquals(
+        jar.normalize(),
+        MetastoreRuntimeJarResolver.resolveBackendJar(
+            config,
+            config.catalogs().get("catalog1"),
+            MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78));
+  }
+
+  @Test
   public void backendJarResolverUsesNewerHortonworksDefaultJar() throws Exception {
     Path jar = Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar").toAbsolutePath();
     ProxyConfig config = ProxyConfig.builder()
