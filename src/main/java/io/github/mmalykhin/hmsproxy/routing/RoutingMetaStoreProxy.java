@@ -150,7 +150,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
         observation.markError();
       }
       long elapsedMs = elapsedMillis(startedAt);
-      LOG.debug("requestId={} client-error method={} elapsedMs={} error={}",
+      LOG.warn("requestId={} client-error method={} elapsedMs={} error={}",
           requestId, name, elapsedMs, throwable.toString(), throwable);
       if (throwable instanceof TException) {
         throw throwable;

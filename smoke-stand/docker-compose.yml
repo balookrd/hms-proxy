@@ -310,6 +310,7 @@ services:
       - ./proxy/hms-proxy-apache.properties:/opt/hms-proxy/hms-proxy-apache.properties:ro
       - ./proxy/hms-proxy-apache-kerberos.properties:/opt/hms-proxy/hms-proxy-apache-kerberos.properties:ro
       - ./proxy/hms-proxy-ranger.properties:/opt/hms-proxy/hms-proxy-ranger.properties:ro
+      - ./proxy/hms-proxy-ranger-kerberos.properties:/opt/hms-proxy/hms-proxy-ranger-kerberos.properties:ro
       - ./proxy/hms-proxy-db-cache.properties:/opt/hms-proxy/hms-proxy-db-cache.properties:ro
       - ./ranger/policy-cache:/opt/hms-proxy/ranger-cache
       # The Iceberg REST writer runs inside this container: data-file writes need the

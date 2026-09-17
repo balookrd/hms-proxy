@@ -12,6 +12,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 - **Сохранение null-значения partNames при TRUNCATE TABLE**:
   - Исправлена подмена `partNames = null` на пустой список `List.of()` в `TruncateTableReqHandler`, `HortonworksFrontendBridge` и `Hive4FrontendBridge`. Ранее при выполнении `TRUNCATE TABLE` без секции `PARTITION (...)` (для непартиционированных таблиц или таблиц целиком) прокси передавал на бэкенд пустой список партиций `[]` вместо `null`. По спецификации Hive Metastore передача пустого списка означает выборку 0 партиций, из-за чего метастор возвращал успешный ответ (no-op), фактически не удаляя файлы данных из директории таблицы на HDFS.
+- **Фильтрация таблиц политиками Ranger в get_table_meta**:
+  - Добавлена проверка `support.metadataAuthorizer.isTableAllowed(...)` в `GetTableMetaHandler` для маршрутов `resolved`, `defaultNamespace` и `fanout`, предотвращая утечку метаданных запрещённых таблиц через RPC `get_table_meta`.
+- **Обработка set_ugi при включенной имперсонации**:
+  - В `SetUgiHandler` исключен вызов `fallback.invokeGlobal` на бэкенд при включенной имперсонации (`security.impersonation-enabled=true`). Защищённый бэкенд открывает соединение с delegation token и отклоняет вызовы `set_ugi`, что приводило к `UndeclaredThrowableException`. Теперь `SetUgiHandler` связывает UGI с клиентским соединением и корректно возвращает группы без сбоев.
 - **Устранение гонки потоков в тесте метрик Iceberg REST**:
   - В тесте `recordsRestRequestMetricsAndListenerInfo` (`IcebergRestEndpointIntegrationTest`) добавлено ожидание обновления асинхронных метрик, записываемых в `finally`-блоке пула потоков HTTP-сервера, предотвращая ложные падения теста на высоконагруженных CI-раннерах GitHub Actions.
 
@@ -50,6 +54,11 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 - **Авторизация Apache Ranger и общий кэш метаданных**:
   - Интегрирован модуль авторизации Ranger (`ranger-plugins-common` 2.5.0) для проверки прав доступа пользователей к базам данных и таблицам непосредственно на уровне Thrift RPC прокси.
   - Добавлен глобальный разделяемый кэш метаданных (`shared-across-users=true` для баз данных и метаданных), позволяющий безопасно переиспользовать кэшированные объекты метастора между пользователями с фильтрацией выдачи политиками Ranger.
+  - Поддержана аутентификация по Kerberos при работе с Ranger: добавлены генерация keytab-файлов пользователей (`admin`, `alice`, `bob`, `eve`, `charlie`, `david`) в KDC Docker-стенда, конфигурационный профиль `smoke-stand/proxy/hms-proxy-ranger-kerberos.properties` и керберизованный запуск Ranger smoke-тестов по умолчанию.
+  - Реализован smoke-сценарий проверки политик Ranger в `scripts/run-real-installation-smoke.sh` (`--scenario ranger` и в `--scenario all`) с поддержкой как простой, так и Kerberos-аутентификации (`--keytab`, `--client-principal`).
+  - Расширены проверки гранулярности политик на уровне таблиц: сокрытие запрещённых таблиц (`secret_orders`) внутри разрешённых баз (`sales`) в `get_all_tables`, `get_tables` с pattern, `get_table_meta` и строгий отказ с `NoSuchObjectException` при прямом вызове `get_table`.
+  - Добавлена проверка групповых политик Ranger: проверка прав пользователей `charlie` (группа `sales`) и `david` (группа `finance`).
+  - Добавлены модульные тесты в `RoutingMetaStoreProxyRangerTest` для валидации отказа доступа к таблицам внутри разрешённой БД и правил для групп.
   - Экспортированы метрики Ranger и кэша в Prometheus, добавлены панели мониторинга в Grafana dashboard.
 - **Имперсонация пользователей в Kerberos через Delegation Tokens**:
   - Реализован механизм сквозной имперсонации: прокси автоматически получает delegation token (`get_delegation_token`) от защищённого HMS бэкенда и подключает клиентские сессии по протоколу SASL DIGEST-MD5 под `createProxyUser(user).doAs(...)`.

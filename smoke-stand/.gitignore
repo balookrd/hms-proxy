@@ -4,6 +4,8 @@ hms/*.jar
 hs2/lib/
 proxy/hive-metastore/
 proxy/hms-proxy-fat.jar
+proxy/hms-proxy.jar
+*.log
 
 # Maven output of the classpath-resolving poms.
 */target/

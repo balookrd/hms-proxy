@@ -124,6 +124,19 @@ public class RoutingMetaStoreProxyRangerTest {
                 getAllTablesCalls.incrementAndGet();
                 return List.of("orders", "customers", "secret_reports");
               }
+              if ("get_tables".equals(method.getName())) {
+                return List.of("orders", "customers", "secret_reports");
+              }
+              if ("get_table".equals(method.getName())) {
+                String dbName = (String) args[0];
+                String tableName = (String) args[1];
+                Table t = new Table();
+                t.setDbName(dbName);
+                t.setTableName(tableName);
+                t.setOwner("owner");
+                t.setTableType("MANAGED_TABLE");
+                return t;
+              }
               throw new UnsupportedOperationException(method.getName());
             })));
 
@@ -169,6 +182,8 @@ public class RoutingMetaStoreProxyRangerTest {
     Method getAllDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
     Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
     Method getAllTablesMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_tables", String.class);
+    Method getTablesMethod = ThriftHiveMetastore.Iface.class.getMethod("get_tables", String.class, String.class);
+    Method getTableMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
 
     org.apache.hadoop.security.UserGroupInformation aliceUgi =
         org.apache.hadoop.security.UserGroupInformation.createRemoteUser("alice");
@@ -212,6 +227,54 @@ public class RoutingMetaStoreProxyRangerTest {
     Assert.assertEquals(1, getAllTablesCalls.get());
     // Alice policy allows orders and customers, but not secret_reports
     Assert.assertEquals(List.of("orders", "customers"), aliceTables);
+
+    // 7. Alice queries get_tables("sales", ".*") -> filters pattern results to only allowed tables
+    @SuppressWarnings("unchecked")
+    List<String> alicePatternTables = (List<String>) invokeAs(aliceUgi, routingHandler, getTablesMethod, "sales", ".*");
+    Assert.assertEquals(List.of("orders", "customers"), alicePatternTables);
+
+    // 8. Alice queries get_table for allowed table "orders" -> succeeds
+    Table aliceOrderTable = (Table) invokeAs(aliceUgi, routingHandler, getTableMethod, "sales", "orders");
+    Assert.assertEquals("orders", aliceOrderTable.getTableName());
+
+    // 9. Alice queries get_table for forbidden table "secret_reports" in allowed db -> rejected by Ranger
+    try {
+      invokeAs(aliceUgi, routingHandler, getTableMethod, "sales", "secret_reports");
+      Assert.fail("Alice should not have access to 'secret_reports'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("secret_reports"));
+    }
+
+    // 10. Bob queries get_table for "sales.orders" -> rejected by Ranger
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "sales", "orders");
+      Assert.fail("Bob should not have access to 'sales.orders'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("sales"));
+    }
+
+    // 11. Group-based authorization: Charlie (group sales) & David (group finance)
+    org.apache.hadoop.security.UserGroupInformation charlieSalesUgi =
+        org.apache.hadoop.security.UserGroupInformation.createUserForTesting("charlie", new String[]{"sales"});
+    @SuppressWarnings("unchecked")
+    List<String> charlieDbs = (List<String>) invokeAs(charlieSalesUgi, routingHandler, getAllDbsMethod);
+    Assert.assertEquals(List.of("sales"), charlieDbs);
+
+    Table charlieOrderTable = (Table) invokeAs(charlieSalesUgi, routingHandler, getTableMethod, "sales", "orders");
+    Assert.assertEquals("orders", charlieOrderTable.getTableName());
+
+    try {
+      invokeAs(charlieSalesUgi, routingHandler, getDbMethod, "finance");
+      Assert.fail("Charlie (sales group) should not have access to 'finance'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("finance"));
+    }
+
+    org.apache.hadoop.security.UserGroupInformation davidFinanceUgi =
+        org.apache.hadoop.security.UserGroupInformation.createUserForTesting("david", new String[]{"finance"});
+    @SuppressWarnings("unchecked")
+    List<String> davidDbs = (List<String>) invokeAs(davidFinanceUgi, routingHandler, getAllDbsMethod);
+    Assert.assertEquals(List.of("finance"), davidDbs);
 
     customAuthorizer.close();
   }
@@ -278,6 +341,7 @@ public class RoutingMetaStoreProxyRangerTest {
     ));
     RangerPolicy.RangerPolicyItem item1 = new RangerPolicy.RangerPolicyItem();
     item1.setUsers(List.of("alice"));
+    item1.setGroups(List.of("sales"));
     item1.setAccesses(List.of(new RangerPolicy.RangerPolicyItemAccess("select", true)));
     p1.setPolicyItems(List.of(item1));
 
@@ -292,6 +356,7 @@ public class RoutingMetaStoreProxyRangerTest {
     ));
     RangerPolicy.RangerPolicyItem item2 = new RangerPolicy.RangerPolicyItem();
     item2.setUsers(List.of("bob"));
+    item2.setGroups(List.of("finance"));
     item2.setAccesses(List.of(new RangerPolicy.RangerPolicyItemAccess("select", true)));
     p2.setPolicyItems(List.of(item2));
 

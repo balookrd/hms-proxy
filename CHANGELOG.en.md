@@ -12,6 +12,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 - **Preserve null partNames in TRUNCATE TABLE**:
   - Fixed coercion of `partNames = null` into an empty list `List.of()` in `TruncateTableReqHandler`, `HortonworksFrontendBridge`, and `Hive4FrontendBridge`. Previously, when executing `TRUNCATE TABLE` without a `PARTITION (...)` spec (for unpartitioned tables or entire partitioned tables), the proxy sent an empty partition list `[]` instead of `null` to the backend. In Hive Metastore, passing an empty list means selecting 0 partitions to truncate, causing HMS to return success as a silent no-op without actually deleting data files from the table directory on HDFS.
+- **Ranger table policy enforcement in get_table_meta**:
+  - Added `support.metadataAuthorizer.isTableAllowed(...)` check in `GetTableMetaHandler` across `resolved`, `defaultNamespace`, and `fanout` dispatch paths, preventing metadata leakage of denied tables via the `get_table_meta` RPC.
+- **Handled set_ugi under enabled impersonation**:
+  - Avoided backend `fallback.invokeGlobal` call in `SetUgiHandler` when client impersonation is enabled (`security.impersonation-enabled=true`). Secure backends establish connections using delegation tokens and reject `set_ugi`, which previously resulted in `UndeclaredThrowableException`. `SetUgiHandler` now associates the UGI with the client connection and returns groups directly.
 - **Eliminated race condition in Iceberg REST metrics test**:
   - Added polling await in `recordsRestRequestMetricsAndListenerInfo` (`IcebergRestEndpointIntegrationTest`) for asynchronous metrics recorded in the HTTP server thread pool's `finally` block, preventing intermittent test failures on busy GitHub Actions CI runners.
 
@@ -50,6 +54,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 - **Apache Ranger Authorization & Shared Metadata Cache**:
   - Integrated Apache Ranger authorization plugin (`ranger-plugins-common` 2.5.0) to enforce database- and table-level access control directly at proxy Thrift RPC boundaries.
   - Added global shared metadata cache mode (`shared-across-users=true` for database lists and catalog metadata), enabling secure reuse of cached metastore objects across users filtered by Ranger policies.
+  - Added Kerberos authentication support for Apache Ranger verification: generated user keytab files (`admin`, `alice`, `bob`, `eve`, `charlie`, `david`) in the Docker stand's KDC, added `smoke-stand/proxy/hms-proxy-ranger-kerberos.properties` configuration profile, and enabled Kerberized Ranger smoke runs by default.
+  - Implemented Ranger policy verification smoke scenario in `scripts/run-real-installation-smoke.sh` (`--scenario ranger` and in `--scenario all`) supporting both simple and Kerberos authentication (`--keytab`, `--client-principal`).
+  - Extended table-level policy granularity tests: hiding of forbidden tables (`secret_orders`) within permitted databases (`sales`) in `get_all_tables`, `get_tables` with pattern, and `get_table_meta`, plus strict `NoSuchObjectException` refusal on direct `get_table` calls.
+  - Added group-based authorization verification: validating permissions for users `charlie` (in `sales` group) and `david` (in `finance` group).
+  - Added unit tests in `RoutingMetaStoreProxyRangerTest` validating table-level denials within permitted databases and group-based access rules.
   - Exported Ranger and cache metrics to Prometheus, added monitoring panels to Grafana dashboard.
 - **Kerberos Impersonation via Delegation Tokens**:
   - Implemented end-to-end impersonation: the proxy requests a delegation token (`get_delegation_token`) from the secured HMS backend and connects client sessions using SASL DIGEST-MD5 under `createProxyUser(user).doAs(...)`.

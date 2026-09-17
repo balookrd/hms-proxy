@@ -486,20 +486,25 @@ branch main has changed`, изменение не остаётся ни на о�
 
 ## Apache Ranger и общий кэш метаданных (`run-ranger-shared-cache-smoke.sh`)
 
-Проверяет встроенную авторизацию через Apache Ranger в связке с общим глобальным кэшем метаданных (`shared-across-users=true`):
+Проверяет встроенную авторизацию через Apache Ranger в связке с общим глобальным кэшем метаданных (`shared-across-users=true`) и Kerberos-аутентификацией пользователей:
 
 ```bash
 cd smoke-stand && ./prepare.sh
-PROXY_CONFIG=/opt/hms-proxy/hms-proxy-ranger.properties docker compose up -d --build proxy
+# По умолчанию запускается в полностью керберизованном режиме:
 ./run-ranger-shared-cache-smoke.sh
+# Или без Kerberos (simple auth):
+./run-ranger-shared-cache-smoke.sh --no-kerberos
 ```
 
-Сценарий тестирует многопользовательскую авторизацию и разделяемый кэш на запущенном прокси:
-- Создаёт изолированные тестовые базы данных `sales` (таблицы `orders`, `customers`) и `finance` (таблицы `reports`, `expenses`).
-- Проверяет, что пользователь `alice` видит только разрешённую базу данных `sales` и её таблицы в `get_all_databases` и `get_all_tables`.
+Сценарий тестирует многопользовательскую авторизацию под Kerberos (с аутентичными keytab-файлами пользователей из KDC стенда) и разделяемый кэш на запущенном прокси:
+- Создаёт изолированные тестовые базы данных `sales` (разрешённые таблицы `orders`, `customers` и запрещённая таблица `secret_orders`) и `finance` (таблицы `reports`, `expenses`).
+- Проверяет, что пользователь `alice` (по Kerberos SASL или `set_ugi`) видит только разрешённую базу данных `sales` и её разрешённые таблицы в `get_all_databases`, `get_all_tables`, `get_tables` с pattern и `get_table_meta`.
+- Проверяет гранулярность на уровне таблиц: `alice` получает отказ `NoSuchObjectException` при попытке точечного `get_table` на таблицу `secret_orders` внутри разрешённой БД `sales`, а списки таблиц её скрывают.
 - Проверяет, что пользователь `bob` получает `get_all_databases` из общего кэша (без повторных запросов в бэкенд HMS) и видит только `finance`.
 - Проверяет, что `bob` получает отказ при обращении к `sales`, а `alice` — при обращении к `finance`.
+- Проверяет групповые политики Ranger: пользователи `charlie` (с группой `sales`) и `david` (с группой `finance`) авторизуются согласно правилам для групп.
 - Проверяет, что неавторизованный пользователь `eve` не имеет доступа к приватным базам, а `admin` видит все базы данных и производит корректную очистку.
+- Проверяет метрики Prometheus (`hms_proxy_ranger_evaluations_total` с метками `result="allowed"` и `result="denied"`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
 
 ## Автообновление кэша баз данных (`run-database-cache-smoke.sh`)
 

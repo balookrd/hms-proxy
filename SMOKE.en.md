@@ -30,6 +30,7 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
 | Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner in metadata and on HDFS (`owner:group`), and audit logs record `authenticatedUser`. |
+| Direct HMS smoke CLI `ranger` | any (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` or `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Expected to pass with Ranger plugin enabled; confirms granular user and group authorization at database and table levels, filtering of hidden objects from listings, and strict rejection (NoSuchObjectException) on direct access attempts. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
@@ -475,7 +476,24 @@ scripts/run-real-installation-smoke-simple.sh --scenario schema_pattern
 scripts/run-real-installation-smoke-kerberos.sh --scenario schema_pattern
 ```
 
-**16. What To Watch In Proxy Logs**
+**16. Apache Ranger Authorization Policy Verification (Including Kerberos)**
+
+Verifies integration with Apache Ranger for metadata-level operation authorization:
+- User isolation check (`sales_user` sees only `sales` database, `finance_user` sees only `finance`, `unauthorized_user` sees neither).
+- Table listing filtering (`get_all_tables`, `get_tables` with pattern, `get_table_meta`): user can only see policy-allowed tables (`orders`, `customers`), while unauthorized tables within the same database (`secret_orders`) remain hidden.
+- Direct table access check (`get_table`): allowed tables return successfully; attempting to read forbidden tables within an accessible database or in another database strictly fails with `NoSuchObjectException`.
+- Group-based authorization (`sales_group` and `finance_group`): users `charlie` (in `sales` group) and `david` (in `finance` group) receive permissions according to group policies.
+- Kerberos authentication support: verifies SASL Kerberos principals and user keytab authentication (`alice`, `bob`, `eve`, `admin`).
+- Prometheus Ranger metrics check (`hms_proxy_ranger_evaluations_total` with `allowed` and `denied`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
+
+Practical runner:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario ranger
+# or with Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
+```
+
+**17. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
@@ -488,3 +506,5 @@ Look for:
 - `Unsupported Hortonworks frontend method` errors
 - `requires a Hortonworks backend runtime` errors
 - trace entries for `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`
+- Ranger entries: `Ranger authorization plugin initialized`, `Ranger access evaluation: user=..., resource=..., accessType=..., result=...`
+

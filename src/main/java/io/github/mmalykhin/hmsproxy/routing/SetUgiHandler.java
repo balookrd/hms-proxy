@@ -40,12 +40,6 @@ final class SetUgiHandler implements SpecialCaseHandler {
           RequestContext.currentRequestId(), requestedUser, groups);
     }
 
-    if (support.router == null || support.router.defaultBackend() == null || !support.router.defaultBackend().impersonationEnabled()) {
-      return groups;
-    }
-
-    ImpersonationContext impersonation = support.impersonationResolver.resolve().orElseThrow(() ->
-        new MetaException("Caller identity is unavailable for impersonation"));
-    return fallback.invokeGlobal(method, new Object[]{impersonation.userName(), impersonation.groupNames()});
+    return groups;
   }
 }

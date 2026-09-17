@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +21,8 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
     @SuppressWarnings("unchecked")
     List<String> tableTypes = (List<String>) args[2];
 
+    ImpersonationContext impersonation = support.currentImpersonation();
+
     CatalogRouter.ResolvedNamespace resolved = support.router.resolvePattern(dbPattern).orElse(null);
     if (resolved != null) {
       RequestContext.currentObservation().recordNamespace(resolved);
@@ -31,8 +34,10 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           resolved.catalogName(),
           "table",
           backendResults,
-          result -> support.federationLayer.isTableExposed(
-              resolved.catalogName(), result.getDbName(), result.getTableName()),
+          result -> support.metadataAuthorizer.isTableAllowed(
+              resolved.catalogName(), result.getDbName(), result.getTableName(), impersonation)
+              && support.federationLayer.isTableExposed(
+                  resolved.catalogName(), result.getDbName(), result.getTableName()),
           result -> NamespaceTranslator.externalizeTableMeta(
               result,
               support.router.resolveCatalog(resolved.catalogName(), result.getDbName()),
@@ -53,8 +58,10 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           defaultNamespace.catalogName(),
           "table",
           backendResults,
-          result -> support.federationLayer.isTableExposed(
-              defaultNamespace.catalogName(), result.getDbName(), result.getTableName()),
+          result -> support.metadataAuthorizer.isTableAllowed(
+              defaultNamespace.catalogName(), result.getDbName(), result.getTableName(), impersonation)
+              && support.federationLayer.isTableExposed(
+                  defaultNamespace.catalogName(), result.getDbName(), result.getTableName()),
           result -> NamespaceTranslator.externalizeTableMeta(
               result,
               support.router.resolveCatalog(defaultNamespace.catalogName(), result.getDbName()),
@@ -65,11 +72,11 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
     List<TableMeta> results = new ArrayList<>();
     for (FanoutExecutor.FanoutBackendResult<List<TableMeta>> fanoutResult : support.invokeFanoutRead(
         method.getName(),
-        (backend, impersonation, requestId) -> {
+        (backend, imp, requestId) -> {
           @SuppressWarnings("unchecked")
           List<TableMeta> result = (List<TableMeta>) support.dispatcher.invokeDirect(
               backend, method, new Object[]{dbPattern, tablePattern, tableTypes},
-              impersonation, requestId, false, false);
+              imp, requestId, false, false);
           return result;
         })) {
       String catalogName = fanoutResult.backend().name();
@@ -78,7 +85,9 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           catalogName,
           "table",
           fanoutResult.value(),
-          result -> support.federationLayer.isTableExposed(catalogName, result.getDbName(), result.getTableName()),
+          result -> support.metadataAuthorizer.isTableAllowed(
+              catalogName, result.getDbName(), result.getTableName(), impersonation)
+              && support.federationLayer.isTableExposed(catalogName, result.getDbName(), result.getTableName()),
           result -> NamespaceTranslator.externalizeTableMeta(
               result,
               support.router.resolveCatalog(catalogName, result.getDbName()),

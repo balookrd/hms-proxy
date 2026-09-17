@@ -41,6 +41,12 @@ principals=(
   "HTTP/hs2@${REALM}:spnego.keytab"
   "HTTP/hs2-hdp@${REALM}:hs2-hdp.keytab"
   "smoke-user@${REALM}:smoke-user.keytab"
+  "admin@${REALM}:admin.keytab"
+  "alice@${REALM}:alice.keytab"
+  "bob@${REALM}:bob.keytab"
+  "eve@${REALM}:eve.keytab"
+  "charlie@${REALM}:charlie.keytab"
+  "david@${REALM}:david.keytab"
 )
 
 # A keytab may hold several principals - HDFS wants its service principal and the SPNEGO

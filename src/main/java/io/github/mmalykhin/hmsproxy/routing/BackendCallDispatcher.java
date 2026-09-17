@@ -258,7 +258,7 @@ final class BackendCallDispatcher {
           elapsedMs,
           cause.toString());
     }
-    LOG.debug("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
+    LOG.warn("requestId={} proxy-error catalog={} method={} elapsedMs={} error={}",
         requestId, backend.name(), methodName, elapsedMs, cause.toString(), cause);
   }
 

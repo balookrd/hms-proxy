@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern|ranger]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,7 +23,7 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke
+  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke + optional Ranger policy smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
   impersonation run only the table creation user impersonation smoke
   txn           run only the direct ACID/txn smoke
@@ -31,6 +31,7 @@ Scenarios:
   notification  run only Hortonworks add_write_notification_log smoke
   rest          run only the Iceberg REST catalog smoke (HTTP, via curl)
   schema_pattern run only the DBeaver/Hue converted schema pattern smoke
+  ranger        run only Apache Ranger authorization policy smoke (supports simple and kerberos auth)
 
 Important env vars:
   HMS_SMOKE_URI
@@ -167,6 +168,36 @@ Optional beeline / SQL env vars:
   HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL default: false
   HMS_SMOKE_SQL_FRONT_DOORS              default: apache hdp (which passes run)
   HMS_SMOKE_TRANSACTIONAL_SQL_FRONT_DOORS default: hdp (space-separated: apache hdp)
+EOF
+
+  cat <<'EOF'
+
+Optional Apache Ranger authorization policy env vars:
+  HMS_SMOKE_RANGER_ENABLED               enable Ranger policy verification in 'all' scenario; default: false (auto-enabled if HMS_SMOKE_RANGER_SALES_DB is set)
+  HMS_SMOKE_RANGER_ADMIN_USER            administrative user with full permissions; default: admin
+  HMS_SMOKE_RANGER_SALES_USER            user permitted to access sales DB and allowed tables; default: alice
+  HMS_SMOKE_RANGER_SALES_GROUP           group permitted to access sales DB and allowed tables; default: sales
+  HMS_SMOKE_RANGER_FINANCE_USER          user permitted to access finance DB; default: bob
+  HMS_SMOKE_RANGER_FINANCE_GROUP         group permitted to access finance DB; default: finance
+  HMS_SMOKE_RANGER_UNAUTHORIZED_USER     user denied access to sales and finance; default: eve
+  HMS_SMOKE_RANGER_CHARLIE_USER          user in sales group; default: charlie
+  HMS_SMOKE_RANGER_DAVID_USER            user in finance group; default: david
+  HMS_SMOKE_RANGER_SALES_DB              database for sales policies; default: sales
+  HMS_SMOKE_RANGER_FINANCE_DB            database for finance policies; default: finance
+  HMS_SMOKE_RANGER_SALES_TABLE           allowed table in sales DB; default: orders
+  HMS_SMOKE_RANGER_SALES_SECOND_TABLE    second allowed table in sales DB; default: customers
+  HMS_SMOKE_RANGER_SALES_DENIED_TABLE    table in sales DB forbidden to sales user; default: secret_orders
+  HMS_SMOKE_RANGER_FINANCE_TABLE         allowed table in finance DB; default: reports
+  HMS_SMOKE_RANGER_FINANCE_SECOND_TABLE  second allowed table in finance DB; default: expenses
+  HMS_SMOKE_RANGER_METRICS_URL           Prometheus metrics endpoint to check Ranger counters
+  HMS_SMOKE_RANGER_ADMIN_KEYTAB          optional Kerberos keytab for admin user
+  HMS_SMOKE_RANGER_ADMIN_PRINCIPAL       optional Kerberos principal for admin user
+  HMS_SMOKE_RANGER_SALES_KEYTAB          optional Kerberos keytab for sales user (alice)
+  HMS_SMOKE_RANGER_SALES_PRINCIPAL       optional Kerberos principal for sales user (alice)
+  HMS_SMOKE_RANGER_FINANCE_KEYTAB        optional Kerberos keytab for finance user (bob)
+  HMS_SMOKE_RANGER_FINANCE_PRINCIPAL     optional Kerberos principal for finance user (bob)
+  HMS_SMOKE_RANGER_UNAUTHORIZED_KEYTAB   optional Kerberos keytab for unauthorized user (eve)
+  HMS_SMOKE_RANGER_UNAUTHORIZED_PRINCIPAL optional Kerberos principal for unauthorized user (eve)
 EOF
 
   if [[ "${AUTH_OVERRIDE}" != "simple" ]]; then
@@ -564,6 +595,336 @@ run_schema_pattern_smoke() {
 
   rm -f "${output_file}"
   log "schema pattern smoke passed"
+}
+
+ranger_is_configured() {
+  [[ "${HMS_SMOKE_RANGER_ENABLED:-false}" == "true" \
+    || -n "${HMS_SMOKE_RANGER_SALES_DB:-}" \
+    || -n "${HMS_SMOKE_RANGER_SALES_USER:-}" ]]
+}
+
+run_ranger_smoke() {
+  if ! ranger_is_configured; then
+    if [[ "${SCENARIO}" == "ranger" ]]; then
+      fail "ranger scenario requires HMS_SMOKE_RANGER_ENABLED=true or HMS_SMOKE_RANGER_SALES_DB / HMS_SMOKE_RANGER_SALES_USER"
+    fi
+    log "skipping Ranger authorization policy smoke because Ranger is not configured"
+    return
+  fi
+
+  local auth="${HMS_SMOKE_AUTH:-${AUTH_OVERRIDE:-simple}}"
+  log "running Apache Ranger authorization policy smoke (auth: ${auth})"
+
+  local admin_user="${HMS_SMOKE_RANGER_ADMIN_USER:-admin}"
+  local sales_user="${HMS_SMOKE_RANGER_SALES_USER:-alice}"
+  local sales_group="${HMS_SMOKE_RANGER_SALES_GROUP:-sales}"
+  local finance_user="${HMS_SMOKE_RANGER_FINANCE_USER:-bob}"
+  local finance_group="${HMS_SMOKE_RANGER_FINANCE_GROUP:-finance}"
+  local unauthorized_user="${HMS_SMOKE_RANGER_UNAUTHORIZED_USER:-eve}"
+  local charlie_user="${HMS_SMOKE_RANGER_CHARLIE_USER:-charlie}"
+  local david_user="${HMS_SMOKE_RANGER_DAVID_USER:-david}"
+
+  local sales_db="${HMS_SMOKE_RANGER_SALES_DB:-sales}"
+  local finance_db="${HMS_SMOKE_RANGER_FINANCE_DB:-finance}"
+  local sales_table="${HMS_SMOKE_RANGER_SALES_TABLE:-orders}"
+  local sales_second_table="${HMS_SMOKE_RANGER_SALES_SECOND_TABLE:-customers}"
+  local sales_denied_table="${HMS_SMOKE_RANGER_SALES_DENIED_TABLE:-secret_orders}"
+  local finance_table="${HMS_SMOKE_RANGER_FINANCE_TABLE:-reports}"
+  local finance_second_table="${HMS_SMOKE_RANGER_FINANCE_SECOND_TABLE:-expenses}"
+
+  run_ranger_cli() {
+    local label="$1"
+    local user="$2"
+    local groups="$3"
+    shift 3
+
+    local -a user_args=()
+    if [[ "${auth}" == "kerberos" ]]; then
+      local user_keytab=""
+      local user_principal=""
+      case "${user}" in
+        "${admin_user}")
+          user_keytab="${HMS_SMOKE_RANGER_ADMIN_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_ADMIN_PRINCIPAL:-}"
+          ;;
+        "${sales_user}")
+          user_keytab="${HMS_SMOKE_RANGER_SALES_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_SALES_PRINCIPAL:-}"
+          ;;
+        "${finance_user}")
+          user_keytab="${HMS_SMOKE_RANGER_FINANCE_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_FINANCE_PRINCIPAL:-}"
+          ;;
+        "${unauthorized_user}")
+          user_keytab="${HMS_SMOKE_RANGER_UNAUTHORIZED_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_UNAUTHORIZED_PRINCIPAL:-}"
+          ;;
+        "${charlie_user}")
+          user_keytab="${HMS_SMOKE_RANGER_CHARLIE_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_CHARLIE_PRINCIPAL:-}"
+          ;;
+        "${david_user}")
+          user_keytab="${HMS_SMOKE_RANGER_DAVID_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_DAVID_PRINCIPAL:-}"
+          ;;
+      esac
+
+      if [[ -z "${user_keytab}" && -n "${HMS_SMOKE_KEYTAB_DIR:-}" && -f "${HMS_SMOKE_KEYTAB_DIR}/${user}.keytab" ]]; then
+        user_keytab="${HMS_SMOKE_KEYTAB_DIR}/${user}.keytab"
+        local realm="${HMS_SMOKE_CLIENT_PRINCIPAL#*@}"
+        user_principal="${user}@${realm}"
+      fi
+
+      if [[ -z "${user_keytab}" && -f "/keytabs/${user}.keytab" ]]; then
+        user_keytab="/keytabs/${user}.keytab"
+        local realm="${HMS_SMOKE_CLIENT_PRINCIPAL#*@}"
+        user_principal="${user}@${realm}"
+      fi
+
+      if [[ -n "${user_keytab}" && -n "${user_principal}" ]]; then
+        user_args+=("--client-principal" "${user_principal}" "--keytab" "${user_keytab}")
+      fi
+      user_args+=("--set-ugi" "true" "--set-ugi-user" "${user}")
+    else
+      user_args+=("--user" "${user}" "--set-ugi" "true" "--set-ugi-user" "${user}")
+    fi
+
+    if [[ -n "${groups}" ]]; then
+      user_args+=("--groups" "${groups}")
+    fi
+
+    run_cli "${label}" "metadata" "${user_args[@]}" "$@"
+  }
+
+  run_ranger_cli_expect_fail() {
+    local label="$1"
+    local user="$2"
+    local groups="$3"
+    shift 3
+
+    local -a user_args=()
+    if [[ "${auth}" == "kerberos" ]]; then
+      local user_keytab=""
+      local user_principal=""
+      case "${user}" in
+        "${admin_user}")
+          user_keytab="${HMS_SMOKE_RANGER_ADMIN_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_ADMIN_PRINCIPAL:-}"
+          ;;
+        "${sales_user}")
+          user_keytab="${HMS_SMOKE_RANGER_SALES_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_SALES_PRINCIPAL:-}"
+          ;;
+        "${finance_user}")
+          user_keytab="${HMS_SMOKE_RANGER_FINANCE_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_FINANCE_PRINCIPAL:-}"
+          ;;
+        "${unauthorized_user}")
+          user_keytab="${HMS_SMOKE_RANGER_UNAUTHORIZED_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_UNAUTHORIZED_PRINCIPAL:-}"
+          ;;
+        "${charlie_user}")
+          user_keytab="${HMS_SMOKE_RANGER_CHARLIE_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_CHARLIE_PRINCIPAL:-}"
+          ;;
+        "${david_user}")
+          user_keytab="${HMS_SMOKE_RANGER_DAVID_KEYTAB:-}"
+          user_principal="${HMS_SMOKE_RANGER_DAVID_PRINCIPAL:-}"
+          ;;
+      esac
+
+      if [[ -z "${user_keytab}" && -n "${HMS_SMOKE_KEYTAB_DIR:-}" && -f "${HMS_SMOKE_KEYTAB_DIR}/${user}.keytab" ]]; then
+        user_keytab="${HMS_SMOKE_KEYTAB_DIR}/${user}.keytab"
+        local realm="${HMS_SMOKE_CLIENT_PRINCIPAL#*@}"
+        user_principal="${user}@${realm}"
+      fi
+
+      if [[ -z "${user_keytab}" && -f "/keytabs/${user}.keytab" ]]; then
+        user_keytab="/keytabs/${user}.keytab"
+        local realm="${HMS_SMOKE_CLIENT_PRINCIPAL#*@}"
+        user_principal="${user}@${realm}"
+      fi
+
+      if [[ -n "${user_keytab}" && -n "${user_principal}" ]]; then
+        user_args+=("--client-principal" "${user_principal}" "--keytab" "${user_keytab}")
+      fi
+      user_args+=("--set-ugi" "true" "--set-ugi-user" "${user}")
+    else
+      user_args+=("--user" "${user}" "--set-ugi" "true" "--set-ugi-user" "${user}")
+    fi
+
+    if [[ -n "${groups}" ]]; then
+      user_args+=("--groups" "${groups}")
+    fi
+
+    local -a cmd=()
+    cmd=("${JAVA_CMD[@]}" "-cp" "${HMS_SMOKE_FAT_JAR}" "${CLI_CLASS}" "metadata" "${COMMON_ARGS[@]}" "${user_args[@]}" "$@")
+
+    log "running ${label} (expecting Ranger refusal)"
+    printf '  %q' "${cmd[@]}"
+    printf '\n'
+
+    local output=""
+    set +e
+    output="$("${cmd[@]}" 2>&1)"
+    local status=$?
+    set -e
+    printf '%s\n' "${output}"
+    if [[ ${status} -eq 0 ]]; then
+      fail "${label} was expected to be denied by Ranger, but succeeded"
+    fi
+    log "${label}: correctly rejected by Ranger"
+  }
+
+  cleanup_ranger_metadata() {
+    log "cleaning up test Ranger metadata..."
+    run_ranger_cli "cleanup sales denied table" "${admin_user}" "" --op drop_table --db "${sales_db}" --table "${sales_denied_table}" 2>/dev/null || true
+    run_ranger_cli "cleanup sales second table" "${admin_user}" "" --op drop_table --db "${sales_db}" --table "${sales_second_table}" 2>/dev/null || true
+    run_ranger_cli "cleanup sales table" "${admin_user}" "" --op drop_table --db "${sales_db}" --table "${sales_table}" 2>/dev/null || true
+    run_ranger_cli "cleanup sales db" "${admin_user}" "" --op drop_database --db "${sales_db}" --cascade true 2>/dev/null || true
+
+    run_ranger_cli "cleanup finance second table" "${admin_user}" "" --op drop_table --db "${finance_db}" --table "${finance_second_table}" 2>/dev/null || true
+    run_ranger_cli "cleanup finance table" "${admin_user}" "" --op drop_table --db "${finance_db}" --table "${finance_table}" 2>/dev/null || true
+    run_ranger_cli "cleanup finance db" "${admin_user}" "" --op drop_database --db "${finance_db}" --cascade true 2>/dev/null || true
+  }
+
+  cleanup_ranger_metadata
+  trap cleanup_ranger_metadata RETURN
+
+  # Step 1: Create test metadata via admin user
+  log "creating Ranger test databases and tables via admin user '${admin_user}'"
+  run_ranger_cli "create sales db" "${admin_user}" "" --op create_database --db "${sales_db}"
+  run_ranger_cli "create sales table" "${admin_user}" "" --op create_table --db "${sales_db}" --table "${sales_table}"
+  run_ranger_cli "create sales second table" "${admin_user}" "" --op create_table --db "${sales_db}" --table "${sales_second_table}"
+  run_ranger_cli "create sales denied table" "${admin_user}" "" --op create_table --db "${sales_db}" --table "${sales_denied_table}"
+
+  run_ranger_cli "create finance db" "${admin_user}" "" --op create_database --db "${finance_db}"
+  run_ranger_cli "create finance table" "${admin_user}" "" --op create_table --db "${finance_db}" --table "${finance_table}"
+  run_ranger_cli "create finance second table" "${admin_user}" "" --op create_table --db "${finance_db}" --table "${finance_second_table}"
+
+  # Step 2: Database listing isolation
+  local out_file
+  out_file="$(mktemp "${TMPDIR:-/tmp}/hms-ranger-smoke.XXXXXX")"
+  trap 'rm -f "${out_file:-}"; cleanup_ranger_metadata' RETURN
+
+  log "verifying database listing filtering for sales user '${sales_user}'"
+  run_ranger_cli "get_all_databases as sales user" "${sales_user}" "" --op get_all_databases | tee "${out_file}"
+  grep -q "${sales_db}" "${out_file}" || fail "'${sales_user}' expected to see '${sales_db}' in get_all_databases"
+  if grep -q "${finance_db}" "${out_file}"; then
+    fail "'${sales_user}' MUST NOT see '${finance_db}' in get_all_databases"
+  fi
+
+  log "verifying database listing filtering for finance user '${finance_user}'"
+  run_ranger_cli "get_all_databases as finance user" "${finance_user}" "" --op get_all_databases | tee "${out_file}"
+  grep -q "${finance_db}" "${out_file}" || fail "'${finance_user}' expected to see '${finance_db}' in get_all_databases"
+  if grep -q "${sales_db}" "${out_file}"; then
+    fail "'${finance_user}' MUST NOT see '${sales_db}' in get_all_databases"
+  fi
+
+  log "verifying database listing filtering for unauthorized user '${unauthorized_user}'"
+  run_ranger_cli "get_all_databases as unauthorized user" "${unauthorized_user}" "" --op get_all_databases | tee "${out_file}"
+  if grep -q "${sales_db}" "${out_file}" || grep -q "${finance_db}" "${out_file}"; then
+    fail "'${unauthorized_user}' MUST NOT see '${sales_db}' or '${finance_db}' in get_all_databases"
+  fi
+
+  log "verifying admin user '${admin_user}' sees all databases"
+  run_ranger_cli "get_all_databases as admin" "${admin_user}" "" --op get_all_databases | tee "${out_file}"
+  grep -q "${sales_db}" "${out_file}" || fail "'${admin_user}' expected to see '${sales_db}'"
+  grep -q "${finance_db}" "${out_file}" || fail "'${admin_user}' expected to see '${finance_db}'"
+
+  # Step 3: Direct database access (get_database)
+  log "verifying get_database access and denial"
+  run_ranger_cli "get_database sales as sales user" "${sales_user}" "" --op get_database --db "${sales_db}" | tee "${out_file}"
+  grep -q "database=${sales_db}" "${out_file}" || fail "'${sales_user}' failed to get database '${sales_db}'"
+
+  run_ranger_cli_expect_fail "get_database sales as finance user" "${finance_user}" "" --op get_database --db "${sales_db}"
+
+  run_ranger_cli "get_database finance as finance user" "${finance_user}" "" --op get_database --db "${finance_db}" | tee "${out_file}"
+  grep -q "database=${finance_db}" "${out_file}" || fail "'${finance_user}' failed to get database '${finance_db}'"
+
+  run_ranger_cli_expect_fail "get_database finance as sales user" "${sales_user}" "" --op get_database --db "${finance_db}"
+  run_ranger_cli_expect_fail "get_database sales as unauthorized user" "${unauthorized_user}" "" --op get_database --db "${sales_db}"
+  run_ranger_cli_expect_fail "get_database finance as unauthorized user" "${unauthorized_user}" "" --op get_database --db "${finance_db}"
+
+  # Step 4: Table listing filtering (get_all_tables, get_tables, get_table_meta)
+  log "verifying table listing filtering in '${sales_db}' for '${sales_user}'"
+  run_ranger_cli "get_all_tables as sales user" "${sales_user}" "" --op get_all_tables --db "${sales_db}" | tee "${out_file}"
+  grep -q "${sales_table}" "${out_file}" || fail "'${sales_user}' expected to see table '${sales_table}'"
+  grep -q "${sales_second_table}" "${out_file}" || fail "'${sales_user}' expected to see table '${sales_second_table}'"
+  if grep -q "${sales_denied_table}" "${out_file}"; then
+    fail "'${sales_user}' MUST NOT see denied table '${sales_denied_table}' in get_all_tables"
+  fi
+
+  run_ranger_cli "get_tables with pattern as sales user" "${sales_user}" "" --op get_tables --db "${sales_db}" --pattern ".*" | tee "${out_file}"
+  grep -q "${sales_table}" "${out_file}" || fail "'${sales_user}' expected to see table '${sales_table}' in get_tables"
+  if grep -q "${sales_denied_table}" "${out_file}"; then
+    fail "'${sales_user}' MUST NOT see denied table '${sales_denied_table}' in get_tables"
+  fi
+
+  run_ranger_cli "get_table_meta as sales user" "${sales_user}" "" --op get_table_meta --pattern "${sales_db}" --table ".*" | tee "${out_file}"
+  grep -q "${sales_db}.${sales_table}" "${out_file}" || fail "'${sales_user}' expected to see table '${sales_table}' in get_table_meta"
+  if grep -q "${sales_denied_table}" "${out_file}"; then
+    fail "'${sales_user}' MUST NOT see denied table '${sales_denied_table}' in get_table_meta"
+  fi
+
+  # Step 5: Direct table access (get_table)
+  log "verifying direct get_table access and denials"
+  run_ranger_cli "get_table allowed table as sales user" "${sales_user}" "" --op get_table --db "${sales_db}" --table "${sales_table}" | tee "${out_file}"
+  grep -q "table=${sales_db}.${sales_table}" "${out_file}" || fail "'${sales_user}' failed to get allowed table '${sales_table}'"
+
+  # Table denial within permitted database
+  run_ranger_cli_expect_fail "get_table denied table in permitted db" "${sales_user}" "" --op get_table --db "${sales_db}" --table "${sales_denied_table}"
+
+  # Table denial across database boundaries
+  run_ranger_cli_expect_fail "get_table foreign table as finance user" "${finance_user}" "" --op get_table --db "${sales_db}" --table "${sales_table}"
+  run_ranger_cli_expect_fail "get_table as unauthorized user" "${unauthorized_user}" "" --op get_table --db "${sales_db}" --table "${sales_table}"
+
+  run_ranger_cli "get_table finance table as finance user" "${finance_user}" "" --op get_table --db "${finance_db}" --table "${finance_table}" | tee "${out_file}"
+  grep -q "table=${finance_db}.${finance_table}" "${out_file}" || fail "'${finance_user}' failed to get allowed table '${finance_table}'"
+  run_ranger_cli_expect_fail "get_table finance table as sales user" "${sales_user}" "" --op get_table --db "${finance_db}" --table "${finance_table}"
+
+  # Step 6: Group-based authorization
+  log "verifying group-based Ranger authorization rules"
+  run_ranger_cli "get_all_databases as charlie (group ${sales_group})" "${charlie_user}" "${sales_group}" --op get_all_databases | tee "${out_file}"
+  grep -q "${sales_db}" "${out_file}" || fail "'${charlie_user}' in group '${sales_group}' expected to see '${sales_db}'"
+  if grep -q "${finance_db}" "${out_file}"; then
+    fail "'${charlie_user}' in group '${sales_group}' MUST NOT see '${finance_db}'"
+  fi
+  run_ranger_cli "get_table as charlie (group ${sales_group})" "${charlie_user}" "${sales_group}" --op get_table --db "${sales_db}" --table "${sales_table}" | tee "${out_file}"
+  grep -q "table=${sales_db}.${sales_table}" "${out_file}" || fail "'${charlie_user}' failed to get table '${sales_table}'"
+  run_ranger_cli_expect_fail "get_database finance as charlie (group ${sales_group})" "${charlie_user}" "${sales_group}" --op get_database --db "${finance_db}"
+
+  run_ranger_cli "get_all_databases as david (group ${finance_group})" "${david_user}" "${finance_group}" --op get_all_databases | tee "${out_file}"
+  grep -q "${finance_db}" "${out_file}" || fail "'${david_user}' in group '${finance_group}' expected to see '${finance_db}'"
+  if grep -q "${sales_db}" "${out_file}"; then
+    fail "'${david_user}' in group '${finance_group}' MUST NOT see '${sales_db}'"
+  fi
+  run_ranger_cli "get_table as david (group ${finance_group})" "${david_user}" "${finance_group}" --op get_table --db "${finance_db}" --table "${finance_table}" | tee "${out_file}"
+  grep -q "table=${finance_db}.${finance_table}" "${out_file}" || fail "'${david_user}' failed to get table '${finance_table}'"
+  run_ranger_cli_expect_fail "get_database sales as david (group ${finance_group})" "${david_user}" "${finance_group}" --op get_database --db "${sales_db}"
+
+  # Step 7: Prometheus metrics check
+  local metrics_url="${HMS_SMOKE_RANGER_METRICS_URL:-${HMS_SMOKE_REST_METRICS_URL:-}}"
+  if [[ -n "${metrics_url}" ]] && command -v curl >/dev/null 2>&1; then
+    log "checking Ranger metrics at ${metrics_url}"
+    local metrics_content=""
+    metrics_content="$(curl -sf "${metrics_url}" || true)"
+    if [[ -n "${metrics_content}" ]]; then
+      grep -q 'hms_proxy_ranger_evaluations_total.*result="allowed"' <<< "${metrics_content}" \
+        || fail "missing hms_proxy_ranger_evaluations_total with result=allowed in ${metrics_url}"
+      grep -q 'hms_proxy_ranger_evaluations_total.*result="denied"' <<< "${metrics_content}" \
+        || fail "missing hms_proxy_ranger_evaluations_total with result=denied in ${metrics_url}"
+      grep -q "hms_proxy_ranger_filtered_objects_total" <<< "${metrics_content}" \
+        || fail "missing hms_proxy_ranger_filtered_objects_total in ${metrics_url}"
+      grep -q "hms_proxy_ranger_plugin_info" <<< "${metrics_content}" \
+        || fail "missing hms_proxy_ranger_plugin_info in ${metrics_url}"
+      log "successfully verified Ranger Prometheus metrics"
+    fi
+  fi
+
+  rm -f "${out_file}"
+  trap cleanup_ranger_metadata RETURN
+  log "Apache Ranger authorization policy smoke passed"
 }
 
 notification_is_configured() {
@@ -2255,6 +2616,9 @@ main() {
       run_notification_smoke
       run_rest_smoke
       run_schema_pattern_smoke
+      if ranger_is_configured; then
+        run_ranger_smoke
+      fi
       ;;
     sql)
       run_sql_smoke_all
@@ -2279,8 +2643,11 @@ main() {
     schema_pattern)
       run_schema_pattern_smoke
       ;;
+    ranger)
+      run_ranger_smoke
+      ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern, ranger"
       ;;
   esac
 
