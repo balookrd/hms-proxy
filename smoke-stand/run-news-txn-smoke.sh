@@ -45,6 +45,7 @@ set hive.vectorized.execution.enabled=false;
 set hive.support.concurrency=true;
 set hive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
 set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.stats.autogather=true;
 
 -- 1. Setup database
 create database if not exists ${TEST_DB};
@@ -72,6 +73,10 @@ insert into ${STG_TABLE} values (
     'https://news.yandex.ru/rubric/article-1001.html'
 );
 
+-- 4b. Verify SELECT * from non-transactional staging table under DbTxnManager
+-- (HiveServer2 issues get_valid_write_ids with empty fullTableNames: [] for this query)
+select * from ${STG_TABLE};
+
 -- 5. Create partitioned transactional table
 create table if not exists ${TXN_TABLE} (
     id string,
@@ -90,7 +95,7 @@ clustered by (id) into 2 buckets
 stored as orc
 tblproperties ('transactional'='true', 'smoke'='true');
 
--- 6. Execute user target query
+-- 6. Execute user target query (exercises StatsTask and set_aggr_stats_for / update_table_column_statistics_req)
 INSERT INTO ${TEST_DB}.${TXN_TABLE} PARTITION (source = 'crawler')
     SELECT 
         article_identity_fingerprint AS id,
@@ -105,9 +110,13 @@ INSERT INTO ${TEST_DB}.${TXN_TABLE} PARTITION (source = 'crawler')
         parse_url(url, 'HOST') AS host
     FROM ${TEST_DB}.${STG_TABLE};
 
+-- 6b. Verify SELECT * from transactional table under DbTxnManager
+select * from ${TEST_DB}.${TXN_TABLE};
+
 -- 7. Verify inserted data
 select
-    case when count(*) = 1 then 'NEWS_TXN_SMOKE_COUNT_OK' else 'NEWS_TXN_SMOKE_COUNT_FAIL' end as count_marker,
+    'NEWS_TXN_SMOKE_COUNT_OK' as count_marker,
+    count(*) as row_count,
     source,
     host,
     id
@@ -140,7 +149,7 @@ else
 fi
 
 log "Validating test results..."
-if grep -E "^NEWS_TXN_SMOKE_COUNT_OK[[:space:]]+crawler[[:space:]]+news\.yandex\.ru[[:space:]]+fp-smoke-1001" "${OUT_FILE}" >/dev/null; then
+if grep -E "^NEWS_TXN_SMOKE_COUNT_OK[[:space:]]+1[[:space:]]+crawler[[:space:]]+news\.yandex\.ru[[:space:]]+fp-smoke-1001" "${OUT_FILE}" >/dev/null; then
   log "SUCCESS: Transactional partition insert verified with expected data!"
 else
   fail "Verification marker 'NEWS_TXN_SMOKE_COUNT_OK' not found in output."

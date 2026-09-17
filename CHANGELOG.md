@@ -49,6 +49,12 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Устранение дефектов smoke-стенда и тестов транзакционного ACID-слоя**:
+  - В Hortonworks HiveServer2 (`smoke-stand/hs2-hdp/entrypoint.sh`) включен автосбор статистики (`hive.stats.autogather=true`), ранее искусственно отключенный и маскировавший сбои `StatsTask` (`set_aggr_stats_for` / `update_table_column_statistics_req`).
+  - В `smoke-stand/env/sql.env` и `smoke-stand/env/sql-apache.env` снято ограничение `HMS_SMOKE_TRANSACTIONAL_SQL_FRONT_DOORS=hdp`: после сохранения `writeId` и `validWriteIdList` в прокси транзакционные SQL-тесты со сбором статистики теперь штатно выполняются через оба front door (`apache` и `hdp`).
+  - В `scripts/run-real-installation-smoke.sh` и `smoke-stand/run-news-txn-smoke.sh` добавлены проверки запросов `SELECT *` к не-ACID и ACID таблицам в сессиях с активным `DbTxnManager` (проверка обработки `get_valid_write_ids` с пустым списком таблиц), а также добавлены строгие проверки маркеров результатов транзакционных вставок (`txn_hdp_row_ok`, `txn_apache_row_ok`).
+  - В утилите `HmsMetastoreSmokeCli` добавлен вызов `get_valid_write_ids` с пустым списком таблиц для проверки fallback-маршрутизации жизненного цикла транзакций.
+  - В `smoke-stand/TEST-MATRIX.md` и `TEST-MATRIX.en.md` актуализировано описание строки C6.
 - **Сохранение транзакционного контекста и pass-through расширенных Thrift-запросов HDP и Hive 4**:
   - Устранена потеря полей транзакционного состояния (`writeId`, `validWriteIdList`, `engine`) при передаче запросов через фронтенд-мосты `HortonworksFrontendBridge` и `Hive4FrontendBridge`:
     - `alter_table_req`: передача `writeId`, `validWriteIdList` и `environmentContext` в бэкенд с защитой указателей Iceberg через `IcebergTablePointerGuard` и fallback на `alter_table_with_environment_context` для чистых Apache 3.1.3 бэкендов.

@@ -1262,6 +1262,14 @@ EOF
   if [[ "${HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
       && transactional_sql_runs_on_front_door "${front_door}"; then
     cat >> "${sql_file}" <<EOF
+create table if not exists ${txn_hdp}_stg (
+  id int,
+  ds string
+) stored as orc;
+insert into ${txn_hdp}_stg values (1, '2026-03-31');
+-- Non-transactional table SELECT under DbTxnManager verifies get_valid_write_ids with empty table list
+select * from ${txn_hdp}_stg;
+
 create table if not exists ${txn_hdp} (
   id int,
   ds string
@@ -1269,9 +1277,11 @@ create table if not exists ${txn_hdp} (
 clustered by (id) into 1 buckets
 stored as orc
 tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
-insert into ${txn_hdp} values (1, '2026-03-31');
-select count(*) as ${txn_hdp}_count from ${txn_hdp} where id=1;
+insert into ${txn_hdp} select id, ds from ${txn_hdp}_stg;
+select 'txn_hdp_row_ok', count(*) from ${txn_hdp} where id=1;
+select * from ${txn_hdp} where id=1;
 drop table ${txn_hdp};
+drop table ${txn_hdp}_stg;
 EOF
   fi
 
@@ -1338,6 +1348,14 @@ EOF
   if [[ "${HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
       && transactional_sql_runs_on_front_door "${front_door}"; then
     cat >> "${sql_file}" <<EOF
+create table if not exists ${txn_apache}_stg (
+  id int,
+  ds string
+) stored as orc;
+insert into ${txn_apache}_stg values (1, '2026-03-31');
+-- Non-transactional table SELECT under DbTxnManager verifies get_valid_write_ids with empty table list
+select * from ${txn_apache}_stg;
+
 create table if not exists ${txn_apache} (
   id int,
   ds string
@@ -1345,9 +1363,11 @@ create table if not exists ${txn_apache} (
 clustered by (id) into 1 buckets
 stored as orc
 tblproperties ('transactional'='true', 'smoke'='true', 'table_kind'='transactional');
-insert into ${txn_apache} values (1, '2026-03-31');
-select count(*) as ${txn_apache}_count from ${txn_apache} where id=1;
+insert into ${txn_apache} select id, ds from ${txn_apache}_stg;
+select 'txn_apache_row_ok', count(*) from ${txn_apache} where id=1;
+select * from ${txn_apache} where id=1;
 drop table ${txn_apache};
+drop table ${txn_apache}_stg;
 EOF
   fi
 
@@ -1531,6 +1551,14 @@ EOF
   fi
   if [[ "${run_cross_database_join}" == "true" ]]; then
     assert_file_contains_result "${output_file}" "cross_database_join_ok"
+  fi
+  if [[ "${HMS_SMOKE_HDP_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
+      && transactional_sql_runs_on_front_door "${front_door}"; then
+    assert_file_contains_result "${output_file}" "txn_hdp_row_ok"
+  fi
+  if [[ "${HMS_SMOKE_APACHE_RUN_TRANSACTIONAL_SQL:-false}" == "true" ]] \
+      && transactional_sql_runs_on_front_door "${front_door}"; then
+    assert_file_contains_result "${output_file}" "txn_apache_row_ok"
   fi
 }
 

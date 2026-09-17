@@ -115,8 +115,8 @@ cat > "$CONF_DIR/hive-site.xml" <<XML
   <property><name>hive.metastore.event.listeners</name><value></value></property>
   <property><name>hive.exec.pre.hooks</name><value></value></property>
   <property><name>hive.exec.post.hooks</name><value></value></property>
-  <property><name>hive.exec.failure.hooks</name><value></value></property>
-  <property><name>hive.stats.autogather</name><value>false</value></property>
+  <!-- Autogather stats is enabled so that StatsTask exercises set_aggr_stats_for / update_table_column_statistics_req with write state -->
+  <property><name>hive.stats.autogather</name><value>true</value></property>
 
   <!-- ACID writes go to the default catalog through the proxy. -->
   <property><name>hive.support.concurrency</name><value>true</value></property>

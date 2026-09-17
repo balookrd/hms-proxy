@@ -12,6 +12,7 @@ import java.nio.file.Paths;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -121,6 +122,12 @@ public final class HmsMetastoreSmokeCli {
         if (validResp.getTblValidWriteIdsSize() > 0) {
           System.out.println("get_valid_write_ids first=" + validResp.getTblValidWriteIds().get(0));
         }
+
+        // Verify get_valid_write_ids with empty table list (as issued by HiveServer2 during SELECT under DbTxnManager)
+        GetValidWriteIdsRequest emptyValidReq =
+            new GetValidWriteIdsRequest(Collections.emptyList(), validTxnList);
+        var emptyValidResp = thriftClient.get_valid_write_ids(emptyValidReq);
+        System.out.println("get_valid_write_ids (empty table list) entries=" + emptyValidResp.getTblValidWriteIdsSize());
 
         thriftClient.commit_txn(new CommitTxnRequest(txnId));
         System.out.println("commit_txn txnId=" + txnId);

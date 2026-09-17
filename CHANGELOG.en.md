@@ -49,6 +49,12 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Fix Smoke Stand Configuration and ACID Transactional Test Scenarios**:
+  - Enabled statistics autogathering (`hive.stats.autogather=true`) in Hortonworks HiveServer2 (`smoke-stand/hs2-hdp/entrypoint.sh`), which previously masked failures in `StatsTask` (`set_aggr_stats_for` / `update_table_column_statistics_req`).
+  - Lifted the `HMS_SMOKE_TRANSACTIONAL_SQL_FRONT_DOORS=hdp` restriction in `smoke-stand/env/sql.env` and `smoke-stand/env/sql-apache.env`: after preserving `writeId` and `validWriteIdList` in proxy bridges, transactional SQL tests with statistics collection now run against both `apache` and `hdp` front doors.
+  - Added non-transactional and transactional `SELECT *` queries under active `DbTxnManager` to `scripts/run-real-installation-smoke.sh` and `smoke-stand/run-news-txn-smoke.sh` to verify `get_valid_write_ids` routing with empty table lists (`fullTableNames: []`), along with strict assertion checks for transactional query output markers (`txn_hdp_row_ok`, `txn_apache_row_ok`).
+  - Added empty table list `get_valid_write_ids` validation to `HmsMetastoreSmokeCli` to test default-catalog transaction lifecycle routing.
+  - Updated test matrix row C6 in `smoke-stand/TEST-MATRIX.md` and `TEST-MATRIX.en.md`.
 - **Preserve Transactional Context and Pass-Through Extended Thrift Requests for HDP and Hive 4**:
   - Eliminated dropping of transactional state fields (`writeId`, `validWriteIdList`, `engine`) during request forwarding across frontend bridges `HortonworksFrontendBridge` and `Hive4FrontendBridge`:
     - `alter_table_req`: forwards `writeId`, `validWriteIdList`, and `environmentContext` to backends with Iceberg pointer safety via `IcebergTablePointerGuard` and graceful fallback to `alter_table_with_environment_context` for standard Apache 3.1.3 backends.
