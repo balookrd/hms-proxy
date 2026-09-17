@@ -36,6 +36,9 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 - **Unified HDP runtime version in routing test and eliminated ClassCastException**:
   - Replaced incorrect `HORTONWORKS_3_1_0_3_1_5_6150_1` profile with production `HORTONWORKS_3_1_0_3_1_0_78` in `alterTableRenamesTableAcrossSchemasWithHdpBackend` (`RoutingMetaStoreProxyNamespaceRoutingTest`), aligning the profile with the configured `HDP_JAR` (`hive-standalone-metastore-3.1.0.3.1.0.0-78.jar`).
   - Fixed a hidden `ClassCastException` in `IcebergTablePointerGuard` during `get_table` lookup caused by creating a redundant `MetastoreApiClassLoader` in the test mock instead of reusing the isolated backend class loader.
+- **Eliminated fat.jar upload timeout in GitHub Actions release workflow**:
+  - Migrated the release publication step in `_release-build.yml` from `softprops/action-gh-release@v2` to the official `gh release` CLI.
+  - Resolves `Headers Timeout Error` and hanging asset uploads for large binary artifacts (`dist/*-fat.jar`, >130 MB) to the GitHub API on runners executing under Node 24.
 
 ### Added
 

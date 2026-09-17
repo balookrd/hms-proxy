@@ -36,6 +36,9 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 - **Выравнивание версии HDP в тестах и устранение ClassCastException**:
   - В тесте `alterTableRenamesTableAcrossSchemasWithHdpBackend` (`RoutingMetaStoreProxyNamespaceRoutingTest`) заменен ошибочно указанный профиль `HORTONWORKS_3_1_0_3_1_5_6150_1` на боевой `HORTONWORKS_3_1_0_3_1_0_78`, соответствующий переданному jar-артефакту `HDP_JAR` (`hive-standalone-metastore-3.1.0.3.1.0.0-78.jar`).
   - Устранен скрытый `ClassCastException` внутри `IcebergTablePointerGuard` при вызове `get_table`, вызванный созданием дублирующего `MetastoreApiClassLoader` в тестовом моке вместо использования classloader'а изолированного бэкенда.
+- **Устранение таймаута загрузки fat.jar в релизах GitHub Actions**:
+  - В workflow `_release-build.yml` шаг публикации релиза переведен со стороннего JS-action `softprops/action-gh-release@v2` на официальный `gh release` CLI.
+  - Это устраняет ошибку `Headers Timeout Error` и зависание загрузки больших бинарных ассетов (`dist/*-fat.jar`, >130 МБ) в GitHub API на раннерах под управлением Node 24.
 
 ### Добавлено
 

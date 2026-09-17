@@ -185,14 +185,34 @@ jobs:
         run: .github/scripts/gen-release-notes.sh "$TAG" release-notes.md
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ steps.vars.outputs.release_name }}
-          prerelease: ${{ inputs.prerelease }}
-          make_latest: ${{ inputs.make_latest }}
-          body_path: release-notes.md
-          fail_on_unmatched_files: true
-          files: |
-            dist/*.jar
-            dist/SHA256SUMS.txt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_NAME: ${{ steps.vars.outputs.release_name }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
+        run: |
+          set -euo pipefail
+
+          flags=(
+            --title "${RELEASE_NAME}"
+            --notes-file release-notes.md
+          )
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            flags+=(--prerelease)
+          fi
+          if [[ "${MAKE_LATEST}" == "true" ]]; then
+            flags+=(--latest)
+          else
+            flags+=(--latest=false)
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Updating existing release ${TAG}..."
+            gh release edit "${TAG}" "${flags[@]}"
+            gh release upload "${TAG}" dist/*.jar dist/SHA256SUMS.txt --clobber
+          else
+            echo "Creating release ${TAG}..."
+            gh release create "${TAG}" dist/*.jar dist/SHA256SUMS.txt "${flags[@]}"
+          fi
