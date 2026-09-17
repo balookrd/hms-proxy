@@ -1100,16 +1100,8 @@ run_sql_smoke() {
   # has no MapReduce, so the engine cannot be named in hive-site.xml (the server would not start),
   # and a stand without YARN cannot use the vendor default of Tez either. `set` is the only place
   # left to choose, and it is what an operator types on a real cluster too.
-  # TRUNCATE is opt-out because neither client can carry it out against the Hortonworks metastore
-  # on this stand, and they fail in opposite ways. Measured on the wire, the difference is one
-  # argument: the Apache client sends partNames=null - truncate the whole table - so the metastore
-  # deletes the table directory, reaches HdfsAdmin.getEncryptionZoneForPath, finds no matching
-  # signature on its own classpath, dies with NoSuchMethodError and drops the connection; the
-  # client sees a bare TTransportException behind a failed DDLTask. The vendor client sends
-  # partNames=[], an empty partition list, so the metastore has nothing to delete and answers
-  # success without doing any work - which is why the assertion below checks the row count rather
-  # than the absence of an error. The front door is not the variable: HortonworksFrontendBridge
-  # downgrades truncate_table_req to the same positional call.
+  # TRUNCATE empties the whole table when partNames is null. The assertion below checks the row count
+  # (truncate_emptied_*) rather than the absence of an error to ensure files are actually deleted on HDFS.
   local truncate_sql_managed_hdp=""
   local truncate_sql_managed_apache=""
   if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
@@ -1478,8 +1470,7 @@ EOF
   assert_file_contains_result "${output_file}" "${managed_hdp}_renamed"
   assert_file_contains_result "${output_file}" "${external_hdp}_renamed"
   if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
-    # Not "did TRUNCATE fail": the Hortonworks client sends an empty partition list, so the
-    # metastore truncates nothing and answers success. Only the row count tells the two apart.
+    # Verify that the table was actually emptied and files removed, rather than just returning success.
     assert_file_contains_result "${output_file}" "truncate_emptied_managed_hdp"
     assert_file_contains_result "${output_file}" "truncate_emptied_managed_apache"
   fi

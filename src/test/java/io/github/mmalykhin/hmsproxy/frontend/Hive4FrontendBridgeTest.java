@@ -335,6 +335,39 @@ public class Hive4FrontendBridgeTest {
   }
 
   @Test
+  public void bridgeMapsHive4OnlyTruncateTableReqWithNullPartNamesPreservingEntireTableTruncation() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    List<Object> capturedArgs = new ArrayList<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      capturedArgs.clear();
+      if (args != null) {
+        for (Object arg : args) {
+          capturedArgs.add(arg);
+        }
+      }
+      return null;
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader()
+        .loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    Method method = bridge.ifaceClass().getMethod("truncate_table_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("truncate_table", invokedMethod.get());
+    Assert.assertEquals("sales", capturedArgs.get(0));
+    Assert.assertEquals("events", capturedArgs.get(1));
+    Assert.assertNull(capturedArgs.get(2));
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.TruncateTableResponse", response.getClass().getName());
+  }
+
+  @Test
   public void bridgeMapsHive4OnlyDropTableReqToLegacyApacheMethod() throws Exception {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

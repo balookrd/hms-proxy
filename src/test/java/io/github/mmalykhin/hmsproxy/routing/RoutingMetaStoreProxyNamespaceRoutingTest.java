@@ -1000,6 +1000,65 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void truncateTableReqFallsBackToLegacyTruncateTablePreservingNullPartNames() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<Object> capturedPartNames = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("truncate_table".equals(method.getName())) {
+        capturedDb.set((String) args[0]);
+        capturedTable.set((String) args[1]);
+        capturedPartNames.set(args[2]);
+        return null;
+      }
+      throw new NoSuchMethodException("Method not supported: " + method.getName());
+    });
+    CatalogBackend legacyBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", legacyBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.TruncateTableRequest", true, classLoader);
+    Object request = requestClass
+        .getConstructor(String.class, String.class)
+        .newInstance("catalog2__sales", "events");
+
+    Object response = handler.truncate_table_req(request);
+
+    Assert.assertNull(response);
+    Assert.assertEquals("truncate_table", invokedMethod.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertNull(capturedPartNames.get());
+  }
+
+  @Test
   public void getTableStatisticsReqRoutesToResolvedCatalogAndRewritesValidWriteIds() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedDb = new AtomicReference<>();

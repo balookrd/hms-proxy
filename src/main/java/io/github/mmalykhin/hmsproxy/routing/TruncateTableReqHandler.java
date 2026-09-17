@@ -53,7 +53,7 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
     String db = (String) ThriftReflectionCache.invokeGetter(routedRequest, "getDbName");
     String tbl = (String) ThriftReflectionCache.invokeGetter(routedRequest, "getTableName");
     Object partNames = ThriftReflectionCache.invokeGetter(routedRequest, "getPartNames");
-    List<String> partNamesList = partNames == null ? List.of() : (List<String>) partNames;
+    List<String> partNamesList = (List<String>) partNames;
     support.invokeDirect(backend, TRUNCATE_TABLE, new Object[]{db, tbl, partNamesList});
     return null;
   }

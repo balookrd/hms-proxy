@@ -268,11 +268,12 @@ public final class HortonworksFrontendBridge {
       return null;
     }
 
+    @SuppressWarnings("unchecked")
     private Object handleTruncateTableReq(Method method, Object request) throws Throwable {
       apacheHandler.truncate_table(
           (String) invokeNoArgs(request, "getDbName"),
           (String) invokeNoArgs(request, "getTableName"),
-          stringList(invokeNoArgs(request, "getPartNames")));
+          (List<String>) invokeNoArgs(request, "getPartNames"));
       return emptyResponse(method.getReturnType());
     }
 

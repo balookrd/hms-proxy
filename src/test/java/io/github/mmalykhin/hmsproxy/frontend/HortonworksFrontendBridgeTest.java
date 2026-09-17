@@ -124,6 +124,38 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeMapsHdpOnlyTruncateTableReqWithNullPartNamesPreservingEntireTableTruncation() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    List<Object> capturedArgs = new ArrayList<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      capturedArgs.clear();
+      if (args != null) {
+        for (Object arg : args) {
+          capturedArgs.add(arg);
+        }
+      }
+      return null;
+    });
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    Method method = bridge.ifaceClass().getMethod("truncate_table_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("truncate_table", invokedMethod.get());
+    Assert.assertEquals("sales", capturedArgs.get(0));
+    Assert.assertEquals("events", capturedArgs.get(1));
+    Assert.assertNull(capturedArgs.get(2));
+    Assert.assertEquals("org.apache.hadoop.hive.metastore.api.TruncateTableResponse", response.getClass().getName());
+  }
+
+  @Test
   public void bridgeMapsHdpOnlyStatsUpdateRequestToSetAggrStatsFor() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

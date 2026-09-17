@@ -8,6 +8,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Preserve null partNames in TRUNCATE TABLE**:
+  - Fixed coercion of `partNames = null` into an empty list `List.of()` in `TruncateTableReqHandler`, `HortonworksFrontendBridge`, and `Hive4FrontendBridge`. Previously, when executing `TRUNCATE TABLE` without a `PARTITION (...)` spec (for unpartitioned tables or entire partitioned tables), the proxy sent an empty partition list `[]` instead of `null` to the backend. In Hive Metastore, passing an empty list means selecting 0 partitions to truncate, causing HMS to return success as a silent no-op without actually deleting data files from the table directory on HDFS.
+
 ### Added
 
 - **Automatic View Reference Rewriting for Spark and Federated Catalogs**:
