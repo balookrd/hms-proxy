@@ -8,7 +8,7 @@ final class TraceOnlyWriteOps {
   static void contribute(OperationRegistry r) {
     r.all(o -> o.trace(),
         "alter_table", "alter_table_with_environment_context",
-        "add_partition", "add_partitions", "add_partitions_req",
+        "add_partition", "add_partitions",
         "alter_partition", "alter_partitions", "rename_partition",
         "set_aggr_stats_for",
         "update_table_column_statistics", "update_partition_column_statistics");

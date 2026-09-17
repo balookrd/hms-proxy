@@ -41,6 +41,20 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Preserve Transactional Context and Pass-Through Extended Thrift Requests for HDP and Hive 4**:
+  - Eliminated dropping of transactional state fields (`writeId`, `validWriteIdList`, `engine`) during request forwarding across frontend bridges `HortonworksFrontendBridge` and `Hive4FrontendBridge`:
+    - `alter_table_req`: forwards `writeId`, `validWriteIdList`, and `environmentContext` to backends with Iceberg pointer safety via `IcebergTablePointerGuard` and graceful fallback to `alter_table_with_environment_context` for standard Apache 3.1.3 backends.
+    - `alter_partitions_req`: forwards `writeId` and `validWriteIdList` with fallback to `alter_partitions_with_environment_context`.
+    - `truncate_table_req`: preserves `writeId` and `validWriteIdList` with fallback to `truncate_table`.
+    - `rename_partition_req`: forwards `validWriteIdList` with fallback to `rename_partition`.
+    - `get_table_statistics_req` and `get_partitions_statistics_req`: internalizes qualified table names in `validWriteIdList` and externalizes response payloads without downcasting request objects to Apache 3.1.3 types.
+    - `add_partitions_req`: routes with preserved `validWriteIdList` and fallback to `add_partitions_req(AddPartitionsRequest)`.
+    - `add_write_notification_log_in_batch`: batch notification logging for Hive 4 backends with database internalization and catalog access validation.
+  - Added automatic signature upgrades in `Hive4BackendAdapter` for positional methods supplying the default argument `engine = "hive"`:
+    - `delete_table_column_statistics(db, tbl, col)` -> `delete_table_column_statistics(db, tbl, col, "hive")`.
+    - `delete_partition_column_statistics(db, tbl, part, col)` -> `delete_partition_column_statistics(db, tbl, part, col, "hive")`.
+  - Allowed `APACHE_4_1_0` backend runtime profile in `AddWriteNotificationLogHandler` alongside Hortonworks runtimes.
+  - Registered operations `alter_table_req`, `alter_partitions_req`, `truncate_table_req`, `rename_partition_req`, `get_table_statistics_req`, `get_partitions_statistics_req`, `add_partitions_req`, `add_write_notification_log_in_batch` in `HmsOperationPolicy` access rules.
 - **Preserve transactional write state (`writeId`, `validWriteIdList`) during column stats update (`set_aggr_stats_for`)**:
   - Fixed `MetaException: Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` when executing `INSERT INTO <acid_table>` in HiveServer2 during statistics gathering (`StatsTask`).
   - Previously, `set_aggr_stats_for` and `update_table_column_statistics_req` in `HortonworksFrontendBridge` and `Hive4FrontendBridge` were coerced into Apache Hive 3.1.3 `SetPartitionsStatsRequest`, which lacked `writeId` (field 3) and `validWriteIdList` (field 4) present in HDP 3.1.0 and Hive 4. Consequently, Thrift dropped these fields, causing the backend metastore to reject the update.

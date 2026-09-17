@@ -41,6 +41,20 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Сохранение транзакционного контекста и pass-through расширенных Thrift-запросов HDP и Hive 4**:
+  - Устранена потеря полей транзакционного состояния (`writeId`, `validWriteIdList`, `engine`) при передаче запросов через фронтенд-мосты `HortonworksFrontendBridge` и `Hive4FrontendBridge`:
+    - `alter_table_req`: передача `writeId`, `validWriteIdList` и `environmentContext` в бэкенд с защитой указателей Iceberg через `IcebergTablePointerGuard` и fallback на `alter_table_with_environment_context` для чистых Apache 3.1.3 бэкендов.
+    - `alter_partitions_req`: передача `writeId` и `validWriteIdList` с fallback на `alter_partitions_with_environment_context`.
+    - `truncate_table_req`: сохранение `writeId` и `validWriteIdList` с fallback на `truncate_table`.
+    - `rename_partition_req`: передача `validWriteIdList` с fallback на `rename_partition`.
+    - `get_table_statistics_req` и `get_partitions_statistics_req`: интернализация квалифицированных имен в `validWriteIdList` и экстернализация возвращаемых результатов без даункаста объектов запроса к типам Apache 3.1.3.
+    - `add_partitions_req`: маршрутизация с сохранением `validWriteIdList` и fallback на `add_partitions_req(AddPartitionsRequest)`.
+    - `add_write_notification_log_in_batch`: пакетная запись лога уведомлений в бэкенды Hive 4 с интернализацией БД и проверкой прав доступа.
+  - В `Hive4BackendAdapter` добавлен автоматический апгрейд сигнатур для позиционных методов с подстановкой аргумента по умолчанию `engine = "hive"`:
+    - `delete_table_column_statistics(db, tbl, col)` -> `delete_table_column_statistics(db, tbl, col, "hive")`.
+    - `delete_partition_column_statistics(db, tbl, part, col)` -> `delete_partition_column_statistics(db, tbl, part, col, "hive")`.
+  - В `AddWriteNotificationLogHandler` разрешено использование рантайма `APACHE_4_1_0` наряду с Hortonworks.
+  - Зарегистрированы операции `alter_table_req`, `alter_partitions_req`, `truncate_table_req`, `rename_partition_req`, `get_table_statistics_req`, `get_partitions_statistics_req`, `add_partitions_req`, `add_write_notification_log_in_batch` в политиках прав доступа `HmsOperationPolicy`.
 - **Сохранение транзакционного состояния (`writeId`, `validWriteIdList`) при обновлении статистики таблиц (`set_aggr_stats_for`)**:
   - Исправлена ошибка `MetaException: Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` при выполнении `INSERT INTO <acid_table>` в HiveServer2 на этапе сбора статистики (`StatsTask`).
   - Ранее запросы `set_aggr_stats_for` и `update_table_column_statistics_req` в `HortonworksFrontendBridge` и `Hive4FrontendBridge` принудительно приводились к типу Apache Hive 3.1.3 `SetPartitionsStatsRequest`, в котором отсутствовали поля `writeId` (field 3) и `validWriteIdList` (field 4), добавленные в HDP 3.1.0 и Hive 4. Из-за этого поля отбрасывались Thrift при десериализации, и бэкенд получал неинициализированное состояние.

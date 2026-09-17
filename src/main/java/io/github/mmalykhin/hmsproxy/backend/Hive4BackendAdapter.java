@@ -51,6 +51,22 @@ public final class Hive4BackendAdapter extends AbstractBackendAdapter {
             new Object[]{request},
             impersonation);
         return result == null ? List.<Table>of() : result.getTables();
+      },
+      "delete_table_column_statistics",
+      (backend, args, impersonation) -> {
+        return backend.invokeRawByName(
+            "delete_table_column_statistics",
+            new Class<?>[]{String.class, String.class, String.class, String.class},
+            new Object[]{args[0], args[1], args[2], "hive"},
+            impersonation);
+      },
+      "delete_partition_column_statistics",
+      (backend, args, impersonation) -> {
+        return backend.invokeRawByName(
+            "delete_partition_column_statistics",
+            new Class<?>[]{String.class, String.class, String.class, String.class, String.class},
+            new Object[]{args[0], args[1], args[2], args[3], "hive"},
+            impersonation);
       });
 
   Hive4BackendAdapter() {

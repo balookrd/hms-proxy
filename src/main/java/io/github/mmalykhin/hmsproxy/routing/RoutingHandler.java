@@ -157,6 +157,13 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler lock = new LockRoutingHandler(support, this);
     SpecialCaseHandler refreshPrivileges = new RefreshPrivilegesHandler(support);
     SpecialCaseHandler setAggrStatsFor = new SetAggrStatsForHandler(support);
+    SpecialCaseHandler alterTableReq = new AlterTableReqHandler(support, icebergTablePointerGuard);
+    SpecialCaseHandler alterPartitionsReq = new AlterPartitionsReqHandler(support);
+    SpecialCaseHandler truncateTableReq = new TruncateTableReqHandler(support);
+    SpecialCaseHandler renamePartitionReq = new RenamePartitionReqHandler(support);
+    SpecialCaseHandler tableStatisticsReq = new TableStatisticsReqHandler(support);
+    SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support);
+    SpecialCaseHandler addWriteNotificationLogBatch = new AddWriteNotificationLogBatchHandler(support);
     return Map.ofEntries(
         Map.entry("lock", lock),
         Map.entry("set_ugi", setUgi),
@@ -169,6 +176,14 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("getTablesExt", getTablesExt),
         Map.entry("getAllMaterializedViewObjectsForRewriting", getAllMvForRewriting),
         Map.entry("set_aggr_stats_for", setAggrStatsFor),
+        Map.entry("alter_table_req", alterTableReq),
+        Map.entry("alter_partitions_req", alterPartitionsReq),
+        Map.entry("truncate_table_req", truncateTableReq),
+        Map.entry("rename_partition_req", renamePartitionReq),
+        Map.entry("get_table_statistics_req", tableStatisticsReq),
+        Map.entry("get_partitions_statistics_req", tableStatisticsReq),
+        Map.entry("add_partitions_req", addPartitionsReq),
+        Map.entry("add_write_notification_log_in_batch", addWriteNotificationLogBatch),
         Map.entry("drop_table", dropTable),
         Map.entry("drop_table_with_environment_context", dropTable),
         Map.entry("refresh_privileges", refreshPrivileges)

@@ -82,12 +82,73 @@ public final class HortonworksFrontendBridge {
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
-      if ("set_aggr_stats_for".equals(method.getName()) && extension != null) {
-        try {
-          Object result = extension.set_aggr_stats_for(args == null || args.length == 0 ? null : args[0]);
-          return booleanResponse(method.getReturnType(), (Boolean) result);
-        } catch (Throwable t) {
-          throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+      if (extension != null) {
+        switch (method.getName()) {
+          case "set_aggr_stats_for" -> {
+            try {
+              Object result = extension.set_aggr_stats_for(args == null || args.length == 0 ? null : args[0]);
+              return booleanResponse(method.getReturnType(), (Boolean) result);
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "alter_table_req" -> {
+            try {
+              Object result = extension.alter_table_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "alter_partitions_req" -> {
+            try {
+              Object result = extension.alter_partitions_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "truncate_table_req" -> {
+            try {
+              Object result = extension.truncate_table_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "rename_partition_req" -> {
+            try {
+              Object result = extension.rename_partition_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "get_table_statistics_req" -> {
+            try {
+              Object result = extension.get_table_statistics_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "get_partitions_statistics_req" -> {
+            try {
+              Object result = extension.get_partitions_statistics_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          case "add_partitions_req" -> {
+            try {
+              Object result = extension.add_partitions_req(args == null || args.length == 0 ? null : args[0]);
+              return convertResult(result, method.getReturnType());
+            } catch (Throwable t) {
+              throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
+            }
+          }
+          default -> {}
         }
       }
       if (HmsOperationPolicy.describe(method.getName()).hdpAdapted()) {
@@ -298,8 +359,11 @@ public final class HortonworksFrontendBridge {
     }
 
     private Object convertResult(Object result, Class<?> returnType) throws Exception {
-      if (returnType == void.class || result == null) {
+      if (returnType == void.class) {
         return null;
+      }
+      if (result == null) {
+        return emptyResponse(returnType);
       }
       return ThriftValueConverter.convertValue(result, returnType, hdpClassLoader);
     }

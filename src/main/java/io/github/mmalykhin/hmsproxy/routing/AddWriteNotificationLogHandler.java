@@ -20,9 +20,9 @@ final class AddWriteNotificationLogHandler implements SpecialCaseHandler {
     support.recordDefaultCatalogRouteIfImplicit("add_write_notification_log", dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "add_write_notification_log", namespace.backendDbName());
-    if (!backend.runtimeProfile().isHortonworks()) {
+    if (!backend.runtimeProfile().isHortonworks() && !backend.runtimeProfile().isHive4()) {
       throw new MetaException(
-          "Hortonworks add_write_notification_log requires a Hortonworks backend runtime for catalog '"
+          "add_write_notification_log requires a Hortonworks or Hive 4 backend runtime for catalog '"
               + backend.name()
               + "'");
     }

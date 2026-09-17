@@ -275,7 +275,7 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
 
     MetaException error = Assert.assertThrows(MetaException.class, () -> handler.addWriteNotificationLog(request));
 
-    Assert.assertTrue(error.getMessage().contains("requires a Hortonworks backend runtime"));
+    Assert.assertTrue(error.getMessage().contains("requires a Hortonworks or Hive 4 backend runtime"));
   }
 
   @Test
@@ -850,6 +850,215 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
 
     GetValidWriteIdsRequest request = new GetValidWriteIdsRequest(List.of("catalog2__sales.events"), "1:1::");
     handler.invoke(null, method, new Object[] {request});
+  }
+
+  @Test
+  public void alterTableReqRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog2")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("alter_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTableName").invoke(req));
+            capturedWriteId.set((Long) req.getClass().getMethod("getWriteId").invoke(req));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.AlterTableResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          if ("get_table".equals(method.getName()) || "get_table_req".equals(method.getName())) {
+            Object table = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table").getConstructor().newInstance();
+            table.getClass().getMethod("setDbName", String.class).invoke(table, args[0]);
+            table.getClass().getMethod("setTableName", String.class).invoke(table, args[1]);
+            table.getClass().getMethod("setParameters", Map.class).invoke(table, Map.of());
+            return table;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.AlterTableRequest", true, classLoader);
+    Class<?> tableClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader);
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "catalog2__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, Map.of());
+
+    Object request = requestClass
+        .getConstructor(String.class, String.class, tableClass)
+        .newInstance("catalog2__sales", "events", table);
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 101L);
+
+    Object response = handler.alter_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertEquals(Long.valueOf(101L), capturedWriteId.get());
+  }
+
+  @Test
+  public void truncateTableReqRoutesToResolvedCatalogAndRewritesDb() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog2")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("truncate_table_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTableName").invoke(req));
+            capturedWriteId.set((Long) req.getClass().getMethod("getWriteId").invoke(req));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.TruncateTableRequest", true, classLoader);
+    Object request = requestClass
+        .getConstructor(String.class, String.class)
+        .newInstance("catalog2__sales", "events");
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 55L);
+
+    Object response = handler.truncate_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertEquals(Long.valueOf(55L), capturedWriteId.get());
+  }
+
+  @Test
+  public void getTableStatisticsReqRoutesToResolvedCatalogAndRewritesValidWriteIds() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("get_table_statistics_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedDb.set((String) req.getClass().getMethod("getDbName").invoke(req));
+            capturedTable.set((String) req.getClass().getMethod("getTblName").invoke(req));
+            capturedValidWriteIds.set((String) req.getClass().getMethod("getValidWriteIdList").invoke(req));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.TableStatsResult")
+                .getConstructor(List.class)
+                .newInstance(List.of());
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.TableStatsRequest", true, classLoader);
+    Object request = requestClass
+        .getConstructor(String.class, String.class, List.class)
+        .newInstance("catalog2__sales", "events", List.of("id"));
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "catalog2__sales.events:77:1::");
+
+    Object response = handler.get_table_statistics_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+    Assert.assertEquals("sales.events:77:1::", capturedValidWriteIds.get());
   }
 }
 

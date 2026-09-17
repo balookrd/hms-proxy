@@ -215,6 +215,54 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return invoke(null, method, new Object[]{request});
   }
 
+  @Override
+  public Object alter_table_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("alter_table_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object alter_partitions_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("alter_partitions_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object truncate_table_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("truncate_table_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object rename_partition_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("rename_partition_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_table_statistics_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_table_statistics_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object get_partitions_statistics_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_statistics_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object add_partitions_req(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("add_partitions_req", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
+  @Override
+  public Object add_write_notification_log_in_batch(Object request) throws Throwable {
+    Method method = HortonworksFrontendExtension.class.getMethod("add_write_notification_log_in_batch", Object.class);
+    return invoke(null, method, new Object[]{request});
+  }
+
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {
     if (!AUDIT_LOG.isInfoEnabled()) {
       return;

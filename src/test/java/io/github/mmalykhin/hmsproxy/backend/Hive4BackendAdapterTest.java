@@ -140,6 +140,64 @@ public class Hive4BackendAdapterTest {
   }
 
   @Test
+  public void invokeAppendsEngineToTableColumnStatistics() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<List<Object>> capturedArgs = new AtomicReference<>();
+
+    CatalogBackend backend = newIsolatedBackend((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("delete_table_column_statistics".equals(method.getName())) {
+        capturedArgs.set(List.of(args));
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    try {
+      Method deleteStats = ThriftHiveMetastore.Iface.class.getMethod(
+          "delete_table_column_statistics", String.class, String.class, String.class);
+
+      Object result = backend.invoke(deleteStats, new Object[]{"sales", "events", "user_id"}, null);
+
+      Assert.assertEquals("delete_table_column_statistics", invokedMethod.get());
+      Assert.assertEquals(Boolean.TRUE, result);
+      Assert.assertEquals(List.of("sales", "events", "user_id", "hive"), capturedArgs.get());
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
+  public void invokeAppendsEngineToPartitionColumnStatistics() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<List<Object>> capturedArgs = new AtomicReference<>();
+
+    CatalogBackend backend = newIsolatedBackend((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("delete_partition_column_statistics".equals(method.getName())) {
+        capturedArgs.set(List.of(args));
+        return true;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    try {
+      Method deleteStats = ThriftHiveMetastore.Iface.class.getMethod(
+          "delete_partition_column_statistics", String.class, String.class, String.class, String.class);
+
+      Object result = backend.invoke(deleteStats, new Object[]{"sales", "events", "ds=2026-09-17", "user_id"}, null);
+
+      Assert.assertEquals("delete_partition_column_statistics", invokedMethod.get());
+      Assert.assertEquals(Boolean.TRUE, result);
+      Assert.assertEquals(List.of("sales", "events", "ds=2026-09-17", "user_id", "hive"), capturedArgs.get());
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
   public void invokeRequestDelegatesGetTableReqUnchanged() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

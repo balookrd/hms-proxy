@@ -20,6 +20,7 @@ final class AcidOps {
     r.all(o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE).mutating(),
         "compact", "compact2", "fire_listener_event", "repl_tbl_writeid_state");
     r.op("add_dynamic_partitions", o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE));
+    r.op("add_write_notification_log_in_batch", o -> o.cls(HmsOperationClass.ACID_NAMESPACE_BOUND_WRITE).mutating());
 
     // Id-bound lifecycle: all share TXN_AND_LOCK_LIFECYCLE default backend.
     r.all(o -> o.cls(HmsOperationClass.ACID_ID_BOUND_LIFECYCLE)

@@ -29,5 +29,9 @@ final class PartitionOps {
         "drop_partition_by_name", "drop_partition_by_name_with_environment_context",
         "markPartitionForEvent", "isPartitionMarkedForEvent",
         "delete_partition_column_statistics", "delete_table_column_statistics");
+    r.op("get_partitions_statistics_req", o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.op("add_partitions_req", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating()
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
   }
 }

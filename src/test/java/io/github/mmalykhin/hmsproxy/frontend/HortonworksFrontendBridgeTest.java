@@ -264,6 +264,110 @@ public class HortonworksFrontendBridgeTest {
   }
 
   @Test
+  public void bridgeDelegatesAlterTableReqToHortonworksExtensionPreservingWriteState() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("alter_table_req".equals(method.getName())) {
+        Object request = args[0];
+        try {
+          capturedWriteId.set((Long) request.getClass().getMethod("getWriteId").invoke(request));
+          capturedValidWriteIds.set((String) request.getClass().getMethod("getValidWriteIdList").invoke(request));
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+
+    Object request = requestClass.getConstructor(String.class, String.class, tableClass)
+        .newInstance("sales", "events", table);
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 101L);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "sales.events:101:1::");
+    Method method = bridge.ifaceClass().getMethod("alter_table_req", requestClass);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals(Long.valueOf(101L), capturedWriteId.get());
+    Assert.assertEquals("sales.events:101:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
+  public void bridgeDelegatesTruncateTableReqToHortonworksExtensionPreservingWriteState() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<Long> capturedWriteId = new AtomicReference<>();
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("truncate_table_req".equals(method.getName())) {
+        Object request = args[0];
+        try {
+          capturedWriteId.set((Long) request.getClass().getMethod("getWriteId").invoke(request));
+          capturedValidWriteIds.set((String) request.getClass().getMethod("getValidWriteIdList").invoke(request));
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.TruncateTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    requestClass.getMethod("setWriteId", long.class).invoke(request, 55L);
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "sales.events:55:1::");
+    Method method = bridge.ifaceClass().getMethod("truncate_table_req", requestClass);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals(Long.valueOf(55L), capturedWriteId.get());
+    Assert.assertEquals("sales.events:55:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
+  public void bridgeDelegatesGetTableStatisticsReqToHortonworksExtensionPreservingWriteState() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    AtomicReference<String> capturedValidWriteIds = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_statistics_req".equals(method.getName())) {
+        Object request = args[0];
+        try {
+          capturedValidWriteIds.set((String) request.getClass().getMethod("getValidWriteIdList").invoke(request));
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.TableStatsRequest");
+    Object request = requestClass.getConstructor(String.class, String.class, List.class).newInstance("sales", "events", List.of("id"));
+    requestClass.getMethod("setValidWriteIdList", String.class).invoke(request, "sales.events:77:1::");
+    Method method = bridge.ifaceClass().getMethod("get_table_statistics_req", requestClass);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("sales.events:77:1::", capturedValidWriteIds.get());
+  }
+
+  @Test
   public void bridgeMapsGetDatabaseReqForNewerHdpRuntime() throws Exception {
     Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();
