@@ -42,6 +42,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Smoke-тестирование мутаций таблиц и партиций, обмена партициями и путей на стенде**:
+  - Создан специализированный скрипт `smoke-stand/run-partition-and-rename-smoke.sh` для проверки переименования таблиц и партиций, обмена партициями (`EXCHANGE PARTITION`) и переписывания локаций внешних партиций (`ExternalTableLocationRewriter`) на Docker-стенде, включая негативные проверки строгой блокировки кросс-каталожных операций.
+  - Расширен CLI-инструмент `HmsMetastoreSmokeCli` поддержкой прямых Thrift-операций `rename_table`, `exchange_partition`, `rename_partition`, `add_partition`, `alter_partition`, `get_partition` и флагов `--partition-keys`, `--expect-error`.
+  - В SQL smoke-раннер `scripts/run-real-installation-smoke.sh` добавлены проверки `EXCHANGE PARTITION` и путей партиций внешних таблиц через Beeline (с флагами отключения `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION` и `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION`).
 - **Покрытие боевой версии HDP 3.1.0.0-78 в тестах Thrift-сериализации и резолвера jar**:
   - В `FrontendBridgeThriftSerializationTest` добавлен тест `hortonworks78TruncateTableReqSerializesResponse` с константой `HDP_78_JAR`, проверяющий сквозной round-trip через бинарный протокол Thrift для боевого профиля `FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78`.
   - В `MetastoreRuntimeJarResolverTest` добавлен unit-тест `backendJarResolverUsesHortonworksDefaultJar`, валидирующий разрешение пути по умолчанию для боевого бэкенд-профиля `MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78`.

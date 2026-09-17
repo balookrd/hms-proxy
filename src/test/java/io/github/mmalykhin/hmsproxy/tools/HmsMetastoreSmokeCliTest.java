@@ -248,4 +248,23 @@ public class HmsMetastoreSmokeCliTest {
     method.setAccessible(true);
     return (List<String>) method.invoke(target, key);
   }
+
+  @Test
+  public void parsePartitionSpecsParsesSingleAndMultiplePairs() {
+    Map<String, String> single = HmsMetastoreSmokeCli.parsePartitionSpecs("p=2026-05-01");
+    Assert.assertEquals(Map.of("p", "2026-05-01"), single);
+
+    Map<String, String> multi = HmsMetastoreSmokeCli.parsePartitionSpecs("ds=2026-01-01,region=eu");
+    Assert.assertEquals(Map.of("ds", "2026-01-01", "region", "eu"), multi);
+
+    Assert.assertTrue(HmsMetastoreSmokeCli.parsePartitionSpecs("").isEmpty());
+    Assert.assertTrue(HmsMetastoreSmokeCli.parsePartitionSpecs(null).isEmpty());
+  }
+
+  @Test
+  public void cliArgsParsesPartitionKeysAndPartVals() throws Exception {
+    Object cli = parse("--partition-keys", "p:string,k:int", "--part-vals", "2026-01-01,10");
+    Assert.assertEquals(List.of("p:string", "k:int"), invokeList(cli, "list", "partition-keys"));
+    Assert.assertEquals(List.of("2026-01-01", "10"), invokeList(cli, "requiredList", "part-vals"));
+  }
 }

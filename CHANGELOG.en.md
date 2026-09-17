@@ -42,6 +42,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Smoke testing for table and partition mutations, partition exchange, and location rewriting on stand**:
+  - Added dedicated test runner `smoke-stand/run-partition-and-rename-smoke.sh` validating table and partition renames, partition exchange (`EXCHANGE PARTITION`), and external partition location rewriting (`ExternalTableLocationRewriter`) on Docker stand, including negative assertions for strict cross-catalog denial.
+  - Extended `HmsMetastoreSmokeCli` tool with direct Thrift operations `rename_table`, `exchange_partition`, `rename_partition`, `add_partition`, `alter_partition`, `get_partition`, alongside `--partition-keys` and `--expect-error` options.
+  - Added `EXCHANGE PARTITION` and external partition location assertions to SQL smoke runner `scripts/run-real-installation-smoke.sh` via Beeline (configurable with `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION` and `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION`).
 - **Coverage for production HDP 3.1.0.0-78 in Thrift serialization and jar resolver tests**:
   - Added `hortonworks78TruncateTableReqSerializesResponse` test in `FrontendBridgeThriftSerializationTest` with constant `HDP_78_JAR`, verifying end-to-end binary Thrift protocol round-trip for production `FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78`.
   - Added `backendJarResolverUsesHortonworksDefaultJar` unit test in `MetastoreRuntimeJarResolverTest`, validating default jar path resolution for production `MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78`.

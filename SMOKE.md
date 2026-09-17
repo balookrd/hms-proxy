@@ -500,7 +500,22 @@ scripts/run-real-installation-smoke-simple.sh --scenario ranger
 scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 ```
 
-**17. Что смотреть в логах proxy**
+**17. Проверка переименования таблиц и партиций, обмена партициями и локаций партиций**
+
+Проверяет недавние исправления маршрутизации мутаций, федерации и нормализации локаций:
+- **Переименование таблиц**: переименование внутри каталога (`rename_table`) работает корректно, а кросс-каталожный перенос отклоняется с `MetaException` (`Cross-catalog table rename is not supported`).
+- **Обмен партициями**: `EXCHANGE PARTITION` между двумя таблицами одного каталога перемещает партицию, а кросс-каталожный обмен отклоняется с `MetaException` (`Cross-catalog exchange partition is not supported`).
+- **Переименование партиций**: переименование партиции в федеративном каталоге (`rename_partition`) корректно транслирует namespace и возвращает обновлённую партицию.
+- **Локации партиций внешних таблиц**: неквалифицированные или кастомные пути при `add_partition` и `alter_partition` автоматически переписываются с квалификацией схемой и неймнодой целевого HDFS соответствующего каталога (`ExternalTableLocationRewriter`).
+
+Запуск на Docker-стенде:
+```bash
+smoke-stand/run-partition-and-rename-smoke.sh
+```
+
+В сценарии Beeline SQL (`scripts/run-real-installation-smoke-simple.sh --scenario sql`) шаги `EXCHANGE PARTITION` и проверка внешних партиций выполняются автоматически и могут быть выключены флагами `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` и `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
+
+**18. Что смотреть в логах proxy**
 
 Ищи:
 - `Starting HMS proxy`

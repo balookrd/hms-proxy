@@ -493,7 +493,22 @@ scripts/run-real-installation-smoke-simple.sh --scenario ranger
 scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 ```
 
-**17. What To Watch In Proxy Logs**
+**17. Table/Partition Rename, Partition Exchange, and Partition Locations Verification**
+
+Verifies recent mutation routing, federation, and location normalization fixes:
+- **Table Rename**: renaming within a catalog (`rename_table`) works properly, while cross-catalog table renaming is strictly rejected with `MetaException` (`Cross-catalog table rename is not supported`).
+- **Partition Exchange**: `EXCHANGE PARTITION` between compatible tables within the same catalog moves the partition, while cross-catalog partition exchange is strictly rejected with `MetaException` (`Cross-catalog exchange partition is not supported`).
+- **Partition Rename**: partition rename in a federated catalog (`rename_partition`) correctly translates the namespace and returns the updated partition.
+- **External Partition Locations**: unqualified or custom paths specified during `add_partition` and `alter_partition` are automatically rewritten with the scheme and namenode authority of the catalog's target HDFS (`ExternalTableLocationRewriter`).
+
+Running on Docker stand:
+```bash
+smoke-stand/run-partition-and-rename-smoke.sh
+```
+
+In the Beeline SQL scenario (`scripts/run-real-installation-smoke-simple.sh --scenario sql`), `EXCHANGE PARTITION` and external partition location steps run automatically and can be opted out via `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` and `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
+
+**18. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`

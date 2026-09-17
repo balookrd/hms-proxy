@@ -551,6 +551,22 @@ cd smoke-stand
 - Выполняет `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` с вычислением выражений (`CAST`, `COALESCE`, `parse_url`, `NULL`).
 - Проверяет корректность чтения записанных данных из партиции и удаляет тестовые таблицы.
 
+## Переименование таблиц/партиций и перенос партиций (`run-partition-and-rename-smoke.sh`)
+
+Проверяет недавние исправления маршрутизации мутаций, федерации и нормализации путей:
+
+```bash
+cd smoke-stand
+./run-partition-and-rename-smoke.sh
+```
+
+Сценарий проверяет:
+- Переименование таблиц внутри каталога и отказ при попытке кросс-каталожного переименования (`MetaException: Cross-catalog table rename is not supported`).
+- Переименование таблицы в федеративном (non-default) каталоге (`apache__default`).
+- Обмен партициями (`EXCHANGE PARTITION`) внутри каталога и отказ при кросс-каталожном обмене (`MetaException: Cross-catalog exchange partition is not supported`).
+- Переименование партиции в федеративном каталоге (`apache__default`) с корректной трансляцией namespace.
+- Нормализацию и переписывание локаций внешних партиций (`ExternalTableLocationRewriter`) при добавлении (`add_partition`) и изменении (`alter_partition`) партиций.
+
 ## MapReduce под Kerberos
 
 Чтобы керберизованный `INSERT` заработал, нужны две вещи, и `LocalJobRunner` прячет обе за

@@ -1438,6 +1438,12 @@ run_sql_smoke() {
   local mv_local="smoke_mv_local_${run_id}"
   local cross_db="${hdp_catalog}__smoke_cross_db_${run_id}"
   local cross_db_table="smoke_cross_db_tbl_${run_id}"
+  local exchange_tgt_hdp="smoke_exch_tgt_hdp_${run_id}"
+  local exchange_tgt_apache="smoke_exch_tgt_apache_${run_id}"
+  local ext_part_hdp="smoke_ext_p_hdp_${run_id}"
+  local ext_part_apache="smoke_ext_p_apache_${run_id}"
+  local run_exchange_partition="${HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION:-true}"
+  local run_external_partition="${HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION:-true}"
   local sql_file=""
   local output_file=""
   # The X's must be the last characters of the template: BSD mktemp (macOS) only randomizes a
@@ -1530,6 +1536,68 @@ select case when count(*) = 0 then 'truncate_emptied_managed_apache' else 'trunc
     log "skipping managed<->external conversion SQL smoke because HMS_SMOKE_SQL_RUN_TABLE_CONVERSION=${run_table_conversion}"
   fi
 
+  local exchange_sql_hdp=""
+  local exchange_sql_apache=""
+  if [[ "${run_exchange_partition}" == "true" ]]; then
+    exchange_sql_hdp="insert into \${managed_hdp} partition (p='2026-06-01') values (3, '2026-06-01', 'exch_hdp');
+create table if not exists \${exchange_tgt_hdp} (
+  id int,
+  ds string,
+  extra string
+)
+partitioned by (p string)
+stored as parquet;
+alter table \${exchange_tgt_hdp} exchange partition (p='2026-06-01') with table \${managed_hdp};
+select case when count(*) = 1 then 'exchange_partition_ok_managed_hdp' else 'exchange_partition_fail_managed_hdp' end as exch_res_hdp from \${exchange_tgt_hdp} where p='2026-06-01';
+drop table \${exchange_tgt_hdp};"
+
+    exchange_sql_apache="insert into \${managed_apache} partition (p='2026-06-01') values (3, '2026-06-01', 'exch_apache');
+create table if not exists \${exchange_tgt_apache} (
+  id int,
+  ds string,
+  extra string
+)
+partitioned by (p string)
+stored as parquet;
+alter table \${exchange_tgt_apache} exchange partition (p='2026-06-01') with table \${managed_apache};
+select case when count(*) = 1 then 'exchange_partition_ok_managed_apache' else 'exchange_partition_fail_managed_apache' end as exch_res_apache from \${exchange_tgt_apache} where p='2026-06-01';
+drop table \${exchange_tgt_apache};"
+  else
+    log "skipping EXCHANGE PARTITION SQL smoke because HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=${run_exchange_partition}"
+  fi
+
+  local ext_part_sql_hdp=""
+  local ext_part_sql_apache=""
+  if [[ "${run_external_partition}" == "true" ]]; then
+    ext_part_sql_hdp="create external table if not exists \${ext_part_hdp} (
+  id int,
+  ds string
+)
+partitioned by (p string)
+stored as parquet
+location '\${hdp_external_root}/ext_part/\${ext_part_hdp}';
+alter table \${ext_part_hdp} set tblproperties ('smoke'='true', 'table_kind'='external');
+alter table \${ext_part_hdp} add partition (p='p_ext') location '\${hdp_external_root}/ext_part_loc/\${ext_part_hdp}/p_ext';
+describe formatted \${ext_part_hdp} partition (p='p_ext');
+select case when count(*) = 0 then 'ext_part_created_hdp' else 'ext_part_fail_hdp' end as ext_p_res_hdp from \${ext_part_hdp} where p='p_ext';
+drop table \${ext_part_hdp};"
+
+    ext_part_sql_apache="create external table if not exists \${ext_part_apache} (
+  id int,
+  ds string
+)
+partitioned by (p string)
+stored as parquet
+location '\${apache_external_root}/ext_part/\${ext_part_apache}';
+alter table \${ext_part_apache} set tblproperties ('smoke'='true', 'table_kind'='external');
+alter table \${ext_part_apache} add partition (p='p_ext') location '\${apache_external_root}/ext_part_loc/\${ext_part_apache}/p_ext';
+describe formatted \${ext_part_apache} partition (p='p_ext');
+select case when count(*) = 0 then 'ext_part_created_apache' else 'ext_part_fail_apache' end as ext_p_res_apache from \${ext_part_apache} where p='p_ext';
+drop table \${ext_part_apache};"
+  else
+    log "skipping external partition location SQL smoke because HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=${run_external_partition}"
+  fi
+
   local session_init="${HMS_SMOKE_SQL_SESSION_INIT:-}"
   if [[ "${front_door}" == "hdp" && -n "${HMS_SMOKE_SQL_HDP_SESSION_INIT:-}" ]]; then
     session_init="${HMS_SMOKE_SQL_HDP_SESSION_INIT}"
@@ -1575,6 +1643,7 @@ insert into ${managed_hdp} partition (p='2026-05-01') values (2, '2026-05-01', '
 select extra as managed_hdp_added_column_value from ${managed_hdp} where p='2026-05-01';
 alter table ${managed_hdp} drop partition (p='2026-04-01');
 show partitions ${managed_hdp};
+${exchange_sql_hdp}
 ${truncate_sql_managed_hdp}
 alter table ${managed_hdp} rename to ${managed_hdp}_renamed;
 describe formatted ${managed_hdp}_renamed;
@@ -1608,6 +1677,7 @@ describe formatted ${external_hdp}_renamed;
 show tables like '${external_hdp}_renamed';
 select count(*) as external_hdp_renamed_count from ${external_hdp}_renamed;
 drop table ${external_hdp}_renamed;
+${ext_part_sql_hdp}
 ${load_sql_hdp}
 ${convert_sql_hdp}
 EOF
@@ -1661,6 +1731,7 @@ insert into ${managed_apache} partition (p='2026-05-01') values (2, '2026-05-01'
 select extra as managed_apache_added_column_value from ${managed_apache} where p='2026-05-01';
 alter table ${managed_apache} drop partition (p='2026-04-01');
 show partitions ${managed_apache};
+${exchange_sql_apache}
 ${truncate_sql_managed_apache}
 alter table ${managed_apache} rename to ${managed_apache}_renamed;
 describe formatted ${managed_apache}_renamed;
@@ -1694,6 +1765,7 @@ describe formatted ${external_apache}_renamed;
 show tables like '${external_apache}_renamed';
 select count(*) as external_apache_renamed_count from ${external_apache}_renamed;
 drop table ${external_apache}_renamed;
+${ext_part_sql_apache}
 ${load_sql_apache}
 ${convert_sql_apache}
 EOF
@@ -1830,6 +1902,22 @@ EOF
   assert_file_contains_result "${output_file}" "added_managed_apache"
   assert_file_contains_result "${output_file}" "${managed_hdp}_renamed"
   assert_file_contains_result "${output_file}" "${external_hdp}_renamed"
+  if [[ "${run_exchange_partition}" == "true" ]]; then
+    assert_file_contains_result "${output_file}" "exchange_partition_ok_managed_hdp"
+    assert_file_contains_result "${output_file}" "exchange_partition_ok_managed_apache"
+  fi
+  if [[ "${run_external_partition}" == "true" ]]; then
+    assert_file_contains_result "${output_file}" "ext_part_created_hdp"
+    assert_file_contains_result "${output_file}" "ext_part_created_apache"
+    local hdp_filesystem=""
+    local apache_filesystem=""
+    hdp_filesystem="$(filesystem_of_location "${hdp_external_root}")"
+    apache_filesystem="$(filesystem_of_location "${apache_external_root}")"
+    if [[ -n "${hdp_filesystem}" && -n "${apache_filesystem}" ]]; then
+      assert_table_filesystem "${output_file}" "${ext_part_hdp}" "${hdp_filesystem}"
+      assert_table_filesystem "${output_file}" "${ext_part_apache}" "${apache_filesystem}"
+    fi
+  fi
   if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
     # Verify that the table was actually emptied and files removed, rather than just returning success.
     assert_file_contains_result "${output_file}" "truncate_emptied_managed_hdp"

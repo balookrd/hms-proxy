@@ -505,7 +505,8 @@ public final class HmsMetastoreSmokeCli {
           org.apache.hadoop.hive.metastore.api.Table newTable = new org.apache.hadoop.hive.metastore.api.Table();
           newTable.setDbName(db);
           newTable.setTableName(table);
-          newTable.setTableType("EXTERNAL_TABLE");
+          String tableType = cli.getOrDefault("table-type", "EXTERNAL_TABLE");
+          newTable.setTableType(tableType);
           String owner = cli.get("owner");
           String effectiveUser = cli.get("set-ugi-user") != null ? cli.get("set-ugi-user") : cli.get("user");
           if (owner == null && effectiveUser != null && !effectiveUser.isBlank()) {
@@ -519,11 +520,25 @@ public final class HmsMetastoreSmokeCli {
           org.apache.hadoop.hive.metastore.api.SerDeInfo serde = new org.apache.hadoop.hive.metastore.api.SerDeInfo();
           serde.setSerializationLib("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
           sd.setSerdeInfo(serde);
+          String location = cli.get("location");
+          if (location != null && !location.isBlank()) {
+            sd.setLocation(location);
+          }
           newTable.setSd(sd);
+          List<String> partKeySpecs = cli.list("partition-keys");
+          if (!partKeySpecs.isEmpty()) {
+            List<org.apache.hadoop.hive.metastore.api.FieldSchema> partitionKeys = new ArrayList<>();
+            for (String keySpec : partKeySpecs) {
+              String[] parts = keySpec.split(":");
+              partitionKeys.add(new org.apache.hadoop.hive.metastore.api.FieldSchema(
+                  parts[0].trim(), parts.length > 1 ? parts[1].trim() : "string", ""));
+            }
+            newTable.setPartitionKeys(partitionKeys);
+          }
           thriftClient.create_table(newTable);
           org.apache.hadoop.hive.metastore.api.Table created = thriftClient.get_table(db, table);
-          String location = created.getSd() != null ? created.getSd().getLocation() : null;
-          System.out.println("created table=" + db + "." + table + " owner=" + created.getOwner() + " location=" + location);
+          String actualLocation = created.getSd() != null ? created.getSd().getLocation() : null;
+          System.out.println("created table=" + db + "." + table + " owner=" + created.getOwner() + " location=" + actualLocation);
           String expectedOwner = cli.get("expected-owner");
           if (expectedOwner != null && !expectedOwner.isBlank()) {
             if (!expectedOwner.equals(created.getOwner())) {
@@ -531,9 +546,9 @@ public final class HmsMetastoreSmokeCli {
                   + "', but got '" + created.getOwner() + "'");
             }
           }
-          if (cli.getBoolean("check-hdfs-owner", false) && location != null && !location.isBlank()) {
+          if (cli.getBoolean("check-hdfs-owner", false) && actualLocation != null && !actualLocation.isBlank()) {
             try {
-              org.apache.hadoop.fs.Path p = new org.apache.hadoop.fs.Path(location);
+              org.apache.hadoop.fs.Path p = new org.apache.hadoop.fs.Path(actualLocation);
               String nnHost = p.toUri().getHost();
               if (nnHost != null && !nnHost.isBlank()) {
                 String serverPrincipal = cli.get("server-principal");
@@ -550,15 +565,15 @@ public final class HmsMetastoreSmokeCli {
                 org.apache.hadoop.fs.FileSystem fs = p.getFileSystem(conf);
                 if (fs.exists(p)) {
                   org.apache.hadoop.fs.FileStatus st = fs.getFileStatus(p);
-                  System.out.println("table.hdfs.path=" + location + " owner=" + st.getOwner() + " group=" + st.getGroup());
+                  System.out.println("table.hdfs.path=" + actualLocation + " owner=" + st.getOwner() + " group=" + st.getGroup());
                   String expectedHdfsOwner = cli.getOrDefault("expected-hdfs-owner", expectedOwner);
                   if (expectedHdfsOwner != null && !expectedHdfsOwner.equals(st.getOwner())) {
-                    throw new IllegalStateException("HDFS owner mismatch on " + location + ": expected '"
+                    throw new IllegalStateException("HDFS owner mismatch on " + actualLocation + ": expected '"
                         + expectedHdfsOwner + "', but got '" + st.getOwner() + "'");
                   }
                   String expectedHdfsGroup = cli.get("expected-hdfs-group");
                   if (expectedHdfsGroup != null && !expectedHdfsGroup.equals(st.getGroup())) {
-                    throw new IllegalStateException("HDFS group mismatch on " + location + ": expected '"
+                    throw new IllegalStateException("HDFS group mismatch on " + actualLocation + ": expected '"
                         + expectedHdfsGroup + "', but got '" + st.getGroup() + "'");
                   }
                 }
@@ -569,7 +584,7 @@ public final class HmsMetastoreSmokeCli {
               if (cause instanceof IllegalStateException ise) {
                 throw ise;
               }
-              System.err.println("warning: could not directly verify HDFS owner on " + location + ": " + cause.getMessage());
+              System.err.println("warning: could not directly verify HDFS owner on " + actualLocation + ": " + cause.getMessage());
             }
           }
         }
@@ -580,6 +595,139 @@ public final class HmsMetastoreSmokeCli {
           boolean deleteData = cli.getBoolean("delete-data", true);
           thriftClient.drop_table(db, table, deleteData);
           System.out.println("dropped table=" + db + "." + table);
+        }
+        case "rename_table" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for rename_table");
+          }
+          String newDb = cli.getOrDefault("new-db", db);
+          String newTable = cli.required("new-table");
+          String expectError = cli.get("expect-error");
+          try {
+            org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
+            t.setDbName(newDb);
+            t.setTableName(newTable);
+            thriftClient.alter_table(db, table, t);
+            if (expectError != null && !expectError.isBlank()) {
+              throw new IllegalStateException("Expected error containing '" + expectError + "', but rename_table succeeded");
+            }
+            System.out.println("renamed table from " + db + "." + table + " to " + newDb + "." + newTable);
+          } catch (Exception e) {
+            if (expectError != null && !expectError.isBlank()) {
+              String msg = e.getMessage();
+              if (msg != null && msg.contains(expectError)) {
+                System.out.println("rename_table failed as expected with: " + msg);
+                break;
+              }
+              throw new IllegalStateException("Expected error containing '" + expectError + "', but got: " + msg, e);
+            }
+            throw e;
+          }
+        }
+        case "exchange_partition" -> {
+          String sourceDb = cli.getOrDefault("source-db", db);
+          String sourceTable = cli.getOrDefault("source-table", table);
+          if (sourceDb == null || sourceTable == null) {
+            throw new IllegalArgumentException("--source-db and --source-table (or --db and --table) are required for exchange_partition");
+          }
+          String destDb = cli.required("dest-db");
+          String destTable = cli.required("dest-table");
+          String partSpecsStr = cli.required("partition-specs");
+          Map<String, String> partitionSpecs = parsePartitionSpecs(partSpecsStr);
+          String expectError = cli.get("expect-error");
+          try {
+            org.apache.hadoop.hive.metastore.api.Partition exchanged =
+                thriftClient.exchange_partition(partitionSpecs, sourceDb, sourceTable, destDb, destTable);
+            if (expectError != null && !expectError.isBlank()) {
+              throw new IllegalStateException("Expected error containing '" + expectError + "', but exchange_partition succeeded");
+            }
+            System.out.println("exchanged partition db=" + exchanged.getDbName() + " table=" + exchanged.getTableName()
+                + " values=" + exchanged.getValues() + " location=" + (exchanged.getSd() != null ? exchanged.getSd().getLocation() : "null"));
+          } catch (Exception e) {
+            if (expectError != null && !expectError.isBlank()) {
+              String msg = e.getMessage();
+              if (msg != null && msg.contains(expectError)) {
+                System.out.println("exchange_partition failed as expected with: " + msg);
+                break;
+              }
+              throw new IllegalStateException("Expected error containing '" + expectError + "', but got: " + msg, e);
+            }
+            throw e;
+          }
+        }
+        case "rename_partition" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for rename_partition");
+          }
+          List<String> partVals = cli.requiredList("part-vals");
+          List<String> newPartVals = cli.requiredList("new-part-vals");
+          org.apache.hadoop.hive.metastore.api.Partition part = thriftClient.get_partition(db, table, partVals);
+          part.setValues(newPartVals);
+          thriftClient.rename_partition(db, table, partVals, part);
+          org.apache.hadoop.hive.metastore.api.Partition renamed = thriftClient.get_partition(db, table, newPartVals);
+          System.out.println("renamed partition db=" + renamed.getDbName() + " table=" + renamed.getTableName()
+              + " values=" + renamed.getValues() + " location=" + (renamed.getSd() != null ? renamed.getSd().getLocation() : "null"));
+        }
+        case "add_partition" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for add_partition");
+          }
+          List<String> partVals = cli.requiredList("part-vals");
+          org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
+          org.apache.hadoop.hive.metastore.api.Partition newPart = new org.apache.hadoop.hive.metastore.api.Partition();
+          newPart.setDbName(db);
+          newPart.setTableName(table);
+          newPart.setValues(partVals);
+          org.apache.hadoop.hive.metastore.api.StorageDescriptor sd = new org.apache.hadoop.hive.metastore.api.StorageDescriptor(t.getSd());
+          String loc = cli.get("location");
+          if (loc != null && !loc.isBlank()) {
+            sd.setLocation(loc);
+          }
+          newPart.setSd(sd);
+          org.apache.hadoop.hive.metastore.api.Partition created = thriftClient.add_partition(newPart);
+          String actualLoc = created.getSd() != null ? created.getSd().getLocation() : null;
+          System.out.println("added partition db=" + created.getDbName() + " table=" + created.getTableName()
+              + " values=" + created.getValues() + " location=" + actualLoc);
+          String expectedPrefix = cli.get("expected-location-prefix");
+          if (expectedPrefix != null && !expectedPrefix.isBlank()) {
+            if (actualLoc == null || !actualLoc.startsWith(expectedPrefix)) {
+              throw new IllegalStateException("Partition location mismatch: expected prefix '" + expectedPrefix
+                  + "', but got '" + actualLoc + "'");
+            }
+          }
+        }
+        case "alter_partition" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for alter_partition");
+          }
+          List<String> partVals = cli.requiredList("part-vals");
+          org.apache.hadoop.hive.metastore.api.Partition part = thriftClient.get_partition(db, table, partVals);
+          String newLoc = cli.required("location");
+          if (part.getSd() != null) {
+            part.getSd().setLocation(newLoc);
+          }
+          thriftClient.alter_partition(db, table, part);
+          org.apache.hadoop.hive.metastore.api.Partition updated = thriftClient.get_partition(db, table, partVals);
+          String actualLoc = updated.getSd() != null ? updated.getSd().getLocation() : null;
+          System.out.println("altered partition db=" + updated.getDbName() + " table=" + updated.getTableName()
+              + " values=" + updated.getValues() + " location=" + actualLoc);
+          String expectedPrefix = cli.get("expected-location-prefix");
+          if (expectedPrefix != null && !expectedPrefix.isBlank()) {
+            if (actualLoc == null || !actualLoc.startsWith(expectedPrefix)) {
+              throw new IllegalStateException("Partition location mismatch: expected prefix '" + expectedPrefix
+                  + "', but got '" + actualLoc + "'");
+            }
+          }
+        }
+        case "get_partition" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for get_partition");
+          }
+          List<String> partVals = cli.requiredList("part-vals");
+          org.apache.hadoop.hive.metastore.api.Partition part = thriftClient.get_partition(db, table, partVals);
+          String actualLoc = part.getSd() != null ? part.getSd().getLocation() : null;
+          System.out.println("partition db=" + part.getDbName() + " table=" + part.getTableName()
+              + " values=" + part.getValues() + " location=" + actualLoc);
         }
         default -> throw new IllegalArgumentException("Unknown metadata op: " + op);
       }
@@ -770,7 +918,7 @@ public final class HmsMetastoreSmokeCli {
           --conf key=value                      repeatable extra HiveConf override
 
         metadata mode:
-          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|get_table_meta|create_database|drop_database|create_table|drop_table
+          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|get_table_meta|create_database|drop_database|create_table|drop_table|rename_table|exchange_partition|rename_partition|add_partition|alter_partition|get_partition
           --user alice                          optional impersonation user for simple auth
           --db db_name                          optional database name
           --table table_name                    optional table name
@@ -900,5 +1048,22 @@ public final class HmsMetastoreSmokeCli {
       }
       return conf;
     }
+  }
+
+  static Map<String, String> parsePartitionSpecs(String str) {
+    if (str == null || str.isBlank()) {
+      return Collections.emptyMap();
+    }
+    Map<String, String> map = new LinkedHashMap<>();
+    String[] pairs = str.split(",");
+    for (String pair : pairs) {
+      int idx = pair.indexOf('=');
+      if (idx > 0) {
+        map.put(pair.substring(0, idx).trim(), pair.substring(idx + 1).trim());
+      } else {
+        map.put(pair.trim(), "");
+      }
+    }
+    return map;
   }
 }
