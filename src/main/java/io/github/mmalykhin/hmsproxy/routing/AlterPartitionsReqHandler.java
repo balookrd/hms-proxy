@@ -16,9 +16,15 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
       String.class, String.class, List.class, EnvironmentContext.class);
 
   private final RoutingSupport support;
+  private final ExternalTableLocationRewriter externalTableLocationRewriter;
 
   AlterPartitionsReqHandler(RoutingSupport support) {
+    this(support, null);
+  }
+
+  AlterPartitionsReqHandler(RoutingSupport support, ExternalTableLocationRewriter externalTableLocationRewriter) {
     this.support = support;
+    this.externalTableLocationRewriter = externalTableLocationRewriter;
   }
 
   @Override
@@ -43,6 +49,36 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
     }
 
     Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setDbName", namespace.backendDbName());
+    String catName = ThriftReflectionCache.readString(routedRequest, "getCatName");
+    if (catName != null) {
+      ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName",
+          NamespaceTranslator.internalCatalogName(catName, dbName, namespace,
+              support.federationLayer.preserveBackendCatalogName()));
+    }
+    String validWriteIdList = ThriftReflectionCache.readString(routedRequest, "getValidWriteIdList");
+    if (validWriteIdList != null) {
+      ThriftReflectionCache.invokeStringSetter(routedRequest, "setValidWriteIdList",
+          NamespaceInternalizer.transformValidWriteIdList(validWriteIdList, namespace));
+    }
+    Object rawPartitions = ThriftReflectionCache.invokeGetter(routedRequest, "getPartitions");
+    if (rawPartitions instanceof Iterable<?> iterable) {
+      for (Object part : iterable) {
+        String partDb = ThriftReflectionCache.readString(part, "getDbName");
+        if (partDb != null && NamespaceTranslator.matchesExternalDatabaseAlias(partDb, namespace.externalDbName())) {
+          ThriftReflectionCache.invokeStringSetter(part, "setDbName", namespace.backendDbName());
+        }
+        String partCat = ThriftReflectionCache.readString(part, "getCatName");
+        if (partCat != null) {
+          ThriftReflectionCache.invokeStringSetter(part, "setCatName",
+              NamespaceTranslator.internalCatalogName(partCat, dbName, namespace,
+                  support.federationLayer.preserveBackendCatalogName()));
+        }
+      }
+    }
+    if (externalTableLocationRewriter != null) {
+      externalTableLocationRewriter.rewriteObjectArguments(new Object[]{routedRequest}, namespace, "alter_partitions_req");
+    }
     try {
       return support.invokeBackendNamed(backend, "alter_partitions_req", routedRequest);
     } catch (Throwable cause) {

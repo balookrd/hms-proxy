@@ -6,6 +6,7 @@ import java.util.Locale;
 import java.util.Map;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import io.github.mmalykhin.hmsproxy.config.catalog.ExternalTableLocationRewriteMode;
@@ -32,9 +33,59 @@ final class ExternalTableLocationRewriter {
       return;
     }
     for (Object argument : args) {
-      if (argument instanceof Table table) {
-        rewriteTableLocation(table, namespace);
+      rewriteArgument(argument, namespace);
+    }
+  }
+
+  private void rewriteArgument(Object argument, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+    if (argument == null) {
+      return;
+    }
+    if (argument instanceof Table table) {
+      rewriteTableLocation(table, namespace);
+      return;
+    }
+    if (argument instanceof Partition partition) {
+      rewritePartitionLocation(partition, namespace);
+      return;
+    }
+    if (argument instanceof Iterable<?> iterable) {
+      for (Object item : iterable) {
+        rewriteArgument(item, namespace);
       }
+      return;
+    }
+    if (argument.getClass().isArray()) {
+      int length = java.lang.reflect.Array.getLength(argument);
+      for (int i = 0; i < length; i++) {
+        rewriteArgument(java.lang.reflect.Array.get(argument, i), namespace);
+      }
+      return;
+    }
+    if (isDynamicExternalTable(argument)) {
+      rewriteDynamicTableLocation(argument, namespace);
+      return;
+    }
+    if (isDynamicPartition(argument)) {
+      rewriteDynamicPartitionLocation(argument, namespace);
+      return;
+    }
+
+    Object tableObj = ThriftReflectionCache.invokeGetter(argument, "getTable");
+    if (tableObj != null) {
+      rewriteArgument(tableObj, namespace);
+    }
+    Object partitionsObj = ThriftReflectionCache.invokeGetter(argument, "getPartitions");
+    if (partitionsObj != null) {
+      rewriteArgument(partitionsObj, namespace);
+    }
+    Object partsObj = ThriftReflectionCache.invokeGetter(argument, "getParts");
+    if (partsObj != null) {
+      rewriteArgument(partsObj, namespace);
+    }
+    Object newPartObj = ThriftReflectionCache.invokeGetter(argument, "getNewPart");
+    if (newPartObj != null) {
+      rewriteArgument(newPartObj, namespace);
     }
   }
 
@@ -42,7 +93,11 @@ final class ExternalTableLocationRewriter {
     if (methodName == null) {
       return false;
     }
-    return methodName.startsWith("create_table") || methodName.startsWith("alter_table");
+    return methodName.startsWith("create_table")
+        || methodName.startsWith("alter_table")
+        || methodName.startsWith("add_partition")
+        || methodName.startsWith("alter_partition")
+        || methodName.startsWith("rename_partition");
   }
 
   private void rewriteTableLocation(Table table, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
@@ -58,6 +113,82 @@ final class ExternalTableLocationRewriter {
     if (!rewritten.equals(location)) {
       storageDescriptor.setLocation(rewritten);
     }
+  }
+
+  private void rewriteDynamicTableLocation(Object table, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+    if (!isDynamicExternalTable(table)) {
+      return;
+    }
+    Object sd = ThriftReflectionCache.invokeGetter(table, "getSd");
+    if (sd == null) {
+      return;
+    }
+    String location = blankToNull(ThriftReflectionCache.readString(sd, "getLocation"));
+    if (location == null) {
+      return;
+    }
+    String rewritten = rewriteLocation(location, namespace.backend().defaultFileSystemUri());
+    if (!rewritten.equals(location)) {
+      ThriftReflectionCache.invokeStringSetter(sd, "setLocation", rewritten);
+    }
+  }
+
+  private static boolean isDynamicExternalTable(Object table) {
+    if (table == null) {
+      return false;
+    }
+    String tableType = blankToNull(ThriftReflectionCache.readString(table, "getTableType"));
+    if (EXTERNAL_TABLE.equalsIgnoreCase(tableType)) {
+      return true;
+    }
+    Object parametersObj = ThriftReflectionCache.invokeGetter(table, "getParameters");
+    if (parametersObj instanceof Map<?, ?> parameters) {
+      Object ext = parameters.get("EXTERNAL");
+      return ext != null && "TRUE".equalsIgnoreCase(String.valueOf(ext));
+    }
+    return false;
+  }
+
+  private void rewritePartitionLocation(Partition partition, CatalogRouter.ResolvedNamespace namespace)
+      throws MetaException {
+    if (partition == null || !partition.isSetSd()) {
+      return;
+    }
+    StorageDescriptor storageDescriptor = partition.getSd();
+    String location = blankToNull(storageDescriptor.getLocation());
+    if (location == null) {
+      return;
+    }
+    String rewritten = rewriteLocation(location, namespace.backend().defaultFileSystemUri());
+    if (!rewritten.equals(location)) {
+      storageDescriptor.setLocation(rewritten);
+    }
+  }
+
+  private void rewriteDynamicPartitionLocation(Object partition, CatalogRouter.ResolvedNamespace namespace)
+      throws MetaException {
+    if (partition == null) {
+      return;
+    }
+    Object sd = ThriftReflectionCache.invokeGetter(partition, "getSd");
+    if (sd == null) {
+      return;
+    }
+    String location = blankToNull(ThriftReflectionCache.readString(sd, "getLocation"));
+    if (location == null) {
+      return;
+    }
+    String rewritten = rewriteLocation(location, namespace.backend().defaultFileSystemUri());
+    if (!rewritten.equals(location)) {
+      ThriftReflectionCache.invokeStringSetter(sd, "setLocation", rewritten);
+    }
+  }
+
+  private static boolean isDynamicPartition(Object obj) {
+    if (obj == null) {
+      return false;
+    }
+    return "Partition".equals(obj.getClass().getSimpleName());
   }
 
   private String rewriteLocation(String location, URI targetDefaultFs) throws MetaException {

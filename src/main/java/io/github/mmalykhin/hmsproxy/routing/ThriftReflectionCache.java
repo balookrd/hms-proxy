@@ -132,7 +132,18 @@ final class ThriftReflectionCache {
 
   @SuppressWarnings({"unchecked", "rawtypes"})
   static Object deepCopy(Object thriftObject) {
-    return ((TBase) thriftObject).deepCopy();
+    if (thriftObject == null) {
+      return null;
+    }
+    if (thriftObject instanceof TBase tBase) {
+      return tBase.deepCopy();
+    }
+    try {
+      Method deepCopyMethod = thriftObject.getClass().getMethod("deepCopy");
+      return deepCopyMethod.invoke(thriftObject);
+    } catch (Throwable ignored) {
+      return thriftObject;
+    }
   }
 
   static void invokeStringSetter(Object target, String methodName, String argument) {

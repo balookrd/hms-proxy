@@ -68,7 +68,7 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
       }
     }
 
-    externalizeConstraintsResponse(response, namespace.externalDbName());
+    externalizeConstraintsResponse(response, namespace);
     return response;
   }
 
@@ -126,7 +126,7 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
     }
   }
 
-  private void externalizeConstraintsResponse(Object response, String clientDbName) {
+  private void externalizeConstraintsResponse(Object response, CatalogRouter.ResolvedNamespace namespace) {
     if (response == null) {
       return;
     }
@@ -135,13 +135,29 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
       if (allConstraints == null) {
         return;
       }
+      String clientDbName = namespace.externalDbName();
       externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getPrimaryKeys"), "setTable_db", clientDbName);
-      externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getForeignKeys"), "setFktable_db", clientDbName);
+      externalizeForeignKeys(ThriftReflectionCache.invokeGetter(allConstraints, "getForeignKeys"), namespace);
       externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getUniqueConstraints"), "setTable_db", clientDbName);
       externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getNotNullConstraints"), "setTable_db", clientDbName);
       externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getDefaultConstraints"), "setTable_db", clientDbName);
       externalizeList(ThriftReflectionCache.invokeGetter(allConstraints, "getCheckConstraints"), "setTable_db", clientDbName);
     } catch (Throwable ignored) {
+    }
+  }
+
+  private void externalizeForeignKeys(Object listObj, CatalogRouter.ResolvedNamespace namespace) {
+    if (listObj instanceof List<?> list) {
+      for (Object item : list) {
+        if (item != null) {
+          ThriftReflectionCache.invokeStringSetter(item, "setFktable_db", namespace.externalDbName());
+          String pkDb = ThriftReflectionCache.readString(item, "getPktable_db");
+          if (pkDb != null && !pkDb.isBlank()) {
+            String externalPkDb = support.router.externalDatabaseName(namespace.catalogName(), pkDb);
+            ThriftReflectionCache.invokeStringSetter(item, "setPktable_db", externalPkDb);
+          }
+        }
+      }
     }
   }
 

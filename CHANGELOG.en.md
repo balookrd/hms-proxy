@@ -10,6 +10,17 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Partition location rewriting for external tables (External Table Location Rewrite)**:
+  - Extended `ExternalTableLocationRewriter` to support partition mutations (`supports`: `add_partition*`, `alter_partition*`, `rename_partition*`).
+  - Supported qualifying unqualified locations (`QUALIFY_UNQUALIFIED`) and rewriting client `source-default-fs` to catalog `targetDefaultFs` (`REWRITE_IF_SOURCE_DEFAULT_FS`) across `Partition` objects, `List<Partition>` collections, and request envelopes `AlterPartitionsRequest`, `AddPartitionsRequest`, `RenamePartitionRequest` (including dynamic classes from isolated ClassLoaders).
+  - Wired `ExternalTableLocationRewriter` into `AlterPartitionsReqHandler`, `AddPartitionsReqHandler`, and `RenamePartitionHandler` prior to dispatching requests to backends, and added full internalization of `dbName`, `catName`, `validWriteIdList`, and nested partition database names in `AlterPartitionsReqHandler`.
+- **Routing and safety enforcement for exchange_partition, rename_partition, and create_table_req**:
+  - **`exchange_partition` and `exchange_partitions`**: Introduced dedicated `ExchangePartitionHandler` that independently resolves `source_db` and `dest_db` schemas, enforces single-catalog boundaries (rejecting cross-catalog partition exchange with `MetaException`), validates write permissions on read-only catalogs, internalizes both schema names, and invalidates the negative cache in `IcebergTablePointerGuard` for both tables.
+  - **`rename_partition` and `rename_partition_req`**: Unified in `RenamePartitionHandler` with enforcement preventing ACID transactional partition renames on non-default catalogs, rewriting of `validWriteIdList` and `catName`, internalizing `new_part.dbName`, and invalidating the Iceberg negative cache.
+  - **`create_table_req`**: Enhanced `CreateTableReqHandler` to forbid transactional (`transactional=true`) tables on non-default catalogs, connected `ExternalTableLocationRewriter` (with support for isolated Table classes), and internalized both `fktable_db` and `pktable_db` with single-catalog constraint checks.
+  - **`get_all_table_constraints`**: Added externalization of parent database schema (`pktable_db`) for foreign keys (`SQLForeignKey`) in `GetAllTableConstraintsHandler`.
+  - **`drop_table`**: Added cache invalidation in `IcebergTablePointerGuard` in `DropTableHandler` upon successful table drop.
+  - **`ThriftReflectionCache.deepCopy`**: Added reflection-based fallback to handle objects from isolated ClassLoaders safely without relying on a shared `TBase` interface.
 - **Cross-schema table rename and move (ALTER TABLE ... RENAME TO)**:
   - Fixed an issue where renaming/moving a table to another database schema (`ALTER TABLE {stg_db}.{table_name} RENAME TO {tgt_db}.{table_name}`) failed to relocate the table, leaving it in the source database `stg_db`.
   - Previously, `alter_table_req` internalized the entire request using the source table's namespace (`sourceNamespace`), causing `table.setDbName(...)` to unconditionally overwrite the target database with the source database, turning the operation into a no-op intra-schema rename.

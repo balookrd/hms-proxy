@@ -295,6 +295,21 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
   }
 
   @Test
+  public void droppingAnOrdinaryTableDropsTheCachedAnswer() throws Throwable {
+    Stand stand = newStand(hiveRecord());
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+    Assert.assertEquals(1, stand.reads.get());
+
+    Method drop = ThriftHiveMetastore.Iface.class.getMethod("drop_table", String.class, String.class, boolean.class);
+    invoke(stand.handler, drop, "sales", "events", true);
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+    Assert.assertEquals("the cached 'not an Iceberg table' answer must not survive drop_table",
+        2, stand.reads.get());
+  }
+
+  @Test
   public void aDisabledGuardReadsNothingAndRewritesNothing() throws Throwable {
     Stand stand = newStand(
         icebergRecord(CURRENT, PREVIOUS),
@@ -771,6 +786,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
               stand.record.set(copyOf((Table) args[2]));
               return null;
             case "create_table":
+            case "drop_table":
               return null;
             case "lock": {
               if (stand.lockCallFails) {

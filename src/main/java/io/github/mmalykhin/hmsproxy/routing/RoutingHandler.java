@@ -134,7 +134,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache, databaseMetadataCache, metadataAuthorizer);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
-    this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger);
+    this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger, icebergTablePointerGuard);
     this.specialCaseHandlers = buildSpecialCaseHandlers(dropTableHandler);
   }
 
@@ -158,17 +158,18 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler refreshPrivileges = new RefreshPrivilegesHandler(support);
     SpecialCaseHandler setAggrStatsFor = new SetAggrStatsForHandler(support);
     SpecialCaseHandler alterTable = new AlterTableHandler(support, icebergTablePointerGuard, externalTableLocationRewriter);
-    SpecialCaseHandler alterPartitionsReq = new AlterPartitionsReqHandler(support);
+    SpecialCaseHandler alterPartitionsReq = new AlterPartitionsReqHandler(support, externalTableLocationRewriter);
     SpecialCaseHandler truncateTableReq = new TruncateTableReqHandler(support);
-    SpecialCaseHandler renamePartitionReq = new RenamePartitionReqHandler(support);
+    SpecialCaseHandler renamePartition = new RenamePartitionHandler(support, icebergTablePointerGuard, externalTableLocationRewriter);
+    SpecialCaseHandler exchangePartition = new ExchangePartitionHandler(support, icebergTablePointerGuard);
     SpecialCaseHandler tableStatisticsReq = new TableStatisticsReqHandler(support);
-    SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support);
+    SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support, externalTableLocationRewriter);
     SpecialCaseHandler addWriteNotificationLogBatch = new AddWriteNotificationLogBatchHandler(support);
     SpecialCaseHandler getPartitionReq = new GetPartitionReqHandler(support);
     SpecialCaseHandler getPartitionsReq = new GetPartitionsReqHandler(support);
     SpecialCaseHandler getPartitionsByNamesReq = new GetPartitionsByNamesReqHandler(support);
     SpecialCaseHandler getPartitionsByFilterReq = new GetPartitionsByFilterReqHandler(support);
-    SpecialCaseHandler createTableReq = new CreateTableReqHandler(support);
+    SpecialCaseHandler createTableReq = new CreateTableReqHandler(support, externalTableLocationRewriter, icebergTablePointerGuard);
     SpecialCaseHandler deleteColumnStatisticsReq = new DeleteColumnStatisticsReqHandler(support);
     SpecialCaseHandler getAllTableConstraints = new GetAllTableConstraintsHandler(support);
     SpecialCaseHandler getMaxAllocatedTableWriteId = new GetMaxAllocatedTableWriteIdHandler(support);
@@ -190,7 +191,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("alter_table_with_cascade", alterTable),
         Map.entry("alter_partitions_req", alterPartitionsReq),
         Map.entry("truncate_table_req", truncateTableReq),
-        Map.entry("rename_partition_req", renamePartitionReq),
+        Map.entry("rename_partition_req", renamePartition),
+        Map.entry("rename_partition", renamePartition),
+        Map.entry("exchange_partition", exchangePartition),
+        Map.entry("exchange_partitions", exchangePartition),
         Map.entry("get_table_statistics_req", tableStatisticsReq),
         Map.entry("get_partitions_statistics_req", tableStatisticsReq),
         Map.entry("add_partitions_req", addPartitionsReq),

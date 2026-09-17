@@ -14,25 +14,37 @@ final class DropTableHandler implements SpecialCaseHandler, AutoCloseable {
   private final NamespaceFallback fallback;
   private final ExternalTableDropPurger externalTableDropPurger;
   private final ExternalTableDropPurgeExecutor purgeExecutor;
+  private final IcebergTablePointerGuard icebergTablePointerGuard;
 
   DropTableHandler(
       RoutingSupport support,
       NamespaceFallback fallback,
       ExternalTableDropPurger externalTableDropPurger
   ) {
-    this(support, fallback, externalTableDropPurger, new ExternalTableDropPurgeExecutor());
+    this(support, fallback, externalTableDropPurger, new ExternalTableDropPurgeExecutor(), null);
   }
 
   DropTableHandler(
       RoutingSupport support,
       NamespaceFallback fallback,
       ExternalTableDropPurger externalTableDropPurger,
-      ExternalTableDropPurgeExecutor purgeExecutor
+      IcebergTablePointerGuard icebergTablePointerGuard
+  ) {
+    this(support, fallback, externalTableDropPurger, new ExternalTableDropPurgeExecutor(), icebergTablePointerGuard);
+  }
+
+  DropTableHandler(
+      RoutingSupport support,
+      NamespaceFallback fallback,
+      ExternalTableDropPurger externalTableDropPurger,
+      ExternalTableDropPurgeExecutor purgeExecutor,
+      IcebergTablePointerGuard icebergTablePointerGuard
   ) {
     this.support = support;
     this.fallback = fallback;
     this.externalTableDropPurger = externalTableDropPurger;
     this.purgeExecutor = purgeExecutor;
+    this.icebergTablePointerGuard = icebergTablePointerGuard;
   }
 
   @Override
@@ -57,6 +69,10 @@ final class DropTableHandler implements SpecialCaseHandler, AutoCloseable {
     }
 
     Object result = support.invokeDirect(namespace.backend(), method, routedArgs);
+    if (icebergTablePointerGuard != null && routedArgs.length >= 2
+        && routedArgs[0] instanceof String backendDb && routedArgs[1] instanceof String tableName) {
+      icebergTablePointerGuard.invalidate(namespace.catalogName(), backendDb, tableName);
+    }
     runBestEffortDropPurge(namespace, purgeRequest);
     return support.federationLayer.externalizeResult(result, namespace);
   }

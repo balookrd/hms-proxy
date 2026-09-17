@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -20,9 +21,17 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       String.class, String.class, Table.class, EnvironmentContext.class);
 
   private final RoutingSupport support;
+  private final ExternalTableLocationRewriter externalTableLocationRewriter;
+  private final IcebergTablePointerGuard icebergTablePointerGuard;
 
-  CreateTableReqHandler(RoutingSupport support) {
+  CreateTableReqHandler(
+      RoutingSupport support,
+      ExternalTableLocationRewriter externalTableLocationRewriter,
+      IcebergTablePointerGuard icebergTablePointerGuard
+  ) {
     this.support = support;
+    this.externalTableLocationRewriter = externalTableLocationRewriter;
+    this.icebergTablePointerGuard = icebergTablePointerGuard;
   }
 
   @Override
@@ -36,6 +45,7 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
     if (dbName == null) {
       throw new MetaException("create_table_req requires a target database");
     }
+    String tableName = (String) ThriftReflectionCache.invokeGetter(rawTable, "getTableName");
 
     CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
@@ -43,29 +53,76 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "create_table_req", namespace.backendDbName());
 
-    internalizeCreateTableRequest(request, namespace.backendDbName());
+    if (!namespace.catalogName().equals(support.config.defaultCatalog())) {
+      @SuppressWarnings("unchecked")
+      Map<String, String> params = (Map<String, String>) ThriftReflectionCache.invokeGetter(rawTable, "getParameters");
+      if (params != null && "true".equalsIgnoreCase(params.get("transactional"))) {
+        throw new MetaException("Cannot create transactional table '"
+            + dbName + "." + tableName
+            + "' in non-default catalog '" + namespace.catalogName()
+            + "'. Transactional (ACID) tables are only supported in the default catalog '"
+            + support.config.defaultCatalog() + "'");
+      }
+    }
 
+    internalizeCreateTableRequest(request, namespace);
+
+    if (externalTableLocationRewriter != null) {
+      Object tableObj = ThriftReflectionCache.invokeGetter(request, "getTable");
+      if (tableObj != null) {
+        externalTableLocationRewriter.rewriteObjectArguments(new Object[]{tableObj}, namespace, "create_table_req");
+      }
+    }
+
+    Object result;
     try {
-      return support.invokeBackendNamed(backend, "create_table_req", request);
+      result = support.invokeBackendNamed(backend, "create_table_req", request);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        return fallbackToLegacy(backend, request);
+        result = fallbackToLegacy(backend, request);
+      } else {
+        throw cause;
       }
-      throw cause;
     }
+
+    if (icebergTablePointerGuard != null && tableName != null) {
+      icebergTablePointerGuard.invalidate(namespace.catalogName(), namespace.backendDbName(), tableName);
+    }
+
+    return result;
   }
 
-  private void internalizeCreateTableRequest(Object request, String backendDbName) {
+  private void internalizeCreateTableRequest(Object request, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+    String backendDbName = namespace.backendDbName();
     Object rawTable = ThriftReflectionCache.invokeGetter(request, "getTable");
     if (rawTable != null) {
       ThriftReflectionCache.invokeStringSetter(rawTable, "setDbName", backendDbName);
     }
     internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getPrimaryKeys"), "setTable_db", backendDbName);
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getForeignKeys"), "setFktable_db", backendDbName);
+    internalizeForeignKeys(ThriftReflectionCache.invokeGetter(request, "getForeignKeys"), namespace);
     internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getUniqueConstraints"), "setTable_db", backendDbName);
     internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getNotNullConstraints"), "setTable_db", backendDbName);
     internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getDefaultConstraints"), "setTable_db", backendDbName);
     internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getCheckConstraints"), "setTable_db", backendDbName);
+  }
+
+  private void internalizeForeignKeys(Object fksObj, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+    if (fksObj instanceof List<?> list) {
+      for (Object fk : list) {
+        if (fk != null) {
+          ThriftReflectionCache.invokeStringSetter(fk, "setFktable_db", namespace.backendDbName());
+          String pkDb = ThriftReflectionCache.readString(fk, "getPktable_db");
+          if (pkDb != null && !pkDb.isBlank()) {
+            CatalogRouter.ResolvedNamespace pkNamespace = support.router.resolveDatabase(pkDb);
+            if (!pkNamespace.catalogName().equals(namespace.catalogName())) {
+              throw new MetaException("Cannot create foreign key across different catalogs: FK catalog '"
+                  + namespace.catalogName() + "' and PK catalog '" + pkNamespace.catalogName() + "'");
+            }
+            ThriftReflectionCache.invokeStringSetter(fk, "setPktable_db", pkNamespace.backendDbName());
+          }
+        }
+      }
+    }
   }
 
   private void internalizeConstraintList(Object listObj, String setterName, String backendDbName) {

@@ -108,8 +108,8 @@ final class AlterTableHandler implements SpecialCaseHandler {
     Object internalizedTable = null;
     if (rawTable != null) {
       internalizedTable = support.federationLayer.internalizeArgument(rawTable, targetNamespace);
-      if (externalTableLocationRewriter != null && internalizedTable instanceof Table tableInstance) {
-        externalTableLocationRewriter.rewriteObjectArguments(new Object[]{tableInstance}, targetNamespace, methodName);
+      if (externalTableLocationRewriter != null) {
+        externalTableLocationRewriter.rewriteObjectArguments(new Object[]{internalizedTable}, targetNamespace, methodName);
       }
     }
 

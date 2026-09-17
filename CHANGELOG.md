@@ -10,6 +10,17 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Переписывание путей партиций внешних таблиц (External Table Location Rewrite)**:
+  - В `ExternalTableLocationRewriter` добавлена поддержка операций над партициями (`supports`: `add_partition*`, `alter_partition*`, `rename_partition*`).
+  - Поддержана квалификация неквалифицированных локаций (`QUALIFY_UNQUALIFIED`) и переписывание клиентского `source-default-fs` на целевой `targetDefaultFs` каталога (`REWRITE_IF_SOURCE_DEFAULT_FS`) для объектов `Partition`, коллекций `List<Partition>`, а также request-объектов `AlterPartitionsRequest`, `AddPartitionsRequest`, `RenamePartitionRequest` (включая динамические классы из изолированных ClassLoader'ов).
+  - В `AlterPartitionsReqHandler`, `AddPartitionsReqHandler` и `RenamePartitionHandler` подключен `ExternalTableLocationRewriter` перед отправкой запросов на бэкенд, а в `AlterPartitionsReqHandler` также реализована интернализация `dbName`, `catName`, `validWriteIdList` и имен баз данных вложенных партиций.
+- **Маршрутизация и безопасность для exchange_partition, rename_partition и create_table_req**:
+  - **`exchange_partition` и `exchange_partitions`**: реализован специализированный `ExchangePartitionHandler`, независимо разрешающий схемы `source_db` и `dest_db`, проверяющий их принадлежность одному каталогу (кросс-каталожный обмен отклоняется с `MetaException`), проверяющий права записи (READ_ONLY каталоги отклоняются), интернализующий обе схемы и инвалидирующий отрицательный кэш `IcebergTablePointerGuard` для обеих затронутых таблиц.
+  - **`rename_partition` и `rename_partition_req`**: объединены в `RenamePartitionHandler` с проверкой недопустимости ACID-транзакций на не-дефолтных каталогах, трансформацией `validWriteIdList` и `catName`, интернализацией `new_part.dbName` и сбросом отрицательного кэша Iceberg.
+  - **`create_table_req`**: в `CreateTableReqHandler` добавлен запрет создания транзакционных таблиц (`transactional=true`) на не-дефолтных каталогах, подключен `ExternalTableLocationRewriter` (с поддержкой изолированных классов Table), а также интернализация не только `fktable_db`, но и `pktable_db` с проверкой нахождения обеих таблиц внешнего ключа в одном каталоге.
+  - **`get_all_table_constraints`**: в `GetAllTableConstraintsHandler` добавлена экстернализация родительской базы данных (`pktable_db`) для внешних ключей (`SQLForeignKey`).
+  - **`drop_table`**: в `DropTableHandler` добавлена инвалидация кэша `IcebergTablePointerGuard` после успешного удаления таблицы.
+  - **`ThriftReflectionCache.deepCopy`**: обеспечена безопасная работа с объектами из изолированных ClassLoader'ов при отсутствии системного интерфейса `TBase`.
 - **Переименование и перенос таблиц между схемами (ALTER TABLE ... RENAME TO)**:
   - Исправлена ошибка, из-за которой операция переноса таблицы в другую схему (`ALTER TABLE {stg_db}.{table_name} RENAME TO {tgt_db}.{table_name}`) не перемещала таблицу, оставляя её в исходной схеме `stg_db`.
   - Ранее обработчик `alter_table_req` интернализовал запрос целиком с использованием пространства имен исходной таблицы (`sourceNamespace`), в результате чего `table.setDbName(...)` перезаписывал целевую базу данных значением исходной базы, превращая вызов в холостое переименование внутри одной схемы.
