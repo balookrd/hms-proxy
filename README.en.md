@@ -85,7 +85,7 @@ These switches change client-visible names or SQL text, not backend selection:
 | --- | --- |
 | `routing.catalog-db-separator` | Changes the external legacy spelling, for example `catalog2__sales` instead of `catalog2.sales`. |
 | `federation.preserve-backend-catalog-name=true` | Returns backend `catName` / `catalogName` such as `hive`, but routing still follows the external `dbName` or explicit proxy catalog. |
-| `federation.view-text-rewrite.mode=REWRITE` | Rewrites view SQL between external and internal names; it does not change backend selection for the RPC itself. |
+| `federation.view-text-rewrite.mode=REWRITE` | Rewrites view SQL between external and internal names (enabled by default); it does not change backend selection for the RPC itself. |
 
 ## RPC behavior matrix
 
@@ -894,11 +894,11 @@ Some HDP-only methods still do not have a safe Apache mapping, so they remain un
 explicitly rather than returning a misleading success response.
 
 View/materialized-view notes:
-- the proxy can rewrite SQL text only with `federation.view-text-rewrite.mode=REWRITE`
+- view SQL rewrite is enabled by default (`federation.view-text-rewrite.mode=REWRITE`)
 - rewrite is intentionally parser-less and conservative: a lexical scanner tracks table positions
-  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) and rewrites only the database qualifier of a
-  reference standing in one of them; it does not parse the full Hive SQL grammar
-- string literals, `--` and `/* */` comments, numbers and backquoted identifiers are skipped, so
+  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) and rewrites the database qualifier of a reference
+  standing in one of them, or qualifies an unqualified table with the external database; it does not parse the full Hive SQL grammar
+- CTEs in `WITH ... AS (...)`, string literals, `--` and `/* */` comments, numbers and backquoted identifiers are skipped, so
   their content is never rewritten; column qualifiers and table aliases (`t.col` in
   `select t.col from sales.orders t`) are left alone even when they collide with a database name
 - `catalog.db.table` references keep their catalog qualifier: outbound rewrite collapses
@@ -909,10 +909,10 @@ View/materialized-view notes:
 - whatever cannot be resolved unambiguously stays untouched and is logged at `DEBUG` by
   `ViewDefinitionCompatibility`; an unrewritten reference surfaces as an explicit backend error
   rather than as a silently corrupted view definition
-- by default only `viewExpandedText` is rewritten
-  (`federation.view-text-rewrite.preserve-original-text=true`), so the client-facing
-  `viewOriginalText` is never mutated; set it to `false` if you also want the stored original SQL
-  translated
+- by default both `viewExpandedText` and client-facing `viewOriginalText` are rewritten
+  (`federation.view-text-rewrite.preserve-original-text=false`), as well as Spark view parameters
+  (`view.default.database`), so query engines like Spark properly resolve references with the proxy prefix;
+  set it to `true` if you want to preserve the raw stored original SQL
 - dialect-specific text (variable substitution such as `${hiveconf:db}`, macros, engine-specific
   hints) is out of scope and still needs validation in your environment
 
@@ -994,17 +994,18 @@ federation.preserve-backend-catalog-name=true
 This only changes the returned `catName`/`catalogName`, typically to backend values such as
 `hive`. Backend selection still follows the canonical routing model above.
 
-If your workloads depend on Hive views or materialized views across multiple catalogs, also test
-with:
+If your workloads depend on Hive views or materialized views across multiple catalogs, view SQL
+rewrite is enabled by default:
 
 ```properties
 federation.view-text-rewrite.mode=REWRITE
+federation.view-text-rewrite.preserve-original-text=false
 ```
 
-That rewrites view SQL between external and internal names. `viewOriginalText` is preserved by
-default (`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` only if the
-stored original SQL must be translated as well. Neither switch changes backend selection for the
-RPC itself.
+That rewrites view SQL between external and internal names, including `viewOriginalText` and Spark properties
+`view.default.database`. If you need to disable view rewrite, set `federation.view-text-rewrite.mode=DISABLED`,
+or set `federation.view-text-rewrite.preserve-original-text=true` to keep raw `viewOriginalText`. Neither switch
+changes backend selection for the RPC itself.
 
 If you need the proxy to physically delete external-table data on Apache `3.1.3` backends after
 `DROP TABLE`, enable:

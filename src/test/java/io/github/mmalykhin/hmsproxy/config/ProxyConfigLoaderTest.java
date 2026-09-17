@@ -334,19 +334,19 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
-  public void viewTextRewritePreservesOriginalTextByDefault() throws Exception {
+  public void viewTextRewriteEnabledAndRewritesOriginalTextByDefault() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
           synthetic-read-lock.store.mode=IN_MEMORY
           catalogs=catalog1
           catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
-          federation.view-text-rewrite.mode=REWRITE
           """);
 
       ProxyConfig config = ProxyConfigLoader.load(file);
 
-      Assert.assertTrue(config.federation().preserveOriginalViewText());
+      Assert.assertEquals(ViewTextRewriteMode.REWRITE, config.federation().viewTextRewriteMode());
+      Assert.assertFalse(config.federation().preserveOriginalViewText());
     } finally {
       Files.deleteIfExists(file);
     }

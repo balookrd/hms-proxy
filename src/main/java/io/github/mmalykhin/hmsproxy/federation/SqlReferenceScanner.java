@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.federation;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -56,10 +57,11 @@ final class SqlReferenceScanner {
   }
 
   /**
-   * Returns qualified ({@code >= 2} parts) table references in table positions, in source order.
+   * Returns table references in table positions, in source order.
    */
   static List<TableReference> scan(String sql) {
     List<Token> tokens = tokenize(sql);
+    Set<String> cteNames = findCteNames(tokens);
     List<TableReference> references = new ArrayList<>();
     State state = State.NONE;
     List<Frame> frames = new ArrayList<>();
@@ -92,6 +94,9 @@ final class SqlReferenceScanner {
           index = collectChain(tokens, index, chain);
           if (state == State.EXPECT_TABLE_REFERENCE) {
             if (chain.size() >= 2) {
+              references.add(new TableReference(List.copyOf(chain)));
+            } else if (chain.size() == 1
+                && !cteNames.contains(chain.get(0).unquoted().toUpperCase(Locale.ROOT))) {
               references.add(new TableReference(List.copyOf(chain)));
             }
             state = State.AFTER_TABLE_REFERENCE;
@@ -133,6 +138,60 @@ final class SqlReferenceScanner {
       }
     }
     return references;
+  }
+
+  private static Set<String> findCteNames(List<Token> tokens) {
+    Set<String> cteNames = new HashSet<>();
+    int i = 0;
+    while (i < tokens.size()) {
+      Token t = tokens.get(i);
+      if (t.kind == Kind.IDENTIFIER && "WITH".equalsIgnoreCase(t.text)) {
+        i++;
+        while (i < tokens.size()) {
+          Token nameToken = tokens.get(i);
+          if (nameToken.kind != Kind.IDENTIFIER && nameToken.kind != Kind.QUOTED_IDENTIFIER) {
+            break;
+          }
+          String cteName = new Part(nameToken.text, nameToken.start, nameToken.end).unquoted();
+          i++;
+          if (i < tokens.size() && tokens.get(i).kind == Kind.OPEN_PAREN) {
+            int depth = 1;
+            i++;
+            while (i < tokens.size() && depth > 0) {
+              if (tokens.get(i).kind == Kind.OPEN_PAREN) {
+                depth++;
+              } else if (tokens.get(i).kind == Kind.CLOSE_PAREN) {
+                depth--;
+              }
+              i++;
+            }
+          }
+          if (i < tokens.size() && tokens.get(i).kind == Kind.IDENTIFIER && "AS".equalsIgnoreCase(tokens.get(i).text)) {
+            cteNames.add(cteName.toUpperCase(Locale.ROOT));
+            i++;
+            if (i < tokens.size() && tokens.get(i).kind == Kind.OPEN_PAREN) {
+              int depth = 1;
+              i++;
+              while (i < tokens.size() && depth > 0) {
+                if (tokens.get(i).kind == Kind.OPEN_PAREN) {
+                  depth++;
+                } else if (tokens.get(i).kind == Kind.CLOSE_PAREN) {
+                  depth--;
+                }
+                i++;
+              }
+            }
+            if (i < tokens.size() && tokens.get(i).kind == Kind.COMMA) {
+              i++;
+              continue;
+            }
+          }
+          break;
+        }
+      }
+      i++;
+    }
+    return cteNames;
   }
 
   private static int collectChain(List<Token> tokens, int index, List<Part> chain) {

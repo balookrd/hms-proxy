@@ -10,6 +10,12 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Automatic View Reference Rewriting for Spark and Federated Catalogs**:
+  - Enabled automatic view SQL rewriting by default (`federation.view-text-rewrite.mode=REWRITE`, `preserve-original-text=false`), ensuring catalog prefixes (e.g. `hdp__inrs_dds.inwhs_transaction`) are automatically prepended when clients access views through catalog prefixes.
+  - Supported rewriting both `viewExpandedText` and client-facing `viewOriginalText`, preventing table resolution failures in Spark applications (such as Spark queries on cluster Titanium failing to find tables located on the remote HDP backend `ns-etl`).
+  - Added rewriting of Spark view properties (`view.default.database` and `view.catalogAndNamespace.part.X`) in table parameters (`Table.parameters`), keeping Spark Catalyst table resolution context consistent with the proxy catalog namespace.
+  - Extended view detection (`isViewLike`) to recognize `tableType="VIEW"` and tables containing view SQL text without explicit `VIRTUAL_VIEW` types.
+  - Added qualification of unqualified tables in `SqlReferenceScanner` (`FROM table` -> `FROM catalog__db.table`) while properly preserving CTE names declared in `WITH ... AS (...)`.
 - **Batch Operations, Constraints, and Extended RPCs for Hive 4 and HDP**:
   - `get_table_objects_by_name_req`: supported batch table fetching by name list via `GetTablesRequest` with database internalization, exposure filtering, and table externalization in `GetTablesResult`; supported on Hive 4 and Hortonworks front doors as well as Apache, Hortonworks, and Hive 4 backends.
   - `create_table_req`: end-to-end table creation routing via `CreateTableRequest` for Hive 4 and HDP 6150 backends, preserving concurrent `EnvironmentContext` and all table constraints (primary keys, foreign keys, unique, not null, default, check constraints) with database internalization; graceful fallback to `create_table_with_constraints` / `create_table_with_environment_context` for Apache 3.1.3.

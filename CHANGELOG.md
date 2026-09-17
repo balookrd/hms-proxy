@@ -10,6 +10,12 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Автоматическое переписывание ссылок в представлениях (views) для Spark и федеративных каталогов**:
+  - Включено автоматическое переписывание SQL-текста представлений по умолчанию (`federation.view-text-rewrite.mode=REWRITE`, `preserve-original-text=false`), что обеспечивает автоматическое добавление префикса каталога прокси (например, `hdp__inrs_dds.inwhs_transaction`) к таблицам при обращении клиентов к view через префикс каталога.
+  - Поддержано переписывание как `viewExpandedText`, так и сохранённого `viewOriginalText`, предотвращая ошибки разрешения таблиц в Spark-приложениях (например, падение Spark на кластере Titanium при чтении view над таблицами удаленного HDP-бэкенда `ns-etl`).
+  - Реализовано переписывание Spark-параметров представлений (`view.default.database` и `view.catalogAndNamespace.part.X`) в параметрах таблицы (`Table.parameters`), обеспечивая корректный контекст разрешения таблиц Spark Catalyst.
+  - Расширено распознавание представлений (`isViewLike`): поддержан тип `VIEW` и таблицы с заполненным SQL-текстом без явного типа `VIRTUAL_VIEW`.
+  - В `SqlReferenceScanner` добавлена поддержка квалификации неквалифицированных таблиц в table-позициях (`FROM table` -> `FROM catalog__db.table`) с корректным сохранением CTE-выражений из блока `WITH ... AS (...)`.
 - **Поддержка пакетных операций, ограничений (constraints) и расширенных RPC Hive 4 и HDP**:
   - `get_table_objects_by_name_req`: поддержано пакетное чтение таблиц по списку имён через `GetTablesRequest` с интернализацией БД, фильтрацией exposure и экстернализацией таблиц в ответе `GetTablesResult`; метод поддержан на фронтендах Hive 4 и Hortonworks, а также на бэкендах Apache, Hortonworks и Hive 4.
   - `create_table_req`: сквозная маршрутизация создания таблиц через `CreateTableRequest` для Hive 4 и HDP 6150 с сохранением одновременных `EnvironmentContext` и всех табличных ограничений (primary keys, foreign keys, unique, not null, default, check constraints) с интернализацией БД; graceful fallback на `create_table_with_constraints` / `create_table_with_environment_context` для Apache 3.1.3.

@@ -86,7 +86,7 @@ failure, если mutation остаётся ambiguous.
 | --- | --- |
 | `routing.catalog-db-separator` | Меняет внешний legacy формат, например `catalog2__sales` вместо `catalog2.sales`. |
 | `federation.preserve-backend-catalog-name=true` | Возвращает backend `catName` / `catalogName` вроде `hive`, но routing всё равно идёт по внешнему `dbName` или явному proxy catalog. |
-| `federation.view-text-rewrite.mode=REWRITE` | Переписывает SQL внутри view между внешними и внутренними именами; на выбор backend для самого RPC не влияет. |
+| `federation.view-text-rewrite.mode=REWRITE` | Переписывает SQL внутри view между внешними и внутренними именами (включено по умолчанию); на выбор backend для самого RPC не влияет. |
 
 ## Матрица поведения RPC
 
@@ -891,11 +891,11 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 - `get_all_materialized_view_objects_for_rewriting` -> прямой Hortonworks passthrough только в Hortonworks backend `3.1.0.3.1.5.6150-1` через `routing.default-catalog`
 
 Замечания по view / materialized view:
-- переписывание SQL работает только при `federation.view-text-rewrite.mode=REWRITE`
+- переписывание SQL включено по умолчанию (`federation.view-text-rewrite.mode=REWRITE`)
 - rewrite сделан intentionally parser-less: лексический сканер отслеживает table-позиции
-  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) и переписывает только database-квалификатор ссылки,
-  стоящей в такой позиции; полный Hive SQL grammar не разбирается
-- string literals, комментарии `--` и `/* */`, числа и идентификаторы в backquote пропускаются,
+  (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) и переписывает database-квалификатор ссылки,
+  стоящей в такой позиции, либо квалифицирует неквалифицированную таблицу внешней БД; полный Hive SQL grammar не разбирается
+- CTE в блоке `WITH ... AS (...)`, string literals, комментарии `--` и `/* */`, числа и идентификаторы в backquote пропускаются,
   поэтому их содержимое никогда не переписывается; квалификаторы колонок и алиасы таблиц
   (`t.col` в `select t.col from sales.orders t`) не трогаются, даже если совпадают с именем БД
 - ссылки вида `catalog.db.table` сохраняют catalog-префикс: на выходе схлопывается только
@@ -906,10 +906,10 @@ catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-
 - всё, что нельзя разрешить однозначно, остаётся нетронутым и логируется на уровне `DEBUG` в
   `ViewDefinitionCompatibility`; непереписанная ссылка проявится как явная ошибка backend, а не
   как молча испорченное определение вью
-- по умолчанию переписывается только `viewExpandedText`
-  (`federation.view-text-rewrite.preserve-original-text=true`), то есть клиентский
-  `viewOriginalText` не мутируется; поставь `false`, если нужно переписывать и сохранённый
-  оригинальный SQL
+- по умолчанию переписываются и `viewExpandedText`, и клиентский `viewOriginalText`
+  (`federation.view-text-rewrite.preserve-original-text=false`), а также параметры Spark-представлений
+  (`view.default.database`), чтобы движки вроде Spark корректно находили таблицы с префиксом прокси;
+  поставь `true`, если нужно сохранять сырой оригинальный SQL без изменений
 - диалектные конструкции (подстановки вроде `${hiveconf:db}`, макросы, engine-specific hints) вне
   области rewrite — их по-прежнему стоит проверить отдельным smoke тестом в вашей среде
 
@@ -1003,16 +1003,17 @@ federation.preserve-backend-catalog-name=true
 Это меняет только возвращаемые `catName`/`catalogName`, обычно на backend-значения вроде `hive`.
 Выбор backend по-прежнему следует канонической модели маршрутизации выше.
 
-Если нагрузки используют Hive views или materialized views между несколькими catalog, имеет смысл
-сразу прогонять и такой режим:
+Если нагрузки используют Hive views или materialized views между несколькими catalog, переписывание SQL
+внутри view включено по умолчанию:
 
 ```properties
 federation.view-text-rewrite.mode=REWRITE
+federation.view-text-rewrite.preserve-original-text=false
 ```
 
-Это переписывает SQL внутри view между внешними и внутренними именами. `viewOriginalText` по
-умолчанию сохраняется (`federation.view-text-rewrite.preserve-original-text=true`); ставь `false`
-только если нужно переписывать и сохранённый оригинальный SQL. На выбор backend для самого RPC ни
+Это переписывает SQL внутри view между внешними и внутренними именами, включая `viewOriginalText` и
+Spark-параметры `view.default.database`. Если нужно выключить переписывание, установи `federation.view-text-rewrite.mode=DISABLED`,
+а для сохранения сырого `viewOriginalText` — `federation.view-text-rewrite.preserve-original-text=true`. На выбор backend для самого RPC ни
 одна из настроек не влияет.
 
 Если нужно, чтобы proxy физически удалял данные external table на backend Apache `3.1.3`

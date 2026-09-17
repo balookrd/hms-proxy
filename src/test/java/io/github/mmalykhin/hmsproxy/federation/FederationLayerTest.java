@@ -341,6 +341,122 @@ public class FederationLayerTest {
     Assert.assertTrue(layer.isTableExposed("catalog1", "finance", "secret"));
   }
 
+  @Test
+  public void externalizeResultRewritesSparkViewScenarioWithCatalogPrefix() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = new Table();
+    table.setTableType("VIRTUAL_VIEW");
+    table.setDbName("inrs_dds");
+    table.setTableName("v_inwhs_transaction");
+    table.setViewOriginalText("select * from inrs_dds.inwhs_transaction");
+    table.setViewExpandedText("select `inrs_dds`.`inwhs_transaction`.`id` from `inrs_dds`.`inwhs_transaction`");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.default.database", "inrs_dds");
+    params.put("view.catalogAndNamespace.numParts", "2");
+    params.put("view.catalogAndNamespace.part.0", "spark_catalog");
+    params.put("view.catalogAndNamespace.part.1", "inrs_dds");
+    table.setParameters(params);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals("select * from hdp__inrs_dds.inwhs_transaction", routed.getViewOriginalText());
+    Assert.assertEquals(
+        "select `inrs_dds`.`inwhs_transaction`.`id` from `hdp__inrs_dds`.`inwhs_transaction`",
+        routed.getViewExpandedText());
+    Assert.assertEquals("hdp__inrs_dds", routed.getParameters().get("view.default.database"));
+    Assert.assertEquals("hdp__inrs_dds", routed.getParameters().get("view.catalogAndNamespace.part.1"));
+  }
+
+  @Test
+  public void externalizeResultRewritesSparkViewWithNullExpandedText() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = new Table();
+    table.setTableType("VIEW");
+    table.setDbName("inrs_dds");
+    table.setTableName("v_inwhs_transaction");
+    table.setViewOriginalText("select * from inrs_dds.inwhs_transaction");
+    table.setViewExpandedText(null);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals("select * from hdp__inrs_dds.inwhs_transaction", routed.getViewOriginalText());
+    Assert.assertNull(routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultQualifiesUnqualifiedTableReferences() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = new Table();
+    table.setTableType("VIRTUAL_VIEW");
+    table.setDbName("inrs_dds");
+    table.setTableName("v_inwhs_transaction");
+    table.setViewOriginalText("select id, amount from inwhs_transaction t where t.amount > 0");
+    table.setViewExpandedText("select `t`.`id`, `t`.`amount` from `inwhs_transaction` `t`");
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "select id, amount from hdp__inrs_dds.inwhs_transaction t where t.amount > 0",
+        routed.getViewOriginalText());
+    Assert.assertEquals(
+        "select `t`.`id`, `t`.`amount` from `hdp__inrs_dds`.`inwhs_transaction` `t`",
+        routed.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultPreservesCommonTableExpressions() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = new Table();
+    table.setTableType("VIRTUAL_VIEW");
+    table.setDbName("inrs_dds");
+    table.setTableName("v_inwhs_transaction");
+    String sql = "with tx_cte as (select id from inwhs_transaction) select * from tx_cte";
+    table.setViewOriginalText(sql);
+    table.setViewExpandedText(sql);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals(
+        "with tx_cte as (select id from hdp__inrs_dds.inwhs_transaction) select * from tx_cte",
+        routed.getViewOriginalText());
+    Assert.assertEquals(
+        "with tx_cte as (select id from hdp__inrs_dds.inwhs_transaction) select * from tx_cte",
+        routed.getViewExpandedText());
+  }
+
+  @Test
+  public void internalizeArgumentRestoresParametersAndSql() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = new Table();
+    table.setTableType("VIRTUAL_VIEW");
+    table.setDbName("hdp__inrs_dds");
+    table.setTableName("v_inwhs_transaction");
+    table.setViewOriginalText("select * from hdp__inrs_dds.inwhs_transaction");
+    table.setViewExpandedText("select * from `hdp__inrs_dds`.`inwhs_transaction`");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.default.database", "hdp__inrs_dds");
+    params.put("view.catalogAndNamespace.numParts", "2");
+    params.put("view.catalogAndNamespace.part.1", "hdp__inrs_dds");
+    table.setParameters(params);
+
+    Table routed = (Table) layer.internalizeArgument(table, namespace);
+
+    Assert.assertEquals("select * from inrs_dds.inwhs_transaction", routed.getViewOriginalText());
+    Assert.assertEquals("select * from `inrs_dds`.`inwhs_transaction`", routed.getViewExpandedText());
+    Assert.assertEquals("inrs_dds", routed.getParameters().get("view.default.database"));
+    Assert.assertEquals("inrs_dds", routed.getParameters().get("view.catalogAndNamespace.part.1"));
+  }
+
   private static Table viewTable(String viewOriginalText, String viewExpandedText) {
     Table table = new Table();
     table.setTableType("VIRTUAL_VIEW");
@@ -359,6 +475,7 @@ public class FederationLayerTest {
     Map<String, Object> backends = new LinkedHashMap<>();
     backends.put("catalog1", null);
     backends.put("catalog2", null);
+    backends.put("hdp", null);
     CatalogRouter router = constructor.newInstance(config, backends);
     return new FederationLayer(config, router);
   }
@@ -392,7 +509,18 @@ public class FederationLayerTest {
                 java.util.List.of(),
                 null,
                 null,
-                Map.of("hive.metastore.uris", "thrift://hms2:9083"))))
+                Map.of("hive.metastore.uris", "thrift://hms2:9083")),
+            "hdp",
+            new CatalogConfig(
+                "hdp",
+                "hdp",
+                "file:///warehouse/hdp",
+                false,
+                CatalogAccessMode.READ_WRITE,
+                java.util.List.of(),
+                null,
+                null,
+                Map.of("hive.metastore.uris", "thrift://hms-hdp:9083"))))
         .backend(new BackendConfig(Map.of()))
         .compatibility(new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false))
         .federation(new FederationConfig(

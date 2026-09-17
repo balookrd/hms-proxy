@@ -100,8 +100,43 @@ final class ViewDefinitionCompatibility {
       return;
     }
     table.setViewExpandedText(rewriteSql(table.getViewExpandedText(), namespace, direction));
-    if (!config.federation().preserveOriginalViewText()) {
+    if (!config.federation().preserveOriginalViewText()
+        || table.getViewExpandedText() == null
+        || table.getViewExpandedText().isBlank()) {
       table.setViewOriginalText(rewriteSql(table.getViewOriginalText(), namespace, direction));
+    }
+    rewriteViewParameters(table, namespace, direction);
+  }
+
+  private void rewriteViewParameters(Table table, CatalogRouter.ResolvedNamespace namespace, Direction direction) {
+    Map<String, String> params = table.getParameters();
+    if (params == null || params.isEmpty()) {
+      return;
+    }
+    String defaultDbKey = "view.default.database";
+    String currentDefaultDb = params.get(defaultDbKey);
+    if (currentDefaultDb != null && !currentDefaultDb.isBlank()) {
+      String rewritten = rewriteDbName(currentDefaultDb, namespace, direction);
+      if (rewritten != null) {
+        params.put(defaultDbKey, rewritten);
+      }
+    }
+    String numPartsStr = params.get("view.catalogAndNamespace.numParts");
+    if (numPartsStr != null) {
+      try {
+        int numParts = Integer.parseInt(numPartsStr.trim());
+        for (int i = 0; i < numParts; i++) {
+          String partKey = "view.catalogAndNamespace.part." + i;
+          String partVal = params.get(partKey);
+          if (partVal != null && !partVal.isBlank()) {
+            String rewritten = rewriteDbName(partVal, namespace, direction);
+            if (rewritten != null) {
+              params.put(partKey, rewritten);
+            }
+          }
+        }
+      } catch (NumberFormatException ignored) {
+      }
     }
   }
 
@@ -139,6 +174,20 @@ final class ViewDefinitionCompatibility {
       Direction direction
   ) {
     List<Part> qualifier = reference.qualifier();
+    if (qualifier.isEmpty()) {
+      if (direction == Direction.EXTERNALIZE) {
+        Part tablePart = reference.parts().get(0);
+        String externalDb = namespace.externalDbName();
+        if (externalDb == null || externalDb.isBlank()) {
+          return null;
+        }
+        String replacementText = tablePart.quoted()
+            ? '`' + externalDb.replace("`", "``") + "`.`" + tablePart.unquoted().replace("`", "``") + '`'
+            : externalDb + "." + tablePart.unquoted();
+        return new Replacement(tablePart.start(), tablePart.end(), replacementText);
+      }
+      return null;
+    }
     if (qualifier.size() == 1) {
       Part dbPart = qualifier.get(0);
       String rewrittenDb = rewriteDbName(dbPart.unquoted(), namespace, direction);
@@ -260,11 +309,16 @@ final class ViewDefinitionCompatibility {
 
   private static boolean isViewLike(Table table) {
     String tableType = table.getTableType();
-    if (tableType == null || tableType.isBlank()) {
-      return false;
+    if (tableType != null && !tableType.isBlank()) {
+      String normalizedType = tableType.trim().toUpperCase(Locale.ROOT);
+      if ("VIRTUAL_VIEW".equals(normalizedType)
+          || "MATERIALIZED_VIEW".equals(normalizedType)
+          || "VIEW".equals(normalizedType)) {
+        return true;
+      }
     }
-    String normalizedType = tableType.trim().toUpperCase(Locale.ROOT);
-    return "VIRTUAL_VIEW".equals(normalizedType) || "MATERIALIZED_VIEW".equals(normalizedType);
+    return (table.getViewOriginalText() != null && !table.getViewOriginalText().isBlank())
+        || (table.getViewExpandedText() != null && !table.getViewExpandedText().isBlank());
   }
 
   private static boolean isScalar(Object value) {

@@ -17,9 +17,9 @@ public final class FederationConfigParser {
     boolean preserveBackendCatalogName = reader.getBoolean("federation.preserve-backend-catalog-name", false);
     ViewTextRewriteMode viewTextRewriteMode = parseViewTextRewriteMode(
         reader.getOrNull("federation.view-text-rewrite.mode"));
-    // Conservative default: the client-facing view definition is never mutated unless asked for.
+    // Default to rewriting original view text as well so clients (like Spark) see properly qualified references.
     boolean preserveOriginalViewText = reader.getBoolean(
-        "federation.view-text-rewrite.preserve-original-text", true);
+        "federation.view-text-rewrite.preserve-original-text", false);
     ExternalTableLocationRewriteMode externalTableLocationRewriteMode =
         parseExternalTableLocationRewriteMode(reader.getOrNull("federation.external-table-location-rewrite.mode"));
     String externalTableLocationRewriteSourceDefaultFs =
@@ -52,7 +52,7 @@ public final class FederationConfigParser {
         ViewTextRewriteMode.class,
         value,
         "federation.view-text-rewrite.mode",
-        ViewTextRewriteMode.DISABLED);
+        ViewTextRewriteMode.REWRITE);
   }
 
   private static ExternalTableLocationRewriteMode parseExternalTableLocationRewriteMode(String value) {
