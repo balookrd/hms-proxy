@@ -239,7 +239,7 @@ public class IcebergRestEndpointIntegrationTest {
     Assert.assertEquals(404, get("/v1/nope/namespaces").statusCode());
     Assert.assertEquals(400, get("/v1/config?warehouse=nope").statusCode());
 
-    String rendered = metrics.render();
+    String rendered = awaitMetricsContaining("route=\"bad_request\"", Duration.ofSeconds(2));
     Assert.assertTrue("rendered: " + rendered,
         rendered.contains("prefix=\"" + CATALOG_NAME + "\",route=\"list_namespaces\",status=\"200\""));
     Assert.assertTrue("rendered: " + rendered,
@@ -851,6 +851,19 @@ public class IcebergRestEndpointIntegrationTest {
         .GET()
         .build();
     return client.send(request, HttpResponse.BodyHandlers.ofString());
+  }
+
+  private String awaitMetricsContaining(String substring, Duration timeout) throws Exception {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    String rendered = "";
+    while (System.nanoTime() < deadline) {
+      rendered = metrics.render();
+      if (rendered.contains(substring)) {
+        return rendered;
+      }
+      Thread.sleep(10);
+    }
+    return metrics.render();
   }
 
   // Writes a minimal but genuinely readable Iceberg table metadata.json to a local temp

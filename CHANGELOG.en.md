@@ -12,6 +12,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 - **Preserve null partNames in TRUNCATE TABLE**:
   - Fixed coercion of `partNames = null` into an empty list `List.of()` in `TruncateTableReqHandler`, `HortonworksFrontendBridge`, and `Hive4FrontendBridge`. Previously, when executing `TRUNCATE TABLE` without a `PARTITION (...)` spec (for unpartitioned tables or entire partitioned tables), the proxy sent an empty partition list `[]` instead of `null` to the backend. In Hive Metastore, passing an empty list means selecting 0 partitions to truncate, causing HMS to return success as a silent no-op without actually deleting data files from the table directory on HDFS.
+- **Eliminated race condition in Iceberg REST metrics test**:
+  - Added polling await in `recordsRestRequestMetricsAndListenerInfo` (`IcebergRestEndpointIntegrationTest`) for asynchronous metrics recorded in the HTTP server thread pool's `finally` block, preventing intermittent test failures on busy GitHub Actions CI runners.
 
 ### Added
 
