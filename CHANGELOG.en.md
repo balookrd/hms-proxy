@@ -10,6 +10,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **In-memory caching of get_config_value and impersonation timeout elimination**:
+  - Resolved `Timed out waiting for impersonation session for user '...' in catalog '...' after 30000 ms` caused by concurrent client bursts of `get_config_value`. Metastore configuration is caller-independent, so `CompatibilityHandler` now forwards `get_config_value` through the default catalog's shared session pool (`impersonation = null`), preventing queueing and pool exhaustion in per-user impersonation pools.
+  - Introduced thread-safe `ConfigValueCache` with single-flight deduplication across concurrent queries for the same property and negative caching (via sentinel) for properties absent in the backend metastore.
+  - Configured via `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour / 3,600,000 ms) and `routing.config-value-cache.max-entries` (default 1000 entries). Setting `ttl-ms=0` disables caching.
 - **Partition location rewriting for external tables (External Table Location Rewrite)**:
   - Extended `ExternalTableLocationRewriter` to support partition mutations (`supports`: `add_partition*`, `alter_partition*`, `rename_partition*`).
   - Supported qualifying unqualified locations (`QUALIFY_UNQUALIFIED`) and rewriting client `source-default-fs` to catalog `targetDefaultFs` (`REWRITE_IF_SOURCE_DEFAULT_FS`) across `Partition` objects, `List<Partition>` collections, and request envelopes `AlterPartitionsRequest`, `AddPartitionsRequest`, `RenamePartitionRequest` (including dynamic classes from isolated ClassLoaders).

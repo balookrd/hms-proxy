@@ -176,6 +176,7 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
 - упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
 - мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
+- кэшировать конфигурационные параметры метастора (`get_config_value`) в памяти через `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час) с single-flight дедупликацией и negative caching для отсутствующих ключей
 - объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
 - исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
@@ -225,7 +226,8 @@ catalog.catalog1.shared-session-pool-size=8
 
 - внутренние proxy-driven вызовы: backend health probe и reconnect-логика;
 - запросы от service principal'ов, перечисленных в `security.service-principals.*`, — они by design
-  обходят impersonation и переиспользуют общую backend-сессию.
+  обходят impersonation и переиспользуют общую backend-сессию;
+- чтение конфигурации metastore (`get_config_value`) — конфигурация HMS не зависит от пользователя, поэтому для предотвращения очередей и таймаутов в per-user пулах имперсонации вызовы `get_config_value` направляются через shared session pool дефолтного каталога и кэшируются в памяти (`routing.config-value-cache.*`).
 
 В чистом impersonation-deployment без service-principal клиентского трафика повышать
 `shared-session-pool-size` бессмысленно — на throughput приложения это не влияет. Тюнить пул нужно,
@@ -1637,6 +1639,8 @@ routing.database-cache.background-refresh.enabled=true
 routing.database-cache.background-refresh.interval-ms=60000
 routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
+routing.config-value-cache.ttl-ms=3600000
+routing.config-value-cache.max-entries=1000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 

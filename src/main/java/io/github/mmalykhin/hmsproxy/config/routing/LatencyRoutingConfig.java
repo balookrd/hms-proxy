@@ -8,6 +8,7 @@ public record LatencyRoutingConfig(
     DegradedRoutingPolicy degradedRoutingPolicy,
     DatabaseListCacheConfig databaseListCache,
     DatabaseMetadataCacheConfig databaseMetadataCache,
+    ConfigValueCacheConfig configValueCache,
     boolean refreshPrivilegesSyntheticSuccess
 ) {
   public LatencyRoutingConfig(
@@ -17,7 +18,7 @@ public record LatencyRoutingConfig(
       HedgedReadConfig hedgedRead,
       DegradedRoutingPolicy degradedRoutingPolicy
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null, null, false);
   }
 
   public LatencyRoutingConfig(
@@ -28,7 +29,7 @@ public record LatencyRoutingConfig(
       DegradedRoutingPolicy degradedRoutingPolicy,
       DatabaseListCacheConfig databaseListCache
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null, null, false);
   }
 
   public LatencyRoutingConfig(
@@ -40,7 +41,20 @@ public record LatencyRoutingConfig(
       DatabaseListCacheConfig databaseListCache,
       DatabaseMetadataCacheConfig databaseMetadataCache
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, null, false);
+  }
+
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy,
+      DatabaseListCacheConfig databaseListCache,
+      DatabaseMetadataCacheConfig databaseMetadataCache,
+      boolean refreshPrivilegesSyntheticSuccess
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, null, refreshPrivilegesSyntheticSuccess);
   }
 
   public LatencyRoutingConfig {
@@ -57,6 +71,8 @@ public record LatencyRoutingConfig(
         databaseListCache == null ? DatabaseListCacheConfig.disabled() : databaseListCache;
     databaseMetadataCache =
         databaseMetadataCache == null ? DatabaseMetadataCacheConfig.disabled() : databaseMetadataCache;
+    configValueCache =
+        configValueCache == null ? ConfigValueCacheConfig.defaultConfig() : configValueCache;
   }
 
   public static LatencyRoutingConfig disabled() {
@@ -68,6 +84,7 @@ public record LatencyRoutingConfig(
         DegradedRoutingPolicy.STRICT,
         DatabaseListCacheConfig.disabled(),
         DatabaseMetadataCacheConfig.disabled(),
+        ConfigValueCacheConfig.disabled(),
         false);
   }
 }

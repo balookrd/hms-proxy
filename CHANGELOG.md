@@ -10,6 +10,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Кэширование get_config_value и устранение таймаутов имперсонации**:
+  - Устранена ошибка `Timed out waiting for impersonation session for user '...' in catalog '...' after 30000 ms` при массовых клиентских вызовах `get_config_value`. Запрос конфигурации метастора не зависит от пользователя, поэтому в `CompatibilityHandler` вызов `get_config_value` направляется через пул shared-сессий дефолтного каталога (`impersonation = null`), не занимая слоты в per-user пулах имперсонации.
+  - Добавлен потокобезопасный in-memory кэш конфигурационных параметров `ConfigValueCache` с single-flight дедупликацией параллельных запросов за одним ключом и поддержкой negative caching (через sentinel) для отсутствующих на бэкенде параметров.
+  - Настройки кэша управляются свойствами `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час / 3 600 000 мс) и `routing.config-value-cache.max-entries` (по умолчанию 1000 записей). При `ttl-ms=0` кэширование отключается.
 - **Переписывание путей партиций внешних таблиц (External Table Location Rewrite)**:
   - В `ExternalTableLocationRewriter` добавлена поддержка операций над партициями (`supports`: `add_partition*`, `alter_partition*`, `rename_partition*`).
   - Поддержана квалификация неквалифицированных локаций (`QUALIFY_UNQUALIFIED`) и переписывание клиентского `source-default-fs` на целевой `targetDefaultFs` каталога (`REWRITE_IF_SOURCE_DEFAULT_FS`) для объектов `Partition`, коллекций `List<Partition>`, а также request-объектов `AlterPartitionsRequest`, `AddPartitionsRequest`, `RenamePartitionRequest` (включая динамические классы из изолированных ClassLoader'ов).

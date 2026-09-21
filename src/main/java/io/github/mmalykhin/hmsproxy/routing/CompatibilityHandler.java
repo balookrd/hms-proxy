@@ -30,6 +30,7 @@ final class CompatibilityHandler implements InvocationHandler {
   private final ImpersonationResolver impersonationResolver;
   private final long aliveSince;
   private final InvocationHandler next;
+  private final ConfigValueCache configValueCache;
 
   CompatibilityHandler(
       ProxyConfig config,
@@ -41,6 +42,21 @@ final class CompatibilityHandler implements InvocationHandler {
       long aliveSince,
       InvocationHandler next
   ) {
+    this(config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince, next,
+        new ConfigValueCache(config.latencyRouting().configValueCache()));
+  }
+
+  CompatibilityHandler(
+      ProxyConfig config,
+      CompatibilityLayer compatibilityLayer,
+      CatalogRouter router,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      long aliveSince,
+      InvocationHandler next,
+      ConfigValueCache configValueCache
+  ) {
     this.config = config;
     this.compatibilityLayer = compatibilityLayer;
     this.router = router;
@@ -49,6 +65,7 @@ final class CompatibilityHandler implements InvocationHandler {
     this.impersonationResolver = impersonationResolver;
     this.aliveSince = aliveSince;
     this.next = next;
+    this.configValueCache = configValueCache;
   }
 
   @Override
@@ -99,10 +116,17 @@ final class CompatibilityHandler implements InvocationHandler {
     }
     RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
     observability.metrics().recordDefaultCatalogRoute(method.getName());
-    return dispatcher.invokeDirect(
-        router.defaultBackend(), method, args,
-        impersonationResolver.resolve().orElse(null), RequestContext.currentRequestId(),
-        true, true);
+    return configValueCache.getOrFetch(requestedName, defaultValue, (name, sentinel) -> {
+      Object[] backendArgs = new Object[] {name, sentinel};
+      return (String) dispatcher.invokeDirect(
+          router.defaultBackend(), method, backendArgs,
+          null, RequestContext.currentRequestId(),
+          true, true);
+    });
+  }
+
+  ConfigValueCache configValueCache() {
+    return configValueCache;
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})

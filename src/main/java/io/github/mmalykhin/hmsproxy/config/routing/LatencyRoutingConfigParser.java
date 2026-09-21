@@ -60,6 +60,14 @@ public final class LatencyRoutingConfigParser {
     boolean refreshPrivilegesSyntheticSuccess =
         reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
         || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));
+    long configValueCacheTtlMs = reader.getNonNegativeLong(
+        "routing.config-value-cache.ttl-ms",
+        reader.getNonNegativeLong("routing.config-value-cache.ttl-seconds", ConfigValueCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
+    int configValueCacheMaxEntries = reader.getPositiveInt(
+        "routing.config-value-cache.max-entries", ConfigValueCacheConfig.DEFAULT_MAX_ENTRIES);
+    ConfigValueCacheConfig configValueCache = new ConfigValueCacheConfig(
+        configValueCacheTtlMs,
+        configValueCacheMaxEntries);
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
             backendStatePollingEnabled,
@@ -87,6 +95,7 @@ public final class LatencyRoutingConfigParser {
         degradedRoutingPolicy,
         databaseListCache,
         databaseMetadataCache,
+        configValueCache,
         refreshPrivilegesSyntheticSuccess);
   }
 

@@ -173,6 +173,7 @@ When enabled, the proxy can:
 - optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
 - proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
 - immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
+- cache metastore configuration values (`get_config_value`) in memory with `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour) with single-flight deduplication and negative caching for unknown keys
 - coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
 - omit degraded backends from safe fanout reads when
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
@@ -222,7 +223,8 @@ The shared pool then carries only:
 
 - internal proxy-driven calls such as backend health probes and reconnect bookkeeping;
 - requests authenticated as a service principal listed under `security.service-principals.*`, which
-  by design bypass impersonation and reuse a shared backend session.
+  by design bypass impersonation and reuse a shared backend session;
+- metastore configuration queries (`get_config_value`) — HMS configuration properties are caller-independent, so to prevent session pool exhaustion and impersonation timeouts in per-user pools, `get_config_value` calls are routed through the default catalog's shared session pool without caller impersonation and cached in memory (`routing.config-value-cache.*`).
 
 In a pure-impersonation deployment with no service-principal client traffic, raising
 `shared-session-pool-size` therefore has no effect on application throughput. Tune it when at least
@@ -1695,6 +1697,8 @@ routing.database-cache.background-refresh.enabled=true
 routing.database-cache.background-refresh.interval-ms=60000
 routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
+routing.config-value-cache.ttl-ms=3600000
+routing.config-value-cache.max-entries=1000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 

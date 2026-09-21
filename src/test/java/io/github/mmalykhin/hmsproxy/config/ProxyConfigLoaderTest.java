@@ -17,6 +17,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
+import io.github.mmalykhin.hmsproxy.config.routing.ConfigValueCacheConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreMode;
 public class ProxyConfigLoaderTest {
   @Test
@@ -1973,4 +1974,43 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsConfigValueCacheConfiguration() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          routing.config-value-cache.ttl-ms=5000
+          routing.config-value-cache.max-entries=500
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals(5000L, config.latencyRouting().configValueCache().ttlMs());
+      Assert.assertEquals(500, config.latencyRouting().configValueCache().maxEntries());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void defaultsConfigValueCacheWhenUnset() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals(ConfigValueCacheConfig.DEFAULT_TTL_MS, config.latencyRouting().configValueCache().ttlMs());
+      Assert.assertEquals(ConfigValueCacheConfig.DEFAULT_MAX_ENTRIES, config.latencyRouting().configValueCache().maxEntries());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }
+

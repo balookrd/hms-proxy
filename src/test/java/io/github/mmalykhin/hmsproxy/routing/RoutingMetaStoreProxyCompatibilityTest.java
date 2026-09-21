@@ -16,6 +16,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.config.routing.ConfigValueCacheConfig;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.lang.reflect.Constructor;
@@ -326,6 +327,126 @@ public class RoutingMetaStoreProxyCompatibilityTest {
         "metastore.batch.retrieve.max",
         "50",
         java.util.Map.of()).isPresent());
+  }
+
+  @Test
+  public void getConfigValueCachesBackendResultAndDoesNotUseImpersonation() throws Throwable {
+    CatalogConfig catalog1Config = new CatalogConfig(
+        "catalog1",
+        "c1",
+        "file:///c1",
+        true,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        null,
+        null,
+        Map.of("hive.metastore.uris", "thrift://one"));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalog1Config))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .latencyRouting(new LatencyRoutingConfig(
+            null, null, null, null, null, null, null,
+            new ConfigValueCacheConfig(60_000L, 100), false))
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Object[]> capturedArgs = new AtomicReference<>();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_config_value".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        capturedArgs.set(args);
+        if ("hive.metastore.try.direct.sql".equals(args[0])) {
+          return "true";
+        }
+        // Missing property: metastore echoes back the sentinel default value
+        return (String) args[1];
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    BackendRuntime.SessionFactory sessionFactory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig ignoredProxyConfig,
+          CatalogConfig ignoredCatalogConfig,
+          HiveConf ignoredHiveConf,
+          boolean ignoredBackendKerberosEnabled,
+          MetastoreRuntimeProfile ignoredRuntimeProfile
+      ) {
+        return session;
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig ignoredProxyConfig,
+          CatalogConfig ignoredCatalogConfig,
+          HiveConf ignoredHiveConf,
+          boolean ignoredBackendKerberosEnabled,
+          MetastoreRuntimeProfile ignoredRuntimeProfile,
+          String ignoredUserName,
+          List<String> ignoredGroupNames
+      ) {
+        throw new AssertionError("openImpersonating must not be called for get_config_value");
+      }
+    };
+
+    java.lang.reflect.Constructor<BackendRuntime> ctor = BackendRuntime.class.getDeclaredConstructor(
+        ProxyConfig.class,
+        CatalogConfig.class,
+        HiveConf.class,
+        boolean.class,
+        BackendRuntime.SessionFactory.class,
+        MetastoreRuntimeProfile.class,
+        BackendInvocationSession.class,
+        io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics.class);
+    ctor.setAccessible(true);
+    BackendRuntime runtime = ctor.newInstance(
+        config, catalog1Config, new HiveConf(), false, sessionFactory,
+        MetastoreRuntimeProfile.APACHE_3_1_3, session, null);
+
+    CatalogBackend backend = newBackend(
+        config,
+        catalog1Config,
+        new ApacheBackendAdapter(),
+        runtime);
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_config_value", String.class, String.class);
+
+    // Simulate an authenticated caller context
+    String previousUser = ClientRequestContext.setRemoteUser("impersonated_user");
+    try {
+      // First call: misses cache, invokes backend with sentinel, passes impersonation=null to dispatcher
+      Object first = handler.invoke(null, method, new Object[]{"hive.metastore.try.direct.sql", "false"});
+      Assert.assertEquals("true", first);
+      Assert.assertEquals(1, backendCalls.get());
+      Assert.assertNotNull(capturedArgs.get());
+      Assert.assertEquals("hive.metastore.try.direct.sql", capturedArgs.get()[0]);
+      Assert.assertEquals(ConfigValueCache.SENTINEL, capturedArgs.get()[1]);
+
+      // Second call: served from in-memory cache, no backend call
+      Object second = handler.invoke(null, method, new Object[]{"hive.metastore.try.direct.sql", "false"});
+      Assert.assertEquals("true", second);
+      Assert.assertEquals(1, backendCalls.get());
+
+      // Third call: missing key on backend (backend echoes sentinel)
+      Object third = handler.invoke(null, method, new Object[]{"custom.missing.key", "custom_default_1"});
+      Assert.assertEquals("custom_default_1", third);
+      Assert.assertEquals(2, backendCalls.get());
+      Assert.assertEquals(ConfigValueCache.SENTINEL, capturedArgs.get()[1]);
+
+      // Fourth call: missing key served from cache, returns new default without calling backend
+      Object fourth = handler.invoke(null, method, new Object[]{"custom.missing.key", "custom_default_2"});
+      Assert.assertEquals("custom_default_2", fourth);
+      Assert.assertEquals(2, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreRemoteUser(previousUser);
+    }
   }
 
 }
