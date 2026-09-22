@@ -1,6 +1,6 @@
 **Smoke-тест для Beeline и HMS clients**
 
-Подставь свой `jdbc:hive2://...` и при необходимости `principal=...`.
+Укажите адрес подключения `jdbc:hive2://...` и при необходимости `principal=...`.
 Предположим:
 
 - separator: `__`
@@ -13,12 +13,12 @@
 
 ## Test matrix
 
-Используй эту матрицу как короткий operational checklist для smoke-покрытия. Она заранее
+Используйте эту матрицу как краткий операционный чек-лист для smoke-тестирования. Она заранее
 показывает, какие комбинации client / front-door / backend / auth должны работать, работать в
 degraded-режиме или падать явно, ещё до детальных шагов ниже.
 
 | Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
-| --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- | --- |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | read, namespace switching, DDL/DML | Должно проходить через один proxy endpoint с корректным cross-catalog routing. |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | read, namespace switching, DDL/DML | То же самое, плюс должен успешно проходить front-door SASL/Kerberos. |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | view, cross-catalog view rewrite, permanent UDF, materialized views | Должно проходить при включённом view rewrite и наличии выбранного UDF-класса на HS2 classpath; backend без MV support должен падать явно. |
@@ -37,7 +37,7 @@ degraded-режиме или падать явно, ещё до детальны
 
 Практическая автоматизация:
 - для Beeline / HS2 шагов ниже можно использовать `scripts/run-real-installation-smoke-simple.sh --scenario sql`
-- для Beeline / HS2 шагов ниже с Kerberos используй `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+- для шагов Beeline / HS2 с поддержкой Kerberos используйте `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
 
 **1. Базовая проверка фронта**
 
@@ -82,7 +82,7 @@ show tables;
 ```
 
 Ожидание:
-- нет “залипания” одного backend
+- отсутствует ошибочное удержание контекста («залипание») одного бэкенда
 - routing остаётся корректным
 
 **5. DDL: Hortonworks backend**
@@ -225,7 +225,7 @@ drop table smoke_txn_tbl;
 Примечание:
 - В Beeline / HiveServer2 SQL сценариях неqualified `LOCATION '/tmp/...'` резолвится через `fs.defaultFS`
   того HiveServer2, к которому подключён клиент, а не через routed HMS backend. Если разные proxy catalog
-  должны писать в разные HDFS namespace, указывай fully qualified URI для каждого catalog, например
+  должны писать в разные HDFS namespace, указывайте полные URI (fully qualified URI) для каждого каталога, например
   `hdfs://nameservice-hdp/tmp/...` и `hdfs://nameservice-apache/tmp/...`.
 
 **7. Mixed negative-check**
@@ -246,7 +246,7 @@ select count(*) from some_table;
 
 Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Оригинальный клиентский
 SQL по умолчанию остаётся видимым в HMS без изменений
-(`federation.view-text-rewrite.preserve-original-text=true`); поставь `false`, если сохранённый
+(`federation.view-text-rewrite.preserve-original-text=true`); задайте `false`, если сохранённый
 `viewOriginalText` тоже нужно переписывать.
 
 В automated runner view-блок включён по умолчанию через `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`.
@@ -368,13 +368,13 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 Практически это можно запускать готовым клиентом из репозитория:
 - для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario all`
 - для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
-- если нужно провалидировать и default Hortonworks, и default Apache txn target, задай `HMS_SMOKE_TXN_SECONDARY_*`
+- если нужно провалидировать и default Hortonworks, и default Apache txn target, задайте `HMS_SMOKE_TXN_SECONDARY_*`
 - собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
 - режим `txn` покрывает `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
 - режим `notification` покрывает Hortonworks-only `add_write_notification_log`
 - `add_write_notification_log` есть только у Hortonworks front door, а Thrift не умеет
-  согласовывать версии, поэтому такой интерфейс обычно слушает отдельный порт: задай его через
+  согласовывать версии, поэтому такой интерфейс обычно слушает отдельный порт: задайте его через
   `HMS_SMOKE_NOTIFICATION_URI` — он переопределяет `HMS_SMOKE_URI` только для этого сценария
 - таблица должна уже существовать в backend: RPC резолвит её перед записью в лог, а отсутствующая
   таблица падает так же, как любая другая ошибка backend
@@ -405,8 +405,8 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 **11. Negative check: Hortonworks front -> Apache backend notification path**
 
 Практически:
-- задай `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
-- затем запусти `scripts/run-real-installation-smoke-simple.sh --scenario notification` или
+- задайте переменные `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
+- затем запустите `scripts/run-real-installation-smoke-simple.sh --scenario notification` или
   `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
 Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
@@ -420,7 +420,7 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
   add_write_notification_log`. Hive IDL не объявляет исключений для этого метода (и в 3.1.x, и в
   4.x), поэтому libthrift 0.9.3 подменяет любую серверную ошибку этим фиксированным текстом.
   Настоящий Hortonworks metastore точно так же прячет за ним свои ошибки, поэтому со стороны
-  клиента отказ неотличим от любого другого сбоя backend — смотри лог proxy.
+  клиента отказ неотличим от любого другого сбоя backend — проверяйте лог proxy.
 
 **12. Проверка после mixed runtime переключений**
 
@@ -431,7 +431,7 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 - повторный read на `apache__default`
 
 Ожидание:
-- runtime одного каталога не “залипает” на другой
+- контекст рантайма одного каталога не сохраняется ошибочно («не залипает») для другого
 - namespace rewrite остаётся корректным после notification/ACID вызова
 
 **13. Проверка graceful shutdown**
@@ -517,7 +517,7 @@ smoke-stand/run-partition-and-rename-smoke.sh
 
 **18. Что смотреть в логах proxy**
 
-Ищи:
+Обращайте внимание на следующие маркеры в логах:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
 - `runs on a platform without per-socket TCP keepalive tuning` (ожидаемо только на экзотических платформах)

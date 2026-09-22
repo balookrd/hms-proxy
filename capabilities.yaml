@@ -6,8 +6,8 @@ capabilities:
       en: >-
         Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
       ru: >-
-        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
-        request wrappers
+        Клиенты Apache Hive / Spark, использующие обёртки запросов
+        (request wrappers) Apache HMS `3.1.3`
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -35,7 +35,7 @@ capabilities:
         - view rewrite
     expected_result:
       en: Supported as the baseline deployment.
-      ru: Базовый полностью поддержанный сценарий.
+      ru: Базовый полностью поддерживаемый сценарий.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#dropFunctionRoutesByExplicitDbFirstMethodAllowlist
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultRewritesMaterializedViewTextForClientNamespace
@@ -46,8 +46,8 @@ capabilities:
       en: >-
         Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
       ru: >-
-        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
-        request wrappers
+        Клиенты Apache Hive / Spark, использующие обёртки запросов
+        (request wrappers) Apache HMS `3.1.3`
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -77,7 +77,7 @@ capabilities:
         Supported with compatibility downgrade; some calls are degraded to
         legacy RPCs.
       ru: >-
-        Поддержано через compatibility downgrade; часть вызовов работает в
+        Поддерживается через обратную трансляцию (compatibility downgrade); часть вызовов работает в
         degraded-режиме через legacy RPC.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
@@ -89,8 +89,8 @@ capabilities:
         Hive `4.1.x` clients (beeline, JDBC, Spark, Trino-Hive) that speak the Hive 4
         request-wrapper Thrift API
       ru: >-
-        Hive `4.1.x` клиенты (beeline, JDBC, Spark, Trino-Hive), говорящие на
-        Hive 4 request-wrapper Thrift API
+        Клиенты Hive `4.1.x` (beeline, JDBC, Spark, Trino-Hive), использующие
+        Thrift API обёрток запросов Hive 4
     front_door:
       profiles:
         - APACHE_4_1_0
@@ -125,7 +125,7 @@ capabilities:
         APIs (data connectors, scheduled queries, stored procedures, packages, ACID v2
         extensions) respond with `TApplicationException UNKNOWN_METHOD`.
       ru: >-
-        Поддержано через compatibility downgrade для read + стандартного DDL;
+        Поддерживается через обратную трансляцию (compatibility downgrade) для read + стандартного DDL;
         Hive 4-only API (data connectors, scheduled queries, stored procedures,
         packages, ACID v2 extensions) отвечают `TApplicationException UNKNOWN_METHOD`.
     smoke_tests:
@@ -143,8 +143,8 @@ capabilities:
       en: >-
         Apache Hive / Spark clients that speak Apache HMS `3.1.3` request wrappers
       ru: >-
-        Apache Hive / Spark клиенты, которые говорят через Apache HMS `3.1.3`
-        request wrappers
+        Клиенты Apache Hive / Spark, использующие обёртки запросов
+        (request wrappers) Apache HMS `3.1.3`
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -177,7 +177,7 @@ capabilities:
         connectors, scheduled queries, etc.) are not reachable from an Apache 3.1.3
         front door because Apache 3.1.3 has no Thrift bindings for them.
       ru: >-
-        Поддержано через compatibility upgrade для двух позиционных методов,
+        Поддерживается через повышение совместимости (compatibility upgrade) для двух позиционных методов,
         удалённых в Hive 4; остальные RPC проходят прозрачно. Hive 4-only API
         (data connectors, scheduled queries и т.п.) недоступны с Apache 3.1.3
         front door, потому что у Apache 3.1.3 нет Thrift bindings для них.
@@ -192,8 +192,8 @@ capabilities:
         Hortonworks clients that only expect a Hortonworks front-door identity
         via `getVersion()`
       ru: >-
-        Hortonworks клиенты, которым достаточно Hortonworks identity на фронте
-        через `getVersion()`
+        Клиенты Hortonworks, которым достаточно идентификации Hortonworks на
+        фронтенде через `getVersion()`
     front_door:
       profiles:
         - HORTONWORKS_3_1_0_3_1_0_78
@@ -221,7 +221,7 @@ capabilities:
     expected_result:
       en: Supported when changing the advertised profile is enough for the client.
       ru: >-
-        Поддержано, если клиенту достаточно только смены advertised profile.
+        Поддерживается, если клиенту достаточно только смены анонсируемого профиля (advertised profile).
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getVersionUsesConfiguredFrontendProfile
       - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeDelegatesCommonRequestWrapperMethods
@@ -229,7 +229,7 @@ capabilities:
     status: supported
     client:
       en: Hortonworks clients that call HDP-only thrift request-wrapper methods
-      ru: Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы
+      ru: Клиенты Hortonworks, вызывающие HDP-only thrift методы-обёртки (request wrappers)
     front_door:
       profiles:
         - HORTONWORKS_3_1_0_3_1_0_78
@@ -261,7 +261,7 @@ capabilities:
         Supported when the matching Hortonworks front-door and backend runtime
         jars are configured.
       ru: >-
-        Поддержано при наличии совместимых Hortonworks front-door и backend
+        Поддерживается при наличии совместимых Hortonworks front-door и backend
         runtime jar.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#addWriteNotificationLogRoutesToResolvedCatalogAndRewritesDb
@@ -271,7 +271,7 @@ capabilities:
     status: rejected
     client:
       en: Hortonworks clients that call HDP-only thrift request-wrapper methods
-      ru: Hortonworks клиенты, которые вызывают HDP-only thrift request-wrapper методы
+      ru: Клиенты Hortonworks, вызывающие HDP-only thrift методы-обёртки (request wrappers)
     front_door:
       profiles:
         - HORTONWORKS_3_1_0_3_1_0_78
@@ -308,7 +308,7 @@ capabilities:
     status: supported
     client:
       en: HiveServer2 / Beeline SQL workloads across multiple catalogs
-      ru: HiveServer2 / Beeline SQL workloads через несколько каталогов
+      ru: Нагрузки HiveServer2 / Beeline SQL через несколько каталогов
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -323,7 +323,7 @@ capabilities:
         - HORTONWORKS_3_1_0_3_1_5_6150_1
       mixed: true
       en: mixed Apache + Hortonworks backends
-      ru: смешанные Apache + Hortonworks backend
+      ru: смешанные бэкенды Apache + Hortonworks
     auth:
       modes:
         - NONE
@@ -344,7 +344,7 @@ capabilities:
     expected_result:
       en: Supported as long as routing can resolve the target catalog.
       ru: >-
-        Поддержано, пока routing может однозначно вычислить целевой каталог.
+        Поддерживается, пока маршрутизация может однозначно определить целевой каталог.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
@@ -356,8 +356,8 @@ capabilities:
         HiveServer2 / direct HMS clients using txn/lock lifecycle RPCs without
         namespace in the payload
       ru: >-
-        HiveServer2 / direct HMS клиенты, использующие txn/lock lifecycle RPC
-        без namespace в payload
+        Клиенты HiveServer2 / прямые клиенты HMS, использующие методы жизненного цикла
+        транзакций и блокировок (txn/lock) без пространства имён в полезной нагрузке
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -373,7 +373,7 @@ capabilities:
         - HORTONWORKS_3_1_0_3_1_5_6150_1
       mixed: true
       en: mixed Apache + Hortonworks backends
-      ru: смешанные Apache + Hortonworks backend
+      ru: смешанные бэкенды Apache + Hortonworks
     auth:
       modes:
         - NONE
@@ -403,11 +403,11 @@ capabilities:
         non-default catalogs, but otherwise treat this as a single-catalog
         control plane unless you validated otherwise.
       ru: >-
-        Degraded: идут в `routing.default-catalog`; допустимые non-ACID
-        `SELECT`, `NO_TXN` DDL и non-transactional write
-        (`INSERT`/`UPDATE`/`DELETE`) lock всё же могут синтетически
-        обслуживаться на non-default catalog, но в остальном это стоит считать
-        single-catalog control plane, пока не проведена отдельная валидация.
+        Degraded: перенаправляются в `routing.default-catalog`; допустимые non-ACID
+        `SELECT`, `NO_TXN` DDL и блокировки не-транзакционной записи
+        (`INSERT`/`UPDATE`/`DELETE`) всё же могут синтетически
+        обслуживаться на каталогах, отличных от default, но в остальном данный контур
+        следует рассматривать как single-catalog control plane, пока не проведена отдельная валидация.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#syntheticReadLockLifecycleStaysInsideProxyForNonDefaultCatalog
@@ -420,8 +420,8 @@ capabilities:
         Kerberized HiveServer2 / HMS clients that require end-user identity on
         the backend
       ru: >-
-        Kerberized HiveServer2 / HMS клиенты, которым нужна end-user identity
-        на backend
+        Клиенты HiveServer2 / HMS с Kerberos, которым требуется передача идентификатора
+        конечного пользователя (end-user identity) на бэкенд
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -458,8 +458,8 @@ capabilities:
         Supported when proxy-user rules and backend impersonation permissions
         are configured correctly.
       ru: >-
-        Поддержано, если правильно настроены proxy-user rules и backend
-        impersonation permissions.
+        Поддерживается, если правильно настроены правила proxy-user и разрешения
+        имперсонации на бэкенде.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.config.ProxyConfigLoaderTest#loadsImpersonationFlag
       - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#localDelegationTokenHandlingRequiresKerberosFrontDoor
@@ -470,8 +470,8 @@ capabilities:
         Clients attempting mutations without explicit namespace ownership or
         dynamic catalog registry management
       ru: >-
-        Клиенты, которые пытаются делать mutation без explicit namespace
-        ownership или динамически управлять registry каталогов
+        Клиенты, пытающиеся выполнять операции изменения без явного владения пространством имён
+        (explicit namespace ownership) или динамически управлять реестром каталогов
     front_door:
       profiles:
         - APACHE_3_1_3
@@ -508,9 +508,9 @@ capabilities:
         Safely failed by design to preserve deterministic routing, explicit
         namespace ownership, and no silent split-brain writes.
       ru: >-
-        Безопасно отклоняется по design, чтобы сохранить deterministic
-        routing, explicit namespace ownership и не допустить silent
-        split-brain writes.
+        Безопасно отклоняется на уровне архитектуры (by design), чтобы сохранить детерминированную
+        маршрутизацию (deterministic routing), явное владение пространствами имён и предотвратить
+        скрытую рассинхронизацию записей (silent split-brain writes).
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
@@ -626,15 +626,15 @@ method_matrix:
     apache_backend:
       status: supported
       en: Fanout/list aggregation works across Apache backends.
-      ru: Fanout/list aggregation работает поверх Apache backend.
+      ru: Агрегация списков через fanout работает поверх бэкендов Apache.
     hdp_backend:
       status: supported
       en: Same fanout/list aggregation model across Hortonworks backends.
-      ru: Та же модель fanout/list aggregation работает и на Hortonworks backend.
+      ru: Та же модель агрегации списков через fanout работает и на бэкендах Hortonworks.
     hive4_backend:
       status: supported
       en: Same fanout/list aggregation model across Hive 4 backends.
-      ru: Та же модель fanout/list aggregation работает и на Hive 4 backend.
+      ru: Та же модель агрегации списков через fanout работает и на бэкендах Hive 4.
     front_door_support:
       en: Any front-door profile that exposes the overlapping RPCs.
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
@@ -643,21 +643,20 @@ method_matrix:
         Fan out across eligible catalogs when no namespace is present; route to
         one backend when `dbName` or `fullTableName` resolves a catalog
       ru: >-
-        Fanout по подходящим catalog при отсутствии namespace; один backend,
-        если `dbName` или `fullTableName` разрешает catalog
+        Параллельный опрос (fanout) по подходящим каталогам при отсутствии пространства имён;
+        один бэкенд, если `dbName` или `fullTableName` однозначно определяют каталог
     fallback_strategy:
       en: None beyond namespace externalization and optional selective exposure filtering.
       ru: >-
-        Нет, кроме namespace externalization и optional selective exposure
-        filtering.
+        Нет, кроме экстернализации пространств имён и опциональной фильтрации видимости.
     semantic_risk:
       en: >-
         Low; list results can be filtered and merged across catalogs, so expect
         externalized names instead of raw backend names
       ru: >-
-        Низкий; list results могут фильтроваться и объединяться между
-        каталогами, поэтому клиент видит externalized names, а не сырые
-        backend names
+        Низкий; результаты списочных запросов могут фильтроваться и объединяться между
+        каталогами, поэтому клиент видит внешние имена (externalized names), а не внутренние
+        имена бэкенда
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAccessControlTest#getAllDatabasesFiltersHiddenDatabasesByExposurePolicy
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getTableMetaRoutesConvertedDoubleDotSchemaPatternToRemoteCatalog
@@ -676,16 +675,16 @@ method_matrix:
         Retries legacy `get_database`, `get_table`, or
         `get_table_objects_by_name` when the wrapper API is missing
       ru: >-
-        Повторяет вызов через legacy `get_database`, `get_table` или
-        `get_table_objects_by_name`, если wrapper API отсутствует
+        Повторяет вызов через устаревшие методы `get_database`, `get_table` или
+        `get_table_objects_by_name`, если метод-обёртка отсутствует
     hive4_backend:
       status: supported
       en: >-
         Native Hive 4 request-wrapper handling; `*_req` methods are the canonical
         Hive 4 shape and reach the backend through binary-compatible delegation.
       ru: >-
-        Нативная обработка Hive 4 request-wrapper методов; `*_req` — каноническая
-        форма для Hive 4, доходит до backend через binary-compatible делегацию.
+        Нативная обработка методов-обёрток Hive 4; форма `*_req` является канонической
+        для Hive 4 и доходит до бэкенда через бинарно-совместимую делегацию.
     front_door_support:
       en: "`APACHE_3_1_3`, `HORTONWORKS_3_1_0`, `HORTONWORKS_3_1_5`, or `APACHE_4_1_0`"
       ru: "`APACHE_3_1_3`, `HORTONWORKS_3_1_0`, `HORTONWORKS_3_1_5` или `APACHE_4_1_0`"
@@ -699,14 +698,14 @@ method_matrix:
         loaded runtime) and caches that wrapper as unsupported; other backend
         errors are propagated and never cached
       ru: >-
-        Backend adapter деградирует к legacy методу только при
+        Бэкенд-адаптер откатывается к устаревшему методу только при
         `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
-        загруженном runtime) и кеширует такой wrapper как unsupported; прочие
-        ошибки backend пробрасываются и не кешируются
+        загруженном runtime) и кэширует данный wrapper как неподдерживаемый; прочие
+        ошибки бэкенда пробрасываются и не кэшируются
     semantic_risk:
       en: Low; metadata semantics stay aligned, but the call path becomes legacy.
       ru: >-
-        Низкий; metadata semantics сохраняются, но call path становится legacy.
+        Низкий; семантика метаданных сохраняется, но путь вызова переключается на устаревший.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestFallsBackToLegacyMethodWhenWrapperIsUnsupported
       - io.github.mmalykhin.hmsproxy.backend.HortonworksBackendAdapterTest#invokeRequestPropagatesApplicationErrorsInsteadOfDowngradingToLegacy
@@ -732,7 +731,7 @@ method_matrix:
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
     routing_mode:
       en: Default-catalog pin because the RPC has no catalog namespace.
-      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+      ru: Привязка к default-catalog, поскольку у данного RPC нет пространства имён каталога.
     fallback_strategy:
       en: None.
       ru: Нет.
@@ -758,30 +757,30 @@ method_matrix:
         Default-catalog scoped; an empty compatibility response is emitted only
         when the backend does not implement the method.
       ru: >-
-        Scoped через default-catalog; empty compatibility response возвращается
-        только когда backend не реализует метод.
+        Ограничено каталогом default-catalog; пустой совместимый ответ возвращается
+        только тогда, когда бэкенд не реализует метод.
     hdp_backend:
       status: degraded
       en: >-
         Default-catalog scoped; an empty compatibility response is emitted only
         when the backend does not implement the method.
       ru: >-
-        Scoped через default-catalog; empty compatibility response возвращается
-        только когда backend не реализует метод.
+        Ограничено каталогом default-catalog; пустой совместимый ответ возвращается
+        только тогда, когда бэкенд не реализует метод.
     hive4_backend:
       status: degraded
       en: >-
         Default-catalog scoped; an empty compatibility response is emitted only
         when the backend does not implement the method.
       ru: >-
-        Scoped через default-catalog; empty compatibility response возвращается
-        только когда backend не реализует метод.
+        Ограничено каталогом default-catalog; пустой совместимый ответ возвращается
+        только тогда, когда бэкенд не реализует метод.
     front_door_support:
       en: Any front-door profile that exposes the overlapping RPCs.
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
     routing_mode:
       en: Default-catalog pin because the RPC has no catalog namespace.
-      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+      ru: Привязка к default-catalog, поскольку у данного RPC нет пространства имён каталога.
     fallback_strategy:
       en: >-
         Return an empty or synthetic compatibility response only on
@@ -789,9 +788,9 @@ method_matrix:
         loaded runtime); transport failures, `MetaException`, and other
         `TApplicationException` types are propagated to the caller
       ru: >-
-        Возвращает empty или synthetic compatibility response только при
+        Возвращает пустой или синтетический совместимый ответ только при
         `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
-        загруженном runtime); transport failure, `MetaException` и другие типы
+        загруженном runtime); ошибки транспорта, `MetaException` и другие типы
         `TApplicationException` пробрасываются клиенту
     semantic_risk:
       en: >-
@@ -799,9 +798,9 @@ method_matrix:
         notification state, so it is limited to backends that genuinely lack the
         RPC, while transient failures stay visible as errors
       ru: >-
-        Средний; пустой ответ - это утверждение об ACID, lock и notification
-        state, поэтому он допускается только для backend, где RPC действительно
-        отсутствует, а транзиентные сбои остаются видимыми как ошибки
+        Средний; пустой ответ — это утверждение о состоянии ACID, блокировок и
+        уведомлений, поэтому он допускается только для бэкендов, где RPC действительно
+        отсутствует, а временные сбои (transient failures) остаются видимыми как ошибки
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#notificationMethodsHaveCompatibilityFallbacks
       - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#dataSemanticFallbacksOnlyApplyWhenTheBackendHasNoSuchMethod
@@ -822,7 +821,7 @@ method_matrix:
         Empty or success-shaped compatibility response only when the backend
         does not implement the method.
       ru: >-
-        Empty или success-shaped compatibility response только когда backend не
+        Пустой или имитирующий успех совместимый ответ только тогда, когда бэкенд не
         реализует метод.
     hdp_backend:
       status: degraded
@@ -830,7 +829,7 @@ method_matrix:
         Empty or success-shaped compatibility response only when the backend
         does not implement the method.
       ru: >-
-        Empty или success-shaped compatibility response только когда backend не
+        Пустой или имитирующий успех совместимый ответ только тогда, когда бэкенд не
         реализует метод.
     hive4_backend:
       status: degraded
@@ -838,14 +837,14 @@ method_matrix:
         Empty or success-shaped compatibility response only when the backend
         does not implement the method.
       ru: >-
-        Empty или success-shaped compatibility response только когда backend не
+        Пустой или имитирующий успех совместимый ответ только тогда, когда бэкенд не
         реализует метод.
     front_door_support:
       en: Any front-door profile that exposes the overlapping RPCs.
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
     routing_mode:
       en: Normal namespace routing, or default-catalog pin when the RPC has no namespace.
-      ru: Обычный namespace routing либо пин в default-catalog, если у RPC нет namespace.
+      ru: Обычная маршрутизация по пространствам имён либо привязка к default-catalog при их отсутствии.
     fallback_strategy:
       en: >-
         Return an empty or success-shaped compatibility response only on
@@ -853,17 +852,17 @@ method_matrix:
         loaded runtime); a failed authorization call is never reported as an
         empty privilege set or a successful refresh
       ru: >-
-        Возвращает empty или success-shaped compatibility response только при
+        Возвращает пустой или имитирующий успех совместимый ответ только при
         `TApplicationException UNKNOWN_METHOD` (или отсутствии метода в
-        загруженном runtime); проваленный authorization call никогда не
-        выдаётся за пустой privilege set или успешный refresh
+        загруженном runtime); неудачный вызов авторизации никогда не
+        выдаётся за пустой набор привилегий или успешный refresh
     semantic_risk:
       en: >-
         Medium; an empty privilege answer can be read as an authorization
         decision, so it is limited to backends that genuinely lack the RPC
       ru: >-
-        Средний; пустой privilege-ответ может быть прочитан как authorization
-        decision, поэтому он допускается только для backend, где RPC
+        Средний; пустой ответ о привилегиях может быть интерпретирован как решение
+        авторизации, поэтому он допускается только для бэкендов, где RPC
         действительно отсутствует
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#dataSemanticFallbacksOnlyApplyWhenTheBackendHasNoSuchMethod
@@ -875,21 +874,21 @@ method_matrix:
     apache_backend:
       status: degraded
       en: Default-catalog scoped and may emit compatibility empty responses.
-      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+      ru: Ограничено каталогом default-catalog и может возвращать пустой совместимый ответ.
     hdp_backend:
       status: degraded
       en: Default-catalog scoped and may emit compatibility empty responses.
-      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+      ru: Ограничено каталогом default-catalog и может возвращать пустой совместимый ответ.
     hive4_backend:
       status: degraded
       en: Default-catalog scoped and may emit compatibility empty responses.
-      ru: Scoped через default-catalog и может возвращать empty compatibility response.
+      ru: Ограничено каталогом default-catalog и может возвращать пустой совместимый ответ.
     front_door_support:
       en: Any front-door profile that exposes the overlapping RPCs.
       ru: Любой front-door profile, который экспортирует пересекающиеся RPC.
     routing_mode:
       en: Default-catalog pin because the RPC has no catalog namespace.
-      ru: Пин в default-catalog, потому что у RPC нет catalog namespace.
+      ru: Привязка к default-catalog, поскольку у данного RPC нет пространства имён каталога.
     fallback_strategy:
       en: >-
         Return an empty compatibility response on any backend failure
@@ -897,17 +896,17 @@ method_matrix:
         because these RPCs only expose optional workload-management and
         diagnostic state
       ru: >-
-        Возвращает empty compatibility response при любом сбое backend
-        (`TApplicationException`, transport failure или `MetaException`),
-        потому что эти RPC отдают только опциональные workload-management и
-        diagnostic данные
+        Возвращает пустой совместимый ответ при любом сбое бэкенда
+        (`TApplicationException`, ошибки транспорта или `MetaException`),
+        поскольку эти RPC возвращают только опциональные диагностические данные и
+        параметры управления рабочей нагрузкой
     semantic_risk:
       en: >-
         Low; an empty answer hides diagnostics, but it does not change data,
         lock, or authorization semantics
       ru: >-
         Низкий; пустой ответ скрывает диагностику, но не меняет семантику
-        данных, локов и авторизации
+        данных, блокировок и авторизации
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibilityTest#optionalServiceReadsStillFallBackOnAnyBackendFailure
 
@@ -918,15 +917,15 @@ method_matrix:
     apache_backend:
       status: supported
       en: Routed by the namespaces its own components name.
-      ru: Маршрутизируется по namespace, которые называют его собственные компоненты.
+      ru: Маршрутизируется по пространствам имён, указанным в его собственных компонентах.
     hdp_backend:
       status: supported
       en: Same component-driven routing on Hortonworks backends.
-      ru: Та же маршрутизация по компонентам на Hortonworks backend.
+      ru: Та же маршрутизация по компонентам на бэкендах Hortonworks.
     hive4_backend:
       status: supported
       en: Same component-driven routing on Hive 4 backends.
-      ru: Та же маршрутизация по компонентам на Hive 4 backend.
+      ru: Та же маршрутизация по компонентам на бэкендах Hive 4.
     front_door_support:
       en: Any front-door profile.
       ru: Любой front-door profile.
@@ -938,11 +937,11 @@ method_matrix:
         against its own database, so a request spanning two databases of one
         catalog reaches the backend intact.
       ru: >-
-        Компоненты группируются по каталогам. Запрос, назвавший несколько
-        каталогов, маршрутизируется по одному из них - по default catalog, если
-        он присутствует, так как ему принадлежит TxnHandler, - и каждый уцелевший
-        компонент внутренализуется по своей базе, поэтому запрос по двум базам
-        одного каталога доходит до backend целиком.
+        Компоненты группируются по каталогам. Запрос, затрагивающий несколько
+        каталогов, маршрутизируется по одному из них — по default catalog, если
+        он присутствует, так как ему принадлежит TxnHandler, — и каждый оставшийся
+        компонент интернализуется по своей базе, поэтому запрос к двум базам
+        одного каталога доходит до бэкенда целиком.
     fallback_strategy:
       en: >-
         Components of the other catalogs are dropped from the request that
@@ -952,19 +951,19 @@ method_matrix:
         reports it acquired without ever testing for a conflict. Catalog access
         mode is still enforced on dropped components.
       ru: >-
-        Компоненты остальных каталогов из запроса к backend удаляются, пишутся в
-        лог и считаются метрикой `hms_proxy_lock_request_split_total`. Ничего
-        удерживаемого при этом не теряется: non-default каталоги обслуживает
-        synthetic shim, который записывает лок и отвечает «получен», ни разу не
-        проверив конфликт. Access mode каталога на отброшенных компонентах
+        Компоненты остальных каталогов удаляются из запроса к бэкенду, записываются в
+        лог и учитываются метрикой `hms_proxy_lock_request_split_total`. Ни одна
+        удерживаемая блокировка при этом не теряется: каталоги, отличные от default, обслуживает
+        synthetic shim, который фиксирует блокировку и отвечает «получена», не
+        проверяя конфликт. Режим доступа каталога (access mode) для отброшенных компонентов
         по-прежнему соблюдается.
     semantic_risk:
       en: >-
         Medium; a cross-catalog statement keeps a real lock only in the default
         catalog, and the shim gives no writer isolation anywhere else
       ru: >-
-        Средний; кросс-каталожный statement сохраняет настоящий лок только в
-        default catalog, а shim нигде больше не даёт изоляции писателей
+        Средний; межкаталожная операция сохраняет реальную блокировку только в
+        default catalog, а synthetic shim нигде больше не обеспечивает изоляции писателей
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoCatalogsRoutesToTheDefaultCatalog
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoDatabasesOfOneCatalogKeepsEveryComponent
@@ -984,9 +983,9 @@ method_matrix:
         non-ACID `SELECT`, eligible `NO_TXN` DDL and non-transactional write
         locks on non-default catalogs
       ru: >-
-        Пинятся к `routing.default-catalog`; synthetic lock shim помогает
+        Привязываются к `routing.default-catalog`; synthetic lock shim помогает
         только для non-ACID `SELECT`, допустимых `NO_TXN` DDL и
-        non-transactional write lock на non-default catalog
+        блокировок не-транзакционной записи на каталогах, отличных от default
     hdp_backend:
       status: degraded
       en: Same default-catalog control-plane constraint on Hortonworks backends.
@@ -1004,21 +1003,21 @@ method_matrix:
       ru: Любой front-door profile.
     routing_mode:
       en: Default-catalog pin once only ids remain in the payload.
-      ru: Пин в default-catalog, как только в payload остаются только ids.
+      ru: Привязка к default-catalog, как только в полезной нагрузке остаются только идентификаторы (ids).
     fallback_strategy:
       en: >-
         Synthetic lock shim for eligible non-default-catalog lock cases,
         otherwise the normal default-backend txn/lock lifecycle
       ru: >-
-        Synthetic lock shim для допустимых non-default-catalog lock cases,
-        в остальных случаях обычный default-backend txn/lock lifecycle
+        Synthetic lock shim для допустимых случаев блокировок на каталогах, отличных от default,
+        в остальных случаях — штатный жизненный цикл txn/lock на дефолтном бэкенде
     semantic_risk:
       en: >-
         High; treat this as a single-catalog control plane unless you validated
         the exact workload end to end
       ru: >-
-        Высокий; считай это single-catalog control plane, пока не провалидирован
-        точный workload end to end
+        Высокий; данный контур следует рассматривать как single-catalog control plane, пока не протестирован
+        точный сценарий нагрузки сквозным образом
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyCompatibilityTest#backendLocalTxnAndLockMethodsUseDefaultBackendPathWhenCatalogContextIsMissing
 
@@ -1139,10 +1138,10 @@ method_matrix:
         `create_table_with_constraints`; rejected when one request mixes
         constraints with `envContext`
       ru: >-
-        Мостится в `create_table`,
+        Транслируется через мост в `create_table`,
         `create_table_with_environment_context` или
-        `create_table_with_constraints`; отклоняется, если один request
-        одновременно несёт constraints и `envContext`
+        `create_table_with_constraints`; отклоняется, если один запрос
+        одновременно содержит constraints и `envContext`
     hdp_backend:
       status: degraded
       en: Same bridge behavior before routing to the resolved backend.
@@ -1171,8 +1170,8 @@ method_matrix:
     semantic_risk:
       en: Medium; ordinary shapes are fine, but mixed constraint + envContext requests fail explicitly.
       ru: >-
-        Средний; обычные request shapes проходят, но смешанные
-        constraint + envContext запросы падают явно
+        Средний; стандартные формы запросов выполняются штатно, но смешанные
+        запросы (constraint + envContext) отклоняются с явной ошибкой
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendBridgeTest#bridgeMapsCreateTableReqToCreateTableWithEnvironmentContext
 
@@ -1267,7 +1266,7 @@ method_matrix:
       ru: "`HORTONWORKS_*` с standalone jar"
     routing_mode:
       en: Pinned to `routing.default-catalog`.
-      ru: Пинится к `routing.default-catalog`.
+      ru: Привязывается к `routing.default-catalog`.
     fallback_strategy:
       en: None.
       ru: Нет.
@@ -1276,8 +1275,8 @@ method_matrix:
         Medium; the call is default-catalog scoped and materialized-view rewrite
         semantics remain runtime-specific
       ru: >-
-        Средний; вызов scoped через default-catalog, а semantics materialized
-        view rewrite остаются runtime-specific
+        Средний; область действия вызова ограничена default-catalog, а семантика
+        переписывания materialized view зависит от конкретной среды выполнения
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyNamespaceRoutingTest#getAllMaterializedViewObjectsForRewritingUsesDefaultHortonworksBackend
 
@@ -1321,8 +1320,8 @@ method_matrix:
         No guessed routing; the mutation must resolve one owned namespace or
         fail safely up front
       ru: >-
-        Никакой guessed routing; mutation должен разрешиться ровно в один
-        owned namespace, иначе запрос безопасно отклоняется сразу
+        Эвристическая маршрутизация исключена: операция изменения должна строго разрешаться ровно в одно
+        пространство имён, иначе запрос немедленно отклоняется с ошибкой
     fallback_strategy:
       en: None.
       ru: Нет.
@@ -1331,8 +1330,8 @@ method_matrix:
         Blocked by design to guarantee deterministic routing and prevent silent
         split-brain writes or drifting global state.
       ru: >-
-        Заблокировано по design, чтобы гарантировать deterministic routing и
-        не допустить silent split-brain writes или drift global state
+        Заблокировано на уровне архитектуры (by design), чтобы гарантировать детерминированную маршрутизацию и
+        предотвратить скрытую рассинхронизацию записей (silent split-brain writes) или расхождение глобального состояния
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
 
@@ -1346,27 +1345,27 @@ method_matrix:
         Catalog registry is policy-owned by config, not runtime-managed through
         client RPCs.
       ru: >-
-        Registry catalog policy-owned конфигом, а не runtime client RPC.
+        Реестр каталогов определяется конфигурацией (policy-owned), а не управляется клиентскими RPC во время работы.
     hdp_backend:
       status: rejected
       en: >-
         Catalog registry is policy-owned by config, not runtime-managed through
         client RPCs.
       ru: >-
-        Registry catalog policy-owned конфигом, а не runtime client RPC.
+        Реестр каталогов определяется конфигурацией (policy-owned), а не управляется клиентскими RPC во время работы.
     hive4_backend:
       status: rejected
       en: >-
         Catalog registry is policy-owned by config, not runtime-managed through
         client RPCs.
       ru: >-
-        Registry catalog policy-owned конфигом, а не runtime client RPC.
+        Реестр каталогов определяется конфигурацией (policy-owned), а не управляется клиентскими RPC во время работы.
     front_door_support:
       en: Any front-door profile.
       ru: Любой front-door profile.
     routing_mode:
       en: No routing; catalog registry changes are never proxied.
-      ru: Нет маршрутизации; изменения registry catalog никогда не проксируются.
+      ru: "Маршрутизация отсутствует: изменения реестра каталогов никогда не проксируются."
     fallback_strategy:
       en: None.
       ru: Нет.
@@ -1375,7 +1374,7 @@ method_matrix:
         Blocked by design so namespace ownership stays explicit and centrally
         governed.
       ru: >-
-        Заблокировано по design, чтобы namespace ownership оставался явным и
-        централизованно управляемым.
+        Заблокировано на уровне архитектуры (by design), чтобы принадлежность пространств имён оставалась явной и
+        централизованно управляемой.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#catalogManagementRpcsAreRejected

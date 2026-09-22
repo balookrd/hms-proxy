@@ -1,6 +1,6 @@
 # Smoke-стенд
 
-Локальный docker-compose стенд, чтобы гонять наборы `scripts/run-real-installation-smoke-*.sh`
+Локальный docker-compose стенд для выполнения проверок `scripts/run-real-installation-smoke-*.sh`
 против настоящих Hive-метасторов, а не против продового кластера.
 
 За одним прокси стоят два standalone-метастора:
@@ -157,7 +157,7 @@ Purge удаляет данные на кластере своего катал�
   прокси, оба метастора и HDFS (keytab-ы namenode и datanode, SASL data transfer, SPNEGO)
   аутентифицируются, и ни один сервис не откатывается на simple auth.
 - **Нет YARN/Tez.** Запросы идут локальным MapReduce — этого хватает для DDL, чтения и небольших
-  записей, но о распределённом исполнении не говорит ничего. Hortonworks-овый HiveServer2 вообще
+  записей, но о распределённом исполнении не говорит ничего. HiveServer2 дистрибутива Hortonworks вообще
   стартует только потому, что `hive.in.test` проводит его мимо вендорской проверки
   «mr execution engine is not supported!» — см. раздел ниже.
 
@@ -186,7 +186,7 @@ Plain-профиль включает и Iceberg REST listener прокси (`re
 table, view и namespace DDL, а также multi-table transaction commit, — но только для
 default-каталога (`hdp`): его таблицы подкреплены реальным HMS-локом, а любой другой
 каталог обслуживает synthetic lock shim и отказывает write с `403`. `--scenario rest`
-(или REST-шаг `--scenario all`) гоняет его curl'ом с хоста: discovery конфигурации,
+(или REST-шаг `--scenario all`) выполняет запросы утилитой curl с хоста: discovery конфигурации,
 листинги namespace и таблиц, load таблицы, полные write round trip'ы и негативные
 формы — неизвестный prefix, неизвестная таблица и write-роут на non-default каталоге;
 все должны падать чисто.
@@ -246,7 +246,7 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 `metadata.json` — копия файла первой таблицы, с `location`, указывающим на путь
 `smoke_iceberg_tbl_ap` выше, и новым `table-uuid`.
 
-Kerberos-профиль тоже гоняет REST listener, на том же порту (19183), что и plain-профиль.
+Kerberos-профиль также проверяет REST listener на том же порту (19183), что и plain-профиль.
 Он отвечает на SPNEGO: KDC выдаёт принципал `HTTP/proxy@SMOKE.LOCAL` в тот же keytab, которым
 пользуется Thrift front door, а `hms-proxy-kerberos.properties` указывает `rest-catalog.kerberos.*`
 на него. Сам handshake по-прежнему покрыт end-to-end тестом `SpnegoIntegrationTest` на
@@ -258,7 +258,7 @@ docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LO
 docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
 ```
 
-Полный набор REST-проверок гоняет сам smoke-скрипт: в `env/kerberos.env` есть REST-блок с
+Полный набор REST-проверок выполняет сам smoke-скрипт: в `env/kerberos.env` есть REST-блок с
 `HMS_SMOKE_REST_CURL_OPTS=--negotiate -u :`, поэтому после kinit выше (и `docker cp` каталога
 `scripts/` с env-файлом внутрь `stand-proxy`) runner `--scenario all` / `--scenario rest`
 прогоняет все REST-проверки под SPNEGO, включая проверку 401-вызова для запроса без
@@ -411,7 +411,7 @@ smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --kerberos
 smoke-stand/run-iceberg-rowlevel-smoke.sh --prefix hive4 --mode merge-on-read
 ```
 
-`--mode` выбирает одно значение `write.delete.mode`/`write.update.mode`; без него гоняются оба.
+`--mode` выбирает одно значение `write.delete.mode`/`write.update.mode`; без этого флага проверяются оба режима.
 Режим сценарий не принимает на веру: команда `files` REST-writer'а отдаёт число data- и
 delete-файлов спланированного скана, и прогон проверяет, что merge-on-read оставляет delete-файл,
 а copy-on-write не оставляет. Каждая проверка чтения — полный скан строк `select id, src`, а не

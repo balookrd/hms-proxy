@@ -105,6 +105,12 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Changed
 
+- **Russian Documentation Quality and Terminology Revision**:
+  - Completed comprehensive linguistic audit across all Russian documentation files (`README.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`, `smoke-stand/README.md`, `smoke-stand/TEST-MATRIX.md`, `capabilities.yaml`, `AGENTS.md`).
+  - Eliminated literal calques and rough translations in favor of natural technical Russian.
+  - Renamed the architectural section header from "Three pillars" to "Three key principles" ("Три ключевых принципа").
+  - Replaced technical jargon, colloquialisms, and inconsistent informal phrasing with formal technical documentation terminology.
+  - Corrected grammatical agreements, restored Russian typography ("ё"), eliminated duplicate explanations of `_dummy_database` in `README.md`, and unified tone across all guides.
 - **Documentation Primary Locale**:
   - Russian documentation is now primary without language suffix (`README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, `FAILOVER.md`, `SMOKE.md`), while English versions use the `.en.md` suffix (`README.en.md`, `CHANGELOG.en.md`, etc.).
 - **GUI Clients and Schema Pattern Documentation**:

@@ -27,14 +27,14 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
   * Общим пулом shared-сессий ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) размером `catalog.<name>.shared-session-pool-size`.
   * Пулом impersonation-сессий пользователя ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) размером `catalog.<name>.impersonation-pool-max-size`.
 * При возникновении транспортной ошибки (`TTransportException`, разрыв TCP-соединения, сброс сокета) повреждённая сессия признаётся невалидной и уничтожается (`discard`).
-* Прокси берет/создает из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
-* Если повторный вызов также завершается ошибкой, сбой регистрируется подсистемой контроля admission.
+* Прокси берёт/создаёт из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
+* Если повторный вызов также завершается ошибкой, сбой регистрируется подсистемой контроля допуска запросов (admission control).
 
 ### 2.2. Circuit Breaker (Предохранитель)
-Если включен механизм защиты `routing.circuit-breaker.enabled=true`:
+Если включён механизм защиты `routing.circuit-breaker.enabled=true`:
 1. **Регистрация сбоев**: Ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и сбои протокола учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
 2. **Переход в `OPEN`**: При накоплении серии ошибок подряд (`routing.circuit-breaker.failure-threshold`, по умолчанию `3`), состояние контура переходит в `OPEN`.
-3. **Fast-Fail клиентов**: Все последующие запросы к данному каталогу отклоняются мгновенно без блокировки потоков и ожидания сетевого таймаута:
+3. **Мгновенный отказ клиентам (fast-fail)**: Все последующие запросы к данному каталогу отклоняются мгновенно без блокировки потоков и ожидания сетевого таймаута:
    ```text
    MetaException: Backend catalog '<name>' rejected method '<method>' because circuit_open; next retry window in <X>ms
    ```
@@ -43,9 +43,9 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
    * При повторном сбое контур снова переходит в `OPEN` на заданный интервал.
 
 ### 2.3. Адаптивный таймаут сокета (Adaptive Socket Timeout)
-Если включен `routing.adaptive-timeout.enabled=true`:
+Если включён `routing.adaptive-timeout.enabled=true`:
 * Прокси рассчитывает скользящее среднее (EWMA) задержки ответов бэкенда.
-* При обнаружении роста задержек или единичных таймаутов прокси динамически корректирует сокет-таймаут клиента в пределах `[min-timeout-ms, max-timeout-ms]`, предотвращая преждевременные обрывы при временных нагрузках на удаленный HMS.
+* При обнаружении роста задержек или единичных таймаутов прокси динамически корректирует сокет-таймаут клиента в пределах `[min-timeout-ms, max-timeout-ms]`, предотвращая преждевременные обрывы при временных нагрузках на удалённый HMS.
 
 ### 2.4. Нормализация ошибок для Thrift-клиентов
 * В Hive Thrift IDL инфраструктурные сетевые исключения (`TTransportException`, `TApplicationException`) не объявлены в секции `throws` большинства методов. Без специальной обработки библиотека Thrift перехватывала бы их и возвращала клиенту обезличенное сообщение `TApplicationException("Internal error processing <method>")`, скрывая первопричину сбоя.
@@ -86,8 +86,8 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 
 ### Недоступен `default-catalog`
 * **Критический отказ control-plane**:
-  * Все глобальные Thrift RPC без квалифицированного имени БД (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) жестко привязаны к `default-catalog`. При его отказе данные вызовы не могут быть обслужены.
-  * Механизм транзакций и распределенных блокировок Hive (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) управляется бэкендом `default-catalog`. При его недоступности транзакционные DDL/DML блокируются.
+  * Все глобальные Thrift RPC без квалифицированного имени БД (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) жёстко привязаны к `default-catalog`. При его отказе данные вызовы не могут быть обслужены.
+  * Механизм транзакций и распределённых блокировок Hive (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) управляется бэкендом `default-catalog`. При его недоступности транзакционные DDL/DML блокируются.
   * Все операции изменения схемы и данных через шлюз Iceberg REST Catalog (`WriteRouteGate`) разрешены только для таблиц `default-catalog`. Соответственно, запись в Iceberg-таблицы прекращается.
 
 ---
@@ -109,7 +109,7 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
   * Всегда возвращает **HTTP 200 OK** (`{"status":"ok","alive":true,...}`), если процесс JVM запущен и способен принимать HTTP-запросы. Служит для K8s liveness probe.
 * **`/readyz` (Readiness probe)**:
   * Опрашивает состояние соединений всех бэкендов.
-  * Если хотя бы один бэкенд недоступен, отключен или его Circuit Breaker находится в состоянии `OPEN`, эндпоинт возвращает **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
+  * Если хотя бы один бэкенд недоступен, отключён или его Circuit Breaker находится в состоянии `OPEN`, эндпоинт возвращает **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
   * Балансировщики нагрузки (HAProxy, Envoy, Kubernetes Ingress/Service) используют этот сигнал для автоматического вывода инстанса прокси из пула активной маршрутизации.
 
 ### 6.2. Фоновый опрос доступности (Background Polling)
