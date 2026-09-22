@@ -31,6 +31,7 @@ degraded-режиме или падать явно, ещё до детальны
 | Direct HMS smoke CLI `lock` с `--second-db` | `APACHE_3_1_3` | default catalog плюс non-default | `NONE` или `KERBEROS` | один `lock`, компоненты которого называют два каталога, затем `check_lock`, `heartbeat`, `abort_txn` | Должно проходить; proxy маршрутизирует запрос по default catalog и отбрасывает остальные компоненты. Обратите внимание на `--unlock false`: уцелевший лок настоящий и принадлежит транзакции, а такие метастор снимать через `unlock` не даёт. |
 | Direct HMS smoke CLI `impersonation` | любой | default catalog backend | `NONE` или `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Должно проходить; подтверждает, что `set_ugi` привязывает пользователя к соединению, таблица создается с ожидаемым владельцем в метаданных и на HDFS (`owner:group`), а в audit log пишется `authenticatedUser`. |
 | Direct HMS smoke CLI `ranger` | любой (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` или `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Должно проходить при включенном Ranger плагине; подтверждает гранулярную авторизацию пользователей и групп на уровне БД и таблиц, сокрытие запрещенных объектов в списках и строгий отказ (NoSuchObjectException) при попытке прямого доступа. |
+| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | смешанные (`hdp`, `apache`) | `NONE` или `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Должно проходить при включенных кэшах и fallback; подтверждает отказоустойчивость при сетевых сбоях и авариях удаленного ЦОД. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно проходить только если и front door, и routed backend имеют совместимый Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать. Причину называет лог прокси (`requires a Hortonworks backend runtime`), клиент видит только `Internal error processing add_write_notification_log`: Hive IDL не объявляет исключений для этого метода. |
 | Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
@@ -38,6 +39,7 @@ degraded-режиме или падать явно, ещё до детальны
 Практическая автоматизация:
 - для Beeline / HS2 шагов ниже можно использовать `scripts/run-real-installation-smoke-simple.sh --scenario sql`
 - для шагов Beeline / HS2 с поддержкой Kerberos используйте `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+- для сквозной проверки отказоустойчивости cross-DC и WAN используйте `./smoke-stand/run-cross-dc-resilience-smoke.sh` на стенде
 
 **1. Базовая проверка фронта**
 

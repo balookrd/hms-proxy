@@ -548,6 +548,25 @@ The scenario:
 - Executes `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` evaluating SQL expressions (`CAST`, `COALESCE`, `parse_url`, `NULL`).
 - Asserts that the inserted row is read back through the target partition and cleans up test metadata.
 
+## Cross-DC and WAN Resilience (`run-cross-dc-resilience-smoke.sh`)
+
+Exercises cross-datacenter resilience, WAN degradation survivability, and failover capabilities:
+
+```bash
+cd smoke-stand && ./prepare.sh
+./run-cross-dc-resilience-smoke.sh
+```
+
+The scenario tests on a live proxy configured with `hms-proxy-cross-dc.properties`:
+- **Table and Partition Metadata Caches (`TableMetadataCache`, `PartitionMetadataCache`)**: validates cache misses and hits on consecutive `get_table` and `get_partition` calls via Prometheus `hms_proxy_cache_requests_total` metrics.
+- **Automatic DDL Invalidation**: confirms cache invalidation for tables and partitions upon `alter_table` mutations.
+- **Serve-Stale-on-Error**: verifies serving expired metadata (`stale_hit`) during simulated remote catalog outages (`docker stop stand-hms-apache`) without throwing client errors.
+- **Granular `/readyz`**: validates HTTP `200 OK` readiness when the secondary remote catalog is down with `required-for-readiness=false` (prevents local load balancers from taking proxy out of rotation).
+- **Catalog Shadow / Replica Fallback**: transparent fallback of read-only RPCs (`get_table`) to a local shadow replica (`hdp`) during outages with `hms_proxy_catalog_fallback_total` increment.
+- **Split-Brain Protection**: strictly rejects mutating RPCs (`create_table`, `alter_table`, `drop_table`) against the failed catalog, ensuring the replica is never corrupted.
+- **Lenient Startup**: verifies clean proxy boot and readiness when the secondary remote metastore is completely offline.
+- **Recovery**: validates seamless recovery and normal routing when the secondary metastore comes back online.
+
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind

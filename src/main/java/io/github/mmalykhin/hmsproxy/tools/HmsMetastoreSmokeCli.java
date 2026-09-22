@@ -596,6 +596,16 @@ public final class HmsMetastoreSmokeCli {
           thriftClient.drop_table(db, table, deleteData);
           System.out.println("dropped table=" + db + "." + table);
         }
+        case "alter_table" -> {
+          if (db == null || table == null) {
+            throw new IllegalArgumentException("--db and --table are required for alter_table");
+          }
+          org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
+          String comment = cli.getOrDefault("comment", "updated by smoke at " + System.currentTimeMillis());
+          t.putToParameters("smoke.comment", comment);
+          thriftClient.alter_table(db, table, t);
+          System.out.println("altered table=" + db + "." + table + " comment=" + comment);
+        }
         case "rename_table" -> {
           if (db == null || table == null) {
             throw new IllegalArgumentException("--db and --table are required for rename_table");
@@ -918,7 +928,7 @@ public final class HmsMetastoreSmokeCli {
           --conf key=value                      repeatable extra HiveConf override
 
         metadata mode:
-          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|get_table_meta|create_database|drop_database|create_table|drop_table|rename_table|exchange_partition|rename_partition|add_partition|alter_partition|get_partition
+          --op get_all_databases|get_databases|get_database|get_all_tables|get_tables|get_table|get_table_meta|create_database|drop_database|create_table|alter_table|drop_table|rename_table|exchange_partition|rename_partition|add_partition|alter_partition|get_partition
           --user alice                          optional impersonation user for simple auth
           --db db_name                          optional database name
           --table table_name                    optional table name

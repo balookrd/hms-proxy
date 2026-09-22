@@ -33,6 +33,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
     - Прозрачное автоматическое переключение read-only запросов на локальную теневую реплику (`fallback-catalog`) при обнаружении аварии основного удаленного каталога (открытый circuit breaker или ошибки сети/таймаутов).
     - Защита от расхождения данных: мутирующие методы (`mutating=true`) гарантированно не перенаправляются на fallback-каталог, предотвращая split-brain и скрытую запись в реплику.
     - Добавлена Prometheus-метрика `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`.
+  - **Сквозное smoke-тестирование Cross-DC на стенде (`smoke-stand/run-cross-dc-resilience-smoke.sh`)**:
+    - Добавлен автоматизированный сценарий проверки на живом compose-стенде: валидация кэшей таблиц и разделов (hit/miss), автоматической DDL-инвалидации при `alter_table`, режима serve-stale-on-error при искусственной остановке удаленного метастора, гранулярного эндпоинта `/readyz` (HTTP 200 при сбое неблокирующего каталога), shadow fallback на локальную реплику с защитой от split-brain, а также lenient-старта при полностью выключенном вторичном бэкенде.
+    - В CLI-утилиту `HmsMetastoreSmokeCli` добавлена операция `alter_table` для тестирования DDL-модификаций метаданных таблиц.
+    - Добавлен конфигурационный профиль стенда `smoke-stand/proxy/hms-proxy-cross-dc.properties` и обновлен `entrypoint.sh` для поддержки опционального ожидания вторичных каталогов (`WAIT_FOR_APACHE`).
 
 ### Исправлено
 

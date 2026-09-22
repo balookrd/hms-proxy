@@ -31,6 +31,7 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
 | Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner in metadata and on HDFS (`owner:group`), and audit logs record `authenticatedUser`. |
 | Direct HMS smoke CLI `ranger` | any (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` or `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Expected to pass with Ranger plugin enabled; confirms granular user and group authorization at database and table levels, filtering of hidden objects from listings, and strict rejection (NoSuchObjectException) on direct access attempts. |
+| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | mixed (`hdp`, `apache`) | `NONE` or `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Should pass with caches and fallback enabled; verifies cross-DC resilience, WAN degradation survivability, and remote outage failover. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
 | Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
@@ -38,6 +39,7 @@ running the detailed Beeline or direct HMS steps below.
 Practical automation:
 - for the Beeline / HS2 blocks below, you can automate them with `scripts/run-real-installation-smoke-simple.sh --scenario sql`
 - for the Beeline / HS2 blocks below with Kerberos, use `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
+- for end-to-end cross-DC and WAN resilience verification, run `./smoke-stand/run-cross-dc-resilience-smoke.sh` on the stand
 
 **1. Basic Front-Door Check**
 ```sql

@@ -33,6 +33,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
     - Transparently falls back read-only RPCs to a local shadow replica catalog (`fallback-catalog`) when the primary catalog experiences an outage or trip in circuit breaker.
     - Mutating operations (`mutating=true`) are strictly barred from falling back, preventing split-brain states and covert writes to read replicas.
     - Exposed Prometheus metric `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`.
+  - **End-to-End Cross-DC Smoke Testing on Docker Stand (`smoke-stand/run-cross-dc-resilience-smoke.sh`)**:
+    - Introduced an automated test suite verifying table and partition metadata caching (hit/miss), automatic DDL invalidation upon `alter_table`, serve-stale-on-error during simulated remote metastore outages, granular `/readyz` probing (HTTP 200 during non-critical outages), shadow fallback with split-brain mutation rejection, and lenient startup with secondary backends offline.
+    - Added `alter_table` command to `HmsMetastoreSmokeCli` tool for testing DDL table mutations.
+    - Added standalone configuration profile `smoke-stand/proxy/hms-proxy-cross-dc.properties` and made `entrypoint.sh` wait conditional via `WAIT_FOR_APACHE`.
 
 ### Fixed
 

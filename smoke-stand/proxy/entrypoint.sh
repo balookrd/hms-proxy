@@ -26,7 +26,9 @@ wait_for() {
 
 # The metastores take a while to create their schema on a cold volume.
 wait_for hms-hdp 9083 "hdp metastore"
-wait_for hms-apache 9083 "apache metastore"
+if [[ "${WAIT_FOR_APACHE:-true}" == "true" ]]; then
+  wait_for hms-apache 9083 "apache metastore"
+fi
 
 if [[ "${KERBEROS_ENABLED:-false}" == "true" ]]; then
   for _ in $(seq 1 90); do
