@@ -76,6 +76,17 @@ public class HmsOperationPolicyTest {
   }
 
   @Test
+  public void namespacelessPartitionHelpersUseAdminIntrospectionAndDefaultBackend() {
+    for (String method : java.util.List.of("partition_name_has_valid_characters", "partition_name_to_spec", "partition_name_to_vals")) {
+      OperationMetadata operation = HmsOperationPolicy.describe(method);
+      Assert.assertEquals(HmsOperationClass.ADMIN_INTROSPECTION, operation.operationClass());
+      Assert.assertEquals(DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION, operation.defaultBackendPolicy());
+      Assert.assertEquals(NamespaceStrategy.NONE, operation.namespaceStrategy());
+      Assert.assertFalse(operation.mutating());
+    }
+  }
+
+  @Test
   public void refreshPrivilegesIsAMetadataWrite() {
     OperationMetadata operation = HmsOperationPolicy.describe("refresh_privileges");
 

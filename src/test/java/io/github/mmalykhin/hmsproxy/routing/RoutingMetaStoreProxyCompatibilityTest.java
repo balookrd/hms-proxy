@@ -184,6 +184,8 @@ public class RoutingMetaStoreProxyCompatibilityTest {
   @Test
   public void partitionValidationWithoutNamespaceUsesDefaultBackendCompatibilityPath() {
     Assert.assertTrue(RoutingMetaStoreProxy.isDefaultBackendGlobalMethod("partition_name_has_valid_characters"));
+    Assert.assertTrue(RoutingMetaStoreProxy.isDefaultBackendGlobalMethod("partition_name_to_spec"));
+    Assert.assertTrue(RoutingMetaStoreProxy.isDefaultBackendGlobalMethod("partition_name_to_vals"));
   }
 
   @Test
@@ -449,4 +451,51 @@ public class RoutingMetaStoreProxyCompatibilityTest {
     }
   }
 
+  @Test
+  public void partitionNameToSpecAndValsAreHandledLocallyWithoutBackendCall() throws Throwable {
+    Map<String, String> expectedSpec = Map.of("time_key", "2024-01-01");
+    List<String> expectedVals = List.of("2024-01-01");
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      throw new AssertionError("Backend must not be invoked for local partition syntax operations: " + method.getName());
+    });
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend1, "catalog2", backend2)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Method specMethod = ThriftHiveMetastore.Iface.class.getMethod("partition_name_to_spec", String.class);
+    Method valsMethod = ThriftHiveMetastore.Iface.class.getMethod("partition_name_to_vals", String.class);
+
+    Object specResult = handler.invoke(null, specMethod, new Object[]{"time_key=2024-01-01"});
+    Assert.assertEquals(expectedSpec, specResult);
+
+    Object valsResult = handler.invoke(null, valsMethod, new Object[]{"time_key=2024-01-01"});
+    Assert.assertEquals(expectedVals, valsResult);
+
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
 }
+

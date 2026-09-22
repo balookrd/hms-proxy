@@ -40,6 +40,9 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Local processing of namespaceless partition syntax RPCs (partition_name_to_spec / partition_name_to_vals)**:
+  - Fixed `MetaException("Operation partition_name_to_spec requires explicit namespace ownership for deterministic routing...")` occurring in multi-catalog deployments when using Apache Airflow macros like `macros.hive.max_partition(metastore_conn_id="hive_metastore", schema="...", table="...", field="...")` or direct client partition parsing RPCs.
+  - Handled `partition_name_to_spec` and `partition_name_to_vals` locally in proxy memory via `Warehouse.makeSpecFromName` with zero network latency and without consuming metastore backend connections, while retaining registration in `AdminIntrospectionOps` under `Policy.NAMESPACELESS_VALIDATION`.
 - **In-memory caching of get_config_value and impersonation timeout elimination**:
   - Resolved `Timed out waiting for impersonation session for user '...' in catalog '...' after 30000 ms` caused by concurrent client bursts of `get_config_value`. Metastore configuration is caller-independent, so `CompatibilityHandler` now forwards `get_config_value` through the default catalog's shared session pool (`impersonation = null`), preventing queueing and pool exhaustion in per-user impersonation pools.
   - Introduced thread-safe `ConfigValueCache` with single-flight deduplication across concurrent queries for the same property and negative caching (via sentinel) for properties absent in the backend metastore.

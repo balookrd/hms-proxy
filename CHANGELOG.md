@@ -40,6 +40,9 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Локальная обработка синтаксических RPC партиций без namespace (partition_name_to_spec / partition_name_to_vals)**:
+  - Исправлена ошибка `MetaException("Operation partition_name_to_spec requires explicit namespace ownership for deterministic routing...")`, возникавшая в multi-catalog конфигурациях при вызовах макросов Apache Airflow вида `macros.hive.max_partition(metastore_conn_id="hive_metastore", schema="...", table="...", field="...")` или прямых клиентских вызовах синтаксического разбора партиций.
+  - Методы `partition_name_to_spec` и `partition_name_to_vals` теперь обрабатываются локально в памяти JVM прокси через `Warehouse.makeSpecFromName` с нулевой задержкой и без расходования сетевых соединений к метастору, а также зарегистрированы в `AdminIntrospectionOps` с политикой `Policy.NAMESPACELESS_VALIDATION`.
 - **Кэширование get_config_value и устранение таймаутов имперсонации**:
   - Устранена ошибка `Timed out waiting for impersonation session for user '...' in catalog '...' after 30000 ms` при массовых клиентских вызовах `get_config_value`. Запрос конфигурации метастора не зависит от пользователя, поэтому в `CompatibilityHandler` вызов `get_config_value` направляется через пул shared-сессий дефолтного каталога (`impersonation = null`), не занимая слоты в per-user пулах имперсонации.
   - Добавлен потокобезопасный in-memory кэш конфигурационных параметров `ConfigValueCache` с single-flight дедупликацией параллельных запросов за одним ключом и поддержкой negative caching (через sentinel) для отсутствующих на бэкенде параметров.

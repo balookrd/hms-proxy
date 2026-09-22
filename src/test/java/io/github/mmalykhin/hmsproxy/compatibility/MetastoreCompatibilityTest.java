@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.compatibility;
 
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -43,7 +44,36 @@ public class MetastoreCompatibilityTest {
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("update_master_key"));
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("remove_master_key"));
     Assert.assertTrue(MetastoreCompatibility.handlesLocally("get_master_keys"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("partition_name_to_spec"));
+    Assert.assertTrue(MetastoreCompatibility.handlesLocally("partition_name_to_vals"));
     Assert.assertFalse(MetastoreCompatibility.handlesLocally("set_ugi"));
+  }
+
+  @Test
+  public void partitionNameToSpecAndValsAreHandledLocally() throws Exception {
+    @SuppressWarnings("unchecked")
+    Map<String, String> spec = (Map<String, String>) MetastoreCompatibility.handleLocally(
+        "partition_name_to_spec", new Object[]{"dt=2024-01-01/region=US"}, null);
+    Assert.assertEquals(Map.of("dt", "2024-01-01", "region", "US"), spec);
+
+    @SuppressWarnings("unchecked")
+    List<String> vals = (List<String>) MetastoreCompatibility.handleLocally(
+        "partition_name_to_vals", new Object[]{"dt=2024-01-01/region=US"}, null);
+    Assert.assertEquals(List.of("2024-01-01", "US"), vals);
+
+    @SuppressWarnings("unchecked")
+    Map<String, String> emptySpec = (Map<String, String>) MetastoreCompatibility.handleLocally(
+        "partition_name_to_spec", new Object[]{""}, null);
+    Assert.assertTrue(emptySpec.isEmpty());
+
+    @SuppressWarnings("unchecked")
+    List<String> emptyVals = (List<String>) MetastoreCompatibility.handleLocally(
+        "partition_name_to_vals", new Object[]{""}, null);
+    Assert.assertTrue(emptyVals.isEmpty());
+    @SuppressWarnings("unchecked")
+    Map<String, String> invalidSpec = (Map<String, String>) MetastoreCompatibility.handleLocally(
+        "partition_name_to_spec", new Object[]{"invalid_part_without_equals"}, null);
+    Assert.assertTrue(invalidSpec.isEmpty());
   }
 
   @Test
@@ -60,6 +90,12 @@ public class MetastoreCompatibilityTest {
     Assert.assertEquals(
         DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION,
         DefaultBackendRoutingPolicy.policyFor("partition_name_has_valid_characters").orElse(null));
+    Assert.assertEquals(
+        DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION,
+        DefaultBackendRoutingPolicy.policyFor("partition_name_to_spec").orElse(null));
+    Assert.assertEquals(
+        DefaultBackendRoutingPolicy.Policy.NAMESPACELESS_VALIDATION,
+        DefaultBackendRoutingPolicy.policyFor("partition_name_to_vals").orElse(null));
     Assert.assertEquals(
         DefaultBackendRoutingPolicy.Policy.TXN_AND_LOCK_LIFECYCLE,
         DefaultBackendRoutingPolicy.policyFor("open_txns").orElse(null));

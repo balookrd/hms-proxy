@@ -30,6 +30,7 @@ import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
 import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
 import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
+import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 
 public final class MetastoreCompatibility {
@@ -184,6 +185,21 @@ public final class MetastoreCompatibility {
         requireFrontDoorSecurity(frontDoorSecurity).removeMasterKey((Integer) args[0]));
     handlers.put("get_master_keys", (args, frontDoorSecurity) ->
         requireFrontDoorSecurity(frontDoorSecurity).getMasterKeys());
+    handlers.put("partition_name_to_spec", (args, frontDoorSecurity) -> {
+      String partName = args != null && args.length > 0 ? (String) args[0] : null;
+      if (partName == null || partName.isEmpty()) {
+        return new HashMap<String, String>();
+      }
+      return Warehouse.makeSpecFromName(partName);
+    });
+    handlers.put("partition_name_to_vals", (args, frontDoorSecurity) -> {
+      String partName = args != null && args.length > 0 ? (String) args[0] : null;
+      if (partName == null || partName.isEmpty()) {
+        return new ArrayList<String>();
+      }
+      LinkedHashMap<String, String> spec = Warehouse.makeSpecFromName(partName);
+      return new ArrayList<>(spec.values());
+    });
     return Map.copyOf(handlers);
   }
 
