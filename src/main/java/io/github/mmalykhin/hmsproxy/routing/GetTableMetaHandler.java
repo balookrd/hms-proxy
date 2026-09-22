@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 
 final class GetTableMetaHandler implements SpecialCaseHandler {
@@ -73,9 +74,14 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
     for (FanoutExecutor.FanoutBackendResult<List<TableMeta>> fanoutResult : support.invokeFanoutRead(
         method.getName(),
         (backend, imp, requestId) -> {
+          Optional<String> backendPatternOpt = support.router.backendDatabasePattern(backend.name(), dbPattern);
+          if (backendPatternOpt.isEmpty()) {
+            return List.<TableMeta>of();
+          }
+          String backendDbPattern = backendPatternOpt.get();
           @SuppressWarnings("unchecked")
           List<TableMeta> result = (List<TableMeta>) support.dispatcher.invokeDirect(
-              backend, method, new Object[]{dbPattern, tablePattern, tableTypes},
+              backend, method, new Object[]{backendDbPattern, tablePattern, tableTypes},
               imp, requestId, false, false);
           return result;
         })) {
@@ -92,6 +98,9 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
               result,
               support.router.resolveCatalog(catalogName, result.getDbName()),
               support.federationLayer.preserveBackendCatalogName())));
+    }
+    if (dbPattern != null && !dbPattern.isBlank() && !"*".equals(dbPattern) && !".*".equals(dbPattern)) {
+      results.removeIf(meta -> !CatalogRouter.matchesHivePattern(meta.getDbName(), dbPattern));
     }
     return results;
   }

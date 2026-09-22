@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
@@ -224,6 +225,137 @@ public final class CatalogRouter implements AutoCloseable {
       }
     }
     return false;
+  }
+
+  public Optional<String> backendDatabasePattern(String catalogName, String dbPattern) {
+    if (dbPattern == null || dbPattern.isBlank()) {
+      return Optional.of(dbPattern == null ? "" : dbPattern);
+    }
+    String normalized = normalizeExternalDbName(dbPattern);
+    if (normalized == null || normalized.isBlank()) {
+      return Optional.of(dbPattern);
+    }
+
+    if (catalogName.equals(config.defaultCatalog())) {
+      for (CatalogPrefix candidate : patternPrefixes) {
+        if (candidate.catalogName().equals(config.defaultCatalog())) {
+          continue;
+        }
+        if (normalized.startsWith(candidate.prefix())) {
+          return Optional.empty();
+        }
+      }
+      return Optional.of(dbPattern);
+    }
+
+    List<CatalogPrefix> thisCatalogPrefixes = new ArrayList<>();
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (candidate.catalogName().equals(catalogName)) {
+        thisCatalogPrefixes.add(candidate);
+      }
+    }
+
+    for (CatalogPrefix candidate : thisCatalogPrefixes) {
+      if (normalized.startsWith(candidate.prefix())) {
+        String remainder = normalized.substring(candidate.prefix().length());
+        return Optional.of(remainder.isEmpty() ? "*" : remainder);
+      }
+    }
+
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (!candidate.catalogName().equals(catalogName) && !candidate.catalogName().equals(config.defaultCatalog())) {
+        if (normalized.startsWith(candidate.prefix())) {
+          return Optional.empty();
+        }
+      }
+    }
+
+    if (normalized.equals("*") || normalized.equals(".*") || normalized.equals("%")) {
+      return Optional.of(dbPattern);
+    }
+
+    int star = normalized.indexOf('*');
+    int percent = normalized.indexOf('%');
+    int wildcardPos;
+    if (star >= 0 && percent >= 0) {
+      wildcardPos = Math.min(star, percent);
+    } else if (star >= 0) {
+      wildcardPos = star;
+    } else {
+      wildcardPos = percent;
+    }
+
+    if (wildcardPos >= 0) {
+      String prefixBeforeWildcard = normalized.substring(0, wildcardPos);
+      if (prefixBeforeWildcard.isEmpty() || prefixBeforeWildcard.equals(".")) {
+        return Optional.of(dbPattern);
+      }
+
+      boolean matchesCatalogPrefix = false;
+      for (CatalogPrefix candidate : thisCatalogPrefixes) {
+        if (candidate.prefix().startsWith(prefixBeforeWildcard)) {
+          matchesCatalogPrefix = true;
+          break;
+        }
+      }
+
+      if (matchesCatalogPrefix) {
+        String remainderAfterWildcard = normalized.substring(wildcardPos + 1);
+        if (remainderAfterWildcard.isEmpty() || remainderAfterWildcard.equals("*") || remainderAfterWildcard.equals("%")) {
+          return Optional.of("*");
+        }
+        return Optional.of("*" + remainderAfterWildcard);
+      }
+
+      for (CatalogPrefix candidate : patternPrefixes) {
+        if (!candidate.catalogName().equals(catalogName) && !candidate.catalogName().equals(config.defaultCatalog())) {
+          if (prefixBeforeWildcard.startsWith(candidate.prefix()) || candidate.prefix().startsWith(prefixBeforeWildcard)) {
+            return Optional.empty();
+          }
+        }
+      }
+    }
+
+    return Optional.empty();
+  }
+
+  public static boolean matchesHivePattern(String value, String hivePattern) {
+    if (hivePattern == null || hivePattern.isBlank() || "*".equals(hivePattern) || ".*".equals(hivePattern)) {
+      return true;
+    }
+    if (value == null) {
+      return false;
+    }
+    Pattern compiled = compileHivePattern(hivePattern);
+    return compiled.matcher(value).matches();
+  }
+
+  static Pattern compileHivePattern(String hivePattern) {
+    String[] branches = hivePattern.trim().split("\\|");
+    StringBuilder regex = new StringBuilder("(?i)^(");
+    for (int b = 0; b < branches.length; b++) {
+      if (b > 0) {
+        regex.append("|");
+      }
+      String branch = branches[b];
+      for (int i = 0; i < branch.length(); i++) {
+        char c = branch.charAt(i);
+        if (c == '*' || c == '%') {
+          regex.append(".*");
+        } else if (c == '?') {
+          regex.append(".");
+        } else if (c == '.' && i + 1 < branch.length() && branch.charAt(i + 1) == '*') {
+          regex.append(".*");
+          i++;
+        } else if ("()[]{}+^$\\.|".indexOf(c) >= 0) {
+          regex.append("\\").append(c);
+        } else {
+          regex.append(c);
+        }
+      }
+    }
+    regex.append(")$");
+    return Pattern.compile(regex.toString());
   }
 
   private boolean looksLikeExternalDbName(String dbName) {

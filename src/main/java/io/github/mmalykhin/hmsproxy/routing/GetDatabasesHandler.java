@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 final class GetDatabasesHandler implements SpecialCaseHandler {
   private final RoutingSupport support;
@@ -66,18 +67,26 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
     for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : support.invokeFanoutRead(
         method.getName(),
         (backend, impersonation, requestId) -> {
+          Optional<String> backendPatternOpt = support.router.backendDatabasePattern(backend.name(), pattern);
+          if (backendPatternOpt.isEmpty()) {
+            return List.<String>of();
+          }
+          String backendPattern = backendPatternOpt.get();
           @SuppressWarnings("unchecked")
           List<String> result = support.databaseListCache.get(
               method.getName(),
               backend.name(),
-              pattern,
+              backendPattern,
               impersonation,
               () -> (List<String>) support.dispatcher.invokeDirect(
-                  backend, method, new Object[]{pattern}, impersonation, requestId, false, false));
+                  backend, method, new Object[]{backendPattern}, impersonation, requestId, false, false));
           return result;
         })) {
       databases.addAll(support.exposedDatabaseNames(
           method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
+    }
+    if (pattern != null && !pattern.isBlank() && !"*".equals(pattern) && !".*".equals(pattern)) {
+      databases.removeIf(db -> !CatalogRouter.matchesHivePattern(db, pattern));
     }
     return databases;
   }

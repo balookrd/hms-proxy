@@ -53,6 +53,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Трансляция паттернов баз данных при fanout-запросах для удаленных каталогов (get_databases / get_table_meta)**:
+  - Устранена проблема, из-за которой запросы `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'` или фильтрация схем в JDBC/Beeline/DBeaver не возвращали схемы удаленных каталогов (в то время как Spark показывал их корректно).
+  - В `CatalogRouter` добавлен метод `backendDatabasePattern`, вычисляющий целевой паттерн для каждого опрашиваемого бэкенда:
+    - Для удаленного каталога отсекается префикс каталога (например, `titanium__sales*` транслируется в `sales*`);
+    - Для префиксов с масками каталога (`titanium*`, `titanium_*`, `titanium%`) в удаленный метастор отправляется `*` (или соответствующий остаток), так как схемы на удаленном метасторе хранятся без префикса каталога;
+    - Каталоги, которые заведомо не могут содержать схемы по заданному паттерну, исключаются из fanout, снижая сетевую нагрузку на бэкенды.
+  - В `GetDatabasesHandler` и `GetTableMetaHandler` подключена трансляция backend-паттерна и финальная фильтрация результатов по клиентскому Hive-паттерну через `CatalogRouter.matchesHivePattern` (поддержка `*`, `%`, `|`, `.*` и регистронезависимости).
 - **Локальная обработка синтаксических RPC партиций без namespace (partition_name_to_spec / partition_name_to_vals)**:
   - Исправлена ошибка `MetaException("Operation partition_name_to_spec requires explicit namespace ownership for deterministic routing...")`, возникавшая в multi-catalog конфигурациях при вызовах макросов Apache Airflow вида `macros.hive.max_partition(metastore_conn_id="hive_metastore", schema="...", table="...", field="...")` или прямых клиентских вызовах синтаксического разбора партиций.
   - Методы `partition_name_to_spec` и `partition_name_to_vals` теперь обрабатываются локально в памяти JVM прокси через `Warehouse.makeSpecFromName` с нулевой задержкой и без расходования сетевых соединений к метастору, а также зарегистрированы в `AdminIntrospectionOps` с политикой `Policy.NAMESPACELESS_VALIDATION`.
