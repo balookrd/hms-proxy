@@ -176,6 +176,24 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     support.metadataAuthorizer.close();
   }
 
+  void flushCaches() {
+    if (support.databaseListCache != null) {
+      support.databaseListCache.invalidateAll();
+    }
+    if (support.databaseMetadataCache != null) {
+      support.databaseMetadataCache.invalidateAll();
+    }
+    if (support.tableMetadataCache != null) {
+      support.tableMetadataCache.clear();
+    }
+    if (support.partitionMetadataCache != null) {
+      support.partitionMetadataCache.clear();
+    }
+    if (icebergTablePointerGuard != null) {
+      icebergTablePointerGuard.invalidateAll();
+    }
+  }
+
   private Map<String, SpecialCaseHandler> buildSpecialCaseHandlers(SpecialCaseHandler dropTable) {
     SpecialCaseHandler setUgi = new SetUgiHandler(support, this);
     SpecialCaseHandler getAllDatabases = new GetAllDatabasesHandler(support);

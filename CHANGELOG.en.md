@@ -10,6 +10,19 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Metastore utility and configuration RPC localization (Group 1: Introspection & Validation)**:
+  - **`getMetaConf(key)` and `setMetaConf(key, value)`**:
+    - Handled locally in the proxy layer via `CompatibilityHandler` and `MetastoreCompatibility`.
+    - `setMetaConf` maintains session configuration in an isolated per-connection client state (`ClientRequestContext`), eliminating shared connection mutations in the backend connection pool and preventing `requires explicit namespace ownership` errors in multi-catalog deployments.
+    - Strictly validates value types using `MetastoreConf.ConfVars.validate(...)` and adheres to metastore session configuration whitelists (`metaVars`).
+    - `getMetaConf` resolves the value from the client connection session, the default catalog's configuration (`hiveConf`), or metastore defaults, completely avoiding remote network calls to HMS.
+  - **`partition_name_has_valid_characters(part_vals, throw_exception)`**:
+    - Fully handled in-memory via `MetaStoreUtils.partitionNameHasValidCharacters` / `validatePartitionNameCharacters` honoring the `whitelist.pattern` configured on the default catalog.
+  - **`get_metastore_db_uuid()`**:
+    - Resolved on the initial call to `defaultBackend` (with a deterministic proxy UUID fallback if the backend fails) and cached in an `AtomicReference<String>`, instantaneously serving subsequent requests from Spark and other analytical engines without roundtrip latency.
+  - **`flushCache()`**:
+    - Purges all internal in-memory caches within `hms-proxy`: `ConfigValueCache`, `DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`, and the negative cache in `IcebergTablePointerGuard`.
+    - Dispatches a best-effort `flushCache()` call to the default backend without throwing client errors on backend failure.
 - **Cross-DC & WAN Resilience suite**:
   - **Lenient Startup (`catalog.<name>.startup-mode=STRICT|LENIENT`)**:
     - Enables hms-proxy to start up cleanly and serve traffic even when remote or secondary metastore backends are temporarily unreachable at boot time.

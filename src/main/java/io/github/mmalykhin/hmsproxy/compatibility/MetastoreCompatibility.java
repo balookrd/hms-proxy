@@ -32,6 +32,8 @@ import org.apache.hadoop.hive.metastore.api.WMGetActiveResourcePlanResponse;
 import org.apache.hadoop.hive.metastore.api.WMGetAllResourcePlanResponse;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
+import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 
 public final class MetastoreCompatibility {
   private static final String FRONT_DOOR_TOKEN_ERROR =
@@ -157,6 +159,76 @@ public final class MetastoreCompatibility {
     return Optional.of(fallbackValue == null ? "" : fallbackValue);
   }
 
+  public static boolean partitionNameHasValidCharacters(
+      List<String> partVals,
+      boolean throwException,
+      String whitelistPattern
+  ) throws MetaException {
+    Pattern pattern = null;
+    if (whitelistPattern != null && !whitelistPattern.isEmpty()) {
+      pattern = Pattern.compile(whitelistPattern);
+    }
+    if (throwException) {
+      MetaStoreUtils.validatePartitionNameCharacters(partVals, pattern);
+      return true;
+    } else {
+      return MetaStoreUtils.partitionNameHasValidCharacters(partVals, pattern);
+    }
+  }
+
+  public static String getMetaConf(String key, Map<String, String> hiveConf) throws MetaException {
+    if (key == null) {
+      throw new MetaException("Invalid configuration key null");
+    }
+    MetastoreConf.ConfVars confVar = MetastoreConf.getMetaConf(key);
+    if (confVar == null) {
+      throw new MetaException("Invalid configuration key " + key);
+    }
+    Optional<String> sessionVal = ClientRequestContext.sessionMetaConf(key);
+    if (sessionVal.isEmpty()) {
+      sessionVal = ClientRequestContext.sessionMetaConf(confVar.getVarname());
+    }
+    if (sessionVal.isEmpty() && confVar.getHiveName() != null) {
+      sessionVal = ClientRequestContext.sessionMetaConf(confVar.getHiveName());
+    }
+    if (sessionVal.isPresent()) {
+      return sessionVal.get();
+    }
+    if (hiveConf != null) {
+      if (hiveConf.containsKey(key)) {
+        return hiveConf.get(key);
+      }
+      if (hiveConf.containsKey(confVar.getVarname())) {
+        return hiveConf.get(confVar.getVarname());
+      }
+      if (confVar.getHiveName() != null && hiveConf.containsKey(confVar.getHiveName())) {
+        return hiveConf.get(confVar.getHiveName());
+      }
+    }
+    Object defaultVal = confVar.getDefaultVal();
+    return defaultVal != null ? defaultVal.toString() : "";
+  }
+
+  public static void setMetaConf(String key, String value) throws MetaException {
+    if (key == null) {
+      throw new MetaException("Invalid configuration key null");
+    }
+    MetastoreConf.ConfVars confVar = MetastoreConf.getMetaConf(key);
+    if (confVar == null) {
+      throw new MetaException("Invalid configuration key " + key);
+    }
+    try {
+      confVar.validate(value);
+    } catch (IllegalArgumentException e) {
+      throw new MetaException("Invalid configuration value " + value + " for key " + key + " by " + e.getMessage());
+    }
+    ClientRequestContext.setSessionMetaConf(key, value);
+    ClientRequestContext.setSessionMetaConf(confVar.getVarname(), value);
+    if (confVar.getHiveName() != null) {
+      ClientRequestContext.setSessionMetaConf(confVar.getHiveName(), value);
+    }
+  }
+
   private static Map<String, LocalMethodHandler> buildLocalHandlers() {
     Map<String, LocalMethodHandler> handlers = new LinkedHashMap<>();
     handlers.put("get_delegation_token", (args, frontDoorSecurity) ->
@@ -199,6 +271,22 @@ public final class MetastoreCompatibility {
       }
       LinkedHashMap<String, String> spec = Warehouse.makeSpecFromName(partName);
       return new ArrayList<>(spec.values());
+    });
+    handlers.put("partition_name_has_valid_characters", (args, frontDoorSecurity) -> {
+      @SuppressWarnings("unchecked")
+      List<String> partVals = args != null && args.length > 0 ? (List<String>) args[0] : Collections.emptyList();
+      boolean throwException = args != null && args.length > 1 && Boolean.TRUE.equals(args[1]);
+      return partitionNameHasValidCharacters(partVals, throwException, null);
+    });
+    handlers.put("getMetaConf", (args, frontDoorSecurity) -> {
+      String key = args != null && args.length > 0 ? (String) args[0] : null;
+      return getMetaConf(key, Collections.emptyMap());
+    });
+    handlers.put("setMetaConf", (args, frontDoorSecurity) -> {
+      String key = args != null && args.length > 0 ? (String) args[0] : null;
+      String value = args != null && args.length > 1 ? (String) args[1] : null;
+      setMetaConf(key, value);
+      return null;
     });
     return Map.copyOf(handlers);
   }

@@ -94,6 +94,12 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 import static io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTestSupport.*;
 
 public class RoutingMetaStoreProxyCompatibilityTest {
+
+  @org.junit.Before
+  @org.junit.After
+  public void cleanContext() {
+    ClientRequestContext.clearThreadLocalMetaConf();
+  }
   @Test
   public void onlyExplicitCompatibilityMethodsUseDefaultBackendPath() {
     Assert.assertTrue(RoutingMetaStoreProxy.isDefaultBackendGlobalMethod("set_ugi"));
@@ -234,23 +240,19 @@ public class RoutingMetaStoreProxyCompatibilityTest {
   }
 
   @Test
-  public void getMetaConfWithoutCatalogContextUsesDefaultBackend() throws Throwable {
+  public void getMetaConfAndSetMetaConfHandledLocallyWithoutBackendCalls() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
-        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.try.direct.sql", "true"))))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
     AtomicInteger backendCalls = new AtomicInteger();
     BackendInvocationSession session = newSession((proxy, method, args) -> {
-      if ("getMetaConf".equals(method.getName())) {
-        backendCalls.incrementAndGet();
-        Assert.assertEquals("metastore.thrift.uris", args[0]);
-        return "thrift://backend";
-      }
+      backendCalls.incrementAndGet();
       throw new UnsupportedOperationException(method.getName());
     });
     CatalogBackend backend = newBackend(
@@ -260,12 +262,31 @@ public class RoutingMetaStoreProxyCompatibilityTest {
         newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
     RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
-    Method method = ThriftHiveMetastore.Iface.class.getMethod("getMetaConf", String.class);
 
-    Object result = handler.invoke(null, method, new Object[] {"metastore.thrift.uris"});
+    Method getMethod = ThriftHiveMetastore.Iface.class.getMethod("getMetaConf", String.class);
+    Method setMethod = ThriftHiveMetastore.Iface.class.getMethod("setMetaConf", String.class, String.class);
 
-    Assert.assertEquals("thrift://backend", result);
-    Assert.assertEquals(1, backendCalls.get());
+    // Initial get - served from catalog config or default without backend calls
+    Object result = handler.invoke(null, getMethod, new Object[] {"hive.metastore.try.direct.sql"});
+    Assert.assertEquals("true", result);
+    Assert.assertEquals(0, backendCalls.get());
+
+    // Update in session
+    handler.invoke(null, setMethod, new Object[] {"hive.metastore.try.direct.sql", "false"});
+    Assert.assertEquals(0, backendCalls.get());
+
+    // Read updated value
+    result = handler.invoke(null, getMethod, new Object[] {"hive.metastore.try.direct.sql"});
+    Assert.assertEquals("false", result);
+    Assert.assertEquals(0, backendCalls.get());
+
+    // Invalid key throws MetaException
+    try {
+      handler.invoke(null, getMethod, new Object[] {"non.existent.key"});
+      Assert.fail("Should throw MetaException for invalid key");
+    } catch (org.apache.hadoop.hive.metastore.api.MetaException e) {
+      Assert.assertTrue(e.getMessage().contains("Invalid configuration key"));
+    }
   }
 
   @Test
@@ -299,6 +320,77 @@ public class RoutingMetaStoreProxyCompatibilityTest {
     Object result = handler.invoke(null, method, new Object[0]);
 
     Assert.assertEquals("uuid-1", result);
+    Assert.assertEquals(1, backendCalls.get());
+
+    // Second call is served from cache without invoking backend
+    Object result2 = handler.invoke(null, method, new Object[0]);
+    Assert.assertEquals("uuid-1", result2);
+    Assert.assertEquals(1, backendCalls.get());
+  }
+
+  @Test
+  public void partitionNameHasValidCharactersWithoutCatalogContextHandledLocally() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of())))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod(
+        "partition_name_has_valid_characters", java.util.List.class, boolean.class);
+
+    Object result = handler.invoke(null, method, new Object[] {List.of("part1", "part2"), false});
+
+    Assert.assertEquals(Boolean.TRUE, result);
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
+  public void flushCacheClearsLocalCachesAndInvokesBackendBestEffort() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of())))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("flushCache".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("flushCache");
+
+    Object result = handler.invoke(null, method, new Object[0]);
+
+    Assert.assertNull(result);
     Assert.assertEquals(1, backendCalls.get());
   }
 

@@ -53,6 +53,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
+import org.apache.hadoop.hive.metastore.api.Role;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
@@ -93,17 +94,36 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 import static io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyTestSupport.*;
 
 public class RoutingMetaStoreProxyAuthorizationGuardsTest {
+
+  @org.junit.Before
+  @org.junit.After
+  public void cleanContext() {
+    ClientRequestContext.clearThreadLocalMetaConf();
+  }
+
   @Test
-  public void setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
+  public void createRoleWithoutCatalogContextIsRejectedInMultiCatalogMode() throws Throwable {
     RoutingMetaStoreProxy handler =
         new RoutingMetaStoreProxy(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
-    Method method = ThriftHiveMetastore.Iface.class.getMethod("setMetaConf", String.class, String.class);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_role", Role.class);
 
     MetaException error = Assert.assertThrows(
         MetaException.class,
-        () -> handler.invoke(null, method, new Object[] {"metastore.thrift.uris", "thrift://override"}));
+        () -> handler.invoke(null, method, new Object[] {new Role("test_role", 0, "admin")}));
 
     Assert.assertTrue(error.getMessage().contains("requires explicit namespace ownership"));
+  }
+
+  @Test
+  public void setMetaConfWithoutCatalogContextIsHandledLocallyInMultiCatalogMode() throws Throwable {
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER, new FederationLayer(CUSTOM_SEPARATOR_CONFIG, CUSTOM_SEPARATOR_ROUTER), null);
+    Method setMethod = ThriftHiveMetastore.Iface.class.getMethod("setMetaConf", String.class, String.class);
+    Method getMethod = ThriftHiveMetastore.Iface.class.getMethod("getMetaConf", String.class);
+
+    handler.invoke(null, setMethod, new Object[] {"hive.metastore.try.direct.sql", "false"});
+    Object val = handler.invoke(null, getMethod, new Object[] {"hive.metastore.try.direct.sql"});
+    Assert.assertEquals("false", val);
   }
 
   @Test

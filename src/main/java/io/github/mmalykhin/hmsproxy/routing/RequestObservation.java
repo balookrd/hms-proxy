@@ -67,7 +67,7 @@ final class RequestObservation {
 
   void recordNamespace(CatalogRouter.ResolvedNamespace namespace) {
     catalog = namespace.catalogName();
-    backend = namespace.backend().name();
+    backend = namespace.backend() != null ? namespace.backend().name() : namespace.catalogName();
     routed = true;
   }
 

@@ -6,11 +6,18 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.metastore.api.GetCatalogRequest;
 import org.apache.hadoop.hive.metastore.api.GetCatalogResponse;
 import org.apache.hadoop.hive.metastore.api.GetCatalogsResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +38,7 @@ final class CompatibilityHandler implements InvocationHandler {
   private final long aliveSince;
   private final InvocationHandler next;
   private final ConfigValueCache configValueCache;
+  private final AtomicReference<String> cachedDbUuid = new AtomicReference<>();
 
   CompatibilityHandler(
       ProxyConfig config,
@@ -83,6 +91,11 @@ final class CompatibilityHandler implements InvocationHandler {
           throw new MetaException("Catalog definitions are policy-owned by proxy config; HMS API catalog mutations"
               + " are disabled to preserve explicit namespace ownership");
       case "get_config_value" -> handleGetConfigValue(method, args);
+      case "partition_name_has_valid_characters" -> handlePartitionNameHasValidCharacters(args);
+      case "getMetaConf" -> handleGetMetaConf(args);
+      case "setMetaConf" -> handleSetMetaConf(args);
+      case "get_metastore_db_uuid" -> handleGetMetastoreDbUuid(method, args);
+      case "flushCache" -> handleFlushCache(method, args);
       default -> MetastoreCompatibility.handlesLocally(name)
           ? compatibilityLayer.handleLocalMethod(name, args)
           : next.invoke(proxy, method, args);
@@ -123,6 +136,89 @@ final class CompatibilityHandler implements InvocationHandler {
           null, RequestContext.currentRequestId(),
           true, true);
     });
+  }
+
+  private Object handlePartitionNameHasValidCharacters(Object[] args) throws MetaException {
+    @SuppressWarnings("unchecked")
+    List<String> partVals = args != null && args.length > 0 ? (List<String>) args[0] : Collections.emptyList();
+    boolean throwException = args != null && args.length > 1 && Boolean.TRUE.equals(args[1]);
+    String pattern = resolvePartitionValidationPattern();
+    RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+    return MetastoreCompatibility.partitionNameHasValidCharacters(partVals, throwException, pattern);
+  }
+
+  private String resolvePartitionValidationPattern() {
+    Map<String, String> hiveConf = config.catalogs().get(config.defaultCatalog()).hiveConf();
+    if (hiveConf != null) {
+      String pattern = hiveConf.get(MetastoreConf.ConfVars.PARTITION_NAME_WHITELIST_PATTERN.getVarname());
+      if (pattern != null) {
+        return pattern;
+      }
+      pattern = hiveConf.get(MetastoreConf.ConfVars.PARTITION_NAME_WHITELIST_PATTERN.getHiveName());
+      if (pattern != null) {
+        return pattern;
+      }
+    }
+    Object defaultVal = MetastoreConf.ConfVars.PARTITION_NAME_WHITELIST_PATTERN.getDefaultVal();
+    return defaultVal != null ? defaultVal.toString() : null;
+  }
+
+  private Object handleGetMetaConf(Object[] args) throws MetaException {
+    String key = args != null && args.length > 0 ? (String) args[0] : null;
+    RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+    Map<String, String> hiveConf = config.catalogs().get(config.defaultCatalog()).hiveConf();
+    return MetastoreCompatibility.getMetaConf(key, hiveConf);
+  }
+
+  private Object handleSetMetaConf(Object[] args) throws MetaException {
+    String key = args != null && args.length > 0 ? (String) args[0] : null;
+    String value = args != null && args.length > 1 ? (String) args[1] : null;
+    RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+    MetastoreCompatibility.setMetaConf(key, value);
+    return null;
+  }
+
+  private Object handleGetMetastoreDbUuid(Method method, Object[] args) {
+    String cached = cachedDbUuid.get();
+    if (cached != null) {
+      return cached;
+    }
+    String uuid = null;
+    try {
+      RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+      observability.metrics().recordDefaultCatalogRoute(method.getName());
+      uuid = (String) dispatcher.invokeDirect(
+          router.defaultBackend(), method, args,
+          null, RequestContext.currentRequestId(),
+          true, true);
+    } catch (Throwable t) {
+      LOG.warn("requestId={} failed to query metastore db uuid from default backend: {}",
+          RequestContext.currentRequestId(), t.getMessage());
+    }
+    if (uuid == null || uuid.isEmpty()) {
+      uuid = UUID.nameUUIDFromBytes(config.server().name().getBytes(StandardCharsets.UTF_8)).toString();
+    }
+    cachedDbUuid.set(uuid);
+    return uuid;
+  }
+
+  private Object handleFlushCache(Method method, Object[] args) {
+    configValueCache.invalidateAll();
+    if (next instanceof RoutingHandler rh) {
+      rh.flushCaches();
+    }
+    try {
+      RequestContext.currentObservation().recordNamespace(router.resolveCatalog(config.defaultCatalog(), ""));
+      observability.metrics().recordDefaultCatalogRoute(method.getName());
+      dispatcher.invokeDirect(
+          router.defaultBackend(), method, args,
+          null, RequestContext.currentRequestId(),
+          true, true);
+    } catch (Throwable t) {
+      LOG.warn("requestId={} backend flushCache invocation failed: {}",
+          RequestContext.currentRequestId(), t.getMessage());
+    }
+    return null;
   }
 
   ConfigValueCache configValueCache() {

@@ -479,6 +479,10 @@ final class IcebergTablePointerGuard {
     }
   }
 
+  void invalidateAll() {
+    notIcebergUntilNanos.clear();
+  }
+
   private void record(CatalogRouter.ResolvedNamespace namespace, String outcome) {
     support.observability.metrics().recordIcebergPointerGuardEvent(namespace.catalogName(), outcome);
   }

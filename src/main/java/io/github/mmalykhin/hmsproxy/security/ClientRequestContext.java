@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.thrift.transport.TTransport;
 
 public final class ClientRequestContext {
@@ -12,6 +13,8 @@ public final class ClientRequestContext {
   private static final ThreadLocal<String> REMOTE_USER = new ThreadLocal<>();
   private static final ThreadLocal<TTransport> CURRENT_TRANSPORT = new ThreadLocal<>();
   private static final Map<TTransport, ImpersonationContext> CONNECTION_UGI =
+      Collections.synchronizedMap(new WeakHashMap<>());
+  private static final Map<TTransport, Map<String, String>> CONNECTION_META_CONF =
       Collections.synchronizedMap(new WeakHashMap<>());
 
   private ClientRequestContext() {
@@ -62,6 +65,58 @@ public final class ClientRequestContext {
       return Optional.empty();
     }
     return Optional.ofNullable(CONNECTION_UGI.get(transport));
+  }
+
+  public static void setConnectionMetaConf(TTransport transport, String key, String value) {
+    if (transport != null && key != null) {
+      if (value != null) {
+        CONNECTION_META_CONF.computeIfAbsent(transport, t -> new ConcurrentHashMap<>()).put(key, value);
+      } else {
+        Map<String, String> conf = CONNECTION_META_CONF.get(transport);
+        if (conf != null) {
+          conf.remove(key);
+        }
+      }
+    }
+  }
+
+  public static Optional<String> connectionMetaConf(TTransport transport, String key) {
+    if (transport == null || key == null) {
+      return Optional.empty();
+    }
+    Map<String, String> conf = CONNECTION_META_CONF.get(transport);
+    return conf != null ? Optional.ofNullable(conf.get(key)) : Optional.empty();
+  }
+
+  private static final ThreadLocal<Map<String, String>> THREAD_LOCAL_META_CONF =
+      ThreadLocal.withInitial(ConcurrentHashMap::new);
+
+  public static void setSessionMetaConf(String key, String value) {
+    Optional<TTransport> transport = currentTransport();
+    if (transport.isPresent()) {
+      setConnectionMetaConf(transport.get(), key, value);
+    } else if (key != null) {
+      if (value != null) {
+        THREAD_LOCAL_META_CONF.get().put(key, value);
+      } else {
+        THREAD_LOCAL_META_CONF.get().remove(key);
+      }
+    }
+  }
+
+  public static Optional<String> sessionMetaConf(String key) {
+    if (key == null) {
+      return Optional.empty();
+    }
+    Optional<TTransport> transport = currentTransport();
+    if (transport.isPresent()) {
+      return connectionMetaConf(transport.get(), key);
+    }
+    return Optional.ofNullable(THREAD_LOCAL_META_CONF.get().get(key));
+  }
+
+  public static void clearThreadLocalMetaConf() {
+    THREAD_LOCAL_META_CONF.remove();
   }
 
   public static String setRemoteAddress(String remoteAddress) {

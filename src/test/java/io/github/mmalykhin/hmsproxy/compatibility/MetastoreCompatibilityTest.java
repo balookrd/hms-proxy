@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -30,6 +31,12 @@ public class MetastoreCompatibilityTest {
       "get_runtime_stats",
       "get_active_resource_plan",
       "get_all_resource_plans");
+
+  @org.junit.Before
+  @org.junit.After
+  public void cleanContext() {
+    ClientRequestContext.clearThreadLocalMetaConf();
+  }
 
   @Test
   public void delegationTokenMethodsAreHandledLocally() {
@@ -74,6 +81,55 @@ public class MetastoreCompatibilityTest {
     Map<String, String> invalidSpec = (Map<String, String>) MetastoreCompatibility.handleLocally(
         "partition_name_to_spec", new Object[]{"invalid_part_without_equals"}, null);
     Assert.assertTrue(invalidSpec.isEmpty());
+  }
+
+  @Test
+  public void partitionNameHasValidCharactersLocally() throws Exception {
+    Boolean valid = (Boolean) MetastoreCompatibility.handleLocally(
+        "partition_name_has_valid_characters", new Object[]{List.of("2024-01-01", "US"), false}, null);
+    Assert.assertTrue(valid);
+
+    // Whitelist pattern tests
+    String pattern = "[a-zA-Z0-9_\\-]+";
+    Assert.assertTrue(MetastoreCompatibility.partitionNameHasValidCharacters(
+        List.of("part1", "part_2"), false, pattern));
+    Assert.assertTrue(MetastoreCompatibility.partitionNameHasValidCharacters(
+        List.of("part1", "part_2"), true, pattern));
+
+    Assert.assertFalse(MetastoreCompatibility.partitionNameHasValidCharacters(
+        List.of("part1", "part with spaces"), false, pattern));
+
+    try {
+      MetastoreCompatibility.partitionNameHasValidCharacters(
+          List.of("part1", "part with spaces"), true, pattern);
+      Assert.fail("Should throw MetaException for invalid character when throwException=true");
+    } catch (MetaException e) {
+      Assert.assertTrue(e.getMessage().contains("contains a character not matched by whitelist pattern"));
+    }
+  }
+
+  @Test
+  public void metaConfHandledLocally() throws Exception {
+    String directSql = MetastoreCompatibility.getMetaConf("hive.metastore.try.direct.sql", Map.of());
+    Assert.assertNotNull(directSql);
+
+    try {
+      MetastoreCompatibility.getMetaConf("non.existent.key", Map.of());
+      Assert.fail("Should throw MetaException for invalid meta conf key");
+    } catch (MetaException e) {
+      Assert.assertTrue(e.getMessage().contains("Invalid configuration key"));
+    }
+
+    // setMetaConf validation
+    MetastoreCompatibility.setMetaConf("hive.metastore.try.direct.sql", "false");
+    Assert.assertEquals("false", MetastoreCompatibility.getMetaConf("hive.metastore.try.direct.sql", Map.of()));
+    Assert.assertEquals("false", MetastoreCompatibility.getMetaConf("metastore.try.direct.sql", Map.of()));
+    try {
+      MetastoreCompatibility.setMetaConf("metastore.client.socket.timeout", "invalid_time");
+      Assert.fail("Should throw MetaException for invalid time value");
+    } catch (MetaException e) {
+      Assert.assertTrue(e.getMessage().contains("Invalid configuration value"));
+    }
   }
 
   @Test

@@ -10,6 +10,19 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Локализация служебных и конфигурационных RPC метастора (Группа 1: Introspection & Validation)**:
+  - **`getMetaConf(key)` и `setMetaConf(key, value)`**:
+    - Обрабатываются локально на уровне прокси в `CompatibilityHandler` и `MetastoreCompatibility`.
+    - `setMetaConf` сохраняет параметры в изолированной per-connection сессии клиента (`ClientRequestContext`), не мутируя разделяемые соединения в backend connection pool метастора и предотвращая ошибку `requires explicit namespace ownership` в multi-catalog окружениях.
+    - Поддерживается строгая валидация типов значений через `MetastoreConf.ConfVars.validate(...)` и белые списки конфигурации metastore (`metaVars`).
+    - `getMetaConf` считывает значение из сессии текущего соединения, либо из конфигурации каталога по умолчанию (`hiveConf`), либо дефолтное значение metastore, устраняя лишние сетевые вызовы к HMS.
+  - **`partition_name_has_valid_characters(part_vals, throw_exception)`**:
+    - Обрабатывается полностью локально в памяти через `MetaStoreUtils.partitionNameHasValidCharacters` / `validatePartitionNameCharacters` с поддержкой `whitelist.pattern` из конфигурации каталога по умолчанию.
+  - **`get_metastore_db_uuid()`**:
+    - Инициализируется один раз при первом обращении к `defaultBackend` (с детерминированным fallback на базе UUID прокси при сбое бэкенда) и кэшируется в `cachedDbUuid` (`AtomicReference`), мгновенно обслуживая последующие запросы Spark и других аналитических движков без сетевых задержек.
+  - **`flushCache()`**:
+    - Локально сбрасывает все внутренние кэши `hms-proxy`: `ConfigValueCache`, `DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`, а также отрицательный кэш `IcebergTablePointerGuard`.
+    - Отправляет best-effort вызов `flushCache()` на бэкенд по умолчанию, не приводя к сбою клиента при недоступности бэкенда.
 - **Пакет отказоустойчивости для cross-DC / WAN топологий (Cross-DC & WAN Resilience)**:
   - **Lenient Startup (`catalog.<name>.startup-mode=STRICT|LENIENT`)**:
     - Позволяет сервису hms-proxy успешно запускаться и обслуживать запросы даже при полной недоступности вторичных/удаленных каталогов метастора на момент старта.

@@ -512,7 +512,7 @@ capabilities:
         маршрутизацию (deterministic routing), явное владение пространствами имён и предотвратить
         скрытую рассинхронизацию записей (silent split-brain writes).
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#createRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#grantRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#catalogManagementRpcsAreRejected
   - id: ranger_authorization_with_shared_cache
@@ -1283,10 +1283,10 @@ method_matrix:
   - id: ambiguous_global_writes
     method:
       en: >-
-        `setMetaConf`, `grant_role`, `revoke_role`, and other namespace-less
+        `grant_role`, `revoke_role`, `create_role`, and other namespace-less
         service writes
       ru: >-
-        `setMetaConf`, `grant_role`, `revoke_role` и другие namespace-less
+        `grant_role`, `revoke_role`, `create_role` и другие namespace-less
         service write RPC
     apache_backend:
       status: rejected
@@ -1333,7 +1333,7 @@ method_matrix:
         Заблокировано на уровне архитектуры (by design), чтобы гарантировать детерминированную маршрутизацию и
         предотвратить скрытую рассинхронизацию записей (silent split-brain writes) или расхождение глобального состояния
     smoke_tests:
-      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#setMetaConfWithoutCatalogContextIsRejectedInMultiCatalogMode
+      - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#createRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
 
   - id: catalog_registry_rpcs
     method:
