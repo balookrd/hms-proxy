@@ -84,7 +84,9 @@ public final class BackendRuntime implements AutoCloseable {
     this.pool = new LinkedBlockingQueue<>(poolSize);
     this.metrics = metrics;
     this.activeProfile = activeProfile;
-    this.pool.offer(initialSession);
+    if (initialSession != null) {
+      this.pool.offer(initialSession);
+    }
   }
 
   public static BackendRuntime open(
@@ -139,18 +141,29 @@ public final class BackendRuntime implements AutoCloseable {
       initial = sessionFactory.open(
           proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
     } catch (Throwable t) {
-      closeClassLoaderQuietly(isolatedClassLoader, catalogConfig.name());
-      if (t instanceof MetaException me) {
+      if (catalogConfig.startupMode() == io.github.mmalykhin.hmsproxy.config.catalog.CatalogStartupMode.LENIENT) {
+        LOG.warn("Backend catalog '{}' failed initial connection on startup, proceeding in degraded mode (startup-mode=LENIENT): {}",
+            catalogConfig.name(), t.getMessage(), t);
+      } else {
+        closeClassLoaderQuietly(isolatedClassLoader, catalogConfig.name());
+        if (t instanceof MetaException me) {
+          throw me;
+        }
+        MetaException me = new MetaException(
+            "Unable to open backend metastore session for catalog " + catalogConfig.name());
+        me.initCause(t);
         throw me;
       }
-      MetaException me = new MetaException(
-          "Unable to open backend metastore session for catalog " + catalogConfig.name());
-      me.initCause(t);
-      throw me;
     }
     return new BackendRuntime(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, sessionFactory, isolatedClassLoader,
         runtimeProfile, initial, metrics);
+  }
+
+  public boolean hasActiveSession() {
+    synchronized (lifecycleLock) {
+      return !closed && (!pool.isEmpty() || leasedSessions > 0);
+    }
   }
 
   public Object invokeShared(Method method, Object[] args) throws Throwable {

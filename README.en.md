@@ -174,9 +174,16 @@ When enabled, the proxy can:
 - proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
 - immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - cache metastore configuration values (`get_config_value`) in memory with `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour) with single-flight deduplication and negative caching for unknown keys
+- cache table metadata (`get_table`) via `routing.cache.table-metadata.*` and partition metadata (`get_partition*`, `get_part_specs*`) via `routing.cache.partition-metadata.*` with single-flight deduplication, LRU eviction, and automatic DDL invalidation on `alter_table*`, `drop_table*`, `truncate_table*`
+- serve stale table and partition metadata during remote backend outages via `routing.cache.serve-stale-on-error=true` for up to `routing.cache.stale-grace-period-ms` (default 5 minutes)
+- guard inter-datacenter WAN connections from saturation via WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` and `concurrency-timeout-ms`)
+- start proxy smoothly despite temporary remote/secondary catalog unavailability via `catalog.<name>.startup-mode=LENIENT`
+- avoid false-positive load-balancer evictions during remote DC outages via `catalog.<name>.required-for-readiness=false` and `management.readyz.require-all-catalogs=false`
+- transparently fail over read-only requests to a local shadow replica catalog during primary catalog outages via `catalog.<name>.fallback-catalog` and `fallback-on-outage=true` without risking split-brain for mutating operations
 - coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
 - omit degraded backends from safe fanout reads when
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
+- for comprehensive failure scenarios and cross-DC architecture, see [FAILOVER.md](FAILOVER.md) (EN: [FAILOVER.en.md](FAILOVER.en.md))
 
 This is intentionally narrow in scope: hedged reads and degraded omission apply only to safe
 read-only fanout methods, currently `get_all_databases`, `get_databases`, and `get_table_meta`.
@@ -448,6 +455,7 @@ Current Prometheus metrics:
 - `hms_proxy_request_duration_seconds{method,catalog,backend}`
 - `hms_proxy_backend_failures_total{backend,exception}`
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
+- `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
 - `hms_proxy_lock_request_split_total{catalog}`

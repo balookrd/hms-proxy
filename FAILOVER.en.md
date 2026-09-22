@@ -11,10 +11,12 @@ This document describes how **hms-proxy** handles unavailability, network failur
 During application startup ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
 1. The proxy parses configuration and initializes the catalog router ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
 2. For each configured catalog (`catalog.<name>.*`), a [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) instance is instantiated, opening its underlying runtime layer ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
-3. As part of session pool initialization, the session factory immediately attempts to establish an initial connection (`initialSession`) using `HiveMetaStoreClient` or the isolated runtime client.
+3. Depending on the `catalog.<name>.startup-mode` configuration:
+   * **`STRICT` (default)**: The session factory immediately attempts to establish an initial connection (`initialSession`). If unreachable, the proxy exhausts retries, throws `MetaException`, and terminates immediately with a non-zero exit code (**Startup Fail-Fast**), without opening client listener ports. The default catalog (`routing.default-catalog`) is strictly enforced to `STRICT`.
+   * **`LENIENT` (soft startup)**: If a remote or secondary backend fails initial connection during startup, the proxy logs a warning `proceeding in degraded mode (startup-mode=LENIENT)` and proceeds cleanly to open client listener ports. Sessions for this catalog are established lazily on the first request or upon network recovery.
 
-> [!WARNING]
-> **Startup Fail-Fast**: If any configured backend is unreachable during startup, `HiveMetaStoreClient` exhausts its connection retries (`hive.metastore.connect.retries`) and throws a `MetaException`. Consequently, the proxy terminates immediately with a non-zero exit code and **does not open client listener ports**.
+> [!NOTE]
+> Setting `catalog.<name>.startup-mode=LENIENT` is recommended for secondary catalogs in remote datacenters or across WAN links to prevent transient inter-DC outages from blocking the local proxy instance from serving local traffic.
 
 ---
 
@@ -58,6 +60,28 @@ When enabled via `routing.adaptive-timeout.enabled=true`:
 ### 2.5. Compatibility Fallbacks for Service Methods
 * For secondary and diagnostic metastore calls whose failure does not compromise metadata consistency (e.g., `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), the compatibility layer ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) intercepts failures and returns an empty valid payload instead of failing the user session.
 * For critical methods (schema reads, locks, transactions, privileges), failures are never masked — callers are guaranteed to receive an explicit exception.
+
+### 2.6. Table & Partition Metadata Caching and Serve-Stale-on-Error
+* To mitigate high latency across inter-DC WAN links, thread-safe in-memory caches are available:
+  * [`TableMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/TableMetadataCache.java) (`routing.cache.table-metadata.*`) for `get_table`.
+  * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) for `get_partition*`, `get_part_specs*`.
+* **SingleFlight Coalescing**: Concurrent lookups for the same table or partition query are deduplicated, avoiding cache stampedes across the WAN link.
+* **Automatic DDL Invalidation**: Mutations (`alter_table*`, `drop_table*`, `truncate_table*`) immediately invalidate cached table and partition entries.
+* **Serve-Stale-on-Error** (`routing.cache.serve-stale-on-error=true`): When remote backends experience network outages, timeouts, or connection resets, expired entries are safely served for the duration of the stale grace period (`routing.cache.stale-grace-period-ms`, default 5 minutes). This ensures read queries continue seamlessly despite transient WAN drops.
+
+### 2.7. WAN Concurrency Governor
+* To prevent flooding low-bandwidth inter-DC links and starving connection pools, each catalog can enforce a concurrency limit:
+  * `catalog.<name>.max-concurrent-calls` (default: `0`, unlimited).
+  * `catalog.<name>.concurrency-timeout-ms` (default: `10000` ms).
+* RPCs exceeding the concurrency threshold wait on a fair semaphore up to `concurrency-timeout-ms`. If no slot becomes free, the request fails fast with an informative `MetaException`, protecting backend and network resources.
+
+### 2.8. Catalog Shadow / Replica Fallback
+* If a catalog has a local read replica available (e.g., replicated MySQL/PostgreSQL metastore DB), hms-proxy can automatically fall back to it during primary outages:
+  * `catalog.<name>.fallback-catalog=<shadow_catalog_name>`
+  * `catalog.<name>.fallback-on-outage=true`
+* **Automatic Read-Only Fallback**: When the primary catalog fails (circuit breaker `OPEN`, `TTransportException`, timeouts), read-only RPCs (`get_table`, `get_database`, `get_partitions`, etc.) are transparently rerouted to the shadow replica.
+* **Strict Write Guard (No Split-Brain)**: Mutating operations (`create_*`, `alter_*`, `drop_*`, `truncate_*`, Iceberg commits) are strictly forbidden from falling back to the replica and fail with an explicit exception, preventing replica divergence and split-brain states.
+* Tracked via Prometheus metric `hms_proxy_catalog_fallback_total`.
 
 ---
 
@@ -108,8 +132,11 @@ The management HTTP server ([`ManagementHttpServer`](src/main/java/io/github/mma
 * **`/healthz` (Liveness probe)**:
   * Always returns **HTTP 200 OK** (`{"status":"ok","alive":true,...}`) as long as the proxy JVM process is running and accepting HTTP connections. Used for container liveness probes.
 * **`/readyz` (Readiness probe)**:
-  * Verifies connectivity across all configured backends.
-  * If any backend is unreachable, disconnected, or has an `OPEN` circuit breaker, the endpoint returns **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
+  * Verifies connectivity across configured backends with support for granular catalog readiness filtering:
+    * By default, the probe evaluates all configured catalogs.
+    * For remote or secondary catalogs, administrators can configure `catalog.<name>.required-for-readiness=false`. In this case, an outage of the remote catalog does not mark the proxy as degraded: `/readyz` continues returning **HTTP 200 OK** (`{"status":"ready",...}`), while reporting `"requiredForReadiness":false,"connected":false` for that catalog. This prevents remote datacenter network issues from taking down the local proxy instance in the local load balancer.
+    * Additionally, the global flag `management.readyz.require-all-catalogs=false` allows tying proxy readiness exclusively to the `default-catalog`.
+  * If the `default-catalog` or any required backend (`requiredForReadiness=true`) is unreachable or has an `OPEN` circuit breaker, the endpoint returns **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
   * Load balancers (HAProxy, Envoy, Kubernetes Ingress/Service) use this response to automatically remove the proxy instance from the active routing pool.
 
 ### 6.2. Background Health Polling

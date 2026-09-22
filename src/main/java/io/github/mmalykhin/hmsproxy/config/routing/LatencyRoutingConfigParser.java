@@ -57,6 +57,33 @@ public final class LatencyRoutingConfigParser {
         reader.getPositiveInt("routing.database-metadata-cache.max-entries", 1_000),
         dbMetaShared,
         metaRefresh);
+
+    long tableMetaTtlMs = reader.getNonNegativeLong(
+        "routing.table-metadata-cache.ttl-ms",
+        reader.getNonNegativeLong("routing.table-metadata-cache.ttl-seconds", TableMetadataCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
+    boolean tableMetaShared = reader.getBoolean(
+        "routing.table-metadata-cache.shared-across-users", TableMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS);
+    TableMetadataCacheConfig tableMetadataCache = new TableMetadataCacheConfig(
+        tableMetaTtlMs,
+        reader.getPositiveInt("routing.table-metadata-cache.max-entries", TableMetadataCacheConfig.DEFAULT_MAX_ENTRIES),
+        tableMetaShared);
+
+    long partitionMetaTtlMs = reader.getNonNegativeLong(
+        "routing.partition-metadata-cache.ttl-ms",
+        reader.getNonNegativeLong("routing.partition-metadata-cache.ttl-seconds", PartitionMetadataCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
+    boolean partitionMetaShared = reader.getBoolean(
+        "routing.partition-metadata-cache.shared-across-users", PartitionMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS);
+    PartitionMetadataCacheConfig partitionMetadataCache = new PartitionMetadataCacheConfig(
+        partitionMetaTtlMs,
+        reader.getPositiveInt("routing.partition-metadata-cache.max-entries", PartitionMetadataCacheConfig.DEFAULT_MAX_ENTRIES),
+        partitionMetaShared);
+
+    boolean cacheServeStaleOnError = reader.getBoolean(
+        "routing.cache.serve-stale-on-error", LatencyRoutingConfig.DEFAULT_CACHE_SERVE_STALE_ON_ERROR);
+    long cacheStaleGracePeriodMs = reader.getNonNegativeLong(
+        "routing.cache.stale-grace-period-ms",
+        reader.getNonNegativeLong("routing.cache.stale-grace-period-seconds", LatencyRoutingConfig.DEFAULT_CACHE_STALE_GRACE_PERIOD_MS / 1000L) * 1000L);
+
     boolean refreshPrivilegesSyntheticSuccess =
         reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
         || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));
@@ -96,7 +123,11 @@ public final class LatencyRoutingConfigParser {
         databaseListCache,
         databaseMetadataCache,
         configValueCache,
-        refreshPrivilegesSyntheticSuccess);
+        refreshPrivilegesSyntheticSuccess,
+        tableMetadataCache,
+        partitionMetadataCache,
+        cacheServeStaleOnError,
+        cacheStaleGracePeriodMs);
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {

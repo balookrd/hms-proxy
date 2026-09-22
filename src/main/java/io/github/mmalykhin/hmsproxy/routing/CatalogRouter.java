@@ -24,6 +24,10 @@ public final class CatalogRouter implements AutoCloseable {
     this.patternPrefixes = buildPatternPrefixes(config, backends.keySet());
   }
 
+  public static CatalogRouter createForTest(ProxyConfig config, Map<String, CatalogBackend> backends) {
+    return new CatalogRouter(config, backends);
+  }
+
   public static CatalogRouter open(ProxyConfig config) throws MetaException {
     return open(config, null);
   }
@@ -75,6 +79,20 @@ public final class CatalogRouter implements AutoCloseable {
       return Optional.empty();
     }
     return Optional.of(resolveCatalog(catalog, backendDbName));
+  }
+
+  public Optional<CatalogBackend> resolveFallbackBackend(String catalogName) {
+    if (catalogName == null || !backends.containsKey(catalogName)) {
+      return Optional.empty();
+    }
+    CatalogBackend primary = backends.get(catalogName);
+    if (primary != null && primary.fallbackOnOutage() && primary.fallbackCatalog() != null) {
+      CatalogBackend fallback = backends.get(primary.fallbackCatalog());
+      if (fallback != null) {
+        return Optional.of(fallback);
+      }
+    }
+    return Optional.empty();
   }
 
   public ResolvedNamespace resolveDatabase(String dbName) throws MetaException {

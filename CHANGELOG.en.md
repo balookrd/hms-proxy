@@ -8,6 +8,32 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-DC & WAN Resilience suite**:
+  - **Lenient Startup (`catalog.<name>.startup-mode=STRICT|LENIENT`)**:
+    - Enables hms-proxy to start up cleanly and serve traffic even when remote or secondary metastore backends are temporarily unreachable at boot time.
+    - Metastore sessions for lenient catalogs connect lazily on the first request or upon connectivity recovery.
+    - The default catalog (`routing.default-catalog`) strictly enforces `STRICT` mode, preventing startup without the primary metastore.
+  - **Granular Readiness Probing in `/readyz` (`catalog.<name>.required-for-readiness`, `management.readyz.require-all-catalogs`)**:
+    - The `/readyz` health probe differentiates critical from non-critical catalogs: outages of secondary catalogs with `required-for-readiness=false` return HTTP 200 `{"status":"ready"}`, keeping the local proxy instance in rotation on the local load balancer.
+    - The JSON payload reports `"requiredForReadiness": true|false` per catalog, and the aggregate `"backendConnectivity"` flag evaluates only required catalogs.
+    - Added global switch `management.readyz.require-all-catalogs=false` to ignore non-default catalog outages in readiness checks when desired.
+  - **Table & Partition Metadata Caches (`routing.cache.table-metadata.*`, `routing.cache.partition-metadata.*`)**:
+    - Implemented high-performance, thread-safe in-memory caches for table (`get_table`) and partition (`get_partition*`, `get_part_specs*`) metadata to slash WAN latency across distributed datacenters.
+    - Protected with SingleFlight request coalescing to eliminate cache stampedes and LRU eviction.
+    - Always serves defensive deep copies (`ThriftReflectionCache.deepCopy`) to prevent in-memory mutation by client threads.
+    - Automatically invalidated on DDL mutations (`alter_table*`, `drop_table*`, `truncate_table*`).
+  - **Serve-Stale-on-Error Mode (`routing.cache.serve-stale-on-error`, `stale-grace-period-ms`)**:
+    - When backends across WAN links suffer transient transport, socket, or timeout failures, expired cache entries are transparently served during the configurable grace period (`stale-grace-period-ms`, default 5 minutes), maintaining read availability for clients.
+  - **WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls`, `concurrency-timeout-ms`)**:
+    - Protects inter-datacenter WAN bandwidth and metastore backend resources via fair semaphore bounds on concurrent in-flight RPCs per catalog.
+    - Queued requests wait up to `concurrency-timeout-ms` before failing fast with an informative `MetaException`.
+  - **Catalog Shadow / Replica Fallback (`catalog.<name>.fallback-catalog`, `fallback-on-outage`)**:
+    - Transparently falls back read-only RPCs to a local shadow replica catalog (`fallback-catalog`) when the primary catalog experiences an outage or trip in circuit breaker.
+    - Mutating operations (`mutating=true`) are strictly barred from falling back, preventing split-brain states and covert writes to read replicas.
+    - Exposed Prometheus metric `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`.
+
 ### Fixed
 
 - **In-memory caching of get_config_value and impersonation timeout elimination**:

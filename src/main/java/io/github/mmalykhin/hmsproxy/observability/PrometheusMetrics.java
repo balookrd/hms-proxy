@@ -67,6 +67,10 @@ public final class PrometheusMetrics {
       "hms_proxy_backend_fallback_total",
       "Compatibility fallbacks returned after backend failures",
       List.of("method", "from_api", "to_api"));
+  private final Counter catalogFallbackTotal = new Counter(
+      "hms_proxy_catalog_fallback_total",
+      "Cross-DC or replica fallbacks routed to shadow catalog upon primary catalog outage",
+      List.of("primary_catalog", "fallback_catalog", "method"));
   private final Counter routingAmbiguousTotal = new Counter(
       "hms_proxy_routing_ambiguous_total",
       "Requests safely failed because deterministic routing detected conflicting namespaces",
@@ -236,6 +240,13 @@ public final class PrometheusMetrics {
 
   public void recordBackendFallback(String method, String fromApi, String toApi) {
     backendFallbackTotal.inc(labels("method", method, "from_api", fromApi, "to_api", toApi));
+  }
+
+  public void recordCatalogFallback(String primaryCatalog, String fallbackCatalog, String method) {
+    catalogFallbackTotal.inc(labels(
+        "primary_catalog", primaryCatalog,
+        "fallback_catalog", fallbackCatalog,
+        "method", method));
   }
 
   public void recordRoutingAmbiguous() {
@@ -500,6 +511,7 @@ public final class PrometheusMetrics {
       requestDurationSeconds,
       backendFailuresTotal,
       backendFallbackTotal,
+      catalogFallbackTotal,
       routingAmbiguousTotal,
       defaultCatalogRoutedTotal,
       lockRequestSplitTotal,

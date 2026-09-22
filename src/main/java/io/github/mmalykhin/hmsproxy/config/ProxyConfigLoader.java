@@ -82,7 +82,13 @@ public final class ProxyConfigLoader {
             orig.sharedSessionPoolSize(),
             orig.impersonationPoolMaxSize(),
             orig.impersonationSessionIdleTtlMs(),
-            catRanger
+            catRanger,
+            orig.startupMode(),
+            orig.requiredForReadiness(),
+            orig.maxConcurrentCalls(),
+            orig.concurrencyTimeoutMs(),
+            orig.fallbackCatalog(),
+            orig.fallbackOnOutage()
         ));
       }
       catalogs = enrichedCatalogs;

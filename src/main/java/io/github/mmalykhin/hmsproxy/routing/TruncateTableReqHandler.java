@@ -37,15 +37,27 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
           + support.config.defaultCatalog() + "'");
     }
 
+    String tblName = ThriftReflectionCache.readString(request, "getTableName");
     Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
+    Object result;
     try {
-      return support.invokeBackendNamed(backend, "truncate_table_req", routedRequest);
+      result = support.invokeBackendNamed(backend, "truncate_table_req", routedRequest);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        return fallbackToLegacy(backend, routedRequest);
+        result = fallbackToLegacy(backend, routedRequest);
+      } else {
+        throw cause;
       }
-      throw cause;
     }
+    if (tblName != null) {
+      if (support.tableMetadataCache != null) {
+        support.tableMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+      }
+      if (support.partitionMetadataCache != null) {
+        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+      }
+    }
+    return result;
   }
 
   @SuppressWarnings("unchecked")

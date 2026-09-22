@@ -1,9 +1,9 @@
 package io.github.mmalykhin.hmsproxy.config.management;
 
-
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+
 public final class ManagementConfigParser {
   private ManagementConfigParser() {
   }
@@ -21,6 +21,8 @@ public final class ManagementConfigParser {
         "management.threads", ManagementConfig.DEFAULT_THREADS);
     long readinessCacheMs = reader.getNonNegativeLong(
         "management.readiness-cache-ms", ManagementConfig.DEFAULT_READINESS_CACHE_MS);
+    boolean requireAllCatalogs = reader.getBoolean(
+        "management.readyz.require-all-catalogs", ManagementConfig.DEFAULT_REQUIRE_ALL_CATALOGS);
     if (managementEnabled
         && ConfigParsing.bindingsConflict(
             managementBindHost, managementPort, server.bindHost(), server.port())) {
@@ -30,6 +32,6 @@ public final class ManagementConfigParser {
               + ConfigParsing.describeBinding(server.bindHost(), server.port()));
     }
     return new ManagementConfig(
-        managementEnabled, managementBindHost, managementPort, managementThreads, readinessCacheMs);
+        managementEnabled, managementBindHost, managementPort, managementThreads, readinessCacheMs, requireAllCatalogs);
   }
 }

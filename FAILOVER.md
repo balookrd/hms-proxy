@@ -11,10 +11,12 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 При запуске приложения ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
 1. Прокси читает конфигурацию и инициализирует роутер каталогов ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
 2. Для каждого сконфигурированного каталога (`catalog.<name>.*`) создаётся экземпляр [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) и открывается runtime-слой ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
-3. В рамках инициализации пула сессий фабрика сессий немедленно пытается создать первичное соединение (`initialSession`) через `HiveMetaStoreClient` или изолированный клиент.
+3. В зависимости от настройки `catalog.<name>.startup-mode` поведение отличается:
+   * **`STRICT` (по умолчанию)**: фабрика сессий немедленно пытается создать первичное соединение (`initialSession`). Если бэкенд недоступен, прокси исчерпывает попытки переподключения, выбрасывает `MetaException` и аварийно завершает работу с ненулевым кодом выхода (**Startup Fail-Fast**), не открывая клиентские порты. Для дефолтного каталога (`routing.default-catalog`) гарантируется только режим `STRICT`.
+   * **`LENIENT` (мягкий запуск)**: при сбое подключения к удаленному/вторичному бэкенду на старте прокси логирует предупреждение `proceeding in degraded mode (startup-mode=LENIENT)` и успешно продолжает запуск, открывая клиентские порты. Соединения к такому каталогу создаются лениво при поступлении первого запроса или при восстановлении сетевой доступности.
 
-> [!WARNING]
-> **Startup Fail-Fast**: Если хотя бы один из сконфигурированных бэкендов недоступен на этапе старта, `HiveMetaStoreClient` исчерпывает попытки переподключения (`hive.metastore.connect.retries`), после чего выбрасывает `MetaException`. В результате прокси аварийно завершает работу с ненулевым кодом выхода и **не открывает клиентские порты**.
+> [!NOTE]
+> Режим `catalog.<name>.startup-mode=LENIENT` рекомендуется для вторичных каталогов, расположенных в других ЦОД или за WAN-каналами, чтобы временная авария межгородского канала не препятствовала запуску локального прокси и обслуживанию основного датацентра.
 
 ---
 
@@ -58,6 +60,28 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 ### 2.5. Compatibility Fallbacks для сервисных методов
 * Для вспомогательных и диагностических вызовов метастора, сбой которых не нарушает консистентность данных (например, `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), слой совместимости ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) перехватывает сбой и возвращает пустой валидный ответ вместо падения всей пользовательской сессии.
 * Для критичных методов (чтение схемы, блокировки, транзакции, права) пустые ответы никогда не маскируют ошибку — клиент гарантированно получает явное исключение.
+
+### 2.6. Кэширование метаданных таблиц и разделов и режим Serve-Stale-on-Error
+* Для компенсации высоких сетевых задержек межгородских каналов (WAN) реализованы потокобезопасные кэши:
+  * [`TableMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/TableMetadataCache.java) (`routing.cache.table-metadata.*`) для вызовов `get_table`.
+  * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) для вызовов `get_partition*`, `get_part_specs*`.
+* **SingleFlight Coalescing**: параллельные запросы к одной таблице объединяются, исключая шквал запросов в WAN-канал (cache stampede).
+* **Автоматическая DDL-инвалидация**: любые операции изменения (`alter_table*`, `drop_table*`, `truncate_table*`) мгновенно сбрасывают закэшированные записи для затронутых таблиц и разделов.
+* **Serve-Stale-on-Error** (`routing.cache.serve-stale-on-error=true`): при аварии сетевого подключения или недоступности удаленного HMS прокси продолжает отдавать устаревшие метаданные из кэша в течение льготного периода (`routing.cache.stale-grace-period-ms`, по умолчанию 5 минут). Это позволяет аналитическим запросам продолжать выполняться даже в моменты кратковременных разрывов WAN-связи.
+
+### 2.7. Ограничение конкурентных вызовов (WAN Concurrency Governor)
+* Для предотвращения перегрузки медленного межкластерного канала и исчерпания пулов сессий каждый каталог поддерживает ограничение одновременных in-flight RPC:
+  * `catalog.<name>.max-concurrent-calls` (по умолчанию `0` — без ограничений).
+  * `catalog.<name>.concurrency-timeout-ms` (по умолчанию `10000` мс).
+* Вызовы, превышающие лимит, аккуратно встают в очередь на семафоре. Если за время таймаута слот не освободился, запрос отклоняется с понятным `MetaException`, предотвращая каскадные зависания потоков клиентов.
+
+### 2.8. Аварийное переключение на теневую реплику (Catalog Shadow / Replica Fallback)
+* Если для удаленного каталога настроена локальная копия/реплика метаданных (например, реплицируемый MySQL/PostgreSQL metastore бэкенд), прокси поддерживает автоматический fallback:
+  * `catalog.<name>.fallback-catalog=<shadow_catalog_name>`
+  * `catalog.<name>.fallback-on-outage=true`
+* **Автоматическое переключение read-only запросов**: при обнаружении аварии (открытый Circuit Breaker, `TTransportException`, таймауты) безопасные методы чтения метаданных (`get_table`, `get_database`, `get_partitions`, `get_fields` и т.д.) прозрачно перенаправляются на локальный теневой каталог.
+* **Строгий запрет записи (No Split-Brain)**: любые мутирующие запросы (`create_*`, `alter_*`, `drop_*`, `truncate_*`, запись Iceberg) категорически **не** перенаправляются на реплику и завершаются явной ошибкой. Это исключает рассинхронизацию каталогов и появление скрытых несогласованных изменений.
+* Каждое переключение на реплику фиксируется в метрике `hms_proxy_catalog_fallback_total`.
 
 ---
 
@@ -108,8 +132,11 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 * **`/healthz` (Liveness probe)**:
   * Всегда возвращает **HTTP 200 OK** (`{"status":"ok","alive":true,...}`), если процесс JVM запущен и способен принимать HTTP-запросы. Служит для K8s liveness probe.
 * **`/readyz` (Readiness probe)**:
-  * Опрашивает состояние соединений всех бэкендов.
-  * Если хотя бы один бэкенд недоступен, отключён или его Circuit Breaker находится в состоянии `OPEN`, эндпоинт возвращает **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
+  * Опрашивает состояние соединений сконфигурированных бэкендов с поддержкой гранулярной фильтрации каталогов:
+    * По умолчанию прокси проверяет готовность всех каталогов.
+    * Для вторичных или удаленных каталогов можно задать `catalog.<name>.required-for-readiness=false`. В этом случае недоступность такого каталога не блокирует готовность прокси: `/readyz` продолжает возвращать **HTTP 200 OK** (`{"status":"ready",...}`), а в массиве бэкендов этот каталог помечается как `"requiredForReadiness":false,"connected":false`. Это предотвращает ошибочное выведение локального прокси из ротации локального балансировщика нагрузки при авариях в удаленном ЦОД.
+    * Дополнительно доступен глобальный флаг `management.readyz.require-all-catalogs=false`, при котором готовность инстанса определяется исключительно доступностью `default-catalog`.
+  * Если недоступен `default-catalog` либо любой из обязательных бэкендов (`requiredForReadiness=true`), эндпоинт возвращает **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
   * Балансировщики нагрузки (HAProxy, Envoy, Kubernetes Ingress/Service) используют этот сигнал для автоматического вывода инстанса прокси из пула активной маршрутизации.
 
 ### 6.2. Фоновый опрос доступности (Background Polling)

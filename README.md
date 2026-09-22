@@ -177,9 +177,16 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
 - мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - кэшировать конфигурационные параметры метастора (`get_config_value`) в памяти через `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час) с single-flight дедупликацией и negative caching для отсутствующих ключей
+- кэшировать метаданные таблиц (`get_table`) через `routing.cache.table-metadata.*` и разделов (`get_partition*`, `get_part_specs*`) через `routing.cache.partition-metadata.*` с single-flight дедупликацией, LRU-вытеснением и автоматической DDL-инвалидацией при `alter_table*`, `drop_table*`, `truncate_table*`
+- отдавать устаревшие метаданные таблиц и разделов при авариях и разрывах связи с удаленным бэкендом через `routing.cache.serve-stale-on-error=true` в течение `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут)
+- защищать удаленные WAN-каналы от перегрузки через WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` и `concurrency-timeout-ms`)
+- запускать прокси без блокировки при временной недоступности вторичных/удаленных каталогов через `catalog.<name>.startup-mode=LENIENT`
+- предотвращать ложный вывод прокси из балансировщика при сбоях удаленного ЦОД через `catalog.<name>.required-for-readiness=false` и `management.readyz.require-all-catalogs=false`
+- прозрачно перенаправлять read-only запросы на локальную теневую реплику при аварии основного каталога через `catalog.<name>.fallback-catalog` и `fallback-on-outage=true` без риска split-brain для мутаций
 - объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
 - исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
+- подробное руководство по сценариям отказов и архитектуре cross-DC см. в [FAILOVER.md](FAILOVER.md) (EN: [FAILOVER.en.md](FAILOVER.en.md))
 
 Это намеренно узкий механизм: hedged read и degraded omission применяются только к безопасным
 read-only fanout method, сейчас это `get_all_databases`, `get_databases` и `get_table_meta`.
@@ -449,6 +456,7 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_request_duration_seconds{method,catalog,backend}`
 - `hms_proxy_backend_failures_total{backend,exception}`
 - `hms_proxy_backend_fallback_total{method,from_api,to_api}`
+- `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`
 - `hms_proxy_routing_ambiguous_total`
 - `hms_proxy_default_catalog_routed_total{method}`
 - `hms_proxy_lock_request_split_total{catalog}`

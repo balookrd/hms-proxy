@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+
 public record CatalogConfig(
     String name,
     String description,
@@ -25,10 +26,21 @@ public record CatalogConfig(
     int sharedSessionPoolSize,
     int impersonationPoolMaxSize,
     long impersonationSessionIdleTtlMs,
-    io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger
+    io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger,
+    CatalogStartupMode startupMode,
+    boolean requiredForReadiness,
+    int maxConcurrentCalls,
+    long concurrencyTimeoutMs,
+    String fallbackCatalog,
+    boolean fallbackOnOutage
 ) {
   public static final CatalogAccessMode DEFAULT_ACCESS_MODE = CatalogAccessMode.READ_WRITE;
   public static final CatalogExposureMode DEFAULT_EXPOSE_MODE = CatalogExposureMode.ALLOW_ALL;
+  public static final CatalogStartupMode DEFAULT_STARTUP_MODE = CatalogStartupMode.STRICT;
+  public static final boolean DEFAULT_REQUIRED_FOR_READINESS = true;
+  public static final int DEFAULT_MAX_CONCURRENT_CALLS = 0;
+  public static final long DEFAULT_CONCURRENCY_TIMEOUT_MS = 10000L;
+  public static final boolean DEFAULT_FALLBACK_ON_OUTAGE = false;
   public static final long DEFAULT_LATENCY_BUDGET_MS = 0L;
   public static final int DEFAULT_MAX_IMPERSONATION_CLIENTS = 128;
   public static final long DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS = 0L;
@@ -55,6 +67,10 @@ public record CatalogConfig(
     impersonationSessionIdleTtlMs =
         Math.max(impersonationSessionIdleTtlMs, DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
     ranger = ranger == null ? io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled() : ranger;
+    startupMode = startupMode == null ? DEFAULT_STARTUP_MODE : startupMode;
+    maxConcurrentCalls = Math.max(0, maxConcurrentCalls);
+    concurrencyTimeoutMs = concurrencyTimeoutMs <= 0L ? DEFAULT_CONCURRENCY_TIMEOUT_MS : concurrencyTimeoutMs;
+    fallbackCatalog = fallbackCatalog != null && !fallbackCatalog.isBlank() ? fallbackCatalog.trim() : null;
     Map<String, List<String>> copiedExposeTablePatterns = new LinkedHashMap<>();
     for (Map.Entry<String, List<String>> entry : (exposeTablePatterns == null ? Map.<String, List<String>>of() : exposeTablePatterns).entrySet()) {
       copiedExposeTablePatterns.put(entry.getKey(), List.copyOf(entry.getValue()));
@@ -93,7 +109,13 @@ public record CatalogConfig(
         DEFAULT_SHARED_SESSION_POOL_SIZE,
         DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
         DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS,
-        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        DEFAULT_STARTUP_MODE,
+        DEFAULT_REQUIRED_FOR_READINESS,
+        DEFAULT_MAX_CONCURRENT_CALLS,
+        DEFAULT_CONCURRENCY_TIMEOUT_MS,
+        null,
+        DEFAULT_FALLBACK_ON_OUTAGE);
   }
 
   public CatalogConfig(
@@ -129,7 +151,13 @@ public record CatalogConfig(
         DEFAULT_SHARED_SESSION_POOL_SIZE,
         DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
         DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS,
-        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        DEFAULT_STARTUP_MODE,
+        DEFAULT_REQUIRED_FOR_READINESS,
+        DEFAULT_MAX_CONCURRENT_CALLS,
+        DEFAULT_CONCURRENCY_TIMEOUT_MS,
+        null,
+        DEFAULT_FALLBACK_ON_OUTAGE);
   }
 
   public CatalogConfig(
@@ -171,6 +199,61 @@ public record CatalogConfig(
         sharedSessionPoolSize,
         impersonationPoolMaxSize,
         impersonationSessionIdleTtlMs,
-        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled());
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        DEFAULT_STARTUP_MODE,
+        DEFAULT_REQUIRED_FOR_READINESS,
+        DEFAULT_MAX_CONCURRENT_CALLS,
+        DEFAULT_CONCURRENCY_TIMEOUT_MS,
+        null,
+        DEFAULT_FALLBACK_ON_OUTAGE);
+  }
+
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf,
+      long latencyBudgetMs,
+      int maxImpersonationClients,
+      long impersonationClientIdleTtlMs,
+      int sharedSessionPoolSize,
+      int impersonationPoolMaxSize,
+      long impersonationSessionIdleTtlMs,
+      io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        latencyBudgetMs,
+        maxImpersonationClients,
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize,
+        impersonationPoolMaxSize,
+        impersonationSessionIdleTtlMs,
+        ranger,
+        DEFAULT_STARTUP_MODE,
+        DEFAULT_REQUIRED_FOR_READINESS,
+        DEFAULT_MAX_CONCURRENT_CALLS,
+        DEFAULT_CONCURRENCY_TIMEOUT_MS,
+        null,
+        DEFAULT_FALLBACK_ON_OUTAGE);
   }
 }

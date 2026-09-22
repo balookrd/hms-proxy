@@ -18,6 +18,8 @@ final class DatabaseListCache {
   private final long ttlMs;
   private final int maxEntries;
   private final boolean sharedAcrossUsers;
+  private final boolean serveStaleOnError;
+  private final long staleGracePeriodMs;
   private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
@@ -28,7 +30,7 @@ final class DatabaseListCache {
   }
 
   DatabaseListCache(DatabaseListCacheConfig config, io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics) {
-    this(config, metrics, System::currentTimeMillis);
+    this(config, false, 0L, metrics, System::currentTimeMillis);
   }
 
   DatabaseListCache(
@@ -36,9 +38,30 @@ final class DatabaseListCache {
       io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics,
       LongSupplier clock
   ) {
+    this(config, false, 0L, metrics, clock);
+  }
+
+  DatabaseListCache(
+      DatabaseListCacheConfig config,
+      boolean serveStaleOnError,
+      long staleGracePeriodMs,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics
+  ) {
+    this(config, serveStaleOnError, staleGracePeriodMs, metrics, System::currentTimeMillis);
+  }
+
+  DatabaseListCache(
+      DatabaseListCacheConfig config,
+      boolean serveStaleOnError,
+      long staleGracePeriodMs,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics,
+      LongSupplier clock
+  ) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
     this.sharedAcrossUsers = config.sharedAcrossUsers();
+    this.serveStaleOnError = serveStaleOnError;
+    this.staleGracePeriodMs = Math.max(0L, staleGracePeriodMs);
     this.metrics = metrics;
     this.clock = clock == null ? System::currentTimeMillis : clock;
   }
@@ -103,6 +126,16 @@ final class DatabaseListCache {
       future.complete(loaded);
       return loaded == null ? null : new ArrayList<>(loaded);
     } catch (Throwable t) {
+      if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
+        LOG.warn("Backend catalog '{}' failed for method '{}' pattern '{}', serving stale cached database list (age={} ms)",
+            catalogName, methodName, pattern, nowMs - cached.expiresAtMs(), t);
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_list", catalogName, "stale_hit");
+        }
+        List<String> staleResult = new ArrayList<>(cached.databases());
+        future.complete(staleResult);
+        return staleResult;
+      }
       future.completeExceptionally(t);
       throw t;
     } finally {

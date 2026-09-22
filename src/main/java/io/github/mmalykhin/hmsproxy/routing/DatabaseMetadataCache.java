@@ -19,6 +19,8 @@ final class DatabaseMetadataCache {
   private final int maxEntries;
   private final boolean sharedAcrossUsers;
   private final DatabaseListCache databaseListCache;
+  private final boolean serveStaleOnError;
+  private final long staleGracePeriodMs;
   private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
@@ -46,10 +48,33 @@ final class DatabaseMetadataCache {
       io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics,
       LongSupplier clock
   ) {
+    this(config, databaseListCache, false, 0L, metrics, clock);
+  }
+
+  DatabaseMetadataCache(
+      DatabaseMetadataCacheConfig config,
+      DatabaseListCache databaseListCache,
+      boolean serveStaleOnError,
+      long staleGracePeriodMs,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics
+  ) {
+    this(config, databaseListCache, serveStaleOnError, staleGracePeriodMs, metrics, System::currentTimeMillis);
+  }
+
+  DatabaseMetadataCache(
+      DatabaseMetadataCacheConfig config,
+      DatabaseListCache databaseListCache,
+      boolean serveStaleOnError,
+      long staleGracePeriodMs,
+      io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics,
+      LongSupplier clock
+  ) {
     this.ttlMs = config.ttlMs();
     this.maxEntries = config.maxEntries();
     this.sharedAcrossUsers = config.sharedAcrossUsers();
     this.databaseListCache = databaseListCache;
+    this.serveStaleOnError = serveStaleOnError;
+    this.staleGracePeriodMs = Math.max(0L, staleGracePeriodMs);
     this.metrics = metrics;
     this.clock = clock == null ? System::currentTimeMillis : clock;
   }
@@ -113,6 +138,16 @@ final class DatabaseMetadataCache {
       future.complete(loaded);
       return loaded == null ? null : new Database(loaded);
     } catch (Throwable t) {
+      if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
+        LOG.warn("Backend catalog '{}' failed for get_database '{}', serving stale cached metadata (age={} ms)",
+            catalogName, backendDbName, nowMs - cached.expiresAtMs(), t);
+        if (metrics != null) {
+          metrics.recordCacheRequest("database_metadata", catalogName, "stale_hit");
+        }
+        Database staleResult = new Database(cached.database());
+        future.complete(staleResult);
+        return staleResult;
+      }
       future.completeExceptionally(t);
       throw t;
     } finally {

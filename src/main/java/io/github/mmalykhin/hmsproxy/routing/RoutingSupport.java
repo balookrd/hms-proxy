@@ -34,6 +34,8 @@ final class RoutingSupport {
   final ImpersonationResolver impersonationResolver;
   final DatabaseListCache databaseListCache;
   final DatabaseMetadataCache databaseMetadataCache;
+  final TableMetadataCache tableMetadataCache;
+  final PartitionMetadataCache partitionMetadataCache;
   final MetadataAuthorizer metadataAuthorizer;
 
   RoutingSupport(
@@ -53,7 +55,9 @@ final class RoutingSupport {
         dispatcher,
         impersonationResolver,
         databaseListCache,
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache),
+        new DatabaseMetadataCache(config != null && config.latencyRouting() != null
+            ? config.latencyRouting().databaseMetadataCache()
+            : io.github.mmalykhin.hmsproxy.config.routing.DatabaseMetadataCacheConfig.disabled(), databaseListCache),
         NoOpMetadataAuthorizer.INSTANCE);
   }
 
@@ -90,6 +94,37 @@ final class RoutingSupport {
       DatabaseMetadataCache databaseMetadataCache,
       MetadataAuthorizer metadataAuthorizer
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        databaseListCache,
+        databaseMetadataCache,
+        new TableMetadataCache(config != null && config.latencyRouting() != null
+            ? config.latencyRouting().tableMetadataCache()
+            : io.github.mmalykhin.hmsproxy.config.routing.TableMetadataCacheConfig.disabled()),
+        new PartitionMetadataCache(config != null && config.latencyRouting() != null
+            ? config.latencyRouting().partitionMetadataCache()
+            : io.github.mmalykhin.hmsproxy.config.routing.PartitionMetadataCacheConfig.disabled()),
+        metadataAuthorizer);
+  }
+
+  RoutingSupport(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      TableMetadataCache tableMetadataCache,
+      PartitionMetadataCache partitionMetadataCache,
+      MetadataAuthorizer metadataAuthorizer
+  ) {
     this.config = config;
     this.router = router;
     this.federationLayer = federationLayer;
@@ -98,6 +133,16 @@ final class RoutingSupport {
     this.impersonationResolver = impersonationResolver;
     this.databaseListCache = databaseListCache;
     this.databaseMetadataCache = databaseMetadataCache;
+    this.tableMetadataCache = tableMetadataCache != null
+        ? tableMetadataCache
+        : (config != null && config.latencyRouting() != null
+            ? new TableMetadataCache(config.latencyRouting().tableMetadataCache())
+            : new TableMetadataCache(io.github.mmalykhin.hmsproxy.config.routing.TableMetadataCacheConfig.disabled()));
+    this.partitionMetadataCache = partitionMetadataCache != null
+        ? partitionMetadataCache
+        : (config != null && config.latencyRouting() != null
+            ? new PartitionMetadataCache(config.latencyRouting().partitionMetadataCache())
+            : new PartitionMetadataCache(io.github.mmalykhin.hmsproxy.config.routing.PartitionMetadataCacheConfig.disabled()));
     this.metadataAuthorizer = metadataAuthorizer == null ? NoOpMetadataAuthorizer.INSTANCE : metadataAuthorizer;
   }
 

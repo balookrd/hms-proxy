@@ -24,6 +24,7 @@ final class BackendCallDispatcher {
   private final AdmissionGate admissionGate;
   private final ProxyObservability observability;
   private final FanoutExecutor fanoutExecutor;
+  private final CatalogRouter router;
 
   BackendCallDispatcher(
       CompatibilityLayer compatibilityLayer,
@@ -31,10 +32,21 @@ final class BackendCallDispatcher {
       ProxyObservability observability,
       FanoutExecutor fanoutExecutor
   ) {
+    this(compatibilityLayer, admissionGate, observability, fanoutExecutor, null);
+  }
+
+  BackendCallDispatcher(
+      CompatibilityLayer compatibilityLayer,
+      AdmissionGate admissionGate,
+      ProxyObservability observability,
+      FanoutExecutor fanoutExecutor,
+      CatalogRouter router
+  ) {
     this.compatibilityLayer = compatibilityLayer;
     this.admissionGate = admissionGate;
     this.observability = observability;
     this.fanoutExecutor = fanoutExecutor;
+    this.router = router;
   }
 
   Object invokeDirect(
@@ -55,7 +67,7 @@ final class BackendCallDispatcher {
         recordObservation,
         enforceRateLimit,
         true,
-        () -> backend.invoke(method, args, impersonation),
+        target -> target.invoke(method, args, impersonation),
         method);
   }
 
@@ -75,7 +87,7 @@ final class BackendCallDispatcher {
         true,
         true,
         true,
-        () -> backend.invokeRequest(methodName, request, impersonation),
+        target -> target.invokeRequest(methodName, request, impersonation),
         null);
   }
 
@@ -96,7 +108,7 @@ final class BackendCallDispatcher {
         true,
         true,
         false,
-        () -> backend.invokeRawByName(methodName, parameterTypes, args, impersonation),
+        target -> target.invokeRawByName(methodName, parameterTypes, args, impersonation),
         null);
   }
 
@@ -121,6 +133,33 @@ final class BackendCallDispatcher {
       BackendCall call,
       Method declaredMethod
   ) throws Throwable {
+    return performBackendCall(
+        backend,
+        methodName,
+        args,
+        impersonation,
+        requestId,
+        recordObservation,
+        enforceRateLimit,
+        allowCompatibilityFallback,
+        call,
+        declaredMethod,
+        true);
+  }
+
+  private Object performBackendCall(
+      CatalogBackend backend,
+      String methodName,
+      Object[] args,
+      ImpersonationContext impersonation,
+      long requestId,
+      boolean recordObservation,
+      boolean enforceRateLimit,
+      boolean allowCompatibilityFallback,
+      BackendCall call,
+      Method declaredMethod,
+      boolean allowShadowFallback
+  ) throws Throwable {
     long startedAt = System.nanoTime();
     if (enforceRateLimit) {
       admissionGate.enforceRateLimit(methodName, backend.name());
@@ -131,6 +170,26 @@ final class BackendCallDispatcher {
 
     ProxyRuntimeState.BackendCallAdmission admission = admissionGate.admit(backend);
     if (!admission.allowed()) {
+      if (allowShadowFallback && shouldFallbackToShadow(backend, methodName)) {
+        CatalogBackend fallbackBackend = router.resolveFallbackBackend(backend.name()).orElse(null);
+        if (fallbackBackend != null) {
+          LOG.warn("requestId={} backend catalog '{}' admission rejected ({}), falling back to shadow catalog '{}' for read method '{}'",
+              requestId, backend.name(), admission.rejectionReason(), fallbackBackend.name(), methodName);
+          observability.metrics().recordCatalogFallback(backend.name(), fallbackBackend.name(), methodName);
+          return performBackendCall(
+              fallbackBackend,
+              methodName,
+              args,
+              impersonation,
+              requestId,
+              recordObservation,
+              enforceRateLimit,
+              allowCompatibilityFallback,
+              call,
+              declaredMethod,
+              false);
+        }
+      }
       return maybeCompatibilityFallback(
           backend,
           methodName,
@@ -142,7 +201,7 @@ final class BackendCallDispatcher {
 
     try {
       logBackendRequest(requestId, backend, methodName, impersonation, args);
-      Object result = call.call();
+      Object result = call.call(backend);
       long elapsedMs = elapsedMillis(startedAt);
       logBackendResponse(requestId, backend, methodName, elapsedMs, result);
       admissionGate.recordSuccess(backend, elapsedMs);
@@ -151,6 +210,26 @@ final class BackendCallDispatcher {
       long elapsedMs = elapsedMillis(startedAt);
       observability.metrics().recordBackendFailure(backend.name(), cause);
       admissionGate.recordFailure(backend, cause, elapsedMs);
+      if (allowShadowFallback && shouldFallbackToShadow(backend, methodName) && isOutageFailure(cause)) {
+        CatalogBackend fallbackBackend = router.resolveFallbackBackend(backend.name()).orElse(null);
+        if (fallbackBackend != null) {
+          LOG.warn("requestId={} backend catalog '{}' failed call, falling back to shadow catalog '{}' for read method '{}': {}",
+              requestId, backend.name(), fallbackBackend.name(), methodName, cause.getMessage());
+          observability.metrics().recordCatalogFallback(backend.name(), fallbackBackend.name(), methodName);
+          return performBackendCall(
+              fallbackBackend,
+              methodName,
+              args,
+              impersonation,
+              requestId,
+              recordObservation,
+              enforceRateLimit,
+              allowCompatibilityFallback,
+              call,
+              declaredMethod,
+              false);
+        }
+      }
       Optional<Object> compatibilityFallback =
           allowCompatibilityFallback ? compatibilityLayer.fallback(methodName, cause) : Optional.empty();
       if (compatibilityFallback.isPresent()) {
@@ -169,6 +248,50 @@ final class BackendCallDispatcher {
       }
       throw BackendErrorNormalizer.normalizeInfrastructure(backend.name(), methodName, cause);
     }
+  }
+
+  private boolean shouldFallbackToShadow(CatalogBackend backend, String methodName) {
+    if (router == null || backend == null) {
+      return false;
+    }
+    if (!backend.fallbackOnOutage() || backend.fallbackCatalog() == null) {
+      return false;
+    }
+    return !io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy.describe(methodName).mutating();
+  }
+
+  static boolean isOutageFailure(Throwable cause) {
+    if (cause == null) {
+      return false;
+    }
+    if (io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier.isTransportFailure(cause)) {
+      return true;
+    }
+    Throwable current = cause;
+    for (int i = 0; i < 5 && current != null; i++) {
+      if (current instanceof java.net.SocketException
+          || current instanceof java.net.SocketTimeoutException
+          || current instanceof java.util.concurrent.TimeoutException
+          || current instanceof java.io.IOException) {
+        return true;
+      }
+      if (current instanceof org.apache.hadoop.hive.metastore.api.MetaException me) {
+        String msg = me.getMessage();
+        if (msg != null) {
+          String lower = msg.toLowerCase();
+          if (lower.contains("could not connect")
+              || lower.contains("connection refused")
+              || lower.contains("timed out")
+              || lower.contains("broken pipe")
+              || lower.contains("backend unavailable")
+              || lower.contains("rejected")) {
+            return true;
+          }
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private Object maybeCompatibilityFallback(
@@ -268,6 +391,6 @@ final class BackendCallDispatcher {
 
   @FunctionalInterface
   interface BackendCall {
-    Object call() throws Throwable;
+    Object call(CatalogBackend targetBackend) throws Throwable;
   }
 }

@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
@@ -180,11 +181,16 @@ public final class ManagementHttpServer implements AutoCloseable {
       KerberosHealthProbe.KerberosStatus frontDoorKerberos = probes.frontDoor();
       KerberosHealthProbe.KerberosStatus backendKerberos = probes.backend();
       List<ProxyRuntimeState.BackendRuntimeStatus> statuses = observability.runtimeState().backendStatuses();
-      boolean backendConnectivity = statuses.stream().allMatch(ProxyRuntimeState.BackendRuntimeStatus::connected);
-      boolean ready = statuses.stream().allMatch(status ->
-          status.connected()
-              && !status.degraded()
-              && status.circuitState() == ProxyRuntimeState.CircuitState.CLOSED)
+      boolean requireAll = config.management().requireAllCatalogs();
+      boolean backendConnectivity = statuses.stream()
+          .filter(status -> isCatalogRequiredForReadiness(status.backend(), requireAll))
+          .allMatch(ProxyRuntimeState.BackendRuntimeStatus::connected);
+      boolean ready = statuses.stream()
+          .filter(status -> isCatalogRequiredForReadiness(status.backend(), requireAll))
+          .allMatch(status ->
+              status.connected()
+                  && !status.degraded()
+                  && status.circuitState() == ProxyRuntimeState.CircuitState.CLOSED)
           && frontDoorKerberos.healthy()
           && backendKerberos.healthy();
       StringBuilder body = new StringBuilder(512);
@@ -198,11 +204,13 @@ public final class ManagementHttpServer implements AutoCloseable {
           .append("\"backends\":[");
       for (int index = 0; index < statuses.size(); index++) {
         ProxyRuntimeState.BackendRuntimeStatus status = statuses.get(index);
+        boolean required = isCatalogRequiredForReadiness(status.backend(), requireAll);
         if (index > 0) {
           body.append(',');
         }
         body.append('{')
             .append("\"backend\":\"").append(escape(status.backend())).append("\",")
+            .append("\"requiredForReadiness\":").append(required).append(',')
             .append("\"connected\":").append(status.connected()).append(',')
             .append("\"degraded\":").append(status.degraded()).append(',')
             .append("\"lastSuccessEpochSecond\":").append(status.lastSuccessEpochSecond()).append(',')
@@ -226,6 +234,17 @@ public final class ManagementHttpServer implements AutoCloseable {
       }
       body.append("]}\n");
       respond(exchange, ready ? 200 : 503, "application/json; charset=utf-8", body.toString());
+    }
+
+    private boolean isCatalogRequiredForReadiness(String catalogName, boolean requireAll) {
+      if (catalogName.equals(config.defaultCatalog())) {
+        return true;
+      }
+      if (!requireAll) {
+        return false;
+      }
+      CatalogConfig catalogConfig = config.catalogs().get(catalogName);
+      return catalogConfig == null || catalogConfig.requiredForReadiness();
     }
 
     private ProbeSnapshot refreshProbes() {

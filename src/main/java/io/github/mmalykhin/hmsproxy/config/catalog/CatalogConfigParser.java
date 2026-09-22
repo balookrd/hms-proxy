@@ -8,6 +8,7 @@ import java.util.Map;
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+
 public final class CatalogConfigParser {
   private CatalogConfigParser() {
   }
@@ -36,7 +37,9 @@ public final class CatalogConfigParser {
     String defaultCatalog = reader.getOrNull("routing.default-catalog");
     if (defaultCatalog == null) {
       if (catalogs.size() == 1) {
-        return catalogs.keySet().iterator().next();
+        String single = catalogs.keySet().iterator().next();
+        validateCatalogs(single, catalogs);
+        return single;
       }
       throw new IllegalArgumentException(
           "routing.default-catalog is required when more than one catalog is configured");
@@ -44,7 +47,29 @@ public final class CatalogConfigParser {
     if (!catalogs.containsKey(defaultCatalog)) {
       throw new IllegalArgumentException("Unknown routing.default-catalog: " + defaultCatalog);
     }
+    validateCatalogs(defaultCatalog, catalogs);
     return defaultCatalog;
+  }
+
+  public static void validateCatalogs(String defaultCatalog, Map<String, CatalogConfig> catalogs) {
+    CatalogConfig defaultConf = catalogs.get(defaultCatalog);
+    if (defaultConf != null) {
+      if (defaultConf.startupMode() == CatalogStartupMode.LENIENT) {
+        throw new IllegalArgumentException(
+            "routing.default-catalog '" + defaultCatalog + "' cannot have startup-mode=LENIENT");
+      }
+      if (!defaultConf.requiredForReadiness()) {
+        throw new IllegalArgumentException(
+            "routing.default-catalog '" + defaultCatalog + "' cannot have required-for-readiness=false");
+      }
+    }
+    for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+      String fallback = entry.getValue().fallbackCatalog();
+      if (fallback != null && !catalogs.containsKey(fallback)) {
+        throw new IllegalArgumentException(
+            "catalog." + entry.getKey() + ".fallback-catalog refers to unknown catalog '" + fallback + "'");
+      }
+    }
   }
 
   private static CatalogConfig parseCatalog(
@@ -89,6 +114,34 @@ public final class CatalogConfigParser {
     long impersonationSessionIdleTtlMs = reader.getNonNegativeLong(
         prefix + "impersonation-session-idle-ttl-ms", CatalogConfig.DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
 
+    CatalogStartupMode startupMode = ConfigParsing.parseEnum(
+        CatalogStartupMode.class,
+        reader.getOrNull(prefix + "startup-mode"),
+        prefix + "startup-mode",
+        CatalogConfig.DEFAULT_STARTUP_MODE);
+    boolean requiredForReadiness = reader.getBoolean(
+        prefix + "required-for-readiness",
+        CatalogConfig.DEFAULT_REQUIRED_FOR_READINESS);
+    int maxConcurrentCalls = reader.getNonNegativeInt(
+        prefix + "max-concurrent-calls",
+        CatalogConfig.DEFAULT_MAX_CONCURRENT_CALLS);
+    long concurrencyTimeoutMs = reader.getPositiveLong(
+        prefix + "concurrency-timeout-ms",
+        CatalogConfig.DEFAULT_CONCURRENCY_TIMEOUT_MS);
+    String fallbackCatalog = reader.getOrNull(prefix + "fallback-catalog");
+    if (fallbackCatalog != null) {
+      fallbackCatalog = fallbackCatalog.trim();
+      if (fallbackCatalog.isEmpty()) {
+        fallbackCatalog = null;
+      } else if (fallbackCatalog.equals(catalogName)) {
+        throw new IllegalArgumentException(
+            prefix + "fallback-catalog cannot point to the catalog itself ('" + catalogName + "')");
+      }
+    }
+    boolean fallbackOnOutage = reader.getBoolean(
+        prefix + "fallback-on-outage",
+        CatalogConfig.DEFAULT_FALLBACK_ON_OUTAGE);
+
     Map<String, String> hiveConfOverrides = reader.collectPrefixed(prefix + "conf.");
     Map<String, String> hiveConf = new LinkedHashMap<>(backendConf);
     hiveConf.putAll(hiveConfOverrides);
@@ -116,7 +169,14 @@ public final class CatalogConfigParser {
         impersonationClientIdleTtlMs,
         sharedSessionPoolSize,
         impersonationPoolMaxSize,
-        impersonationSessionIdleTtlMs);
+        impersonationSessionIdleTtlMs,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        startupMode,
+        requiredForReadiness,
+        maxConcurrentCalls,
+        concurrencyTimeoutMs,
+        fallbackCatalog,
+        fallbackOnOutage);
   }
 
   private static Map<String, List<String>> parseExposeTablePatterns(PropertyReader reader, String prefix) {
@@ -161,5 +221,4 @@ public final class CatalogConfigParser {
               + "write-db-whitelist. Use " + prefix + "access-mode=READ_ONLY to forbid all writes.");
     }
   }
-
 }

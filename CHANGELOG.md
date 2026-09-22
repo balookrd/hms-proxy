@@ -8,6 +8,32 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Пакет отказоустойчивости для cross-DC / WAN топологий (Cross-DC & WAN Resilience)**:
+  - **Lenient Startup (`catalog.<name>.startup-mode=STRICT|LENIENT`)**:
+    - Позволяет сервису hms-proxy успешно запускаться и обслуживать запросы даже при полной недоступности вторичных/удаленных каталогов метастора на момент старта.
+    - Сессии к таким каталогам открываются лениво при поступлении первого запроса или при восстановлении сетевой связности.
+    - Для дефолтного каталога (`routing.default-catalog`) гарантируется режим `STRICT` (недопустимость запуска без ключевого каталога).
+  - **Гранулярная оценка готовности `/readyz` (`catalog.<name>.required-for-readiness`, `management.readyz.require-all-catalogs`)**:
+    - Эндпоинт `/readyz` теперь дифференцирует каталоги: сбой вторичного каталога с `required-for-readiness=false` возвращает HTTP 200 `{"status":"ready"}`, предотвращая снятие локального прокси балансировщиком нагрузки (local LB).
+    - В теле ответа `/readyz` для каждого бэкенда явно возвращается поле `"requiredForReadiness": true|false`, а агрегированное поле `"backendConnectivity"` учитывает только критичные для готовности каталоги.
+    - Добавлен глобальный выключатель `management.readyz.require-all-catalogs=false`, позволяющий при необходимости игнорировать статус любых не-дефолтных каталогов в `/readyz`.
+  - **Кэширование метаданных таблиц и разделов (Table & Partition Metadata Caches)**:
+    - Реализованы потокобезопасные кэши `TableMetadataCache` (`routing.cache.table-metadata.*`) и `PartitionMetadataCache` (`routing.cache.partition-metadata.*`) для минимизации задержек через WAN-каналы.
+    - Кэширование охватывает `get_table`, `get_partition*`, `get_part_specs*` с SingleFlight дедупликацией параллельных запросов (защита от cache stampede) и LRU-вытеснением.
+    - Из кэша всегда возвращаются глубокие защитные копии (defensive copy через `ThriftReflectionCache.deepCopy`), исключающие порчу закэшированного состояния мутирующими операциями вызывающего кода.
+    - Автоматическая инвалидация кэшей при выполнении DDL-операций (`alter_table*`, `drop_table*`, `truncate_table*`).
+  - **Режим Serve-Stale-on-Error (`routing.cache.serve-stale-on-error`, `stale-grace-period-ms`)**:
+    - При сбоях сетевого подключения к удаленному бэкенду (transport failure, timeout, broken pipe) кэш выдает устаревшие метаданные (stale) в течение настраиваемого интервала (`stale-grace-period-ms`, по умолчанию 5 минут), обеспечивая бесперебойность read-only запросов пользователей.
+  - **WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls`, `concurrency-timeout-ms`)**:
+    - Защита каналов между ЦОД от перегрузки: ограничение числа одновременных in-flight вызовов к удаленному метастору на базе справедливых семафоров.
+    - При превышении лимита вызовы ожидают свободный слот в очереди до `concurrency-timeout-ms`, после чего отклоняются с информативным `MetaException`.
+  - **Catalog Shadow / Replica Fallback (`catalog.<name>.fallback-catalog`, `fallback-on-outage`)**:
+    - Прозрачное автоматическое переключение read-only запросов на локальную теневую реплику (`fallback-catalog`) при обнаружении аварии основного удаленного каталога (открытый circuit breaker или ошибки сети/таймаутов).
+    - Защита от расхождения данных: мутирующие методы (`mutating=true`) гарантированно не перенаправляются на fallback-каталог, предотвращая split-brain и скрытую запись в реплику.
+    - Добавлена Prometheus-метрика `hms_proxy_catalog_fallback_total{primary_catalog,fallback_catalog,method}`.
+
 ### Исправлено
 
 - **Кэширование get_config_value и устранение таймаутов имперсонации**:

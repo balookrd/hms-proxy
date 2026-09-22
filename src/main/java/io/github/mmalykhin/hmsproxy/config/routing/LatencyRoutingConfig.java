@@ -9,8 +9,15 @@ public record LatencyRoutingConfig(
     DatabaseListCacheConfig databaseListCache,
     DatabaseMetadataCacheConfig databaseMetadataCache,
     ConfigValueCacheConfig configValueCache,
-    boolean refreshPrivilegesSyntheticSuccess
+    boolean refreshPrivilegesSyntheticSuccess,
+    TableMetadataCacheConfig tableMetadataCache,
+    PartitionMetadataCacheConfig partitionMetadataCache,
+    boolean cacheServeStaleOnError,
+    long cacheStaleGracePeriodMs
 ) {
+  public static final boolean DEFAULT_CACHE_SERVE_STALE_ON_ERROR = false;
+  public static final long DEFAULT_CACHE_STALE_GRACE_PERIOD_MS = 86_400_000L;
+
   public LatencyRoutingConfig(
       BackendStatePollingConfig backendStatePolling,
       AdaptiveTimeoutConfig adaptiveTimeout,
@@ -18,7 +25,8 @@ public record LatencyRoutingConfig(
       HedgedReadConfig hedgedRead,
       DegradedRoutingPolicy degradedRoutingPolicy
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, null, null, null, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        null, null, null, false, null, null, DEFAULT_CACHE_SERVE_STALE_ON_ERROR, DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
   }
 
   public LatencyRoutingConfig(
@@ -29,7 +37,8 @@ public record LatencyRoutingConfig(
       DegradedRoutingPolicy degradedRoutingPolicy,
       DatabaseListCacheConfig databaseListCache
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, null, null, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        databaseListCache, null, null, false, null, null, DEFAULT_CACHE_SERVE_STALE_ON_ERROR, DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
   }
 
   public LatencyRoutingConfig(
@@ -41,7 +50,8 @@ public record LatencyRoutingConfig(
       DatabaseListCacheConfig databaseListCache,
       DatabaseMetadataCacheConfig databaseMetadataCache
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, null, false);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        databaseListCache, databaseMetadataCache, null, false, null, null, DEFAULT_CACHE_SERVE_STALE_ON_ERROR, DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
   }
 
   public LatencyRoutingConfig(
@@ -54,7 +64,25 @@ public record LatencyRoutingConfig(
       DatabaseMetadataCacheConfig databaseMetadataCache,
       boolean refreshPrivilegesSyntheticSuccess
   ) {
-    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy, databaseListCache, databaseMetadataCache, null, refreshPrivilegesSyntheticSuccess);
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        databaseListCache, databaseMetadataCache, null, refreshPrivilegesSyntheticSuccess, null, null,
+        DEFAULT_CACHE_SERVE_STALE_ON_ERROR, DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
+  }
+
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy,
+      DatabaseListCacheConfig databaseListCache,
+      DatabaseMetadataCacheConfig databaseMetadataCache,
+      ConfigValueCacheConfig configValueCache,
+      boolean refreshPrivilegesSyntheticSuccess
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        databaseListCache, databaseMetadataCache, configValueCache, refreshPrivilegesSyntheticSuccess,
+        null, null, DEFAULT_CACHE_SERVE_STALE_ON_ERROR, DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
   }
 
   public LatencyRoutingConfig {
@@ -73,6 +101,11 @@ public record LatencyRoutingConfig(
         databaseMetadataCache == null ? DatabaseMetadataCacheConfig.disabled() : databaseMetadataCache;
     configValueCache =
         configValueCache == null ? ConfigValueCacheConfig.defaultConfig() : configValueCache;
+    tableMetadataCache =
+        tableMetadataCache == null ? TableMetadataCacheConfig.disabled() : tableMetadataCache;
+    partitionMetadataCache =
+        partitionMetadataCache == null ? PartitionMetadataCacheConfig.disabled() : partitionMetadataCache;
+    cacheStaleGracePeriodMs = Math.max(0L, cacheStaleGracePeriodMs);
   }
 
   public static LatencyRoutingConfig disabled() {
@@ -85,6 +118,10 @@ public record LatencyRoutingConfig(
         DatabaseListCacheConfig.disabled(),
         DatabaseMetadataCacheConfig.disabled(),
         ConfigValueCacheConfig.disabled(),
-        false);
+        false,
+        TableMetadataCacheConfig.disabled(),
+        PartitionMetadataCacheConfig.disabled(),
+        DEFAULT_CACHE_SERVE_STALE_ON_ERROR,
+        DEFAULT_CACHE_STALE_GRACE_PERIOD_MS);
   }
 }

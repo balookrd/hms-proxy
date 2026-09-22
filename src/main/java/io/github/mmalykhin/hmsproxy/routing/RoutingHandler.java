@@ -126,12 +126,44 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       ExternalTableDropPurger externalTableDropPurger,
       io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer metadataAuthorizer
   ) {
+    this(
+        config,
+        router,
+        federationLayer,
+        compatibilityLayer,
+        observability,
+        dispatcher,
+        impersonationResolver,
+        databaseListCache,
+        databaseMetadataCache,
+        new TableMetadataCache(config.latencyRouting().tableMetadataCache()),
+        new PartitionMetadataCache(config.latencyRouting().partitionMetadataCache()),
+        externalTableDropPurger,
+        metadataAuthorizer);
+  }
+
+  RoutingHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      CompatibilityLayer compatibilityLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      TableMetadataCache tableMetadataCache,
+      PartitionMetadataCache partitionMetadataCache,
+      ExternalTableDropPurger externalTableDropPurger,
+      io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer metadataAuthorizer
+  ) {
     this.config = config;
     this.router = router;
     this.compatibilityLayer = compatibilityLayer;
     this.observability = observability;
     this.support = new RoutingSupport(
-        config, router, federationLayer, observability, dispatcher, impersonationResolver, databaseListCache, databaseMetadataCache, metadataAuthorizer);
+        config, router, federationLayer, observability, dispatcher, impersonationResolver,
+        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache, metadataAuthorizer);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger, icebergTablePointerGuard);
@@ -283,11 +315,22 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
           namespace.backendDbName(),
           impersonation,
           () -> (org.apache.hadoop.hive.metastore.api.Database) support.invokeDirect(namespace.backend(), method, routedArgs));
+    } else if ("get_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
+      ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+      result = support.tableMetadataCache.get(
+          namespace.catalogName(),
+          namespace.backendDbName(),
+          tblName,
+          impersonation,
+          () -> (org.apache.hadoop.hive.metastore.api.Table) support.invokeDirect(namespace.backend(), method, routedArgs));
     } else {
       result = support.invokeDirect(namespace.backend(), method, routedArgs);
       if ("drop_database".equals(method.getName()) || "alter_database".equals(method.getName())) {
         support.databaseMetadataCache.invalidate(namespace.catalogName(), namespace.backendDbName());
         support.databaseListCache.invalidate(namespace.catalogName());
+      } else if ("truncate_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
+        support.tableMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
       }
     }
     result = filterReadResult(method.getName(), namespace, result);
@@ -295,7 +338,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   }
 
   private Object routeByDbFirstStringArguments(Method method, Object[] args) throws Throwable {
-    if (args.length <= 1 || !(args[0] instanceof String dbName) || !(args[1] instanceof String)) {
+    if (args.length <= 1 || !(args[0] instanceof String dbName) || !(args[1] instanceof String tblName)) {
       return invokeGlobal(method, args);
     }
     CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
@@ -304,9 +347,40 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     validateReadExposure(method.getName(), namespace, args);
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
-    Object result = support.invokeDirect(namespace.backend(), method, routedArgs);
+    String methodName = method.getName();
+    Object result;
+    if (isPartitionReadMethod(methodName)) {
+      ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+      String querySig = methodName + ":" + java.util.Arrays.deepToString(java.util.Arrays.copyOfRange(routedArgs, 2, routedArgs.length));
+      result = support.partitionMetadataCache.get(
+          namespace.catalogName(),
+          namespace.backendDbName(),
+          tblName,
+          querySig,
+          impersonation,
+          () -> support.invokeDirect(namespace.backend(), method, routedArgs));
+    } else {
+      result = support.invokeDirect(namespace.backend(), method, routedArgs);
+      if (isPartitionMutatingMethod(methodName)) {
+        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+      }
+    }
     result = filterReadResult(method.getName(), namespace, result);
     return support.federationLayer.externalizeResult(result, namespace);
+  }
+
+  private static boolean isPartitionReadMethod(String methodName) {
+    return methodName.startsWith("get_partition")
+        || methodName.startsWith("get_part_spec");
+  }
+
+  private static boolean isPartitionMutatingMethod(String methodName) {
+    return methodName.startsWith("append_partition")
+        || methodName.startsWith("drop_partition")
+        || methodName.startsWith("delete_partition")
+        || methodName.startsWith("alter_partition")
+        || methodName.startsWith("markPartition")
+        || methodName.startsWith("update_creation_metadata");
   }
 
   private Object routeByExtractedNamespace(Method method, Object[] args) throws Throwable {
@@ -335,6 +409,12 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         || methodName.startsWith("drop_database")) {
       support.databaseMetadataCache.invalidate(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
       support.databaseListCache.invalidate(extractedNamespace.catalogName());
+    } else if (methodName.contains("table") || methodName.contains("partition")) {
+      String tableName = RoutingSupport.extractTableName(args != null && args.length > 0 ? args[0] : null);
+      if (tableName != null) {
+        support.tableMetadataCache.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
+        support.partitionMetadataCache.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
+      }
     }
     result = filterReadResult(methodName, extractedNamespace, result);
     return support.federationLayer.externalizeResult(result, extractedNamespace);

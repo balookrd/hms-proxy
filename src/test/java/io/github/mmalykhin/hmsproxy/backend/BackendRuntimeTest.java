@@ -259,6 +259,113 @@ public class BackendRuntimeTest {
         classLoader.findResource("org/apache/hadoop/hive/metastore/api/Database.class"));
   }
 
+  @Test
+  public void lenientStartupSucceedsWhenSessionFactoryFailsInitiallyAndRecoversOnBorrow() throws Throwable {
+    AtomicInteger attempts = new AtomicInteger();
+    BackendRuntime.SessionFactory factory = new ControlledSessionFactory(() -> {
+      if (attempts.incrementAndGet() == 1) {
+        throw new MetaException("Connection refused (remote catalog down at startup)");
+      }
+      return newSession();
+    }, 2);
+
+    CatalogConfig lenientConfig = lenientCatalogConfig();
+
+    // 1. Startup does not fail even though HMS is down
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        lenientConfig,
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+
+    Assert.assertNotNull(runtime);
+    Assert.assertFalse(runtime.hasActiveSession());
+
+    // 2. Later, when an invocation happens, it re-attempts and succeeds
+    try {
+      runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]);
+    } catch (UnsupportedOperationException expected) {
+      // Mock newSession throws UnsupportedOperationException for getStatus, which proves session was acquired!
+    }
+    Assert.assertTrue(runtime.hasActiveSession());
+    runtime.close();
+  }
+
+  @Test(expected = MetaException.class)
+  public void strictStartupFailsImmediatelyWhenSessionFactoryFails() throws Exception {
+    BackendRuntime.SessionFactory factory = new ControlledSessionFactory(() -> {
+      throw new MetaException("Connection refused");
+    });
+
+    BackendRuntime.open(
+        config(),
+        strictCatalogConfig(),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+  }
+
+  private static CatalogConfig lenientCatalogConfig() {
+    return new CatalogConfig(
+        "remote_hdp",
+        "remote",
+        "hdfs://remote-nn:8020/warehouse",
+        false,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://remote-hms:9083"),
+        0L,
+        128,
+        0L,
+        2,
+        4,
+        0L,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        io.github.mmalykhin.hmsproxy.config.catalog.CatalogStartupMode.LENIENT,
+        false,
+        0,
+        5000L,
+        null,
+        false);
+  }
+
+  private static CatalogConfig strictCatalogConfig() {
+    return new CatalogConfig(
+        "remote_hdp",
+        "remote",
+        "hdfs://remote-nn:8020/warehouse",
+        false,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://remote-hms:9083"),
+        0L,
+        128,
+        0L,
+        2,
+        4,
+        0L,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        io.github.mmalykhin.hmsproxy.config.catalog.CatalogStartupMode.STRICT,
+        true,
+        0,
+        5000L,
+        null,
+        false);
+  }
+
   private static ProxyConfig config() {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
@@ -371,14 +478,24 @@ public class BackendRuntimeTest {
     private final boolean requiresIsolatedClassLoader;
     private final AtomicInteger opens = new AtomicInteger();
     private final List<ClassLoader> isolatedClassLoaders = new ArrayList<>();
+    private final int maxAllowedOpens;
 
     private ControlledSessionFactory(SessionSupplier supplier) {
-      this(supplier, false);
+      this(supplier, false, 1);
     }
 
     private ControlledSessionFactory(SessionSupplier supplier, boolean requiresIsolatedClassLoader) {
+      this(supplier, requiresIsolatedClassLoader, 1);
+    }
+
+    private ControlledSessionFactory(SessionSupplier supplier, int maxAllowedOpens) {
+      this(supplier, false, maxAllowedOpens);
+    }
+
+    private ControlledSessionFactory(SessionSupplier supplier, boolean requiresIsolatedClassLoader, int maxAllowedOpens) {
       this.supplier = supplier;
       this.requiresIsolatedClassLoader = requiresIsolatedClassLoader;
+      this.maxAllowedOpens = maxAllowedOpens;
     }
 
     @Override
@@ -407,7 +524,7 @@ public class BackendRuntimeTest {
         ClassLoader isolatedClassLoader
     ) throws MetaException {
       isolatedClassLoaders.add(isolatedClassLoader);
-      if (opens.incrementAndGet() > 1) {
+      if (opens.incrementAndGet() > maxAllowedOpens) {
         throw new MetaException("unexpected extra backend session open");
       }
       try {

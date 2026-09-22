@@ -37,16 +37,37 @@ final class RoutingPipelineFactory {
     AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
     FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
     DatabaseListCache databaseListCache =
-        new DatabaseListCache(config.latencyRouting().databaseListCache(), observability.metrics());
+        new DatabaseListCache(
+            config.latencyRouting().databaseListCache(),
+            config.latencyRouting().cacheServeStaleOnError(),
+            config.latencyRouting().cacheStaleGracePeriodMs(),
+            observability.metrics());
     DatabaseMetadataCache databaseMetadataCache =
-        new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), databaseListCache, observability.metrics());
+        new DatabaseMetadataCache(
+            config.latencyRouting().databaseMetadataCache(),
+            databaseListCache,
+            config.latencyRouting().cacheServeStaleOnError(),
+            config.latencyRouting().cacheStaleGracePeriodMs(),
+            observability.metrics());
+    TableMetadataCache tableMetadataCache =
+        new TableMetadataCache(
+            config.latencyRouting().tableMetadataCache(),
+            config.latencyRouting().cacheServeStaleOnError(),
+            config.latencyRouting().cacheStaleGracePeriodMs(),
+            observability.metrics());
+    PartitionMetadataCache partitionMetadataCache =
+        new PartitionMetadataCache(
+            config.latencyRouting().partitionMetadataCache(),
+            config.latencyRouting().cacheServeStaleOnError(),
+            config.latencyRouting().cacheStaleGracePeriodMs(),
+            observability.metrics());
     DatabaseCacheRefresher databaseCacheRefresher = new DatabaseCacheRefresher(
         databaseListCache,
         databaseMetadataCache,
         config.latencyRouting().databaseListCache().backgroundRefresh(),
         config.latencyRouting().databaseMetadataCache().backgroundRefresh());
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
-        compatibilityLayer, admissionGate, observability, fanoutExecutor);
+        compatibilityLayer, admissionGate, observability, fanoutExecutor, router);
     long aliveSince = System.currentTimeMillis() / 1000L;
     ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
     MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
@@ -62,6 +83,8 @@ final class RoutingPipelineFactory {
         impersonationResolver,
         databaseListCache,
         databaseMetadataCache,
+        tableMetadataCache,
+        partitionMetadataCache,
         externalTableDropPurger,
         metadataAuthorizer);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(

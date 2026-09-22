@@ -58,8 +58,9 @@ public final class CatalogBackend implements AutoCloseable {
   private volatile long appliedClientTimeoutMs;
   private volatile long lastReconnectAtNanos;
   private volatile boolean closed;
+  private final Semaphore concurrentCallsSemaphore;
 
-  private CatalogBackend(
+  CatalogBackend(
       ProxyConfig proxyConfig,
       CatalogConfig config,
       HiveConf hiveConf,
@@ -76,6 +77,9 @@ public final class CatalogBackend implements AutoCloseable {
     this.catalog = catalog;
     this.metrics = metrics;
     this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(hiveConf.get(SOCKET_TIMEOUT_KEY), 0L);
+    this.concurrentCallsSemaphore = config.maxConcurrentCalls() > 0
+        ? new Semaphore(config.maxConcurrentCalls(), true)
+        : null;
     publishImpersonationGauges();
   }
 
@@ -115,6 +119,18 @@ public final class CatalogBackend implements AutoCloseable {
     catalog.setDescription(catalogConfig.description());
     catalog.setLocationUri(catalogConfig.locationUri());
     return new CatalogBackend(proxyConfig, catalogConfig, conf, adapter, runtime, catalog, metrics);
+  }
+
+  public static CatalogBackend createForTest(
+      ProxyConfig proxyConfig,
+      CatalogConfig config,
+      HiveConf hiveConf,
+      BackendAdapter adapter,
+      BackendRuntime runtime,
+      Catalog catalog,
+      PrometheusMetrics metrics
+  ) {
+    return new CatalogBackend(proxyConfig, config, hiveConf, adapter, runtime, catalog, metrics);
   }
 
   public String name() {
@@ -229,14 +245,21 @@ public final class CatalogBackend implements AutoCloseable {
 
   public Object invokeRaw(Method method, Object[] args, ImpersonationContext impersonation)
       throws Throwable {
-    if (impersonation != null && config.impersonationEnabled()) {
-      return invokeWithImpersonation(method, args, impersonation);
+    boolean permitAcquired = acquireConcurrentCallPermit();
+    try {
+      if (impersonation != null && config.impersonationEnabled()) {
+        return invokeWithImpersonation(method, args, impersonation);
+      }
+      if (impersonation != null && LOG.isDebugEnabled()) {
+        LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
+            config.name(), impersonation.userName());
+      }
+      return invokeSharedClient(method, args);
+    } finally {
+      if (permitAcquired) {
+        releaseConcurrentCallPermit();
+      }
     }
-    if (impersonation != null && LOG.isDebugEnabled()) {
-      LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
-          config.name(), impersonation.userName());
-    }
-    return invokeSharedClient(method, args);
   }
 
   public Object invokeRawByName(
@@ -245,14 +268,68 @@ public final class CatalogBackend implements AutoCloseable {
       Object[] args,
       ImpersonationContext impersonation
   ) throws Throwable {
-    if (impersonation != null && config.impersonationEnabled()) {
-      return impersonationClient(impersonation).invokeByName(methodName, parameterTypes, args);
+    boolean permitAcquired = acquireConcurrentCallPermit();
+    try {
+      if (impersonation != null && config.impersonationEnabled()) {
+        return impersonationClient(impersonation).invokeByName(methodName, parameterTypes, args);
+      }
+      if (impersonation != null && LOG.isDebugEnabled()) {
+        LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
+            config.name(), impersonation.userName());
+      }
+      return runtime.invokeSharedByName(methodName, parameterTypes, args);
+    } finally {
+      if (permitAcquired) {
+        releaseConcurrentCallPermit();
+      }
     }
-    if (impersonation != null && LOG.isDebugEnabled()) {
-      LOG.debug("Backend catalog '{}' has impersonation disabled, using shared client for user '{}'",
-          config.name(), impersonation.userName());
+  }
+
+  private boolean acquireConcurrentCallPermit() throws MetaException {
+    if (concurrentCallsSemaphore == null) {
+      return false;
     }
-    return runtime.invokeSharedByName(methodName, parameterTypes, args);
+    long timeoutMs = config.concurrencyTimeoutMs();
+    try {
+      if (!concurrentCallsSemaphore.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS)) {
+        throw new MetaException("Catalog '" + config.name()
+            + "' exceeded max concurrent calls limit of " + config.maxConcurrentCalls()
+            + " (timed out after " + timeoutMs + " ms)");
+      }
+      return true;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      MetaException me = new MetaException(
+          "Interrupted while waiting for concurrency permit for catalog " + config.name());
+      me.initCause(e);
+      throw me;
+    }
+  }
+
+  private void releaseConcurrentCallPermit() {
+    if (concurrentCallsSemaphore != null) {
+      concurrentCallsSemaphore.release();
+    }
+  }
+
+  public boolean requiredForReadiness() {
+    return config.requiredForReadiness();
+  }
+
+  public io.github.mmalykhin.hmsproxy.config.catalog.CatalogStartupMode startupMode() {
+    return config.startupMode();
+  }
+
+  public String fallbackCatalog() {
+    return config.fallbackCatalog();
+  }
+
+  public boolean fallbackOnOutage() {
+    return config.fallbackOnOutage();
+  }
+
+  public boolean hasActiveSession() {
+    return runtime.hasActiveSession();
   }
 
   private Object invokeSharedClient(Method method, Object[] args) throws Throwable {
