@@ -99,8 +99,9 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
               support.router.resolveCatalog(catalogName, result.getDbName()),
               support.federationLayer.preserveBackendCatalogName())));
     }
-    if (dbPattern != null && !dbPattern.isBlank() && !"*".equals(dbPattern) && !".*".equals(dbPattern)) {
-      results.removeIf(meta -> !CatalogRouter.matchesHivePattern(meta.getDbName(), dbPattern));
+    String normalizedDbPattern = support.router.normalizeDatabasePattern(dbPattern);
+    if (!"*".equals(normalizedDbPattern) && !".*".equals(normalizedDbPattern)) {
+      results.removeIf(meta -> !CatalogRouter.matchesHivePattern(meta.getDbName(), normalizedDbPattern));
     }
     return results;
   }

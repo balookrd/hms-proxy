@@ -54,12 +54,15 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 ### Fixed
 
 - **Database pattern translation in fanout queries for remote catalogs (get_databases / get_table_meta)**:
-  - Fixed an issue where queries like `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'`, or schema filtering in JDBC/Beeline/DBeaver failed to return remote catalog schemas (while Spark displayed them correctly).
-  - Added `backendDatabasePattern` method to `CatalogRouter` to compute the target pattern for each polled backend:
+  - Fixed an issue where queries like `SHOW DATABASES`, `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'`, or schema filtering in JDBC/Beeline/DBeaver failed to return remote catalog schemas (while Spark displayed them correctly).
+  - Added support for Hive 3 catalog transport framing (`@<catalog>#`, `@<catalog>#*`, `@<catalog>#!`, `@<catalog>#<pattern>`):
+    - Added `normalizeDatabasePattern` method to `CatalogRouter` to correctly extract the clean database pattern and normalize `@<catalog>#` (used by Hive 3 to query all databases in a catalog) into `*`;
+    - Enabled Hive framing normalization in `canMatchRemoteCatalogs` so that `SHOW DATABASES` calls (transmitting `get_databases("@hive#")`) properly trigger fanout across all attached catalogs;
+    - Ensured `backendDatabasePattern` forwards `*` to remote backends for general patterns (`*`, `@hive#`) without leaking the local Hive 3 `@hive#` framing to the remote metastore;
     - Strips the catalog prefix for remote catalogs (e.g., `titanium__sales*` translates to `sales*`);
     - Translates catalog-level wildcard prefixes (`titanium*`, `titanium_*`, `titanium%`) to `*` (or the corresponding remainder) for the remote metastore, since remote schemas are stored without the catalog prefix;
     - Skips backends that cannot possibly match the specified pattern during fanout, reducing backend network load.
-  - Updated `GetDatabasesHandler` and `GetTableMetaHandler` to query backends with translated patterns and apply post-filtering against the client's Hive pattern via `CatalogRouter.matchesHivePattern` (supporting `*`, `%`, `|`, `.*`, and case-insensitivity).
+  - Updated `GetDatabasesHandler` and `GetTableMetaHandler` to query backends with translated patterns and apply post-filtering against the normalized client pattern via `CatalogRouter.matchesHivePattern` (supporting `*`, `%`, `|`, `.*`, and case-insensitivity).
 - **Local processing of namespaceless partition syntax RPCs (partition_name_to_spec / partition_name_to_vals)**:
   - Fixed `MetaException("Operation partition_name_to_spec requires explicit namespace ownership for deterministic routing...")` occurring in multi-catalog deployments when using Apache Airflow macros like `macros.hive.max_partition(metastore_conn_id="hive_metastore", schema="...", table="...", field="...")` or direct client partition parsing RPCs.
   - Handled `partition_name_to_spec` and `partition_name_to_vals` locally in proxy memory via `Warehouse.makeSpecFromName` with zero network latency and without consuming metastore backend connections, while retaining registration in `AdminIntrospectionOps` under `Policy.NAMESPACELESS_VALIDATION`.

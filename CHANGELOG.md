@@ -54,12 +54,15 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 ### Исправлено
 
 - **Трансляция паттернов баз данных при fanout-запросах для удаленных каталогов (get_databases / get_table_meta)**:
-  - Устранена проблема, из-за которой запросы `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'` или фильтрация схем в JDBC/Beeline/DBeaver не возвращали схемы удаленных каталогов (в то время как Spark показывал их корректно).
-  - В `CatalogRouter` добавлен метод `backendDatabasePattern`, вычисляющий целевой паттерн для каждого опрашиваемого бэкенда:
+  - Устранена проблема, из-за которой запросы `SHOW DATABASES`, `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'` или фильтрация схем в JDBC/Beeline/DBeaver не возвращали схемы удаленных каталогов (в то время как Spark показывал их корректно).
+  - Поддержан транспортный фрейминг каталогов Hive 3 (`@<catalog>#`, `@<catalog>#*`, `@<catalog>#!`, `@<catalog>#<pattern>`):
+    - Добавлен метод `normalizeDatabasePattern` в `CatalogRouter`, корректно извлекающий чистый шаблон БД и нормализующий `@<catalog>#` (сигнализирующий запрос всех баз данных каталога в Hive 3) в `*`;
+    - В `canMatchRemoteCatalogs` подключена нормализация Hive-фрейминга, благодаря чему вызовы `SHOW DATABASES` (передающие `get_databases("@hive#")`) теперь корректно инициируют fanout по всем подключенным каталогам;
+    - В `backendDatabasePattern` для удаленных бэкендов при общих шаблонах (`*`, `@hive#`) гарантированно передается `*` без утечки локального Hive 3 фрейминга `@hive#` на удаленный метастор;
     - Для удаленного каталога отсекается префикс каталога (например, `titanium__sales*` транслируется в `sales*`);
     - Для префиксов с масками каталога (`titanium*`, `titanium_*`, `titanium%`) в удаленный метастор отправляется `*` (или соответствующий остаток), так как схемы на удаленном метасторе хранятся без префикса каталога;
     - Каталоги, которые заведомо не могут содержать схемы по заданному паттерну, исключаются из fanout, снижая сетевую нагрузку на бэкенды.
-  - В `GetDatabasesHandler` и `GetTableMetaHandler` подключена трансляция backend-паттерна и финальная фильтрация результатов по клиентскому Hive-паттерну через `CatalogRouter.matchesHivePattern` (поддержка `*`, `%`, `|`, `.*` и регистронезависимости).
+  - В `GetDatabasesHandler` и `GetTableMetaHandler` подключена трансляция backend-паттерна и финальная фильтрация результатов по нормализованному клиентскому шаблону через `CatalogRouter.matchesHivePattern` (поддержка `*`, `%`, `|`, `.*` и регистронезависимости).
 - **Локальная обработка синтаксических RPC партиций без namespace (partition_name_to_spec / partition_name_to_vals)**:
   - Исправлена ошибка `MetaException("Operation partition_name_to_spec requires explicit namespace ownership for deterministic routing...")`, возникавшая в multi-catalog конфигурациях при вызовах макросов Apache Airflow вида `macros.hive.max_partition(metastore_conn_id="hive_metastore", schema="...", table="...", field="...")` или прямых клиентских вызовах синтаксического разбора партиций.
   - Методы `partition_name_to_spec` и `partition_name_to_vals` теперь обрабатываются локально в памяти JVM прокси через `Warehouse.makeSpecFromName` с нулевой задержкой и без расходования сетевых соединений к метастору, а также зарегистрированы в `AdminIntrospectionOps` с политикой `Policy.NAMESPACELESS_VALIDATION`.

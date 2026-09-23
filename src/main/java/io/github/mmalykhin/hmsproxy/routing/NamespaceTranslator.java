@@ -234,8 +234,15 @@ public final class NamespaceTranslator {
       return dbName;
     }
     int hash = dbName.indexOf('#');
-    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
-      return normalizeCompatibilityDbName(dbName.substring(hash + 1));
+    if (dbName.startsWith("@") && hash > 1) {
+      if (hash + 1 < dbName.length()) {
+        String remainder = dbName.substring(hash + 1);
+        if (remainder.equals("!")) {
+          return "";
+        }
+        return normalizeCompatibilityDbName(remainder);
+      }
+      return "";
     }
     return dbName;
   }

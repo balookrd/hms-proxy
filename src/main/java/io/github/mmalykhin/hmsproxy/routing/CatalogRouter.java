@@ -161,8 +161,15 @@ public final class CatalogRouter implements AutoCloseable {
       return dbName;
     }
     int hash = dbName.indexOf('#');
-    if (dbName.startsWith("@") && hash > 1 && hash + 1 < dbName.length()) {
-      return normalizeExternalDbName(dbName.substring(hash + 1));
+    if (dbName.startsWith("@") && hash > 1) {
+      if (hash + 1 < dbName.length()) {
+        String remainder = dbName.substring(hash + 1);
+        if (remainder.equals("!")) {
+          return "";
+        }
+        return normalizeExternalDbName(remainder);
+      }
+      return "";
     }
     if (looksLikeExternalDbName(dbName)) {
       return dbName;
@@ -182,14 +189,25 @@ public final class CatalogRouter implements AutoCloseable {
     return dbName;
   }
 
+  public String normalizeDatabasePattern(String dbPattern) {
+    if (dbPattern == null || dbPattern.isBlank()) {
+      return "*";
+    }
+    String normalized = normalizeExternalDbName(dbPattern.trim());
+    if (normalized == null || normalized.isBlank()) {
+      return "*";
+    }
+    return normalized;
+  }
+
   public boolean canMatchRemoteCatalogs(String dbPattern) {
     if (singleCatalog()) {
       return false;
     }
-    if (dbPattern == null || dbPattern.isBlank()) {
+    String normalized = normalizeDatabasePattern(dbPattern);
+    if ("*".equals(normalized) || ".*".equals(normalized) || "%".equals(normalized)) {
       return true;
     }
-    String normalized = normalizeExternalDbName(dbPattern);
     for (CatalogPrefix candidate : patternPrefixes) {
       if (candidate.catalogName().equals(config.defaultCatalog())) {
         continue;
@@ -228,13 +246,7 @@ public final class CatalogRouter implements AutoCloseable {
   }
 
   public Optional<String> backendDatabasePattern(String catalogName, String dbPattern) {
-    if (dbPattern == null || dbPattern.isBlank()) {
-      return Optional.of(dbPattern == null ? "" : dbPattern);
-    }
-    String normalized = normalizeExternalDbName(dbPattern);
-    if (normalized == null || normalized.isBlank()) {
-      return Optional.of(dbPattern);
-    }
+    String normalized = normalizeDatabasePattern(dbPattern);
 
     if (catalogName.equals(config.defaultCatalog())) {
       for (CatalogPrefix candidate : patternPrefixes) {
@@ -245,7 +257,7 @@ public final class CatalogRouter implements AutoCloseable {
           return Optional.empty();
         }
       }
-      return Optional.of(dbPattern);
+      return Optional.of(dbPattern == null || dbPattern.isBlank() ? "*" : dbPattern);
     }
 
     List<CatalogPrefix> thisCatalogPrefixes = new ArrayList<>();
@@ -271,7 +283,7 @@ public final class CatalogRouter implements AutoCloseable {
     }
 
     if (normalized.equals("*") || normalized.equals(".*") || normalized.equals("%")) {
-      return Optional.of(dbPattern);
+      return Optional.of(dbPattern != null && dbPattern.startsWith("@") ? "*" : dbPattern);
     }
 
     int star = normalized.indexOf('*');

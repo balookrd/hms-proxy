@@ -85,8 +85,9 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
       databases.addAll(support.exposedDatabaseNames(
           method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
     }
-    if (pattern != null && !pattern.isBlank() && !"*".equals(pattern) && !".*".equals(pattern)) {
-      databases.removeIf(db -> !CatalogRouter.matchesHivePattern(db, pattern));
+    String normalizedPattern = support.router.normalizeDatabasePattern(pattern);
+    if (!"*".equals(normalizedPattern) && !".*".equals(normalizedPattern)) {
+      databases.removeIf(db -> !CatalogRouter.matchesHivePattern(db, normalizedPattern));
     }
     return databases;
   }

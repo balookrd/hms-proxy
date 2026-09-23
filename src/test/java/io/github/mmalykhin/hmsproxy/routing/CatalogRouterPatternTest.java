@@ -62,10 +62,20 @@ public class CatalogRouterPatternTest {
     Assert.assertEquals(Optional.of("%"), router.backendDatabasePattern("catalog2", "%"));
     Assert.assertEquals(Optional.of("*sales*"), router.backendDatabasePattern("catalog2", "*sales*"));
 
+    // Hive 3 transport framing with @cat#
+    Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#"));
+    Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#*"));
+    Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#catalog2*"));
+    Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#catalog2_*"));
+    Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#catalog2__*"));
+    Assert.assertEquals(Optional.of("sales*"), router.backendDatabasePattern("catalog2", "@hive#catalog2__sales*"));
+
     // Unmatched pattern returns empty for catalog2
     Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "sales*"));
     Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "catalog1__*"));
     Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "other*"));
+    Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "@hive#sales*"));
+    Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "@hive#catalog1__*"));
   }
 
   @Test
@@ -105,5 +115,42 @@ public class CatalogRouterPatternTest {
     // Substring wildcards
     Assert.assertTrue(CatalogRouter.matchesHivePattern("catalog2__sales_daily", "*sales*"));
     Assert.assertFalse(CatalogRouter.matchesHivePattern("catalog2__dwh", "*sales*"));
+  }
+
+  @Test
+  public void normalizeDatabasePatternStripsHiveFraming() {
+    CatalogRouter router = router();
+
+    Assert.assertEquals("*", router.normalizeDatabasePattern(null));
+    Assert.assertEquals("*", router.normalizeDatabasePattern(""));
+    Assert.assertEquals("*", router.normalizeDatabasePattern("   "));
+    Assert.assertEquals("*", router.normalizeDatabasePattern("*"));
+    Assert.assertEquals("*", router.normalizeDatabasePattern("@hive#"));
+    Assert.assertEquals("*", router.normalizeDatabasePattern("@hive#*"));
+    Assert.assertEquals("catalog2*", router.normalizeDatabasePattern("@hive#catalog2*"));
+    Assert.assertEquals("catalog2__*", router.normalizeDatabasePattern("@hive#catalog2__*"));
+    Assert.assertEquals("catalog2_%", router.normalizeDatabasePattern("@hive#catalog2_%"));
+    Assert.assertEquals("sales*", router.normalizeDatabasePattern("@hive#sales*"));
+    Assert.assertEquals("catalog2__sales*", router.normalizeDatabasePattern("spark_catalog.catalog2__sales*"));
+  }
+
+  @Test
+  public void canMatchRemoteCatalogsEvaluatesWildcardsAndCatalogFraming() {
+    CatalogRouter router = router();
+
+    Assert.assertTrue(router.canMatchRemoteCatalogs(null));
+    Assert.assertTrue(router.canMatchRemoteCatalogs(""));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2_%"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2__*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2__*"));
+
+    Assert.assertFalse(router.canMatchRemoteCatalogs("@hive#sales*"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("sales*"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("catalog1__*"));
   }
 }
