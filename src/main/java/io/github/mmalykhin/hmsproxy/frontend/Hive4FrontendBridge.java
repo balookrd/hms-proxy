@@ -92,7 +92,7 @@ public final class Hive4FrontendBridge {
     Object handlerProxy = Proxy.newProxyInstance(
         classLoader,
         new Class<?>[] {ifaceClass},
-        new BridgeInvocationHandler(classLoader, apacheHandler));
+        new BridgeInvocationHandler(config, classLoader, apacheHandler));
     Class<?> processorClass = Class.forName(THRIFT_HMS_CLASS + "$Processor", true, classLoader);
     Constructor<?> constructor = processorClass.getConstructor(ifaceClass);
     TProcessor processor = (TProcessor) constructor.newInstance(handlerProxy);
@@ -109,11 +109,17 @@ public final class Hive4FrontendBridge {
   }
 
   private static final class BridgeInvocationHandler implements InvocationHandler {
+    private final ProxyConfig config;
     private final ClassLoader hive4ClassLoader;
     private final ThriftHiveMetastore.Iface apacheHandler;
     private final HortonworksFrontendExtension extension;
 
-    private BridgeInvocationHandler(ClassLoader hive4ClassLoader, ThriftHiveMetastore.Iface apacheHandler) {
+    private BridgeInvocationHandler(
+        ProxyConfig config,
+        ClassLoader hive4ClassLoader,
+        ThriftHiveMetastore.Iface apacheHandler
+    ) {
+      this.config = config;
       this.hive4ClassLoader = hive4ClassLoader;
       this.apacheHandler = apacheHandler;
       // The HDP extension interface fits the three Hive 4 methods we care about
@@ -350,15 +356,41 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleGetDatabaseReq(Method method, Object request) throws Throwable {
-      Object database = apacheHandler.get_database((String) invokeNoArgs(request, "getName"));
+      String dbName = (String) invokeNoArgs(request, "getName");
+      String catName = null;
+      try {
+        catName = (String) invokeNoArgs(request, "getCatalogName");
+      } catch (ReflectiveOperationException ignored) {
+      }
+      if (catName != null && !catName.isBlank() && !catName.equalsIgnoreCase("hive")
+          && (config == null || !catName.equalsIgnoreCase(config.defaultCatalog()))) {
+        String separator = config == null ? "__" : config.catalogDbSeparator();
+        if (dbName != null && !dbName.startsWith(catName + separator)) {
+          dbName = catName + separator + dbName;
+        }
+      }
+      Object database = apacheHandler.get_database(dbName);
       return convertResult(database, method.getReturnType());
     }
 
     private Object handleGetDatabasesReq(Method method, Object request) throws Throwable {
       String pattern = (String) invokeNoArgs(request, "getPattern");
-      List<String> names = pattern == null || pattern.isEmpty()
-          ? apacheHandler.get_all_databases()
-          : apacheHandler.get_databases(pattern);
+      String catName = null;
+      try {
+        catName = (String) invokeNoArgs(request, "getCatalogName");
+      } catch (ReflectiveOperationException ignored) {
+      }
+      List<String> names;
+      if (catName != null && !catName.isBlank() && !catName.equalsIgnoreCase("hive")
+          && (config == null || !catName.equalsIgnoreCase(config.defaultCatalog()))) {
+        String separator = config == null ? "__" : config.catalogDbSeparator();
+        String effectivePattern = catName + separator + (pattern == null || pattern.isEmpty() ? "*" : pattern);
+        names = apacheHandler.get_databases(effectivePattern);
+      } else {
+        names = pattern == null || pattern.isEmpty()
+            ? apacheHandler.get_all_databases()
+            : apacheHandler.get_databases(pattern);
+      }
       // Hive 4 expects Database structs here; Apache 3.1.3 only lists names, so each one
       // has to be fetched separately.
       List<Object> databases = new ArrayList<>(names.size());

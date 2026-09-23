@@ -303,6 +303,77 @@ public class Hive4FrontendBridgeTest {
   }
 
   @Test
+  public void bridgeMapsGetDatabaseReqWithRemoteCatalogName() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("get_database".equals(method.getName())) {
+        capturedDb.set((String) args[0]);
+        org.apache.hadoop.hive.metastore.api.Database db = new org.apache.hadoop.hive.metastore.api.Database();
+        db.setName((String) args[0]);
+        return db;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader()
+        .loadClass("org.apache.hadoop.hive.metastore.api.GetDatabaseRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setName", String.class).invoke(request, "sales");
+    requestClass.getMethod("setCatalogName", String.class).invoke(request, "catalog2");
+    Method method = bridge.ifaceClass().getMethod("get_database_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("get_database", invokedMethod.get());
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+    Assert.assertEquals("catalog2__sales", response.getClass().getMethod("getName").invoke(response));
+  }
+
+  @Test
+  public void bridgeMapsGetDatabasesReqWithRemoteCatalogName() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<String> capturedPattern = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("get_databases".equals(method.getName())) {
+        invokedMethod.set(method.getName());
+        capturedPattern.set((String) args[0]);
+        return List.of("catalog2__sales");
+      }
+      if ("get_database".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.Database database =
+            new org.apache.hadoop.hive.metastore.api.Database();
+        database.setName((String) args[0]);
+        return database;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge =
+        Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader()
+        .loadClass("org.apache.hadoop.hive.metastore.api.GetDatabaseObjectsRequest");
+    Object request = requestClass.getConstructor().newInstance();
+    requestClass.getMethod("setCatalogName", String.class).invoke(request, "catalog2");
+    requestClass.getMethod("setPattern", String.class).invoke(request, "s*");
+    Method method = bridge.ifaceClass().getMethod("get_databases_req", requestClass);
+
+    Object response = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("get_databases", invokedMethod.get());
+    Assert.assertEquals("catalog2__s*", capturedPattern.get());
+    List<?> dbs = (List<?>) response.getClass().getMethod("getDatabases").invoke(response);
+    Assert.assertEquals(List.of("catalog2__sales"), databaseNames(dbs));
+  }
+
+  @Test
   public void bridgeMapsHive4OnlyTruncateTableReqToLegacyApacheMethod() throws Exception {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

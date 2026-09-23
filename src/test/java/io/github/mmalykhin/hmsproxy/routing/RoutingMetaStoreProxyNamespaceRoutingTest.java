@@ -1928,6 +1928,62 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void getTableReqWithDefaultCatalogNameAndRemoteDbResolvesWithoutConflict() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        getClass().getClassLoader());
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        org.apache.hadoop.hive.metastore.api.GetTableRequest req =
+            (org.apache.hadoop.hive.metastore.api.GetTableRequest) args[0];
+        capturedDb.set(req.getDbName());
+        capturedTable.set(req.getTblName());
+        Table table = new Table();
+        table.setDbName(req.getDbName());
+        table.setTableName(req.getTblName());
+        return new org.apache.hadoop.hive.metastore.api.GetTableResult(table);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    CatalogBackend backend1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogBackend backend2 = newBackend(config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class)
+        .newInstance("catalog2__sales", "events");
+    requestClass.getMethod("setCatName", String.class).invoke(request, "catalog1");
+
+    Object response = handler.get_table_req(request);
+
+    Assert.assertNotNull(response);
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTable.get());
+  }
+
+  @Test
   public void partitionRequestsFallbackOnLegacyApacheBackend() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
     AtomicReference<String> invokedMethod = new AtomicReference<>();

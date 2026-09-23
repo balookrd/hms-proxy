@@ -53,6 +53,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Поддержка запросов Hive 4 с явным каталогом и устранение конфликтов пространств имен (Hive 4 Catalog Wrappers)**:
+  - **`GetTableRequest` / `GetPartitionRequest` в `FederationLayer`**: устранена ложная ошибка конфликта каталогов (`Catalog 'hive' conflicts with namespace '...' owned by catalog '...'`), возникавшая при обращении клиентов Hive 4 к удаленным федеративным таблицам (например, `bt__sales.orders`), когда клиент HiveMetaStoreClient автоматически подставляет `catName = "hive"` (или значение `defaultCatalog`) во все request-структуры. Теперь дефолтный каталог клиента не конфликтует с квалифицированной схемой удаленного каталога.
+  - **`GetDatabaseObjectsRequest` и `GetDatabaseRequest` в `Hive4FrontendBridge`**: добавлена поддержка явного `catalogName` в request-структурах Hive 4. Для удаленных каталогов имя схемы транслируется с префиксом каталога, а для дефолтного каталога/hive сохраняется корректный fanout.
+  - **Лидирующие wildcard-маски с фреймингом каталогов в `CatalogRouter`**: в `backendDatabasePattern` исправлена утечка фрейминга `@hive#` при запросах с шаблонами, начинающимися с маски (например, `SHOW DATABASES LIKE '*sales*'`, приходящий как `@hive#*sales*`). Теперь паттерн корректно нормализуется до `*sales*` перед отправкой на удаленный метастор.
 - **Трансляция паттернов баз данных при fanout-запросах для удаленных каталогов (get_databases / get_table_meta)**:
   - Устранена проблема, из-за которой запросы `SHOW DATABASES`, `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'` или фильтрация схем в JDBC/Beeline/DBeaver не возвращали схемы удаленных каталогов (в то время как Spark показывал их корректно).
   - Поддержан транспортный фрейминг каталогов Hive 3 (`@<catalog>#`, `@<catalog>#*`, `@<catalog>#!`, `@<catalog>#<pattern>`):

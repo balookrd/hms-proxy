@@ -53,6 +53,10 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Hive 4 catalog request wrappers and namespace conflict resolution (Hive 4 Catalog Wrappers)**:
+  - **`GetTableRequest` / `GetPartitionRequest` in `FederationLayer`**: Fixed false catalog conflict error (`Catalog 'hive' conflicts with namespace '...' owned by catalog '...'`) occurring when Hive 4 clients access remote federated tables (e.g., `bt__sales.orders`), where `HiveMetaStoreClient` automatically injects `catName = "hive"` (or configured `defaultCatalog`) into all request objects. The client default catalog no longer conflicts with a qualified remote catalog schema.
+  - **`GetDatabaseObjectsRequest` and `GetDatabaseRequest` in `Hive4FrontendBridge`**: Added support for explicit `catalogName` in Hive 4 request objects. Requests targeting remote catalogs have their database names prefixed with the catalog name, while default catalog/hive requests preserve proper multi-catalog fanout.
+  - **Leading wildcard patterns with catalog framing in `CatalogRouter`**: Fixed leak of `@hive#` framing in `backendDatabasePattern` when pattern queries begin with a wildcard (e.g., `SHOW DATABASES LIKE '*sales*'`, received as `@hive#*sales*`). The pattern is now properly normalized to `*sales*` before being forwarded to the remote metastore.
 - **Database pattern translation in fanout queries for remote catalogs (get_databases / get_table_meta)**:
   - Fixed an issue where queries like `SHOW DATABASES`, `SHOW DATABASES LIKE 'remote*'`, `SHOW DATABASES LIKE 'remote_%'`, or schema filtering in JDBC/Beeline/DBeaver failed to return remote catalog schemas (while Spark displayed them correctly).
   - Added support for Hive 3 catalog transport framing (`@<catalog>#`, `@<catalog>#*`, `@<catalog>#!`, `@<catalog>#<pattern>`):

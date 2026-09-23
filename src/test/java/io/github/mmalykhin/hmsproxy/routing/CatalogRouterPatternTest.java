@@ -69,6 +69,8 @@ public class CatalogRouterPatternTest {
     Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#catalog2_*"));
     Assert.assertEquals(Optional.of("*"), router.backendDatabasePattern("catalog2", "@hive#catalog2__*"));
     Assert.assertEquals(Optional.of("sales*"), router.backendDatabasePattern("catalog2", "@hive#catalog2__sales*"));
+    Assert.assertEquals(Optional.of("*sales*"), router.backendDatabasePattern("catalog2", "@hive#*sales*"));
+    Assert.assertEquals(Optional.of("%sales%"), router.backendDatabasePattern("catalog2", "@hive#%sales%"));
 
     // Unmatched pattern returns empty for catalog2
     Assert.assertEquals(Optional.empty(), router.backendDatabasePattern("catalog2", "sales*"));

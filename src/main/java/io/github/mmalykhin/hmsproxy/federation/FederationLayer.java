@@ -137,6 +137,9 @@ public final class FederationLayer implements FederationOperations {
         CatalogRouter.ResolvedNamespace resolvedByDb = resolvePattern(dbName).orElse(null);
         if (resolvedByDb != null) {
           if (!resolvedByDb.catalogName().equals(catName)) {
+            if (catName.equals(config.defaultCatalog()) || catName.equalsIgnoreCase("hive")) {
+              return resolvedByDb;
+            }
             throw new MetaException("Request has conflicting catalog and database namespace: catName='"
                 + catName + "', dbName='" + dbName + "'");
           }

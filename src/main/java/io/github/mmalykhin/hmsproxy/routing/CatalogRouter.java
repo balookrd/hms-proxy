@@ -300,7 +300,7 @@ public final class CatalogRouter implements AutoCloseable {
     if (wildcardPos >= 0) {
       String prefixBeforeWildcard = normalized.substring(0, wildcardPos);
       if (prefixBeforeWildcard.isEmpty() || prefixBeforeWildcard.equals(".")) {
-        return Optional.of(dbPattern);
+        return Optional.of(dbPattern != null && dbPattern.startsWith("@") ? normalized : dbPattern);
       }
 
       boolean matchesCatalogPrefix = false;
