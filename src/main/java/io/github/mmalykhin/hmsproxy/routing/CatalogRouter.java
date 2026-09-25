@@ -359,7 +359,7 @@ public final class CatalogRouter implements AutoCloseable {
         } else if (c == '.' && i + 1 < branch.length() && branch.charAt(i + 1) == '*') {
           regex.append(".*");
           i++;
-        } else if ("()[]{}+^$\\.|".indexOf(c) >= 0) {
+        } else if ("()[]{}+^$\\|".indexOf(c) >= 0) {
           regex.append("\\").append(c);
         } else {
           regex.append(c);

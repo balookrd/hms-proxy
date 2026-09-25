@@ -117,6 +117,18 @@ public class CatalogRouterPatternTest {
     // Substring wildcards
     Assert.assertTrue(CatalogRouter.matchesHivePattern("catalog2__sales_daily", "*sales*"));
     Assert.assertFalse(CatalogRouter.matchesHivePattern("catalog2__dwh", "*sales*"));
+
+    // Dot wildcard (HiveServer2 convertPattern replaces '_' with '.' for SQL LIKE / ODBC)
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("edo_reporting_dm", "edo.reporting.dm"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("domain_edo_beedocs_dm", "domain.edo.beedocs.dm"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("tech_dpi_dds", "tech.dpi.dds"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("new_tech_stage_stg", "new.tech.stage.stg"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("bt__crm", "bt..crm"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("bt__crm", "bt..*"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("bt__crm", "bt..%"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("edo_reporting_dm", "edo.*"));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern("edo_reporting_dm", "edo.reporting.*"));
+    Assert.assertFalse(CatalogRouter.matchesHivePattern("other_schema", "edo.reporting.dm"));
   }
 
   @Test

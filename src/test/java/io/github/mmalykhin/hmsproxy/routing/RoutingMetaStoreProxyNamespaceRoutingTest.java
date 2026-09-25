@@ -874,6 +874,13 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals(2, resultCatalog2.size());
     Assert.assertTrue(resultCatalog2.contains("catalog2__analytics"));
     Assert.assertTrue(resultCatalog2.contains("catalog2__crm"));
+
+    // Test 3: HiveServer2 sending "@hive#catalog2..*" (ODBC converted pattern)
+    @SuppressWarnings("unchecked")
+    List<String> resultCatalog2Dots = (List<String>) handler.invoke(null, method, new Object[] {"@hive#catalog2..*"});
+    Assert.assertEquals(2, resultCatalog2Dots.size());
+    Assert.assertTrue(resultCatalog2Dots.contains("catalog2__analytics"));
+    Assert.assertTrue(resultCatalog2Dots.contains("catalog2__crm"));
   }
 
   @Test
@@ -943,6 +950,13 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
 
     Assert.assertEquals(1, resultCatalog2.size());
     Assert.assertEquals("catalog2__analytics", resultCatalog2.get(0).getDbName());
+
+    @SuppressWarnings("unchecked")
+    List<TableMeta> resultCatalog2Dots = (List<TableMeta>) handler.invoke(
+        null, method, new Object[] {"@hive#catalog2..*", "*", List.of("MANAGED_TABLE")});
+
+    Assert.assertEquals(1, resultCatalog2Dots.size());
+    Assert.assertEquals("catalog2__analytics", resultCatalog2Dots.get(0).getDbName());
   }
 
   @Test

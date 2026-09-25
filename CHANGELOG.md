@@ -53,6 +53,10 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Исправление Hive pattern matching в `CatalogRouter` для ODBC/JDBC-клиентов (Qlik, Simba ODBC)**:
+  - Исправлена ошибка в `CatalogRouter.compileHivePattern`, из-за которой ODBC-клиенты (в частности Qlik через Simba ODBC) не видели список схем и таблиц, содержащих подчёркивания `_` в именах (например, `edo_reporting_dm`, `domain_edo_beedocs_dm`, `bt__crm`).
+  - При обработке SQL LIKE запросов драйверов HiveServer2 (`MetadataOperation.convertPattern`) преобразует подчёркивание `_` (wildcard одного символа в SQL) в точку `.` (wildcard одного символа в regex). Ранее `compileHivePattern` экранировал символ `.` как литеральную точку `\.`, что приводило к удалению схем и таблиц на этапе пост-фильтрации `matchesHivePattern`.
+  - Точка `.` в `compileHivePattern` теперь сохраняется как регулярный wildcard любого символа `.` (в точности как в нативном Hive Metastore `ObjectStore`), обеспечивая корректное сопоставление dot-separated паттернов с именами схем и таблиц.
 - **Поддержка запросов Hive 4 с явным каталогом и устранение конфликтов пространств имен (Hive 4 Catalog Wrappers)**:
   - **`GetTableRequest` / `GetPartitionRequest` в `FederationLayer`**: устранена ложная ошибка конфликта каталогов (`Catalog 'hive' conflicts with namespace '...' owned by catalog '...'`), возникавшая при обращении клиентов Hive 4 к удаленным федеративным таблицам (например, `bt__sales.orders`), когда клиент HiveMetaStoreClient автоматически подставляет `catName = "hive"` (или значение `defaultCatalog`) во все request-структуры. Теперь дефолтный каталог клиента не конфликтует с квалифицированной схемой удаленного каталога.
   - **`GetDatabaseObjectsRequest` и `GetDatabaseRequest` в `Hive4FrontendBridge`**: добавлена поддержка явного `catalogName` в request-структурах Hive 4. Для удаленных каталогов имя схемы транслируется с префиксом каталога, а для дефолтного каталога/hive сохраняется корректный fanout.
