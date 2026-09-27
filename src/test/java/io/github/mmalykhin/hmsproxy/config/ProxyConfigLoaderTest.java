@@ -2012,5 +2012,104 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void rejectsUnrecognizedPropertyWithSuggestion() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.ports=9083
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for server.ports");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("Unrecognized configuration property"));
+        Assert.assertTrue(e.getMessage().contains("'server.ports'"));
+        Assert.assertTrue(e.getMessage().contains("did you mean 'server.port'?"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsUnrecognizedCatalogPropertyWithSuggestion() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.access_mode=READ_ONLY
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for catalog.catalog1.access_mode");
+      } catch (IllegalArgumentException e) {
+        Assert.assertTrue(e.getMessage().contains("Unrecognized configuration property"));
+        Assert.assertTrue(e.getMessage().contains("'catalog.catalog1.access_mode'"));
+        Assert.assertTrue(e.getMessage().contains("did you mean 'catalog.catalog1.access-mode'?"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void allowsUnrecognizedPropertyWhenStrictValidationDisabled() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          config.strict-validation=false
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.ports=9083
+          foobar.unknown=test
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertNotNull(config);
+      Assert.assertEquals(9083, config.server().port());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void allowsOpenEndedAndDynamicPrefixes() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          backend.conf.any.custom.hadoop.key=123
+          backend.conf.dfs.client.use.datanode.hostname=true
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.conf.custom.catalog.key=456
+          security.front-door-conf.custom.spnego=true
+          catalog.catalog1.expose-table-patterns.db1=t1,t2
+          rate-limit.source-cidr.group1.cidrs=10.0.0.0/8
+          rate-limit.source-cidr.group1.requests-per-second=10
+          rate-limit.source-cidr.group1.burst=20
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertNotNull(config);
+      Assert.assertEquals("123", config.backend().hiveConf().get("any.custom.hadoop.key"));
+      Assert.assertEquals("456", config.catalogs().get("catalog1").hiveConf().get("custom.catalog.key"));
+      Assert.assertEquals("true", config.security().frontDoorConf().get("custom.spnego"));
+      Assert.assertTrue(config.catalogs().get("catalog1").exposeTablePatterns().containsKey("db1"));
+      Assert.assertTrue(config.rateLimit().sourceCidrs().containsKey("group1"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }
 

@@ -38,7 +38,14 @@ import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfigParser;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfigParser;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public final class ProxyConfigLoader {
+  private static final Logger LOG = LoggerFactory.getLogger(ProxyConfigLoader.class);
   private ProxyConfigLoader() {
   }
 
@@ -110,6 +117,9 @@ public final class ProxyConfigLoader {
     List<AdditionalFrontendConfig> additionalFrontends =
         AdditionalFrontendConfigParser.parse(reader, server, management);
 
+    boolean strictValidation = reader.getBoolean("config.strict-validation", true);
+    validateUnconsumedProperties(reader, strictValidation, catalogs.keySet(), additionalFrontends);
+
     return ProxyConfig.builder()
         .server(server)
         .security(security)
@@ -138,4 +148,285 @@ public final class ProxyConfigLoader {
     }
     return sep != null ? sep : ".";
   }
+
+  private static void validateUnconsumedProperties(
+      PropertyReader reader,
+      boolean strictValidation,
+      Set<String> catalogNames,
+      List<AdditionalFrontendConfig> additionalFrontends
+  ) {
+    Set<String> unconsumed = reader.unconsumedKeys();
+    if (unconsumed.isEmpty()) {
+      return;
+    }
+    Set<String> knownCandidates = buildKnownCandidates(catalogNames, additionalFrontends);
+    List<String> details = new ArrayList<>();
+    for (String key : unconsumed) {
+      String suggestion = findBestSuggestion(key, knownCandidates);
+      if (suggestion != null) {
+        details.add("'" + key + "' (did you mean '" + suggestion + "'?)");
+      } else {
+        details.add("'" + key + "'");
+      }
+    }
+    String message;
+    if (details.size() == 1) {
+      message = "Unrecognized configuration property: " + details.get(0);
+    } else {
+      message = "Unrecognized configuration properties (" + details.size() + "):\n  - "
+          + String.join("\n  - ", details);
+    }
+    if (strictValidation) {
+      throw new IllegalArgumentException(message);
+    } else {
+      LOG.warn("{}", message);
+    }
+  }
+
+  static String findBestSuggestion(String key, Set<String> candidates) {
+    String best = null;
+    int minDistance = Integer.MAX_VALUE;
+    int maxAllowedDistance = Math.max(2, key.length() / 3);
+    for (String candidate : candidates) {
+      int dist = levenshteinDistance(key, candidate);
+      if (dist <= maxAllowedDistance && dist < minDistance) {
+        minDistance = dist;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  static int levenshteinDistance(String a, String b) {
+    if (a.equals(b)) {
+      return 0;
+    }
+    int lenA = a.length();
+    int lenB = b.length();
+    if (lenA == 0) {
+      return lenB;
+    }
+    if (lenB == 0) {
+      return lenA;
+    }
+
+    int[] prev = new int[lenB + 1];
+    int[] curr = new int[lenB + 1];
+    for (int j = 0; j <= lenB; j++) {
+      prev[j] = j;
+    }
+    for (int i = 1; i <= lenA; i++) {
+      curr[0] = i;
+      char charA = a.charAt(i - 1);
+      for (int j = 1; j <= lenB; j++) {
+        int cost = (charA == b.charAt(j - 1)) ? 0 : 1;
+        curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+      }
+      System.arraycopy(curr, 0, prev, 0, lenB + 1);
+    }
+    return prev[lenB];
+  }
+
+  private static Set<String> buildKnownCandidates(
+      Set<String> catalogNames,
+      List<AdditionalFrontendConfig> additionalFrontends
+  ) {
+    Set<String> candidates = new LinkedHashSet<>(STATIC_KNOWN_KEYS);
+    for (String cat : catalogNames) {
+      for (String suffix : PER_CATALOG_KNOWN_SUFFIXES) {
+        candidates.add("catalog." + cat + "." + suffix);
+      }
+    }
+    for (AdditionalFrontendConfig extra : additionalFrontends) {
+      for (String suffix : PER_FRONTEND_KNOWN_SUFFIXES) {
+        candidates.add("additional-frontends." + extra.name() + "." + suffix);
+      }
+    }
+    return candidates;
+  }
+
+  private static final Set<String> STATIC_KNOWN_KEYS = Set.of(
+      "config.strict-validation",
+      "server.name",
+      "server.bind-host",
+      "server.port",
+      "server.min-worker-threads",
+      "server.max-worker-threads",
+      "server.client-socket-timeout-ms",
+      "server.tcp-keepalive",
+      "server.tcp-keepalive-idle-seconds",
+      "server.tcp-keepalive-interval-seconds",
+      "server.tcp-keepalive-count",
+      "server.shutdown-timeout-seconds",
+      "catalogs",
+      "routing.default-catalog",
+      "routing.catalog-db-separator",
+      "compatibility.frontend-profile",
+      "compatibility.frontend-standalone-metastore-jar",
+      "compatibility.hortonworks-standalone-metastore-jar",
+      "compatibility.backend-standalone-metastore-jar",
+      "federation.preserve-backend-catalog-name",
+      "federation.view-text-rewrite.mode",
+      "federation.view-text-rewrite.preserve-original-text",
+      "federation.external-table-location-rewrite.mode",
+      "federation.external-table-location-rewrite.source-default-fs",
+      "federation.external-table-drop-purge.mode",
+      "guard.transactional-ddl.mode",
+      "guard.transactional-ddl.client-addresses",
+      "management.enabled",
+      "management.bind-host",
+      "management.port",
+      "management.threads",
+      "management.readiness-cache-ms",
+      "management.readyz.require-all-catalogs",
+      "rest-catalog.enabled",
+      "rest-catalog.bind-host",
+      "rest-catalog.port",
+      "rest-catalog.min-worker-threads",
+      "rest-catalog.max-worker-threads",
+      "rest-catalog.kerberos.principal",
+      "rest-catalog.kerberos.keytab",
+      "rest-catalog.purge.mode",
+      "rest-catalog.purge.allowed-prefixes",
+      "rest-catalog.hive-engine-descriptor",
+      "synthetic-read-lock.store.mode",
+      "synthetic-read-lock.store.zookeeper.connect-string",
+      "synthetic-read-lock.store.zookeeper.znode",
+      "synthetic-read-lock.store.zookeeper.connection-timeout-ms",
+      "synthetic-read-lock.store.zookeeper.session-timeout-ms",
+      "synthetic-read-lock.store.zookeeper.base-sleep-ms",
+      "synthetic-read-lock.store.zookeeper.max-retries",
+      "rate-limit.principal.requests-per-second",
+      "rate-limit.principal.burst",
+      "rate-limit.source.requests-per-second",
+      "rate-limit.source.burst",
+      "routing.iceberg-pointer-guard.enabled",
+      "routing.iceberg-pointer-guard.table-cache-ttl-ms",
+      "routing.iceberg-pointer-guard.table-cache-max-entries",
+      "routing.iceberg-pointer-guard.lock-enabled",
+      "routing.iceberg-pointer-guard.lock-acquire-timeout-ms",
+      "routing.iceberg-pointer-guard.hive-engine-descriptor",
+      "routing.backend-state-polling.enabled",
+      "routing.backend-state-polling.interval-ms",
+      "routing.backend-state-polling.probe-timeout-ms",
+      "routing.backend-state-polling.max-parallelism",
+      "routing.adaptive-timeout.enabled",
+      "routing.adaptive-timeout.initial-ms",
+      "routing.adaptive-timeout.min-ms",
+      "routing.adaptive-timeout.max-ms",
+      "routing.adaptive-timeout.multiplier",
+      "routing.adaptive-timeout.alpha",
+      "routing.adaptive-timeout.reconnect-cooldown-ms",
+      "routing.circuit-breaker.enabled",
+      "routing.circuit-breaker.failure-threshold",
+      "routing.circuit-breaker.open-state-ms",
+      "routing.hedged-read.enabled",
+      "routing.hedged-read.max-parallelism",
+      "routing.hedged-read.fanout-timeout-ms",
+      "routing.degraded-routing-policy",
+      "routing.database-cache.background-refresh.enabled",
+      "routing.database-cache.background-refresh.interval-ms",
+      "routing.database-cache.background-refresh.activity-window-ms",
+      "routing.database-list-cache.ttl-ms",
+      "routing.database-list-cache.max-entries",
+      "routing.database-list-cache.shared-across-users",
+      "routing.database-metadata-cache.ttl-ms",
+      "routing.database-metadata-cache.max-entries",
+      "routing.database-metadata-cache.shared-across-users",
+      "routing.table-metadata-cache.ttl-ms",
+      "routing.table-metadata-cache.max-entries",
+      "routing.table-metadata-cache.shared-across-users",
+      "routing.table-metadata-cache.enabled",
+      "routing.cache.table-metadata.ttl-ms",
+      "routing.cache.table-metadata.max-entries",
+      "routing.cache.table-metadata.shared-across-users",
+      "routing.cache.table-metadata.enabled",
+      "routing.partition-metadata-cache.ttl-ms",
+      "routing.partition-metadata-cache.max-entries",
+      "routing.partition-metadata-cache.shared-across-users",
+      "routing.partition-metadata-cache.enabled",
+      "routing.cache.partition-metadata.ttl-ms",
+      "routing.cache.partition-metadata.max-entries",
+      "routing.cache.partition-metadata.shared-across-users",
+      "routing.cache.partition-metadata.enabled",
+      "routing.cache.serve-stale-on-error",
+      "routing.cache.stale-grace-period-ms",
+      "routing.config-value-cache.ttl-ms",
+      "routing.config-value-cache.max-entries",
+      "routing.refresh-privileges.synthetic-success",
+      "routing.refresh-privileges.mode",
+      "security.mode",
+      "security.server-principal",
+      "security.client-principal",
+      "security.keytab",
+      "security.client-keytab",
+      "security.impersonation-enabled",
+      "ranger.enabled",
+      "ranger.policy.rest.url",
+      "ranger.policy-rest-url",
+      "ranger.service-name",
+      "ranger.service-type",
+      "ranger.app-id",
+      "ranger.policy.cache.dir",
+      "ranger.policy.poll-interval-ms",
+      "ranger.policy.connection-timeout-ms",
+      "ranger.policy.read-timeout-ms",
+      "ranger.ssl.truststore.file",
+      "ranger.ssl.truststore.password",
+      "ranger.config-dir",
+      "ranger.audit.enabled",
+      "additional-frontends"
+  );
+
+  private static final Set<String> PER_CATALOG_KNOWN_SUFFIXES = Set.of(
+      "description",
+      "location-uri",
+      "impersonation-enabled",
+      "access-mode",
+      "write-db-whitelist",
+      "expose-mode",
+      "expose-db-patterns",
+      "runtime-profile",
+      "backend-standalone-metastore-jar",
+      "latency-budget-ms",
+      "impersonation-max-clients",
+      "impersonation-client-idle-ttl-ms",
+      "shared-session-pool-size",
+      "impersonation-pool-max-size",
+      "impersonation-session-idle-ttl-ms",
+      "startup-mode",
+      "required-for-readiness",
+      "max-concurrent-calls",
+      "concurrency-timeout-ms",
+      "fallback-catalog",
+      "fallback-on-outage",
+      "ranger.enabled",
+      "ranger.policy.rest.url",
+      "ranger.policy-rest-url",
+      "ranger.service-name",
+      "ranger.service-type",
+      "ranger.app-id",
+      "ranger.policy.cache.dir",
+      "ranger.policy.poll-interval-ms",
+      "ranger.policy.connection-timeout-ms",
+      "ranger.policy.read-timeout-ms",
+      "ranger.ssl.truststore.file",
+      "ranger.ssl.truststore.password",
+      "ranger.config-dir",
+      "ranger.audit.enabled"
+  );
+
+  private static final Set<String> PER_FRONTEND_KNOWN_SUFFIXES = Set.of(
+      "port",
+      "bind-host",
+      "min-worker-threads",
+      "max-worker-threads",
+      "frontend-profile",
+      "standalone-metastore-jar",
+      "client-socket-timeout-ms",
+      "tcp-keepalive",
+      "tcp-keepalive-idle-seconds",
+      "tcp-keepalive-interval-seconds",
+      "tcp-keepalive-count"
+  );
 }

@@ -58,24 +58,56 @@ public final class LatencyRoutingConfigParser {
         dbMetaShared,
         metaRefresh);
 
+    boolean tableCacheEnabled = reader.getBoolean(
+        "routing.table-metadata-cache.enabled",
+        reader.getBoolean("routing.cache.table-metadata.enabled", true));
     long tableMetaTtlMs = reader.getNonNegativeLong(
         "routing.table-metadata-cache.ttl-ms",
-        reader.getNonNegativeLong("routing.table-metadata-cache.ttl-seconds", TableMetadataCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
+        reader.getNonNegativeLong(
+            "routing.cache.table-metadata.ttl-ms",
+            reader.getNonNegativeLong(
+                "routing.table-metadata-cache.ttl-seconds",
+                reader.getNonNegativeLong("routing.cache.table-metadata.ttl-seconds", TableMetadataCacheConfig.DEFAULT_TTL_MS / 1000L)
+            ) * 1000L
+        ));
+    if (!tableCacheEnabled) {
+      tableMetaTtlMs = 0L;
+    }
+    int tableMetaMaxEntries = reader.getPositiveInt(
+        "routing.table-metadata-cache.max-entries",
+        reader.getPositiveInt("routing.cache.table-metadata.max-entries", TableMetadataCacheConfig.DEFAULT_MAX_ENTRIES));
     boolean tableMetaShared = reader.getBoolean(
-        "routing.table-metadata-cache.shared-across-users", TableMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS);
+        "routing.table-metadata-cache.shared-across-users",
+        reader.getBoolean("routing.cache.table-metadata.shared-across-users", TableMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS));
     TableMetadataCacheConfig tableMetadataCache = new TableMetadataCacheConfig(
         tableMetaTtlMs,
-        reader.getPositiveInt("routing.table-metadata-cache.max-entries", TableMetadataCacheConfig.DEFAULT_MAX_ENTRIES),
+        tableMetaMaxEntries,
         tableMetaShared);
 
+    boolean partitionCacheEnabled = reader.getBoolean(
+        "routing.partition-metadata-cache.enabled",
+        reader.getBoolean("routing.cache.partition-metadata.enabled", true));
     long partitionMetaTtlMs = reader.getNonNegativeLong(
         "routing.partition-metadata-cache.ttl-ms",
-        reader.getNonNegativeLong("routing.partition-metadata-cache.ttl-seconds", PartitionMetadataCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
+        reader.getNonNegativeLong(
+            "routing.cache.partition-metadata.ttl-ms",
+            reader.getNonNegativeLong(
+                "routing.partition-metadata-cache.ttl-seconds",
+                reader.getNonNegativeLong("routing.cache.partition-metadata.ttl-seconds", PartitionMetadataCacheConfig.DEFAULT_TTL_MS / 1000L)
+            ) * 1000L
+        ));
+    if (!partitionCacheEnabled) {
+      partitionMetaTtlMs = 0L;
+    }
+    int partitionMetaMaxEntries = reader.getPositiveInt(
+        "routing.partition-metadata-cache.max-entries",
+        reader.getPositiveInt("routing.cache.partition-metadata.max-entries", PartitionMetadataCacheConfig.DEFAULT_MAX_ENTRIES));
     boolean partitionMetaShared = reader.getBoolean(
-        "routing.partition-metadata-cache.shared-across-users", PartitionMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS);
+        "routing.partition-metadata-cache.shared-across-users",
+        reader.getBoolean("routing.cache.partition-metadata.shared-across-users", PartitionMetadataCacheConfig.DEFAULT_SHARED_ACROSS_USERS));
     PartitionMetadataCacheConfig partitionMetadataCache = new PartitionMetadataCacheConfig(
         partitionMetaTtlMs,
-        reader.getPositiveInt("routing.partition-metadata-cache.max-entries", PartitionMetadataCacheConfig.DEFAULT_MAX_ENTRIES),
+        partitionMetaMaxEntries,
         partitionMetaShared);
 
     boolean cacheServeStaleOnError = reader.getBoolean(

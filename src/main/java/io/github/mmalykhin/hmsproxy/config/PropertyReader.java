@@ -7,24 +7,59 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class PropertyReader {
   private final Properties properties;
+  private final Set<String> consumedKeys = new LinkedHashSet<>();
 
   public PropertyReader(Properties properties) {
     this.properties = properties;
   }
 
+  public void markConsumed(String key) {
+    if (key != null && properties.containsKey(key)) {
+      consumedKeys.add(key);
+    }
+  }
+
+  public void markPrefixConsumed(String prefix) {
+    if (prefix != null) {
+      for (String name : properties.stringPropertyNames()) {
+        if (name.startsWith(prefix)) {
+          consumedKeys.add(name);
+        }
+      }
+    }
+  }
+
+  public Set<String> unconsumedKeys() {
+    Set<String> unconsumed = new LinkedHashSet<>(properties.stringPropertyNames());
+    unconsumed.removeAll(consumedKeys);
+    return unconsumed;
+  }
+
+  public Set<String> consumedKeys() {
+    return Set.copyOf(consumedKeys);
+  }
+
+  public Properties rawProperties() {
+    return properties;
+  }
+
   public String get(String key, String defaultValue) {
+    markConsumed(key);
     return Objects.requireNonNullElse(trimToNull(properties.getProperty(key)), defaultValue);
   }
 
   public String getOrNull(String key) {
+    markConsumed(key);
     return trimToNull(properties.getProperty(key));
   }
 
   public String require(String key) {
+    markConsumed(key);
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       throw new IllegalArgumentException("Missing required property: " + key);
@@ -33,6 +68,7 @@ public final class PropertyReader {
   }
 
   public boolean has(String key) {
+    markConsumed(key);
     return properties.containsKey(key);
   }
 
@@ -46,6 +82,7 @@ public final class PropertyReader {
    * {@code false}, silently flipping security- and routing-relevant switches.
    */
   public boolean getBoolean(String key, boolean defaultValue) {
+    markConsumed(key);
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -61,6 +98,7 @@ public final class PropertyReader {
   }
 
   public int getInt(String key, int defaultValue) {
+    markConsumed(key);
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -89,6 +127,7 @@ public final class PropertyReader {
   }
 
   public long getLong(String key, long defaultValue) {
+    markConsumed(key);
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -117,6 +156,7 @@ public final class PropertyReader {
   }
 
   public double getDouble(String key, double defaultValue) {
+    markConsumed(key);
     String value = trimToNull(properties.getProperty(key));
     if (value == null) {
       return defaultValue;
@@ -147,6 +187,7 @@ public final class PropertyReader {
 
   /** Returns all property-name suffixes under {@code prefix}, sorted, mapped to their raw values. */
   public Map<String, String> collectPrefixed(String prefix) {
+    markPrefixConsumed(prefix);
     return properties.stringPropertyNames().stream()
         .filter(name -> name.startsWith(prefix))
         .sorted()
@@ -178,6 +219,7 @@ public final class PropertyReader {
   }
 
   public String rawValue(String key) {
+    markConsumed(key);
     return properties.getProperty(key);
   }
 

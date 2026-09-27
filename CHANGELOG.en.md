@@ -10,6 +10,16 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Unknown configuration property validation and structured startup logging**:
+  - **Unknown property detection and fail-fast with typo suggestions**:
+    - Introduced strict property access tracking in `PropertyReader` and unconsumed property key detection in `ProxyConfigLoader`.
+    - Boot-time typo detection powered by Levenshtein distance: misspelled properties (e.g. `server.ports=9083` or `catalog.main.access_mode=READ_ONLY`) fail fast at startup with helpful suggestions (*"Unrecognized configuration property: 'server.ports' (did you mean 'server.port'?)"*), preventing silent fallback to defaults.
+    - Added `config.strict-validation` (defaults to `true`). When set to `false`, unrecognized properties emit a `WARN` log instead of failing proxy startup.
+    - Full support for open-ended and dynamic Hadoop/Hive prefixes (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`).
+    - Added compatibility aliases `routing.cache.table-metadata.*` and `routing.cache.partition-metadata.*` alongside `routing.table-metadata-cache.*` and `routing.partition-metadata-cache.*`.
+  - **Structured effective configuration logging (`ProxyConfigLogger`)**:
+    - Emits a clean, tree-structured summary of the effective runtime configuration at `INFO` level during startup: primary and additional listeners, security modes, thread pools, socket timeouts, TCP keepalive, per-catalog settings (access modes, exposure rules, session pools, quotas, fallback), REST catalog, management HTTP, resilience sub-systems (caches, adaptive timeouts, circuit breaker, background refresh), Rate Limiting, Ranger, and DDL guards.
+    - Automatic secret masking: values for sensitive configuration keys containing `password`, `secret`, `credential`, `token`, `private`, or `keytab-password` are rendered as `******` to prevent leakage into log streams.
 - **Metastore utility and configuration RPC localization (Group 1: Introspection & Validation)**:
   - **`getMetaConf(key)` and `setMetaConf(key, value)`**:
     - Handled locally in the proxy layer via `CompatibilityHandler` and `MetastoreCompatibility`.

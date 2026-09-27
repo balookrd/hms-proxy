@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.app;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
+import io.github.mmalykhin.hmsproxy.config.ProxyConfigLogger;
 import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
@@ -43,7 +44,9 @@ public final class HmsProxyApplication {
     // that unwinds on this thread, no matter where startup fails.
     CountDownLatch teardownComplete = new CountDownLatch(1);
     try {
-      ProxyConfig config = ProxyConfigLoader.load(Path.of(args[0]));
+      Path configPath = Path.of(args[0]);
+      ProxyConfig config = ProxyConfigLoader.load(configPath);
+      ProxyConfigLogger.logConfiguration(config, configPath);
       ProxyObservability observability = new ProxyObservability(config);
       FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
       try (frontDoorSecurity;

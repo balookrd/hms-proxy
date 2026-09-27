@@ -10,6 +10,16 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Валидация неизвестных параметров конфигурации и структурированное логирование при старте**:
+  - **Обнаружение неизвестных свойств и опечаток (Unknown Configuration Properties Detection & Fail-Fast)**:
+    - Реализован строгий трекинг обращений к свойствам в `PropertyReader` и выявление нераспознанных или ошибочных ключей в `ProxyConfigLoader`.
+    - При наличии опечаток (например, `server.ports=9083` или `catalog.main.access_mode=READ_ONLY`) прокси выдает информативное сообщение с подсказкой наиболее вероятного правильного ключа на базе расстояния Левенштейна (*«Unrecognized configuration property: 'server.ports' (did you mean 'server.port'?)»*) и завершается с ошибкой на старте, предотвращая молчаливую деградацию настроек в значения по умолчанию.
+    - Добавлен параметр `config.strict-validation` (по умолчанию `true`). При установке `false` прокси не падает на старте, а выводит предупреждение `WARN` со списком неизвестных ключей.
+    - Обеспечена поддержка динамических и открытых префиксов Hadoop/Hive (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`).
+    - Поддержаны алиасы `routing.cache.table-metadata.*` и `routing.cache.partition-metadata.*` наряду с `routing.table-metadata-cache.*` и `routing.partition-metadata-cache.*`.
+  - **Структурированный вывод эффективной конфигурации (`ProxyConfigLogger`)**:
+    - На уровне `INFO` при запуске формируется полный, древовидный отчет обо всех примененных настройках: основные и дополнительные слушатели, параметры безопасности, пулы потоков, таймауты сокетов и TCP keepalive, конфигурация каждого каталога (режимы доступа, фильтры баз/таблиц, пулы сессий, квоты, fallback), REST-каталог, HTTP management, resilience-подсистемы (кэши, adaptive timeouts, circuit breaker, background refresh), Rate Limiting, Ranger и DDL guard.
+    - Безопасное маскирование чувствительных данных: значения параметров, содержащих `password`, `secret`, `credential`, `token`, `private` или `keytab-password` (включая HiveConf и front-door-conf), автоматически заменяются на `******`.
 - **Локализация служебных и конфигурационных RPC метастора (Группа 1: Introspection & Validation)**:
   - **`getMetaConf(key)` и `setMetaConf(key, value)`**:
     - Обрабатываются локально на уровне прокси в `CompatibilityHandler` и `MetastoreCompatibility`.

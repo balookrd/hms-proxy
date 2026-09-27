@@ -323,6 +323,10 @@ The proxy validates its properties file at startup and refuses to start on a val
 interpret. A misconfigured proxy that runs and quietly does the opposite of what the file says is
 worse than one that does not start.
 
+**Unknown properties and typos**: the proxy tracks all accessed properties and refuses to boot if unrecognized, deprecated, or misspelled keys are detected in the configuration file (e.g. `server.ports` instead of `server.port` or `catalog.main.access_mode`). Startup fails fast with typo suggestions based on Levenshtein distance (*"did you mean 'server.port'?"*). Strict validation can be softened to a `WARN` log via `config.strict-validation=false` (defaults to `true`). Dynamic open-ended Hadoop/Hive namespaces (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`) remain fully allowed.
+
+**Effective configuration logging**: immediately after loading, the proxy emits a structured tree summary of all effective settings at `INFO` level (primary and additional listeners, security, thread pools, socket timeouts, per-catalog options, resilience parameters, rate limiting, and guards). Sensitive parameters (passwords, S3 secret keys, tokens, and credentials in `HiveConf` or `front-door-conf`) are automatically masked as `******`.
+
 **Booleans** accept only `true` and `false`, in any case. `yes`, `on`, `1` and typos such as `ture`
 are startup errors naming the key and the value. Previously they were read as `false`, which
 silently disabled impersonation, the management listener, or hedged reads.
