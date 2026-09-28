@@ -63,6 +63,11 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Нормализация dot-separated префиксов и имен схем в `CatalogRouter` для ODBC-клиентов (Qlik, Simba/Cloudera ODBC)**:
+  - Исправлена маршрутизация запросов к удаленным каталогам при обращении ODBC-клиентов (в частности Qlik через Cloudera/Simba ODBC), когда HiveServer2 преобразует символы подчёркивания `_` в шаблонах и квалификаторах в точки `.` (`MetadataOperation.convertPattern`), приводя к именам вида `bt..acp.clc` или шаблонам `@hive#bt..acp.clc`.
+  - В `CatalogRouter.normalizeExternalDbName` добавлена нормализация префиксов каталогов, разделённых двойной точкой (`<catalog>..`), в канонический вид (`<catalog>__`).
+  - В `CatalogRouter.resolveDatabase` и `resolvePattern` добавлено распознавание dot-separated префиксов каталогов и обратное преобразование точек в подчёркивания во внутреннем имени базы данных бэкенда (`acp.clc` -> `acp_clc`) для точных имен (не содержащих подстановочных символов `*` и `%`).
+  - Это предотвращает ошибочную маршрутизацию таких запросов в `defaultCatalog` (где база отсутствует) и устраняет ошибки `Database does not exist` при выполнении запросов метаданных.
 - **Исправление Hive pattern matching в `CatalogRouter` для ODBC/JDBC-клиентов (Qlik, Simba ODBC)**:
   - Исправлена ошибка в `CatalogRouter.compileHivePattern`, из-за которой ODBC-клиенты (в частности Qlik через Simba ODBC) не видели список схем и таблиц, содержащих подчёркивания `_` в именах (например, `edo_reporting_dm`, `domain_edo_beedocs_dm`, `bt__crm`).
   - При обработке SQL LIKE запросов драйверов HiveServer2 (`MetadataOperation.convertPattern`) преобразует подчёркивание `_` (wildcard одного символа в SQL) в точку `.` (wildcard одного символа в regex). Ранее `compileHivePattern` экранировал символ `.` как литеральную точку `\.`, что приводило к удалению схем и таблиц на этапе пост-фильтрации `matchesHivePattern`.

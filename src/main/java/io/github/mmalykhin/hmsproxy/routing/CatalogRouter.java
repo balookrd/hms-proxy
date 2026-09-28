@@ -104,10 +104,12 @@ public final class CatalogRouter implements AutoCloseable {
 
     String prefixedCatalog = prefixedCatalog(normalizedDbName);
     if (prefixedCatalog != null) {
-      return resolveCatalog(
-          prefixedCatalog,
-          normalizedDbName.substring(prefixedCatalog.length() + config.catalogDbSeparator().length()),
-          normalizedDbName);
+      String rawBackendDb = normalizedDbName.substring(prefixedCatalog.length() + config.catalogDbSeparator().length());
+      String backendDb = rawBackendDb.contains(".") && !rawBackendDb.contains("*") && !rawBackendDb.contains("%")
+          ? rawBackendDb.replace('.', '_')
+          : rawBackendDb;
+      String canonicalExternalDb = prefixedCatalog + config.catalogDbSeparator() + backendDb;
+      return resolveCatalog(prefixedCatalog, backendDb, canonicalExternalDb);
     }
 
     return resolveCatalog(config.defaultCatalog(), normalizedDbName);
@@ -121,8 +123,11 @@ public final class CatalogRouter implements AutoCloseable {
     for (CatalogPrefix candidate : patternPrefixes) {
       if (normalizedDbPattern.startsWith(candidate.prefix())) {
         String remainder = normalizedDbPattern.substring(candidate.prefix().length());
-        String externalDbName = candidate.catalogName() + config.catalogDbSeparator() + remainder;
-        return Optional.of(resolveCatalog(candidate.catalogName(), remainder, externalDbName));
+        String backendDb = remainder.contains(".") && !remainder.contains("*") && !remainder.contains("%")
+            ? remainder.replace('.', '_')
+            : remainder;
+        String externalDbName = candidate.catalogName() + config.catalogDbSeparator() + backendDb;
+        return Optional.of(resolveCatalog(candidate.catalogName(), backendDb, externalDbName));
       }
     }
     return Optional.empty();
@@ -171,15 +176,21 @@ public final class CatalogRouter implements AutoCloseable {
       }
       return "";
     }
-    if (looksLikeExternalDbName(dbName)) {
-      return dbName;
+    for (CatalogPrefix candidate : patternPrefixes) {
+      if (dbName.startsWith(candidate.prefix())) {
+        String canonicalPrefix = candidate.catalogName() + config.catalogDbSeparator();
+        if (!candidate.prefix().equals(canonicalPrefix)) {
+          return canonicalPrefix + dbName.substring(candidate.prefix().length());
+        }
+        return dbName;
+      }
     }
 
     int dot = dbName.indexOf('.');
     if (dot > 0) {
       String remainder = dbName.substring(dot + 1);
       if (looksLikeExternalDbName(remainder)) {
-        return remainder;
+        return normalizeExternalDbName(remainder);
       }
       String prefixedCatalog = dbName.substring(0, dot);
       if (prefixedCatalog.equalsIgnoreCase("hive") || prefixedCatalog.equalsIgnoreCase("spark_catalog")) {

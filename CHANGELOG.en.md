@@ -63,6 +63,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **ODBC dot-separated database prefix and name normalization in `CatalogRouter` (Qlik, Simba/Cloudera ODBC)**:
+  - Fixed query routing to remote catalogs when ODBC clients (notably Qlik via Cloudera/Simba ODBC) query metadata where HiveServer2 replaces underscores `_` in patterns and qualifiers with dots `.` (`MetadataOperation.convertPattern`), resulting in names like `bt..acp.clc` or patterns like `@hive#bt..acp.clc`.
+  - Added catalog double-dot prefix recognition (`<catalog>..`) in `CatalogRouter.normalizeExternalDbName`, canonicalizing it to `<catalog>__`.
+  - Updated `CatalogRouter.resolveDatabase` and `resolvePattern` to handle dot-separated catalog prefixes and convert dots back to underscores in the internal backend database name (`acp.clc` -> `acp_clc`) for exact names (containing no `*` or `%` wildcards).
+  - This prevents misrouting such requests to `defaultCatalog` (where the database does not exist) and eliminates `Database does not exist` errors during metadata discovery.
 - **Hive 4 catalog request wrappers and namespace conflict resolution (Hive 4 Catalog Wrappers)**:
   - **`GetTableRequest` / `GetPartitionRequest` in `FederationLayer`**: Fixed false catalog conflict error (`Catalog 'hive' conflicts with namespace '...' owned by catalog '...'`) occurring when Hive 4 clients access remote federated tables (e.g., `bt__sales.orders`), where `HiveMetaStoreClient` automatically injects `catName = "hive"` (or configured `defaultCatalog`) into all request objects. The client default catalog no longer conflicts with a qualified remote catalog schema.
   - **`GetDatabaseObjectsRequest` and `GetDatabaseRequest` in `Hive4FrontendBridge`**: Added support for explicit `catalogName` in Hive 4 request objects. Requests targeting remote catalogs have their database names prefixed with the catalog name, while default catalog/hive requests preserve proper multi-catalog fanout.

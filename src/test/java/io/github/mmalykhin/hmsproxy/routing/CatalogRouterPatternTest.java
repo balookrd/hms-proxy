@@ -143,9 +143,53 @@ public class CatalogRouterPatternTest {
     Assert.assertEquals("*", router.normalizeDatabasePattern("@hive#*"));
     Assert.assertEquals("catalog2*", router.normalizeDatabasePattern("@hive#catalog2*"));
     Assert.assertEquals("catalog2__*", router.normalizeDatabasePattern("@hive#catalog2__*"));
+    Assert.assertEquals("catalog2__*", router.normalizeDatabasePattern("@hive#catalog2..*"));
+    Assert.assertEquals("catalog2__*", router.normalizeDatabasePattern("catalog2..*"));
+    Assert.assertEquals("catalog2__analytics", router.normalizeDatabasePattern("@hive#catalog2..analytics"));
     Assert.assertEquals("catalog2_%", router.normalizeDatabasePattern("@hive#catalog2_%"));
     Assert.assertEquals("sales*", router.normalizeDatabasePattern("@hive#sales*"));
     Assert.assertEquals("catalog2__sales*", router.normalizeDatabasePattern("spark_catalog.catalog2__sales*"));
+    Assert.assertEquals("catalog2__sales*", router.normalizeDatabasePattern("hive.catalog2..sales*"));
+  }
+
+  @Test
+  public void resolveDatabaseHandlesOdbcDotSeparatedNames() throws Exception {
+    CatalogRouter router = router();
+
+    CatalogRouter.ResolvedNamespace resolved1 = router.resolveDatabase("catalog2..analytics");
+    Assert.assertEquals("catalog2", resolved1.catalogName());
+    Assert.assertEquals("analytics", resolved1.backendDbName());
+    Assert.assertEquals("catalog2__analytics", resolved1.externalDbName());
+
+    CatalogRouter.ResolvedNamespace resolved2 = router.resolveDatabase("@hive#catalog2..analytics");
+    Assert.assertEquals("catalog2", resolved2.catalogName());
+    Assert.assertEquals("analytics", resolved2.backendDbName());
+    Assert.assertEquals("catalog2__analytics", resolved2.externalDbName());
+
+    CatalogRouter.ResolvedNamespace resolved3 = router.resolveDatabase("catalog2..sales.daily");
+    Assert.assertEquals("catalog2", resolved3.catalogName());
+    Assert.assertEquals("sales_daily", resolved3.backendDbName());
+    Assert.assertEquals("catalog2__sales_daily", resolved3.externalDbName());
+  }
+
+  @Test
+  public void resolvePatternHandlesOdbcDotSeparatedPatterns() {
+    CatalogRouter router = router();
+
+    CatalogRouter.ResolvedNamespace pattern1 = router.resolvePattern("@hive#catalog2..*").orElseThrow();
+    Assert.assertEquals("catalog2", pattern1.catalogName());
+    Assert.assertEquals("*", pattern1.backendDbName());
+    Assert.assertEquals("catalog2__*", pattern1.externalDbName());
+
+    CatalogRouter.ResolvedNamespace pattern2 = router.resolvePattern("catalog2..analytics").orElseThrow();
+    Assert.assertEquals("catalog2", pattern2.catalogName());
+    Assert.assertEquals("analytics", pattern2.backendDbName());
+    Assert.assertEquals("catalog2__analytics", pattern2.externalDbName());
+
+    CatalogRouter.ResolvedNamespace pattern3 = router.resolvePattern("@hive#catalog2..acp.clc").orElseThrow();
+    Assert.assertEquals("catalog2", pattern3.catalogName());
+    Assert.assertEquals("acp_clc", pattern3.backendDbName());
+    Assert.assertEquals("catalog2__acp_clc", pattern3.externalDbName());
   }
 
   @Test
@@ -160,11 +204,14 @@ public class CatalogRouterPatternTest {
     Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2*"));
     Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2_%"));
     Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2__*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("@hive#catalog2..*"));
     Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2*"));
     Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2__*"));
+    Assert.assertTrue(router.canMatchRemoteCatalogs("catalog2..*"));
 
     Assert.assertFalse(router.canMatchRemoteCatalogs("@hive#sales*"));
     Assert.assertFalse(router.canMatchRemoteCatalogs("sales*"));
     Assert.assertFalse(router.canMatchRemoteCatalogs("catalog1__*"));
+    Assert.assertFalse(router.canMatchRemoteCatalogs("catalog1..*"));
   }
 }
