@@ -101,6 +101,9 @@ public final class CatalogConfigParser {
         prefix + "runtime-profile",
         null);
     String catalogBackendStandaloneMetastoreJar = reader.getOrNull(prefix + "backend-standalone-metastore-jar");
+    if (catalogBackendStandaloneMetastoreJar == null) {
+      catalogBackendStandaloneMetastoreJar = reader.getOrNull(prefix + "standalone-metastore-jar");
+    }
     long latencyBudgetMs = reader.getNonNegativeLong(
         prefix + "latency-budget-ms", CatalogConfig.DEFAULT_LATENCY_BUDGET_MS);
     int maxImpersonationClients = reader.getPositiveInt(

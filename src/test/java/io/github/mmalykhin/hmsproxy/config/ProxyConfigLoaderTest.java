@@ -2111,5 +2111,34 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void supportsStandaloneMetastoreJarAndOutboundSecurityAliases() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path dummyJar = Files.createTempFile("hms-dummy", ".jar");
+    Path dummyKeytab = Files.createTempFile("hms-dummy", ".keytab");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.standalone-metastore-jar=%s
+          security.mode=NONE
+          security.outbound-principal=hive/proxy@SMOKE.LOCAL
+          security.outbound-keytab=%s
+          """.formatted(dummyJar.toAbsolutePath(), dummyKeytab.toAbsolutePath()));
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertNotNull(config);
+      Assert.assertEquals(dummyJar.toAbsolutePath().toString(),
+          config.catalogs().get("catalog1").backendStandaloneMetastoreJar());
+      Assert.assertEquals("hive/proxy@SMOKE.LOCAL", config.security().clientPrincipal());
+      Assert.assertEquals(dummyKeytab.toAbsolutePath().toString(), config.security().clientKeytab());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(dummyJar);
+      Files.deleteIfExists(dummyKeytab);
+    }
+  }
 }
 

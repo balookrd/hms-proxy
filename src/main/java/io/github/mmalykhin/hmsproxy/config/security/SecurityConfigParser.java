@@ -23,8 +23,14 @@ public final class SecurityConfigParser {
         SecurityMode.class, reader.getOrNull("security.mode"), "security.mode", SecurityMode.NONE);
     String serverPrincipal = reader.getOrNull("security.server-principal");
     String clientPrincipal = reader.getOrNull("security.client-principal");
+    if (clientPrincipal == null) {
+      clientPrincipal = reader.getOrNull("security.outbound-principal");
+    }
     String keytab = reader.getOrNull("security.keytab");
     String clientKeytab = reader.getOrNull("security.client-keytab");
+    if (clientKeytab == null) {
+      clientKeytab = reader.getOrNull("security.outbound-keytab");
+    }
     Map<String, String> frontDoorConf = reader.collectPrefixed("security.front-door-conf.");
 
     if (clientPrincipal == null && serverPrincipal != null) {
