@@ -35,8 +35,9 @@ final class TableMetadataOps {
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
     r.op("delete_column_statistics_req", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating()
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
-    r.op("get_all_table_constraints", o -> o.cls(HmsOperationClass.METADATA_READ)
-        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
+    r.all(o -> o.cls(HmsOperationClass.METADATA_READ).ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace(),
+        "get_all_table_constraints", "get_primary_keys", "get_foreign_keys", "get_unique_constraints",
+        "get_not_null_constraints", "get_default_constraints", "get_check_constraints");
     r.op("get_max_allocated_table_write_id", o -> o.cls(HmsOperationClass.METADATA_READ)
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());
     r.op("refresh_privileges", o -> o.cls(HmsOperationClass.METADATA_WRITE).mutating().trace());

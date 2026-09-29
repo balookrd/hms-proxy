@@ -40,7 +40,10 @@ import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.DefaultConstraintsResponse;
+import org.apache.hadoop.hive.metastore.api.ForeignKeysRequest;
 import org.apache.hadoop.hive.metastore.api.ForeignKeysResponse;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.HeartbeatRequest;
 import org.apache.hadoop.hive.metastore.api.Catalog;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
@@ -3071,6 +3074,175 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Object returnedFk = returnedFks.get(0);
     Assert.assertEquals("catalog2__sales", returnedFk.getClass().getMethod("getFktable_db").invoke(returnedFk));
     Assert.assertEquals("catalog2__customers_db", returnedFk.getClass().getMethod("getPktable_db").invoke(returnedFk));
+  }
+
+  @Test
+  public void getPrimaryKeysRoutesToCorrectCatalogAndExternalizesResponse() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTable = new AtomicReference<>();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_primary_keys".equals(method.getName())) {
+        PrimaryKeysRequest req = (PrimaryKeysRequest) args[0];
+        capturedDb.set(req.getDb_name());
+        capturedTable.set(req.getTbl_name());
+        SQLPrimaryKey pk = new SQLPrimaryKey();
+        pk.setTable_db(req.getDb_name());
+        pk.setTable_name(req.getTbl_name());
+        pk.setColumn_name("id");
+        pk.setKey_seq(1);
+        pk.setPk_name("pk_orders");
+        return new PrimaryKeysResponse(List.of(pk));
+      }
+      throw new NoSuchMethodException(method.getName());
+    });
+    CatalogBackend b1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> null)));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", b1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_primary_keys", PrimaryKeysRequest.class);
+    PrimaryKeysRequest request = new PrimaryKeysRequest("catalog2__sales", "orders");
+    PrimaryKeysResponse response = (PrimaryKeysResponse) handler.invoke(null, method, new Object[] {request});
+
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("orders", capturedTable.get());
+    Assert.assertNotNull(response);
+    Assert.assertEquals(1, response.getPrimaryKeysSize());
+    Assert.assertEquals("catalog2__sales", response.getPrimaryKeys().get(0).getTable_db());
+  }
+
+  @Test
+  public void getForeignKeysRoutesToCorrectCatalogAndExternalizesResponse() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_foreign_keys".equals(method.getName())) {
+        ForeignKeysRequest req = (ForeignKeysRequest) args[0];
+        capturedDb.set(req.getForeign_db_name());
+        SQLForeignKey fk = new SQLForeignKey();
+        fk.setFktable_db(req.getForeign_db_name());
+        fk.setFktable_name("orders");
+        fk.setPktable_db("customers_db");
+        fk.setPktable_name("customers");
+        return new ForeignKeysResponse(List.of(fk));
+      }
+      throw new NoSuchMethodException(method.getName());
+    });
+    CatalogBackend b1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> null)));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", b1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_foreign_keys", ForeignKeysRequest.class);
+    ForeignKeysRequest request = new ForeignKeysRequest(null, null, "catalog2__sales", "orders");
+    ForeignKeysResponse response = (ForeignKeysResponse) handler.invoke(null, method, new Object[] {request});
+
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertNotNull(response);
+    Assert.assertEquals(1, response.getForeignKeysSize());
+    Assert.assertEquals("catalog2__sales", response.getForeignKeys().get(0).getFktable_db());
+    Assert.assertEquals("catalog2__customers_db", response.getForeignKeys().get(0).getPktable_db());
+  }
+
+  @Test
+  public void dummyPlaceholderTableRequestsFastFailWithoutCallingBackend() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      throw new NoSuchMethodException(method.getName());
+    });
+    CatalogBackend b1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", b1);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    // 1. get_table_req on _dummy_database._dummy_table
+    try {
+      GetTableRequest req = new GetTableRequest();
+      req.setCatName("catalog1");
+      req.setDbName("_dummy_database");
+      req.setTblName("_dummy_table");
+      Method getTableReqMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table_req", GetTableRequest.class);
+      handler.invoke(null, getTableReqMethod, new Object[] {req});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("_dummy_database"));
+      Assert.assertTrue(e.getMessage().contains("_dummy_table"));
+    }
+
+    // 2. get_table on _dummy_database._dummy_table
+    try {
+      Method getTableMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+      handler.invoke(null, getTableMethod, new Object[] {"_dummy_database", "_dummy_table"});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("_dummy_database"));
+      Assert.assertTrue(e.getMessage().contains("_dummy_table"));
+    }
+
+    // 3. get_database on _dummy_database
+    try {
+      Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+      handler.invoke(null, getDbMethod, new Object[] {"_dummy_database"});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("_dummy_database"));
+    }
+
+    // Backend must not have been contacted
+    Assert.assertEquals(0, backendCalls.get());
   }
 
   public static class TestRenamePartitionRequest {

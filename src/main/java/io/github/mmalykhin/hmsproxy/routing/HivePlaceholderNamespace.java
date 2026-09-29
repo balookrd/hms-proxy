@@ -15,11 +15,39 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
  */
 final class HivePlaceholderNamespace {
   static final String DUMMY_DATABASE = "_dummy_database";
+  static final String DUMMY_TABLE = "_dummy_table";
 
   private HivePlaceholderNamespace() {}
 
   static boolean isPlaceholderDbName(String dbName) {
     return dbName != null && DUMMY_DATABASE.equals(dbName.trim().toLowerCase(Locale.ROOT));
+  }
+
+  static boolean isPlaceholderTableName(String tblName) {
+    return tblName != null && DUMMY_TABLE.equals(tblName.trim().toLowerCase(Locale.ROOT));
+  }
+
+  static boolean isPlaceholderTable(String dbName, String tblName) {
+    return isPlaceholderDbName(dbName) && (tblName == null || tblName.isBlank() || isPlaceholderTableName(tblName));
+  }
+
+  static org.apache.hadoop.hive.metastore.api.NoSuchObjectException newNoSuchObjectException(
+      String catName,
+      String dbName,
+      String tblName
+  ) {
+    String table = tblName != null && !tblName.isBlank() ? tblName : DUMMY_TABLE;
+    String db = dbName != null && !dbName.isBlank() ? dbName : DUMMY_DATABASE;
+    String cat = catName != null && !catName.isBlank() ? catName : "hive";
+    return new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(cat + "." + db + "." + table + " table not found");
+  }
+
+  static boolean isPlaceholderNoSuchObject(Throwable throwable) {
+    if (!(throwable instanceof org.apache.hadoop.hive.metastore.api.NoSuchObjectException)) {
+      return false;
+    }
+    String message = throwable.getMessage();
+    return message != null && message.contains(DUMMY_DATABASE);
   }
 
   /**

@@ -27,7 +27,7 @@ import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.hive.metastore.api.UniqueConstraintsRequest;
 import org.apache.hadoop.hive.metastore.api.UniqueConstraintsResponse;
 
-final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
+final class TableConstraintsHandler implements SpecialCaseHandler {
   private static final Method GET_PRIMARY_KEYS = findMethod("get_primary_keys", PrimaryKeysRequest.class);
   private static final Method GET_FOREIGN_KEYS = findMethod("get_foreign_keys", ForeignKeysRequest.class);
   private static final Method GET_UNIQUE_CONSTRAINTS = findMethod("get_unique_constraints", UniqueConstraintsRequest.class);
@@ -37,39 +37,129 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
 
   private final RoutingSupport support;
 
-  GetAllTableConstraintsHandler(RoutingSupport support) {
+  TableConstraintsHandler(RoutingSupport support) {
     this.support = support;
   }
 
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String dbName = (String) ThriftReflectionCache.invokeGetter(request, "getDbName");
-    if (dbName == null) {
-      throw new MetaException("get_all_table_constraints requires a target database");
+    String dbName = extractDbName(request);
+    if (dbName == null || dbName.isBlank()) {
+      throw new MetaException(method.getName() + " requires a target database");
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    String catName = extractCatName(request);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("get_all_table_constraints", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "get_all_table_constraints", namespace.backendDbName());
+    support.validateCatalogAccess(backend, method.getName(), namespace.backendDbName());
 
-    ThriftReflectionCache.invokeStringSetter(request, "setDbName", namespace.backendDbName());
+    internalizeRequest(request, namespace);
 
     Object response;
-    try {
-      response = support.invokeBackendNamed(backend, "get_all_table_constraints", request);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        response = fallbackToLegacy(backend, request, namespace.backendDbName());
-      } else {
-        throw cause;
+    if ("get_all_table_constraints".equals(method.getName())) {
+      try {
+        response = support.invokeBackendNamed(backend, "get_all_table_constraints", request);
+      } catch (Throwable cause) {
+        if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
+          response = fallbackToLegacy(backend, request, namespace.backendDbName());
+        } else {
+          throw cause;
+        }
       }
+    } else {
+      response = support.invokeDirect(backend, method, args);
     }
 
-    externalizeConstraintsResponse(response, namespace);
+    externalizeResponse(method.getName(), response, namespace);
     return response;
+  }
+
+  private String extractDbName(Object request) {
+    String dbName = ThriftReflectionCache.readString(request, "getDbName", "getDb_name", "getDbname");
+    if (dbName != null && !dbName.isBlank()) {
+      return dbName;
+    }
+    String foreignDb = ThriftReflectionCache.readString(request, "getForeign_db_name", "getForeignDbName");
+    if (foreignDb != null && !foreignDb.isBlank()) {
+      return foreignDb;
+    }
+    return ThriftReflectionCache.readString(request, "getParent_db_name", "getParentDbName");
+  }
+
+  private String extractCatName(Object request) {
+    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
+    if (catName != null && !catName.isBlank()) {
+      return catName;
+    }
+    String foreignCat = ThriftReflectionCache.readString(request, "getForeign_catName");
+    if (foreignCat != null && !foreignCat.isBlank()) {
+      return foreignCat;
+    }
+    return ThriftReflectionCache.readString(request, "getParent_catName");
+  }
+
+  private void internalizeRequest(Object request, CatalogRouter.ResolvedNamespace namespace) {
+    ThriftReflectionCache.invokeStringSetter(request, "setDbName", namespace.backendDbName());
+    ThriftReflectionCache.invokeStringSetter(request, "setDb_name", namespace.backendDbName());
+    ThriftReflectionCache.invokeStringSetter(request, "setDbname", namespace.backendDbName());
+    String foreignDb = ThriftReflectionCache.readString(request, "getForeign_db_name");
+    if (foreignDb != null && matchesDb(foreignDb, namespace)) {
+      ThriftReflectionCache.invokeStringSetter(request, "setForeign_db_name", namespace.backendDbName());
+    }
+    String parentDb = ThriftReflectionCache.readString(request, "getParent_db_name");
+    if (parentDb != null && matchesDb(parentDb, namespace)) {
+      ThriftReflectionCache.invokeStringSetter(request, "setParent_db_name", namespace.backendDbName());
+    }
+  }
+
+  private static boolean matchesDb(String requestDb, CatalogRouter.ResolvedNamespace namespace) {
+    return requestDb.equalsIgnoreCase(namespace.externalDbName())
+        || requestDb.equalsIgnoreCase(namespace.backendDbName());
+  }
+
+  private void externalizeResponse(String methodName, Object response, CatalogRouter.ResolvedNamespace namespace) {
+    if (response == null) {
+      return;
+    }
+    String clientDbName = namespace.externalDbName();
+    String clientCatName = namespace.catalogName();
+    switch (methodName) {
+      case "get_all_table_constraints" -> externalizeAllConstraintsResponse(response, namespace);
+      case "get_primary_keys" -> {
+        Object pks = ThriftReflectionCache.invokeGetter(response, "getPrimaryKeys");
+        externalizeList(pks, "setTable_db", clientDbName);
+        externalizeList(pks, "setCatName", clientCatName);
+      }
+      case "get_foreign_keys" -> {
+        Object fks = ThriftReflectionCache.invokeGetter(response, "getForeignKeys");
+        externalizeForeignKeys(fks, namespace);
+      }
+      case "get_unique_constraints" -> {
+        Object uqs = ThriftReflectionCache.invokeGetter(response, "getUniqueConstraints");
+        externalizeList(uqs, "setTable_db", clientDbName);
+        externalizeList(uqs, "setCatName", clientCatName);
+      }
+      case "get_not_null_constraints" -> {
+        Object nns = ThriftReflectionCache.invokeGetter(response, "getNotNullConstraints");
+        externalizeList(nns, "setTable_db", clientDbName);
+        externalizeList(nns, "setCatName", clientCatName);
+      }
+      case "get_default_constraints" -> {
+        Object dfs = ThriftReflectionCache.invokeGetter(response, "getDefaultConstraints");
+        externalizeList(dfs, "setTable_db", clientDbName);
+        externalizeList(dfs, "setCatName", clientCatName);
+      }
+      case "get_check_constraints" -> {
+        Object cks = ThriftReflectionCache.invokeGetter(response, "getCheckConstraints");
+        externalizeList(cks, "setTable_db", clientDbName);
+        externalizeList(cks, "setCatName", clientCatName);
+      }
+      default -> {
+      }
+    }
   }
 
   private Object fallbackToLegacy(CatalogBackend backend, Object request, String backendDb) throws Throwable {
@@ -126,7 +216,7 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
     }
   }
 
-  private void externalizeConstraintsResponse(Object response, CatalogRouter.ResolvedNamespace namespace) {
+  private void externalizeAllConstraintsResponse(Object response, CatalogRouter.ResolvedNamespace namespace) {
     if (response == null) {
       return;
     }
@@ -161,11 +251,11 @@ final class GetAllTableConstraintsHandler implements SpecialCaseHandler {
     }
   }
 
-  private void externalizeList(Object listObj, String setterName, String clientDbName) {
+  private void externalizeList(Object listObj, String setterName, String clientValue) {
     if (listObj instanceof List<?> list) {
       for (Object item : list) {
         if (item != null) {
-          ThriftReflectionCache.invokeStringSetter(item, setterName, clientDbName);
+          ThriftReflectionCache.invokeStringSetter(item, setterName, clientValue);
         }
       }
     }

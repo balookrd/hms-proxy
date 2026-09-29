@@ -144,6 +144,16 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       }
       return result;
     } catch (Throwable throwable) {
+      if (HivePlaceholderNamespace.isPlaceholderNoSuchObject(throwable)) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("requestId={} method={} dummy placeholder table not found: {}",
+              requestId, name, throwable.getMessage());
+        }
+        if (throwable instanceof TException) {
+          throw throwable;
+        }
+        throw new RuntimeException(throwable);
+      }
       if (throwable instanceof RateLimitExceededException) {
         observation.markThrottled();
       } else {

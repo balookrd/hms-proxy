@@ -10,6 +10,15 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Маршрутизация и экстернализация табличных ограничений (Table Constraints Routing & Externalization)**:
+  - Реализован специализированный обработчик `TableConstraintsHandler` для всех constraint-RPC Hive Metastore:
+    `get_primary_keys` (`PrimaryKeysRequest`), `get_foreign_keys` (`ForeignKeysRequest`), `get_unique_constraints` (`UniqueConstraintsRequest`), `get_not_null_constraints` (`NotNullConstraintsRequest`), `get_default_constraints` (`DefaultConstraintsRequest`), `get_check_constraints` (`CheckConstraintsRequest`), `get_all_table_constraints` (`AllTableConstraintsRequest`).
+  - Обеспечено извлечение целевой базы данных и каталога из запросов (включая двустороннее определение по `foreign_db_name` / `parent_db_name` в `ForeignKeysRequest`), интернализация имен схем при обращении к бэкенду и прозрачная экстернализация полей базы данных в ответах (`table_db`, `fktable_db`, `pktable_db`).
+- **Оптимизация и fast-fail для служебного плейсхолдера Hive (`_dummy_database._dummy_table`)**:
+  - В соответствии с архитектурным контрактом проекта (`AGENTS.md`) знание о служебных плейсхолдерах Hive изолировано исключительно в `HivePlaceholderNamespace`.
+  - Запросы метаданных к плейсхолдеру (`get_table_req`, `get_table`, `get_database`) мгновенно завершаются на уровне прокси с `NoSuchObjectException` без сетевого обращения к бэкенду метастора.
+  - В `RoutingMetaStoreProxy` добавлено тихое логирование (уровень `DEBUG` вместо `WARN` со стектрейсом в `client-error/proxy-error`) и подавление регистрации ошибки в метриках прокси.
+
 - **Жесткий маппинг схем на удаленные каталоги (`catalog.<name>.unprefixed-databases`)**:
   - Позволяет экспонировать выбранные базы данных из удаленного каталога в объединенном пространстве имен напрямую без префикса каталога (например, `beemetrics` вместо `remote__beemetrics`).
   - При наличии одноименной базы данных в каталоге по умолчанию (`default-catalog`), схема из удаленного каталога автоматически вытесняет (shadowed) локальную базу в списках `get_all_databases` и `get_databases`.
@@ -77,6 +86,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
     - Добавлен конфигурационный профиль стенда `smoke-stand/proxy/hms-proxy-cross-dc.properties` и обновлен `entrypoint.sh` для поддержки опционального ожидания вторичных каталогов (`WAIT_FOR_APACHE`).
 
 ### Исправлено
+
+- **Маршрутизация вызовов первичных и внешних ключей (`get_primary_keys`, `get_foreign_keys` и constraints)**:
+  - Устранена ошибка `MetaException: Operation get_primary_keys requires explicit namespace ownership...`, возникавшая при запросах метаданных ограничений таблиц от HiveServer2 / Qlik для таблиц во вторичных федеративных каталогах.
+  - Все методы ограничений целостности теперь маршрутизируются в целевой каталог таблицы, а возвращаемые структуры (`SQLPrimaryKey`, `SQLForeignKey` и др.) содержат корректно экстернализованные имена схем клиента.
+- **Устранение шума в логах и ложных ошибок метрик для служебных запросов `_dummy_database._dummy_table`**:
+  - Устранены десятки тысяч сообщений `WARN client-error/proxy-error` со стектрейсами `NoSuchObjectException` при обращениях HiveServer2 к служебному плейсхолдеру `_dummy_database._dummy_table`.
+  - Запросы обрабатываются на уровне прокси, логируются в `DEBUG` и не искажают счетчики ошибок в мониторинге.
 
 - **Нормализация dot-separated префиксов и имен схем в `CatalogRouter` для ODBC-клиентов (Qlik, Simba/Cloudera ODBC)**:
   - Исправлена маршрутизация запросов к удаленным каталогам при обращении ODBC-клиентов (в частности Qlik через Cloudera/Simba ODBC), когда HiveServer2 преобразует символы подчёркивания `_` в шаблонах и квалификаторах в точки `.` (`MetadataOperation.convertPattern`), приводя к именам вида `bt..acp.clc` или шаблонам `@hive#bt..acp.clc`.

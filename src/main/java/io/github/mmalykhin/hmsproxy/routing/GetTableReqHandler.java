@@ -19,6 +19,10 @@ final class GetTableReqHandler implements SpecialCaseHandler {
     String dbName = ThriftReflectionCache.readString(request, "dbName", "getDbName");
     String tblName = ThriftReflectionCache.readString(request, "tblName", "getTblName");
 
+    if (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)) {
+      throw HivePlaceholderNamespace.newNoSuchObjectException(catName, dbName, tblName);
+    }
+
     CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);

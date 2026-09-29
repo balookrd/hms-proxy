@@ -221,7 +221,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler getPartitionsByFilterReq = new GetPartitionsByFilterReqHandler(support);
     SpecialCaseHandler createTableReq = new CreateTableReqHandler(support, externalTableLocationRewriter, icebergTablePointerGuard);
     SpecialCaseHandler deleteColumnStatisticsReq = new DeleteColumnStatisticsReqHandler(support);
-    SpecialCaseHandler getAllTableConstraints = new GetAllTableConstraintsHandler(support);
+    SpecialCaseHandler tableConstraints = new TableConstraintsHandler(support);
     SpecialCaseHandler getMaxAllocatedTableWriteId = new GetMaxAllocatedTableWriteIdHandler(support);
     return Map.ofEntries(
         Map.entry("lock", lock),
@@ -255,7 +255,13 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         Map.entry("get_partitions_by_filter_req", getPartitionsByFilterReq),
         Map.entry("create_table_req", createTableReq),
         Map.entry("delete_column_statistics_req", deleteColumnStatisticsReq),
-        Map.entry("get_all_table_constraints", getAllTableConstraints),
+        Map.entry("get_all_table_constraints", tableConstraints),
+        Map.entry("get_primary_keys", tableConstraints),
+        Map.entry("get_foreign_keys", tableConstraints),
+        Map.entry("get_unique_constraints", tableConstraints),
+        Map.entry("get_not_null_constraints", tableConstraints),
+        Map.entry("get_default_constraints", tableConstraints),
+        Map.entry("get_check_constraints", tableConstraints),
         Map.entry("get_max_allocated_table_write_id", getMaxAllocatedTableWriteId),
         Map.entry("drop_table", dropTable),
         Map.entry("drop_table_with_environment_context", dropTable),
@@ -327,6 +333,9 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
     Object result;
     if ("get_database".equals(method.getName())) {
+      if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)) {
+        throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
+      }
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
       result = support.databaseMetadataCache.get(
           namespace.catalogName(),
@@ -334,6 +343,9 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
           impersonation,
           () -> (org.apache.hadoop.hive.metastore.api.Database) support.invokeDirect(namespace.backend(), method, routedArgs));
     } else if ("get_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
+      if (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)) {
+        throw HivePlaceholderNamespace.newNoSuchObjectException(null, dbName, tblName);
+      }
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
       result = support.tableMetadataCache.get(
           namespace.catalogName(),

@@ -10,6 +10,15 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Table Constraints Routing & Externalization**:
+  - Implemented dedicated `TableConstraintsHandler` covering all Hive Metastore table constraint RPCs:
+    `get_primary_keys` (`PrimaryKeysRequest`), `get_foreign_keys` (`ForeignKeysRequest`), `get_unique_constraints` (`UniqueConstraintsRequest`), `get_not_null_constraints` (`NotNullConstraintsRequest`), `get_default_constraints` (`DefaultConstraintsRequest`), `get_check_constraints` (`CheckConstraintsRequest`), and `get_all_table_constraints` (`AllTableConstraintsRequest`).
+  - Supports target database and catalog extraction from constraint request objects (including dual lookup by `foreign_db_name` / `parent_db_name` in `ForeignKeysRequest`), schema name internalization for backend dispatch, and transparent externalization of database names in responses (`table_db`, `fktable_db`, `pktable_db`).
+- **Optimization and fast-fail for Hive placeholder table (`_dummy_database._dummy_table`)**:
+  - In adherence to project architecture rules (`AGENTS.md`), placeholder knowledge is strictly encapsulated in `HivePlaceholderNamespace`.
+  - Metadata requests targeting the dummy placeholder table (`get_table_req`, `get_table`, `get_database`) now fail fast with `NoSuchObjectException` directly at the proxy layer without dispatching network calls to backend metastores.
+  - In `RoutingMetaStoreProxy`, placeholder `NoSuchObjectException`s are logged cleanly at `DEBUG` level rather than `WARN` with full stack traces in `client-error/proxy-error`, and error registration in metrics (`markError()`) is bypassed.
+
 - **Hard mapping of unprefixed databases to remote catalogs (`catalog.<name>.unprefixed-databases`)**:
   - Exposes designated databases from a remote catalog directly into the federated namespace without any catalog prefix (e.g. `beemetrics` instead of `remote__beemetrics`).
   - If a database with the same name exists in the default catalog (`default-catalog`), the remote database automatically shadows (replaces) it in `get_all_databases` and `get_databases`.
@@ -77,6 +86,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
     - Added standalone configuration profile `smoke-stand/proxy/hms-proxy-cross-dc.properties` and made `entrypoint.sh` wait conditional via `WAIT_FOR_APACHE`.
 
 ### Fixed
+
+- **Primary & Foreign Keys constraint RPC routing (`get_primary_keys`, `get_foreign_keys`, etc.)**:
+  - Fixed `MetaException: Operation get_primary_keys requires explicit namespace ownership...` error that occurred when HiveServer2 / Qlik queried table constraint metadata for tables belonging to secondary federated catalogs.
+  - All constraint methods now accurately route to the table's owning catalog backend, and response structures (`SQLPrimaryKey`, `SQLForeignKey`, etc.) return properly externalized database names.
+- **Log noise and false metric error suppression for `_dummy_database._dummy_table`**:
+  - Eliminated tens of thousands of noisy `WARN client-error/proxy-error` log events with `NoSuchObjectException` stack traces caused by regular HiveServer2 calls on `_dummy_database._dummy_table`.
+  - Such requests are handled directly by the proxy, logged at `DEBUG` level, and no longer skew error counters in observability metrics.
 
 - **ODBC dot-separated database prefix and name normalization in `CatalogRouter` (Qlik, Simba/Cloudera ODBC)**:
   - Fixed query routing to remote catalogs when ODBC clients (notably Qlik via Cloudera/Simba ODBC) query metadata where HiveServer2 replaces underscores `_` in patterns and qualifiers with dots `.` (`MetadataOperation.convertPattern`), resulting in names like `bt..acp.clc` or patterns like `@hive#bt..acp.clc`.
