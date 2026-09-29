@@ -8,6 +8,7 @@ import io.github.mmalykhin.hmsproxy.config.ratelimit.SourceCidrRateLimitConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.AdaptiveTimeoutConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.BackendStatePollingConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.CircuitBreakerConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.DistributedCacheInvalidationConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.HedgedReadConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
 import io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig;
@@ -271,6 +272,14 @@ public final class ProxyConfigLogger {
         .append(", maxEntries=").append(lr.configValueCache().maxEntries()).append("\n");
     sb.append("  Serve Stale On Error: enabled=").append(lr.cacheServeStaleOnError())
         .append(", gracePeriod=").append(lr.cacheStaleGracePeriodMs()).append("ms\n");
+    DistributedCacheInvalidationConfig dci = lr.distributedCacheInvalidation();
+    sb.append("  Distributed Cache Invalidation: mode=").append(dci.mode());
+    if (dci.isZooKeeper() && dci.zooKeeper() != null) {
+      sb.append(", znode=").append(dci.zooKeeper().znode())
+          .append(", connectString=").append(dci.zooKeeper().connectString())
+          .append(", retention=").append(dci.zooKeeper().eventRetentionMs()).append("ms");
+    }
+    sb.append("\n");
   }
 
   private static void appendRateLimit(StringBuilder sb, RateLimitConfig rl) {

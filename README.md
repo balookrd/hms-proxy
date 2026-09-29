@@ -190,7 +190,7 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
 - мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - кэшировать конфигурационные параметры метастора (`get_config_value`) в памяти через `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час) с single-flight дедупликацией и negative caching для отсутствующих ключей
-- кэшировать метаданные таблиц (`get_table`) через `routing.cache.table-metadata.*` и разделов (`get_partition*`, `get_part_specs*`) через `routing.cache.partition-metadata.*` с single-flight дедупликацией, LRU-вытеснением и автоматической DDL-инвалидацией при `alter_table*`, `drop_table*`, `truncate_table*`
+- кэшировать метаданные таблиц (`get_table`) через `routing.cache.table-metadata.*` и разделов (`get_partition*`, `get_part_specs*`) через `routing.cache.partition-metadata.*` с single-flight дедупликацией, LRU-вытеснением, автоматической локальной и распределенной ZooKeeper DDL-инвалидацией (`routing.cache.distributed-invalidation.*`) при `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - отдавать устаревшие метаданные таблиц и разделов при авариях и разрывах связи с удаленным бэкендом через `routing.cache.serve-stale-on-error=true` в течение `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут)
 - защищать удаленные WAN-каналы от перегрузки через WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` и `concurrency-timeout-ms`)
 - запускать прокси без блокировки при временной недоступности вторичных/удаленных каталогов через `catalog.<name>.startup-mode=LENIENT`
@@ -1673,6 +1673,20 @@ routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
 routing.config-value-cache.ttl-ms=3600000
 routing.config-value-cache.max-entries=1000
+routing.cache.table-metadata.ttl-ms=60000
+routing.cache.table-metadata.max-entries=10000
+routing.cache.partition-metadata.ttl-ms=60000
+routing.cache.partition-metadata.max-entries=10000
+routing.cache.serve-stale-on-error=true
+routing.cache.stale-grace-period-ms=300000
+# Распределенная DDL-инвалидация кэшей между репликами прокси через ZooKeeper:
+routing.cache.distributed-invalidation.mode=ZOOKEEPER
+routing.cache.distributed-invalidation.connect-string=zookeeper.internal:2181
+routing.cache.distributed-invalidation.session-timeout-ms=60000
+routing.cache.distributed-invalidation.connection-timeout-ms=15000
+routing.cache.distributed-invalidation.base-path=/hms-proxy-cache-invalidation
+routing.cache.distributed-invalidation.event-retention-ms=300000
+routing.cache.distributed-invalidation.purge-interval-ms=60000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
@@ -1692,6 +1706,42 @@ shared backend client и сбросу кэша impersonation-клиентов (K
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
 открывает его.
+
+### Кэширование метаданных таблиц, разделов и распределенная DDL-инвалидация (ZooKeeper)
+
+Для ускорения работы в высоконагруженных окружениях и снижения сетевых задержек при межкластерных (WAN) обращениях `hms-proxy` поддерживает кэширование метаданных таблиц и разделов в памяти:
+
+- `routing.cache.table-metadata.ttl-ms` (или `ttl-seconds`, по умолчанию `0` — выключено): кэширование объектов `Table` для вызовов `get_table`.
+- `routing.cache.table-metadata.max-entries` (по умолчанию `10000`): лимит записей LRU-кэша таблиц.
+- `routing.cache.partition-metadata.ttl-ms` (или `ttl-seconds`, по умолчанию `0` — выключено): кэширование метаданных и списков разделов (`get_partition*`, `get_part_specs*`).
+- `routing.cache.partition-metadata.max-entries` (по умолчанию `10000`): лимит записей LRU-кэша разделов.
+- `routing.cache.serve-stale-on-error=true`: при временной недоступности бэкенда или сетевых таймаутах отдавать устаревшие записи из кэша в течение льготного периода `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут).
+- SingleFlight: параллельные обращения к одной и той же таблице или разделу объединяются в один запрос к бэкенду.
+
+#### Синхронизация DDL-инвалидации между репликами прокси через ZooKeeper
+
+При горизонтальном масштабировании `hms-proxy` на несколько экземпляров за балансировщиком нагрузки DDL-операция (`ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DROP DATABASE`), выполненная через один экземпляр прокси, локально сбрасывает закэшированные записи. Для того чтобы остальные экземпляры прокси не продолжали отдавать устаревшие метаданные из своих локальных кэшей, используется распределенная инвалидация через **ZooKeeper**:
+
+```properties
+routing.cache.distributed-invalidation.mode=ZOOKEEPER
+routing.cache.distributed-invalidation.connect-string=zookeeper.internal:2181
+routing.cache.distributed-invalidation.session-timeout-ms=60000
+routing.cache.distributed-invalidation.connection-timeout-ms=15000
+routing.cache.distributed-invalidation.base-path=/hms-proxy-cache-invalidation
+routing.cache.distributed-invalidation.event-retention-ms=300000
+routing.cache.distributed-invalidation.purge-interval-ms=60000
+# routing.cache.distributed-invalidation.instance-id=proxy-node-1
+```
+
+- **Механизм публикации и подписки**: экземпляр, применивший DDL-изменение, публикует компактное бинарное событие в znode `/hms-proxy-cache-invalidation`. Все остальные ноды через Apache Curator `PathChildrenCache` немедленно получают нотификацию и сбрасывают кэш затронутой сущности (таблицы, раздела, базы данных).
+- **Подавление эха**: события содержат идентификатор `instance-id` ноды-источника, что исключает повторную обработку собственных событий.
+- **Fail-Safe защита при сетевом расщеплении (split-brain)**: при переходе соединения с ZooKeeper в состояние `LOST` или `SUSPENDED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
+- **Сборка мусора (Retention Sweep)**: фоновый поток периодически удаляет znode событий старше `event-retention-ms` (по умолчанию 5 минут).
+- **Фоллбэк на строку подключения блокировок**: при отсутствии `connect-string` в секции инвалидации используется адрес `synthetic-read-lock.store.zookeeper.connect-string`.
+- **Prometheus-метрики**:
+  - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
 
 ### Авторизация через Apache Ranger и общий глобальный кэш метаданных
 

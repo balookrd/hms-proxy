@@ -174,17 +174,9 @@ final class AlterTableHandler implements SpecialCaseHandler {
       }
     }
 
-    if (support.tableMetadataCache != null) {
-      support.tableMetadataCache.invalidateTable(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
-      if (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable)) {
-        support.tableMetadataCache.invalidateTable(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
-      }
-    }
-    if (support.partitionMetadataCache != null) {
-      support.partitionMetadataCache.invalidateTable(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
-      if (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable)) {
-        support.partitionMetadataCache.invalidateTable(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
-      }
+    support.invalidateTable(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
+    if (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable)) {
+      support.invalidateTable(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
     }
 
     return result;

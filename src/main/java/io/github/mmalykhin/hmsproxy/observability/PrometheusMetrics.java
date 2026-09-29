@@ -173,6 +173,18 @@ public final class PrometheusMetrics {
       "hms_proxy_cache_refreshes_total",
       "Metadata cache background refresh executions grouped by cache type, catalog, and result (success or failure)",
       List.of("cache", "catalog", "result"));
+  private final Counter distributedCacheInvalidationPublishedTotal = new Counter(
+      "hms_proxy_cache_invalidation_events_published_total",
+      "Distributed cache invalidation events published to ZooKeeper bus grouped by event type",
+      List.of("type"));
+  private final Counter distributedCacheInvalidationReceivedTotal = new Counter(
+      "hms_proxy_cache_invalidation_events_received_total",
+      "Distributed cache invalidation events received from ZooKeeper bus grouped by event type",
+      List.of("type"));
+  private final Counter distributedCacheInvalidationErrorsTotal = new Counter(
+      "hms_proxy_cache_invalidation_errors_total",
+      "Distributed cache invalidation bus errors grouped by operation (publish, receive, cleanup, connect)",
+      List.of("operation"));
   private final Counter rangerEvaluationsTotal = new Counter(
       "hms_proxy_ranger_evaluations_total",
       "Total Apache Ranger policy evaluations grouped by catalog, resource type, access type, and result",
@@ -421,6 +433,18 @@ public final class PrometheusMetrics {
 
   public void recordCacheRefresh(String cache, String catalog, String result, long count) {
     cacheRefreshesTotal.add(labels("cache", cache, "catalog", catalog, "result", result), count);
+  }
+
+  public void recordDistributedCacheInvalidationPublished(String type) {
+    distributedCacheInvalidationPublishedTotal.inc(labels("type", type));
+  }
+
+  public void recordDistributedCacheInvalidationReceived(String type) {
+    distributedCacheInvalidationReceivedTotal.inc(labels("type", type));
+  }
+
+  public void recordDistributedCacheInvalidationError(String operation) {
+    distributedCacheInvalidationErrorsTotal.inc(labels("operation", operation));
   }
 
   public void recordRangerEvaluation(

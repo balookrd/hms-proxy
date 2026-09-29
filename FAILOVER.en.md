@@ -66,7 +66,13 @@ When enabled via `routing.adaptive-timeout.enabled=true`:
   * [`TableMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/TableMetadataCache.java) (`routing.cache.table-metadata.*`) for `get_table`.
   * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) for `get_partition*`, `get_part_specs*`.
 * **SingleFlight Coalescing**: Concurrent lookups for the same table or partition query are deduplicated, avoiding cache stampedes across the WAN link.
-* **Automatic DDL Invalidation**: Mutations (`alter_table*`, `drop_table*`, `truncate_table*`) immediately invalidate cached table and partition entries.
+* **Automatic DDL Invalidation**: Mutations (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) immediately invalidate cached table, partition, and database entries.
+* **Distributed DDL Invalidation via ZooKeeper (Multi-Instance HA)** (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
+  * When scaling `hms-proxy` horizontally across multiple replicas behind an L4/L7 load balancer, a mutating DDL operation processed on any instance publishes an invalidation event to a shared ZooKeeper znode (`routing.cache.distributed-invalidation.base-path`, default: `/hms-proxy-cache-invalidation`).
+  * All connected `hms-proxy` replicas receive real-time notifications via Apache Curator `PathChildrenCache` and immediately invalidate their local cached table, partition, and database metadata.
+  * **Echo Suppression**: Each replica is uniquely identified by `instance-id` and filters out its own published events.
+  * **Fail-Safe Invalidation on ZooKeeper Loss**: If the ZooKeeper connection state changes to `LOST` or `SUSPENDED`, the proxy defensively invalidates all local metadata caches to prevent serving stale data during network partitions.
+  * **Automatic Event Retention Sweep**: A background cleaner periodically (`purge-interval-ms`) purges expired event znodes older than the retention window (`event-retention-ms`, default 5 minutes).
 * **Serve-Stale-on-Error** (`routing.cache.serve-stale-on-error=true`): When remote backends experience network outages, timeouts, or connection resets, expired entries are safely served for the duration of the stale grace period (`routing.cache.stale-grace-period-ms`, default 5 minutes). This ensures read queries continue seamlessly despite transient WAN drops.
 
 ### 2.7. WAN Concurrency Governor

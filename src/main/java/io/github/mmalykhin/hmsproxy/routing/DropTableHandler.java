@@ -74,12 +74,7 @@ final class DropTableHandler implements SpecialCaseHandler, AutoCloseable {
       if (icebergTablePointerGuard != null) {
         icebergTablePointerGuard.invalidate(namespace.catalogName(), backendDb, tableName);
       }
-      if (support.tableMetadataCache != null) {
-        support.tableMetadataCache.invalidateTable(namespace.catalogName(), backendDb, tableName);
-      }
-      if (support.partitionMetadataCache != null) {
-        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), backendDb, tableName);
-      }
+      support.invalidateTable(namespace.catalogName(), backendDb, tableName);
     }
     runBestEffortDropPurge(namespace, purgeRequest);
     return support.federationLayer.externalizeResult(result, namespace);

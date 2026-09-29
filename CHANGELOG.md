@@ -10,6 +10,17 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Распределенная DDL-инвалидация кэшей метаданных через ZooKeeper (`routing.cache.distributed-invalidation.*`)**:
+  - Реализован механизм межсерверной синхронизации инвалидации кэшей метаданных (`TableMetadataCache`, `PartitionMetadataCache`, `DatabaseMetadataCache`) для горизонтально масштабируемых кластеров `hms-proxy` за балансировщиком нагрузки.
+  - Поддержка режимов `NONE` (локальная инвалидация в пределах одного JVM процесса) и `ZOOKEEPER` (`DistributedCacheInvalidationMode`).
+  - При выполнении DDL-мутаций (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) на любом из инстансов прокси формируется и публикуется бинарное событие инвалидации (`CacheInvalidationEvent`) в ZooKeeper под znode `routing.cache.distributed-invalidation.base-path` (по умолчанию `/hms-proxy-cache-invalidation`).
+  - Все реплики `hms-proxy` отслеживают события в реальном времени через Apache Curator `PathChildrenCache` и незамедлительно вычищают закэшированные записи для затронутых сущностей.
+  - **Подавление эха**: исключение повторной обработки собственных событий на ноде-источнике на основе `instance-id`.
+  - **Fail-Safe защита от split-brain**: автоматический полный сброс всех локальных кэшей метаданных при переходе состояния подключения к ZooKeeper в `LOST` или `SUSPENDED`, что предотвращает отдачу устаревших схем клиентам при изоляции ноды.
+  - **Фоновая сборка устаревших событий**: периодическая очистка событий в ZooKeeper (`purge-interval-ms`) старше заданного retention-окна (`event-retention-ms`, по умолчанию 5 минут).
+  - Автоматический fallback на адрес `synthetic-read-lock.store.zookeeper.connect-string` при ненастроенном `connect-string` для инвалидации.
+  - Новые метрики Prometheus: `hms_proxy_cache_invalidation_events_published_total`, `hms_proxy_cache_invalidation_events_received_total` и `hms_proxy_cache_invalidation_errors_total`.
+
 - **Маршрутизация и экстернализация табличных ограничений (Table Constraints Routing & Externalization)**:
   - Реализован специализированный обработчик `TableConstraintsHandler` для всех constraint-RPC Hive Metastore:
     `get_primary_keys` (`PrimaryKeysRequest`), `get_foreign_keys` (`ForeignKeysRequest`), `get_unique_constraints` (`UniqueConstraintsRequest`), `get_not_null_constraints` (`NotNullConstraintsRequest`), `get_default_constraints` (`DefaultConstraintsRequest`), `get_check_constraints` (`CheckConstraintsRequest`), `get_all_table_constraints` (`AllTableConstraintsRequest`).

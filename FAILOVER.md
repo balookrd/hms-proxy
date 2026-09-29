@@ -66,7 +66,13 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
   * [`TableMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/TableMetadataCache.java) (`routing.cache.table-metadata.*`) для вызовов `get_table`.
   * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) для вызовов `get_partition*`, `get_part_specs*`.
 * **SingleFlight Coalescing**: параллельные запросы к одной таблице объединяются, исключая шквал запросов в WAN-канал (cache stampede).
-* **Автоматическая DDL-инвалидация**: любые операции изменения (`alter_table*`, `drop_table*`, `truncate_table*`) мгновенно сбрасывают закэшированные записи для затронутых таблиц и разделов.
+* **Автоматическая DDL-инвалидация**: любые операции изменения (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) мгновенно сбрасывают закэшированные записи для затронутых таблиц, разделов и баз данных.
+* **Распределенная DDL-инвалидация через ZooKeeper (Multi-Instance HA)** (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
+  * При горизонтальном масштабировании `hms-proxy` на группу реплик за L4/L7-балансировщиком DDL-мутация, поступившая на любой из инстансов, публикует событие инвалидации в ZooKeeper znode (`routing.cache.distributed-invalidation.base-path`, по умолчанию `/hms-proxy-cache-invalidation`).
+  * Все подключенные реплики `hms-proxy` через Apache Curator `PathChildrenCache` мгновенно получают нотификацию и сбрасывают локальные кэши затронутых таблиц, разделов и баз данных.
+  * **Подавление эха**: каждый инстанс идентифицируется через `instance-id` и отфильтровывает собственные события инвалидации.
+  * **Fail-safe сброс при потере ZooKeeper**: при разрыве связи с ZooKeeper (`LOST` или `SUSPENDED`) прокси превентивно очищает все локальные кэши, чтобы изолированная нода не отдавала устаревшие метаданные.
+  * **Автоматическая очистка старых событий**: фоновый процесс периодически (`purge-interval-ms`) удаляет отработавшие события старше окна хранения (`event-retention-ms`, по умолчанию 5 минут).
 * **Serve-Stale-on-Error** (`routing.cache.serve-stale-on-error=true`): при аварии сетевого подключения или недоступности удаленного HMS прокси продолжает отдавать устаревшие метаданные из кэша в течение льготного периода (`routing.cache.stale-grace-period-ms`, по умолчанию 5 минут). Это позволяет аналитическим запросам продолжать выполняться даже в моменты кратковременных разрывов WAN-связи.
 
 ### 2.7. Ограничение конкурентных вызовов (WAN Concurrency Governor)

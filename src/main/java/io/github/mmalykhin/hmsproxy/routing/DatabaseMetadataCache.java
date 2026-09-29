@@ -195,6 +195,10 @@ final class DatabaseMetadataCache {
     }
   }
 
+  int size() {
+    return entries.size();
+  }
+
   private void put(Key key, Database database, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
     pruneIfFull();
     entries.put(key, new Entry(new Database(database), expiresAtMs, lastAccessedAtMs, loader));

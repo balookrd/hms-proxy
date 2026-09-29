@@ -10,6 +10,17 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Distributed ZooKeeper Metadata Cache Invalidation (`routing.cache.distributed-invalidation.*`)**:
+  - Implemented cross-replica cache invalidation synchronization for metadata caches (`TableMetadataCache`, `PartitionMetadataCache`, `DatabaseMetadataCache`) in multi-instance `hms-proxy` deployments behind load balancers.
+  - Supports `NONE` (local JVM-only invalidation) and `ZOOKEEPER` (`DistributedCacheInvalidationMode`) modes.
+  - When DDL mutations (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) execute on any proxy replica, a compact binary invalidation event (`CacheInvalidationEvent`) is published to ZooKeeper under `routing.cache.distributed-invalidation.base-path` (default `/hms-proxy-cache-invalidation`).
+  - All `hms-proxy` replicas monitor events in real-time via Apache Curator `PathChildrenCache` and instantly evict cached entries for the affected tables, partitions, and databases.
+  - **Echo Suppression**: Self-published events are filtered out based on unique `instance-id`.
+  - **Fail-Safe Protection on Split-Brain / ZooKeeper Outage**: Automatically flushes all local metadata caches whenever the ZooKeeper connection transitions to `LOST` or `SUSPENDED`, preventing isolated nodes from serving stale schemas.
+  - **Background Retention Sweep**: Periodic cleaner (`purge-interval-ms`) removes expired event znodes older than the retention window (`event-retention-ms`, default 5 minutes).
+  - Connection string fallback to `synthetic-read-lock.store.zookeeper.connect-string` when invalidation `connect-string` is not explicitly set.
+  - Added Prometheus metrics: `hms_proxy_cache_invalidation_events_published_total`, `hms_proxy_cache_invalidation_events_received_total`, and `hms_proxy_cache_invalidation_errors_total`.
+
 - **Table Constraints Routing & Externalization**:
   - Implemented dedicated `TableConstraintsHandler` covering all Hive Metastore table constraint RPCs:
     `get_primary_keys` (`PrimaryKeysRequest`), `get_foreign_keys` (`ForeignKeysRequest`), `get_unique_constraints` (`UniqueConstraintsRequest`), `get_not_null_constraints` (`NotNullConstraintsRequest`), `get_default_constraints` (`DefaultConstraintsRequest`), `get_check_constraints` (`CheckConstraintsRequest`), and `get_all_table_constraints` (`AllTableConstraintsRequest`).

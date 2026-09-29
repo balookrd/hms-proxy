@@ -50,12 +50,7 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
       }
     }
     if (tblName != null) {
-      if (support.tableMetadataCache != null) {
-        support.tableMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
-      }
-      if (support.partitionMetadataCache != null) {
-        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
-      }
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
     }
     return result;
   }

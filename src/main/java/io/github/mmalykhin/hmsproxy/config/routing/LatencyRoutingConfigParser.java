@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.config.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
+import java.util.Locale;
 
 public final class LatencyRoutingConfigParser {
   private LatencyRoutingConfigParser() {
@@ -127,6 +128,52 @@ public final class LatencyRoutingConfigParser {
     ConfigValueCacheConfig configValueCache = new ConfigValueCacheConfig(
         configValueCacheTtlMs,
         configValueCacheMaxEntries);
+
+    DistributedCacheInvalidationMode invalidationMode =
+        parseDistributedCacheInvalidationMode(reader.getOrNull("routing.cache.distributed-invalidation.mode"));
+    DistributedCacheInvalidationConfig distributedCacheInvalidation;
+    if (invalidationMode == DistributedCacheInvalidationMode.ZOOKEEPER) {
+      String connectString = reader.getOrNull("routing.cache.distributed-invalidation.zookeeper.connect-string");
+      if (connectString == null || connectString.isBlank()) {
+        connectString = reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string");
+      }
+      if (connectString == null || connectString.isBlank()) {
+        throw new IllegalArgumentException(
+            "routing.cache.distributed-invalidation.zookeeper.connect-string must be set when "
+                + "routing.cache.distributed-invalidation.mode=ZOOKEEPER");
+      }
+      String znode = reader.getOrNull("routing.cache.distributed-invalidation.zookeeper.znode");
+      int connectionTimeoutMs = reader.getPositiveInt(
+          "routing.cache.distributed-invalidation.zookeeper.connection-timeout-ms",
+          DistributedCacheInvalidationZooKeeperConfig.DEFAULT_CONNECTION_TIMEOUT_MS);
+      int sessionTimeoutMs = reader.getPositiveInt(
+          "routing.cache.distributed-invalidation.zookeeper.session-timeout-ms",
+          DistributedCacheInvalidationZooKeeperConfig.DEFAULT_SESSION_TIMEOUT_MS);
+      int baseSleepMs = reader.getPositiveInt(
+          "routing.cache.distributed-invalidation.zookeeper.base-sleep-ms",
+          DistributedCacheInvalidationZooKeeperConfig.DEFAULT_BASE_SLEEP_MS);
+      int maxRetries = reader.getPositiveInt(
+          "routing.cache.distributed-invalidation.zookeeper.max-retries",
+          DistributedCacheInvalidationZooKeeperConfig.DEFAULT_MAX_RETRIES);
+      long eventRetentionMs = reader.getNonNegativeLong(
+          "routing.cache.distributed-invalidation.zookeeper.event-retention-ms",
+          reader.getNonNegativeLong(
+              "routing.cache.distributed-invalidation.zookeeper.event-retention-seconds",
+              DistributedCacheInvalidationZooKeeperConfig.DEFAULT_EVENT_RETENTION_MS / 1000L) * 1000L);
+      distributedCacheInvalidation = new DistributedCacheInvalidationConfig(
+          invalidationMode,
+          new DistributedCacheInvalidationZooKeeperConfig(
+              connectString,
+              znode,
+              connectionTimeoutMs,
+              sessionTimeoutMs,
+              baseSleepMs,
+              maxRetries,
+              eventRetentionMs));
+    } else {
+      distributedCacheInvalidation = DistributedCacheInvalidationConfig.disabled();
+    }
+
     return new LatencyRoutingConfig(
         new BackendStatePollingConfig(
             backendStatePollingEnabled,
@@ -159,7 +206,19 @@ public final class LatencyRoutingConfigParser {
         tableMetadataCache,
         partitionMetadataCache,
         cacheServeStaleOnError,
-        cacheStaleGracePeriodMs);
+        cacheStaleGracePeriodMs,
+        distributedCacheInvalidation);
+  }
+
+  private static DistributedCacheInvalidationMode parseDistributedCacheInvalidationMode(String value) {
+    if (value == null || value.isBlank()) {
+      return DistributedCacheInvalidationMode.NONE;
+    }
+    try {
+      return DistributedCacheInvalidationMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Unsupported routing.cache.distributed-invalidation.mode: " + value);
+    }
   }
 
   private static DegradedRoutingPolicy parseDegradedRoutingPolicy(String value) {

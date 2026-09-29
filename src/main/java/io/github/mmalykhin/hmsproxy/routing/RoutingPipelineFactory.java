@@ -73,6 +73,23 @@ final class RoutingPipelineFactory {
     MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
         ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs(), observability.metrics())
         : io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE;
+    LocalCacheInvalidator localCacheInvalidator = new LocalCacheInvalidator(
+        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache);
+    CacheInvalidator cacheInvalidator;
+    if (config != null
+        && config.latencyRouting() != null
+        && config.latencyRouting().distributedCacheInvalidation() != null
+        && config.latencyRouting().distributedCacheInvalidation().isZooKeeper()) {
+      try {
+        cacheInvalidator = new ZooKeeperCacheInvalidator(config, localCacheInvalidator, observability.metrics());
+      } catch (Exception e) {
+        observability.metrics().recordDistributedCacheInvalidationError("init");
+        throw new IllegalStateException("Failed to initialize ZooKeeper distributed cache invalidator", e);
+      }
+    } else {
+      cacheInvalidator = localCacheInvalidator;
+    }
+
     RoutingHandler routingHandler = new RoutingHandler(
         config,
         router,
@@ -86,7 +103,8 @@ final class RoutingPipelineFactory {
         tableMetadataCache,
         partitionMetadataCache,
         externalTableDropPurger,
-        metadataAuthorizer);
+        metadataAuthorizer,
+        cacheInvalidator);
     CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
         routingHandler);

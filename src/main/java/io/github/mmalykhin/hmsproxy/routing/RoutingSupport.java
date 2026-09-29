@@ -37,6 +37,7 @@ final class RoutingSupport {
   final TableMetadataCache tableMetadataCache;
   final PartitionMetadataCache partitionMetadataCache;
   final MetadataAuthorizer metadataAuthorizer;
+  final CacheInvalidator cacheInvalidator;
 
   RoutingSupport(
       ProxyConfig config,
@@ -125,6 +126,25 @@ final class RoutingSupport {
       PartitionMetadataCache partitionMetadataCache,
       MetadataAuthorizer metadataAuthorizer
   ) {
+    this(config, router, federationLayer, observability, dispatcher, impersonationResolver,
+        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache,
+        metadataAuthorizer, null);
+  }
+
+  RoutingSupport(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      TableMetadataCache tableMetadataCache,
+      PartitionMetadataCache partitionMetadataCache,
+      MetadataAuthorizer metadataAuthorizer,
+      CacheInvalidator cacheInvalidator
+  ) {
     this.config = config;
     this.router = router;
     this.federationLayer = federationLayer;
@@ -144,6 +164,27 @@ final class RoutingSupport {
             ? new PartitionMetadataCache(config.latencyRouting().partitionMetadataCache())
             : new PartitionMetadataCache(io.github.mmalykhin.hmsproxy.config.routing.PartitionMetadataCacheConfig.disabled()));
     this.metadataAuthorizer = metadataAuthorizer == null ? NoOpMetadataAuthorizer.INSTANCE : metadataAuthorizer;
+    this.cacheInvalidator = cacheInvalidator != null
+        ? cacheInvalidator
+        : new LocalCacheInvalidator(databaseListCache, databaseMetadataCache, this.tableMetadataCache, this.partitionMetadataCache);
+  }
+
+  void invalidateTable(String catalogName, String backendDbName, String tableName) {
+    if (cacheInvalidator != null) {
+      cacheInvalidator.invalidateTable(catalogName, backendDbName, tableName);
+    }
+  }
+
+  void invalidateDatabase(String catalogName, String backendDbName) {
+    if (cacheInvalidator != null) {
+      cacheInvalidator.invalidateDatabase(catalogName, backendDbName);
+    }
+  }
+
+  void invalidateCatalog(String catalogName) {
+    if (cacheInvalidator != null) {
+      cacheInvalidator.invalidateCatalog(catalogName);
+    }
   }
 
   // --- Backend invocation bridges ---

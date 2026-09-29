@@ -157,13 +157,35 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       ExternalTableDropPurger externalTableDropPurger,
       io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer metadataAuthorizer
   ) {
+    this(config, router, federationLayer, compatibilityLayer, observability, dispatcher,
+        impersonationResolver, databaseListCache, databaseMetadataCache, tableMetadataCache,
+        partitionMetadataCache, externalTableDropPurger, metadataAuthorizer, null);
+  }
+
+  RoutingHandler(
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationOperations federationLayer,
+      CompatibilityLayer compatibilityLayer,
+      ProxyObservability observability,
+      BackendCallDispatcher dispatcher,
+      ImpersonationResolver impersonationResolver,
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      TableMetadataCache tableMetadataCache,
+      PartitionMetadataCache partitionMetadataCache,
+      ExternalTableDropPurger externalTableDropPurger,
+      io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer metadataAuthorizer,
+      CacheInvalidator cacheInvalidator
+  ) {
     this.config = config;
     this.router = router;
     this.compatibilityLayer = compatibilityLayer;
     this.observability = observability;
     this.support = new RoutingSupport(
         config, router, federationLayer, observability, dispatcher, impersonationResolver,
-        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache, metadataAuthorizer);
+        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache,
+        metadataAuthorizer, cacheInvalidator);
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger, icebergTablePointerGuard);
@@ -174,20 +196,18 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   void close() {
     dropTableHandler.close();
     support.metadataAuthorizer.close();
+    if (support.cacheInvalidator != null) {
+      try {
+        support.cacheInvalidator.close();
+      } catch (Exception e) {
+        LOG.warn("Failed to close cache invalidator", e);
+      }
+    }
   }
 
   void flushCaches() {
-    if (support.databaseListCache != null) {
-      support.databaseListCache.invalidateAll();
-    }
-    if (support.databaseMetadataCache != null) {
-      support.databaseMetadataCache.invalidateAll();
-    }
-    if (support.tableMetadataCache != null) {
-      support.tableMetadataCache.clear();
-    }
-    if (support.partitionMetadataCache != null) {
-      support.partitionMetadataCache.clear();
+    if (support.cacheInvalidator != null) {
+      support.cacheInvalidator.invalidateAll();
     }
     if (icebergTablePointerGuard != null) {
       icebergTablePointerGuard.invalidateAll();
@@ -356,11 +376,9 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     } else {
       result = support.invokeDirect(namespace.backend(), method, routedArgs);
       if ("drop_database".equals(method.getName()) || "alter_database".equals(method.getName())) {
-        support.databaseMetadataCache.invalidate(namespace.catalogName(), namespace.backendDbName());
-        support.databaseListCache.invalidate(namespace.catalogName());
+        support.invalidateDatabase(namespace.catalogName(), namespace.backendDbName());
       } else if ("truncate_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
-        support.tableMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
-        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+        support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
       }
     }
     result = filterReadResult(method.getName(), namespace, result);
@@ -392,7 +410,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     } else {
       result = support.invokeDirect(namespace.backend(), method, routedArgs);
       if (isPartitionMutatingMethod(methodName)) {
-        support.partitionMetadataCache.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+        support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
       }
     }
     result = filterReadResult(method.getName(), namespace, result);
@@ -437,13 +455,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (methodName.startsWith("create_database")
         || methodName.startsWith("alter_database")
         || methodName.startsWith("drop_database")) {
-      support.databaseMetadataCache.invalidate(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
-      support.databaseListCache.invalidate(extractedNamespace.catalogName());
+      support.invalidateDatabase(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
     } else if (methodName.contains("table") || methodName.contains("partition")) {
       String tableName = RoutingSupport.extractTableName(args != null && args.length > 0 ? args[0] : null);
       if (tableName != null) {
-        support.tableMetadataCache.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
-        support.partitionMetadataCache.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
+        support.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
       }
     }
     result = filterReadResult(methodName, extractedNamespace, result);

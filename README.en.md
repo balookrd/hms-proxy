@@ -187,7 +187,7 @@ When enabled, the proxy can:
 - proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
 - immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - cache metastore configuration values (`get_config_value`) in memory with `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour) with single-flight deduplication and negative caching for unknown keys
-- cache table metadata (`get_table`) via `routing.cache.table-metadata.*` and partition metadata (`get_partition*`, `get_part_specs*`) via `routing.cache.partition-metadata.*` with single-flight deduplication, LRU eviction, and automatic DDL invalidation on `alter_table*`, `drop_table*`, `truncate_table*`
+- cache table metadata (`get_table`) via `routing.cache.table-metadata.*` and partition metadata (`get_partition*`, `get_part_specs*`) via `routing.cache.partition-metadata.*` with single-flight deduplication, LRU eviction, and automatic local & distributed ZooKeeper DDL invalidation (`routing.cache.distributed-invalidation.*`) on `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - serve stale table and partition metadata during remote backend outages via `routing.cache.serve-stale-on-error=true` for up to `routing.cache.stale-grace-period-ms` (default 5 minutes)
 - guard inter-datacenter WAN connections from saturation via WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` and `concurrency-timeout-ms`)
 - start proxy smoothly despite temporary remote/secondary catalog unavailability via `catalog.<name>.startup-mode=LENIENT`
@@ -1732,6 +1732,20 @@ routing.database-cache.background-refresh.activity-window-ms=3600000
 routing.refresh-privileges.synthetic-success=true
 routing.config-value-cache.ttl-ms=3600000
 routing.config-value-cache.max-entries=1000
+routing.cache.table-metadata.ttl-ms=60000
+routing.cache.table-metadata.max-entries=10000
+routing.cache.partition-metadata.ttl-ms=60000
+routing.cache.partition-metadata.max-entries=10000
+routing.cache.serve-stale-on-error=true
+routing.cache.stale-grace-period-ms=300000
+# Distributed ZooKeeper cache invalidation across proxy replicas:
+routing.cache.distributed-invalidation.mode=ZOOKEEPER
+routing.cache.distributed-invalidation.connect-string=zookeeper.internal:2181
+routing.cache.distributed-invalidation.session-timeout-ms=60000
+routing.cache.distributed-invalidation.connection-timeout-ms=15000
+routing.cache.distributed-invalidation.base-path=/hms-proxy-cache-invalidation
+routing.cache.distributed-invalidation.event-retention-ms=300000
+routing.cache.distributed-invalidation.purge-interval-ms=60000
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 ```
 
@@ -1749,6 +1763,44 @@ failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.
+
+### Table & Partition Metadata Caching and Distributed DDL Invalidation (ZooKeeper)
+
+To optimize query planning performance and reduce WAN latency, `hms-proxy` supports in-memory caching of table and partition metadata:
+
+- `routing.cache.table-metadata.ttl-ms` (or `ttl-seconds`, default `0` — disabled): Caches `Table` objects for `get_table`.
+- `routing.cache.table-metadata.max-entries` (default `10000`): Maximum entries in the LRU table cache.
+- `routing.cache.partition-metadata.ttl-ms` (or `ttl-seconds`, default `0` — disabled): Caches partition metadata and partition name lists (`get_partition*`, `get_part_specs*`).
+- `routing.cache.partition-metadata.max-entries` (default `10000`): Maximum entries in the LRU partition cache.
+- `routing.cache.serve-stale-on-error=true`: On transient backend outages or network timeouts, serves stale cached entries for up to `routing.cache.stale-grace-period-ms` (default 5 minutes).
+- SingleFlight: Concurrent lookups for the same table or partition query are coalesced into a single backend RPC.
+
+#### Synchronous Multi-Replica DDL Invalidation via ZooKeeper
+
+When running multiple `hms-proxy` replicas behind a load balancer in an HA topology, in-memory caches on each node are isolated. When a mutating DDL operation (`ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DROP DATABASE`) is processed by one replica, other replicas might serve stale metadata until their TTL expires.
+
+To maintain cross-replica metadata consistency, `hms-proxy` provides **distributed DDL invalidation via ZooKeeper**:
+
+```properties
+routing.cache.distributed-invalidation.mode=ZOOKEEPER
+routing.cache.distributed-invalidation.connect-string=zookeeper.internal:2181
+routing.cache.distributed-invalidation.session-timeout-ms=60000
+routing.cache.distributed-invalidation.connection-timeout-ms=15000
+routing.cache.distributed-invalidation.base-path=/hms-proxy-cache-invalidation
+routing.cache.distributed-invalidation.event-retention-ms=300000
+routing.cache.distributed-invalidation.purge-interval-ms=60000
+# routing.cache.distributed-invalidation.instance-id=proxy-node-1
+```
+
+- **Publish/Subscribe Mechanism**: The replica executing a DDL mutation invalidates its local cache and publishes a compact binary invalidation event to `/hms-proxy-cache-invalidation`. All other replicas watching the znode via Apache Curator `PathChildrenCache` receive the notification and invalidate cached entries for the affected table, partition, or database.
+- **Echo Suppression**: Events include the publishing node's `instance-id`, ensuring the originating replica ignores its own echoed events.
+- **Fail-Safe Behavior on Split-Brain / ZooKeeper Outage**: If the ZooKeeper connection is interrupted (`LOST` or `SUSPENDED`), the proxy defensively flushes all local metadata caches to avoid serving divergent metadata while isolated.
+- **Event Retention Sweep**: A background cleaner periodically purges event znodes older than `event-retention-ms` (default 5 minutes).
+- **Fallback Connection String**: If `connect-string` is omitted in the invalidation config, it automatically falls back to `synthetic-read-lock.store.zookeeper.connect-string`.
+- **Prometheus Metrics**:
+  - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
 
 ### Apache Ranger authorization and global shared metadata cache
 
