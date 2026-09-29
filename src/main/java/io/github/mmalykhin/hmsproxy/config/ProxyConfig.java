@@ -39,8 +39,11 @@ public record ProxyConfig(
     LatencyRoutingConfig latencyRouting,
     IcebergPointerGuardConfig icebergPointerGuard,
     List<AdditionalFrontendConfig> additionalFrontends,
-    RangerConfig ranger
+    RangerConfig ranger,
+    long reloadPollIntervalSeconds
 ) {
+  public static final long DEFAULT_RELOAD_POLL_INTERVAL_SECONDS = 5L;
+
   public ProxyConfig {
     catalogs = Map.copyOf(catalogs);
     backend = backend == null ? new BackendConfig(Map.of()) : backend;
@@ -66,6 +69,31 @@ public record ProxyConfig(
         icebergPointerGuard == null ? IcebergPointerGuardConfig.defaults() : icebergPointerGuard;
     additionalFrontends = additionalFrontends == null ? List.of() : List.copyOf(additionalFrontends);
     ranger = ranger == null ? RangerConfig.disabled() : ranger;
+    reloadPollIntervalSeconds = Math.max(0L, reloadPollIntervalSeconds);
+  }
+
+  public ProxyConfig(
+      ServerConfig server,
+      SecurityConfig security,
+      String catalogDbSeparator,
+      String defaultCatalog,
+      Map<String, CatalogConfig> catalogs,
+      BackendConfig backend,
+      CompatibilityConfig compatibility,
+      FederationConfig federation,
+      TransactionalDdlGuardConfig transactionalDdlGuard,
+      ManagementConfig management,
+      RestCatalogConfig restCatalog,
+      SyntheticReadLockStoreConfig syntheticReadLockStore,
+      RateLimitConfig rateLimit,
+      LatencyRoutingConfig latencyRouting,
+      IcebergPointerGuardConfig icebergPointerGuard,
+      List<AdditionalFrontendConfig> additionalFrontends,
+      RangerConfig ranger
+  ) {
+    this(server, security, catalogDbSeparator, defaultCatalog, catalogs, backend, compatibility,
+        federation, transactionalDdlGuard, management, restCatalog, syntheticReadLockStore, rateLimit,
+        latencyRouting, icebergPointerGuard, additionalFrontends, ranger, DEFAULT_RELOAD_POLL_INTERVAL_SECONDS);
   }
 
   public static Builder builder() {
@@ -90,6 +118,7 @@ public record ProxyConfig(
     private IcebergPointerGuardConfig icebergPointerGuard;
     private List<AdditionalFrontendConfig> additionalFrontends;
     private RangerConfig ranger;
+    private long reloadPollIntervalSeconds = DEFAULT_RELOAD_POLL_INTERVAL_SECONDS;
 
     public Builder server(ServerConfig server) { this.server = server; return this; }
     public Builder security(SecurityConfig security) { this.security = security; return this; }
@@ -111,11 +140,13 @@ public record ProxyConfig(
       return this;
     }
     public Builder ranger(RangerConfig ranger) { this.ranger = ranger; return this; }
+    public Builder reloadPollIntervalSeconds(long seconds) { this.reloadPollIntervalSeconds = seconds; return this; }
 
     public ProxyConfig build() {
       return new ProxyConfig(server, security, catalogDbSeparator, defaultCatalog, catalogs,
           backend, compatibility, federation, transactionalDdlGuard, management, restCatalog,
-          syntheticReadLockStore, rateLimit, latencyRouting, icebergPointerGuard, additionalFrontends, ranger);
+          syntheticReadLockStore, rateLimit, latencyRouting, icebergPointerGuard, additionalFrontends, ranger,
+          reloadPollIntervalSeconds);
     }
   }
 

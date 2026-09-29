@@ -374,4 +374,10 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {
     return MetastoreCompatibility.shouldUseFallback(methodName, cause);
   }
+
+  public synchronized void reconfigure(ProxyConfig newConfig) {
+    if (routingHandler != null) {
+      routingHandler.reconfigure(newConfig);
+    }
+  }
 }

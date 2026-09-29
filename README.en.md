@@ -155,6 +155,19 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 - Hive ACID, locks, tokens, and other truly global metastore operations still need careful
   validation in your environment before turning them on behind a multi-catalog proxy
 
+### Hard database mapping to remote catalogs (`unprefixed-databases`)
+
+In a multi-catalog environment, databases from remote catalogs normally receive a catalog prefix (e.g. `remote__beemetrics`).
+Using `catalog.<name>.unprefixed-databases`, specific databases can be mapped to a remote catalog without any catalog prefix:
+
+```properties
+catalog.remote.unprefixed-databases=beemetrics,another_db
+```
+
+- **Shadowing**: if a database with the same name exists in the default catalog (`routing.default-catalog`), the remote database shadows (replaces) the default catalog's database in `SHOW DATABASES`, `get_all_databases`, and `get_databases`.
+- **Direct routing**: all requests targeting this database (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate, and locks) route directly to the designated remote catalog.
+- **Constraints**: cannot be configured on `routing.default-catalog`, wildcards (`*`, `%`, `?`) are prohibited, and the same database name cannot be assigned to multiple remote catalogs.
+
 ## Latency-aware backend routing
 
 The proxy can also apply optional latency-aware backend handling for slow or intermittently failing
@@ -407,6 +420,14 @@ Available endpoints:
 - `/readyz` checks backend connectivity, returns per-backend `connected` / `degraded` state,
   and includes Kerberos login status plus TGT freshness for front-door and outbound backend credentials
 - `/metrics` exposes Prometheus text format metrics
+
+### Dynamic configuration reload (Safe Reload)
+
+The proxy supports live configuration reloading without restarting the process:
+- **Automatic polling**: `config.reload.poll-interval-seconds` (defaults to `5` seconds) polls the configuration file's mtime and applies changes. Set to `0` to disable background polling.
+- **SIGHUP signal**: send SIGHUP to the proxy process (`kill -HUP <pid>`).
+
+Safe Reload: if the modified configuration file contains syntax errors, invalid properties, or conflicting namespace mappings, the failure is logged and the proxy **continues running uninterrupted on its previous valid configuration**. Upon a successful reload, `CatalogRouter`, `FederationLayer`, and internal metadata caches (`DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`) are updated atomically.
 
 `/healthz` is intended for simple liveness checks and only answers whether the proxy process is up.
 

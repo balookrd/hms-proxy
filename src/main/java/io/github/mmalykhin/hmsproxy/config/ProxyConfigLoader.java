@@ -80,6 +80,7 @@ public final class ProxyConfigLoader {
             orig.exposeMode(),
             orig.exposeDbPatterns(),
             orig.exposeTablePatterns(),
+            orig.unprefixedDatabases(),
             orig.runtimeProfile(),
             orig.backendStandaloneMetastoreJar(),
             orig.hiveConf(),
@@ -116,6 +117,8 @@ public final class ProxyConfigLoader {
     IcebergPointerGuardConfig icebergPointerGuard = IcebergPointerGuardConfigParser.parse(reader);
     List<AdditionalFrontendConfig> additionalFrontends =
         AdditionalFrontendConfigParser.parse(reader, server, management);
+    long reloadPollIntervalSeconds = reader.getNonNegativeLong(
+        "config.reload.poll-interval-seconds", ProxyConfig.DEFAULT_RELOAD_POLL_INTERVAL_SECONDS);
 
     boolean strictValidation = reader.getBoolean("config.strict-validation", true);
     validateUnconsumedProperties(reader, strictValidation, catalogs.keySet(), additionalFrontends);
@@ -138,6 +141,7 @@ public final class ProxyConfigLoader {
         .icebergPointerGuard(icebergPointerGuard)
         .additionalFrontends(additionalFrontends)
         .ranger(ranger)
+        .reloadPollIntervalSeconds(reloadPollIntervalSeconds)
         .build();
   }
 
@@ -377,7 +381,8 @@ public final class ProxyConfigLoader {
       "ranger.ssl.truststore.password",
       "ranger.config-dir",
       "ranger.audit.enabled",
-      "additional-frontends"
+      "additional-frontends",
+      "config.reload.poll-interval-seconds"
   );
 
   private static final Set<String> PER_CATALOG_KNOWN_SUFFIXES = Set.of(
@@ -388,6 +393,7 @@ public final class ProxyConfigLoader {
       "write-db-whitelist",
       "expose-mode",
       "expose-db-patterns",
+      "unprefixed-databases",
       "runtime-profile",
       "backend-standalone-metastore-jar",
       "standalone-metastore-jar",

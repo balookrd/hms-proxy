@@ -519,6 +519,24 @@ The scenario exercises the refresher lifecycle (`DatabaseCacheRefresher`) agains
 - Pauses requests past the activity window (`activity-window-ms=10000`) and asserts idle sleep: refresh metrics cease incrementing.
 - Sends fresh client requests and verifies awakening: background refreshes resume.
 
+## Unprefixed Databases and Live Configuration Reload (`run-unprefixed-db-and-reload-smoke.sh`)
+
+Validates hard mapping of remote databases into the root federated namespace (`catalog.<name>.unprefixed-databases`), shadowing of identically named databases in the default catalog, and dynamic safe configuration reloading via `SIGHUP`:
+
+```bash
+cd smoke-stand && ./prepare.sh
+./run-unprefixed-db-and-reload-smoke.sh
+```
+
+The scenario exercises:
+- Creating test databases with identical names in default catalog (`hdp`) and remote catalog (`apache`).
+- Dynamically applying `catalog.apache.unprefixed-databases` via `SIGHUP` without restarting the service (`docker kill --signal=HUP stand-proxy`).
+- Verifying `get_all_databases`: the database appears without prefix (`smoke_unprefixed_db`), and the prefixed entry `apache__smoke_unprefixed_db` is hidden.
+- Verifying shadowing: requests targeting `smoke_unprefixed_db` route to the remote catalog `apache`, while tables from the default catalog's database are shadowed.
+- Creating and dropping a table via DDL inside the unprefixed database.
+- Verifying Safe Reload: injecting an invalid configuration property and sending `SIGHUP` does not crash the service (the proxy responds on `/readyz` and continues serving requests on the previous valid configuration).
+- Reverting the configuration and confirming un-shadowing after `SIGHUP`.
+
 ## Converted Schema Patterns for DBeaver / Hue (`run-schema-pattern-smoke.sh`)
 
 Validates resolution of converted schema patterns passed by JDBC GUI clients (DBeaver, Hue, DataGrip) via HiveServer2:

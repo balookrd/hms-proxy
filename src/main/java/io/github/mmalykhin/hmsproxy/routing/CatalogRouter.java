@@ -15,14 +15,16 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class CatalogRouter implements AutoCloseable {
-  private final ProxyConfig config;
+  private volatile ProxyConfig config;
   private final Map<String, CatalogBackend> backends;
-  private final List<CatalogPrefix> patternPrefixes;
+  private volatile List<CatalogPrefix> patternPrefixes;
+  private volatile Map<String, String> unprefixedDatabases;
 
   CatalogRouter(ProxyConfig config, Map<String, CatalogBackend> backends) {
     this.config = config;
     this.backends = backends;
     this.patternPrefixes = buildPatternPrefixes(config, backends.keySet());
+    this.unprefixedDatabases = buildUnprefixedDatabases(config);
   }
 
   public static CatalogRouter createForTest(ProxyConfig config, Map<String, CatalogBackend> backends) {
@@ -108,8 +110,15 @@ public final class CatalogRouter implements AutoCloseable {
       String backendDb = rawBackendDb.contains(".") && !rawBackendDb.contains("*") && !rawBackendDb.contains("%")
           ? rawBackendDb.replace('.', '_')
           : rawBackendDb;
-      String canonicalExternalDb = prefixedCatalog + config.catalogDbSeparator() + backendDb;
+      String canonicalExternalDb = isUnprefixedDatabase(prefixedCatalog, backendDb)
+          ? backendDb
+          : prefixedCatalog + config.catalogDbSeparator() + backendDb;
       return resolveCatalog(prefixedCatalog, backendDb, canonicalExternalDb);
+    }
+
+    String routedCatalog = unprefixedDatabases.get(normalizedDbName.toLowerCase(java.util.Locale.ROOT));
+    if (routedCatalog != null && backends.containsKey(routedCatalog)) {
+      return resolveCatalog(routedCatalog, normalizedDbName, normalizedDbName);
     }
 
     return resolveCatalog(config.defaultCatalog(), normalizedDbName);
@@ -126,8 +135,16 @@ public final class CatalogRouter implements AutoCloseable {
         String backendDb = remainder.contains(".") && !remainder.contains("*") && !remainder.contains("%")
             ? remainder.replace('.', '_')
             : remainder;
-        String externalDbName = candidate.catalogName() + config.catalogDbSeparator() + backendDb;
+        String externalDbName = isUnprefixedDatabase(candidate.catalogName(), backendDb)
+            ? backendDb
+            : candidate.catalogName() + config.catalogDbSeparator() + backendDb;
         return Optional.of(resolveCatalog(candidate.catalogName(), backendDb, externalDbName));
+      }
+    }
+    if (!normalizedDbPattern.contains("*") && !normalizedDbPattern.contains("%")) {
+      String routedCatalog = unprefixedDatabases.get(normalizedDbPattern.toLowerCase(java.util.Locale.ROOT));
+      if (routedCatalog != null && backends.containsKey(routedCatalog)) {
+        return Optional.of(resolveCatalog(routedCatalog, normalizedDbPattern, normalizedDbPattern));
       }
     }
     return Optional.empty();
@@ -147,6 +164,9 @@ public final class CatalogRouter implements AutoCloseable {
       return catalog.equals(config.defaultCatalog()) ? backendDbName : catalog;
     }
     if (catalog.equals(config.defaultCatalog())) {
+      return backendDbName;
+    }
+    if (isUnprefixedDatabase(catalog, backendDbName)) {
       return backendDbName;
     }
     return catalog + config.catalogDbSeparator() + backendDbName;
@@ -219,6 +239,11 @@ public final class CatalogRouter implements AutoCloseable {
     if ("*".equals(normalized) || ".*".equals(normalized) || "%".equals(normalized)) {
       return true;
     }
+    for (String unprefixedDb : unprefixedDatabases.keySet()) {
+      if (matchesHivePattern(unprefixedDb, normalized)) {
+        return true;
+      }
+    }
     for (CatalogPrefix candidate : patternPrefixes) {
       if (candidate.catalogName().equals(config.defaultCatalog())) {
         continue;
@@ -260,6 +285,11 @@ public final class CatalogRouter implements AutoCloseable {
     String normalized = normalizeDatabasePattern(dbPattern);
 
     if (catalogName.equals(config.defaultCatalog())) {
+      if (!normalized.contains("*") && !normalized.contains("%")) {
+        if (unprefixedDatabases.containsKey(normalized.toLowerCase(java.util.Locale.ROOT))) {
+          return Optional.empty();
+        }
+      }
       for (CatalogPrefix candidate : patternPrefixes) {
         if (candidate.catalogName().equals(config.defaultCatalog())) {
           continue;
@@ -339,6 +369,12 @@ public final class CatalogRouter implements AutoCloseable {
       }
     }
 
+    for (Map.Entry<String, String> entry : unprefixedDatabases.entrySet()) {
+      if (entry.getValue().equals(catalogName) && matchesHivePattern(entry.getKey(), normalized)) {
+        return Optional.of(dbPattern != null && dbPattern.startsWith("@") ? normalized : (dbPattern == null || dbPattern.isBlank() ? "*" : dbPattern));
+      }
+    }
+
     return Optional.empty();
   }
 
@@ -407,6 +443,45 @@ public final class CatalogRouter implements AutoCloseable {
     }
     prefixes.sort((a, b) -> Integer.compare(b.prefix().length(), a.prefix().length()));
     return Collections.unmodifiableList(prefixes);
+  }
+
+  public boolean isUnprefixedDatabase(String catalogName, String dbName) {
+    if (catalogName == null || dbName == null || catalogName.equals(config.defaultCatalog())) {
+      return false;
+    }
+    String targetCatalog = unprefixedDatabases.get(dbName.toLowerCase(java.util.Locale.ROOT));
+    return catalogName.equals(targetCatalog);
+  }
+
+  public boolean isDatabaseShadowed(String catalogName, String dbName) {
+    if (catalogName == null || dbName == null || !catalogName.equals(config.defaultCatalog())) {
+      return false;
+    }
+    return unprefixedDatabases.containsKey(dbName.toLowerCase(java.util.Locale.ROOT));
+  }
+
+  public synchronized void reconfigure(ProxyConfig newConfig) {
+    this.config = newConfig;
+    this.patternPrefixes = buildPatternPrefixes(newConfig, backends.keySet());
+    this.unprefixedDatabases = buildUnprefixedDatabases(newConfig);
+  }
+
+  public Map<String, String> unprefixedDatabases() {
+    return unprefixedDatabases;
+  }
+
+  private static Map<String, String> buildUnprefixedDatabases(ProxyConfig config) {
+    Map<String, String> mapping = new LinkedHashMap<>();
+    for (Map.Entry<String, CatalogConfig> entry : config.catalogs().entrySet()) {
+      String catalog = entry.getKey();
+      if (catalog.equals(config.defaultCatalog())) {
+        continue;
+      }
+      for (String db : entry.getValue().unprefixedDatabases()) {
+        mapping.put(db.toLowerCase(java.util.Locale.ROOT), catalog);
+      }
+    }
+    return Collections.unmodifiableMap(mapping);
   }
 
   private record CatalogPrefix(String prefix, String catalogName) {}

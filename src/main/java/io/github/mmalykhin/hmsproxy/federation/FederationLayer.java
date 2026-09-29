@@ -12,10 +12,10 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 
 public final class FederationLayer implements FederationOperations {
-  private final ProxyConfig config;
+  private volatile ProxyConfig config;
   private final CatalogRouter router;
-  private final ViewDefinitionCompatibility viewDefinitionCompatibility;
-  private final ExposurePolicy exposurePolicy;
+  private volatile ViewDefinitionCompatibility viewDefinitionCompatibility;
+  private volatile ExposurePolicy exposurePolicy;
 
   public FederationLayer(ProxyConfig config, CatalogRouter router) {
     this.config = config;
@@ -53,14 +53,20 @@ public final class FederationLayer implements FederationOperations {
   }
 
   public boolean isDatabaseExposed(String catalogName, String backendDbName) {
+    if (router.isDatabaseShadowed(catalogName, backendDbName)) {
+      return false;
+    }
     return exposurePolicy.isDatabaseExposed(catalogName, backendDbName);
   }
 
   public boolean isTableExposed(CatalogRouter.ResolvedNamespace namespace, String tableName) {
-    return exposurePolicy.isTableExposed(namespace.catalogName(), namespace.backendDbName(), tableName);
+    return isTableExposed(namespace.catalogName(), namespace.backendDbName(), tableName);
   }
 
   public boolean isTableExposed(String catalogName, String backendDbName, String tableName) {
+    if (router.isDatabaseShadowed(catalogName, backendDbName)) {
+      return false;
+    }
     return exposurePolicy.isTableExposed(catalogName, backendDbName, tableName);
   }
 
@@ -161,5 +167,11 @@ public final class FederationLayer implements FederationOperations {
 
   private boolean sameNamespace(CatalogRouter.ResolvedNamespace left, CatalogRouter.ResolvedNamespace right) {
     return left.catalogName().equals(right.catalogName()) && left.backendDbName().equals(right.backendDbName());
+  }
+
+  public synchronized void reconfigure(ProxyConfig newConfig) {
+    this.config = newConfig;
+    this.exposurePolicy = new ExposurePolicy(newConfig);
+    this.viewDefinitionCompatibility = new ViewDefinitionCompatibility(newConfig, router);
   }
 }

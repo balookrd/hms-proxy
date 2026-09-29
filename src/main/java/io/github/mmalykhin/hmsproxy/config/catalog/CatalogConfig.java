@@ -17,6 +17,7 @@ public record CatalogConfig(
     CatalogExposureMode exposeMode,
     List<String> exposeDbPatterns,
     Map<String, List<String>> exposeTablePatterns,
+    List<String> unprefixedDatabases,
     MetastoreRuntimeProfile runtimeProfile,
     String backendStandaloneMetastoreJar,
     Map<String, String> hiveConf,
@@ -55,6 +56,7 @@ public record CatalogConfig(
     exposeMode = exposeMode == null ? DEFAULT_EXPOSE_MODE : exposeMode;
     writeDbWhitelist = writeDbWhitelist == null ? List.of() : List.copyOf(writeDbWhitelist);
     exposeDbPatterns = exposeDbPatterns == null ? List.of() : List.copyOf(exposeDbPatterns);
+    unprefixedDatabases = unprefixedDatabases == null ? List.of() : List.copyOf(unprefixedDatabases);
     latencyBudgetMs = Math.max(latencyBudgetMs, DEFAULT_LATENCY_BUDGET_MS);
     maxImpersonationClients =
         maxImpersonationClients <= 0 ? DEFAULT_MAX_IMPERSONATION_CLIENTS : maxImpersonationClients;
@@ -100,6 +102,7 @@ public record CatalogConfig(
         DEFAULT_EXPOSE_MODE,
         List.of(),
         Map.of(),
+        List.of(),
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
@@ -142,6 +145,51 @@ public record CatalogConfig(
         exposeMode,
         exposeDbPatterns,
         exposeTablePatterns,
+        List.of(),
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        DEFAULT_LATENCY_BUDGET_MS,
+        DEFAULT_MAX_IMPERSONATION_CLIENTS,
+        DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS,
+        DEFAULT_SHARED_SESSION_POOL_SIZE,
+        DEFAULT_IMPERSONATION_POOL_MAX_SIZE,
+        DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS,
+        io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled(),
+        DEFAULT_STARTUP_MODE,
+        DEFAULT_REQUIRED_FOR_READINESS,
+        DEFAULT_MAX_CONCURRENT_CALLS,
+        DEFAULT_CONCURRENCY_TIMEOUT_MS,
+        null,
+        DEFAULT_FALLBACK_ON_OUTAGE);
+  }
+
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      List<String> unprefixedDatabases,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        unprefixedDatabases,
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
@@ -190,6 +238,7 @@ public record CatalogConfig(
         exposeMode,
         exposeDbPatterns,
         exposeTablePatterns,
+        List.of(),
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
@@ -239,6 +288,7 @@ public record CatalogConfig(
         exposeMode,
         exposeDbPatterns,
         exposeTablePatterns,
+        List.of(),
         runtimeProfile,
         backendStandaloneMetastoreJar,
         hiveConf,
@@ -255,5 +305,61 @@ public record CatalogConfig(
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
         DEFAULT_FALLBACK_ON_OUTAGE);
+  }
+
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf,
+      long latencyBudgetMs,
+      int maxImpersonationClients,
+      long impersonationClientIdleTtlMs,
+      int sharedSessionPoolSize,
+      int impersonationPoolMaxSize,
+      long impersonationSessionIdleTtlMs,
+      io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger,
+      CatalogStartupMode startupMode,
+      boolean requiredForReadiness,
+      int maxConcurrentCalls,
+      long concurrencyTimeoutMs,
+      String fallbackCatalog,
+      boolean fallbackOnOutage
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        List.of(),
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        latencyBudgetMs,
+        maxImpersonationClients,
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize,
+        impersonationPoolMaxSize,
+        impersonationSessionIdleTtlMs,
+        ranger,
+        startupMode,
+        requiredForReadiness,
+        maxConcurrentCalls,
+        concurrencyTimeoutMs,
+        fallbackCatalog,
+        fallbackOnOutage);
   }
 }

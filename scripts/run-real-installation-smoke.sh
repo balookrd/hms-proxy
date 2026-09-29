@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern|ranger]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern|ranger|unprefixed]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,7 +23,7 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke + optional Ranger policy smoke
+  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke + optional Ranger policy smoke + optional unprefixed database smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
   impersonation run only the table creation user impersonation smoke
   txn           run only the direct ACID/txn smoke
@@ -32,6 +32,7 @@ Scenarios:
   rest          run only the Iceberg REST catalog smoke (HTTP, via curl)
   schema_pattern run only the DBeaver/Hue converted schema pattern smoke
   ranger        run only Apache Ranger authorization policy smoke (supports simple and kerberos auth)
+  unprefixed    run only unprefixed database routing smoke
 
 Important env vars:
   HMS_SMOKE_URI
@@ -595,6 +596,64 @@ run_schema_pattern_smoke() {
 
   rm -f "${output_file}"
   log "schema pattern smoke passed"
+}
+
+unprefixed_is_configured() {
+  [[ -n "${HMS_SMOKE_UNPREFIXED_DB:-}" ]]
+}
+
+run_unprefixed_smoke() {
+  if ! unprefixed_is_configured; then
+    if [[ "${SCENARIO}" == "unprefixed" ]]; then
+      fail "unprefixed scenario requires HMS_SMOKE_UNPREFIXED_DB"
+    fi
+    log "skipping unprefixed database smoke because HMS_SMOKE_UNPREFIXED_DB is not configured"
+    return
+  fi
+
+  local unprefixed_db="${HMS_SMOKE_UNPREFIXED_DB}"
+  local remote_catalog="${HMS_SMOKE_UNPREFIXED_CATALOG:-${HMS_SMOKE_APACHE_CATALOG:-apache}}"
+  log "running unprefixed database routing smoke (db: ${unprefixed_db}, remote catalog: ${remote_catalog})"
+
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-unprefixed.XXXXXX")"
+
+  local -a get_db_args=()
+  get_db_args+=("--op" "get_database")
+  get_db_args+=("--db" "${unprefixed_db}")
+  run_cli "get_database for unprefixed database" "metadata" "${get_db_args[@]}" | tee "${output_file}"
+  grep -q "database=${unprefixed_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_database '${unprefixed_db}' failed"; }
+
+  local -a all_dbs_args=()
+  all_dbs_args+=("--op" "get_all_databases")
+  run_cli "get_all_databases for unprefixed check" "metadata" "${all_dbs_args[@]}" | tee "${output_file}"
+  grep -q "${unprefixed_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_all_databases did not contain unprefixed '${unprefixed_db}'"; }
+  if grep -q "${remote_catalog}__${unprefixed_db}" "${output_file}"; then
+    rm -f "${output_file}"
+    fail "get_all_databases contains '${remote_catalog}__${unprefixed_db}', but it should be unprefixed"
+  fi
+
+  local -a pattern_args=()
+  pattern_args+=("--op" "get_databases")
+  pattern_args+=("--pattern" "${unprefixed_db}")
+  run_cli "get_databases pattern for unprefixed db" "metadata" "${pattern_args[@]}" | tee "${output_file}"
+  grep -q "${unprefixed_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_databases with pattern '${unprefixed_db}' did not return '${unprefixed_db}'"; }
+
+  if [[ -n "${HMS_SMOKE_UNPREFIXED_TABLE:-}" ]]; then
+    local -a table_args=()
+    table_args+=("--op" "get_table")
+    table_args+=("--db" "${unprefixed_db}")
+    table_args+=("--table" "${HMS_SMOKE_UNPREFIXED_TABLE}")
+    run_cli "get_table in unprefixed database" "metadata" "${table_args[@]}" | tee "${output_file}"
+    grep -q "table=${unprefixed_db}.${HMS_SMOKE_UNPREFIXED_TABLE}" "${output_file}" \
+      || { rm -f "${output_file}"; fail "get_table in unprefixed database failed"; }
+  fi
+
+  rm -f "${output_file}"
+  log "unprefixed database routing smoke passed"
 }
 
 ranger_is_configured() {
@@ -2707,6 +2766,9 @@ main() {
       if ranger_is_configured; then
         run_ranger_smoke
       fi
+      if unprefixed_is_configured; then
+        run_unprefixed_smoke
+      fi
       ;;
     sql)
       run_sql_smoke_all
@@ -2734,8 +2796,11 @@ main() {
     ranger)
       run_ranger_smoke
       ;;
+    unprefixed)
+      run_unprefixed_smoke
+      ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern, ranger"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern, ranger, unprefixed"
       ;;
   esac
 

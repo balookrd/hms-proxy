@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -10,6 +11,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
@@ -371,5 +373,77 @@ public class CatalogRouterTest {
     Assert.assertFalse(router.canMatchRemoteCatalogs("*"));
     Assert.assertFalse(router.canMatchRemoteCatalogs("default"));
     Assert.assertFalse(router.canMatchRemoteCatalogs(null));
+  }
+
+  @Test
+  public void resolvesUnprefixedDatabaseToRemoteCatalog() throws Exception {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator(".")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", new CatalogConfig(
+                "catalog2", "c2", "file:///c2", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
+                CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of("beemetrics"), null, null,
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogRouter router = routerFor(config);
+
+    CatalogRouter.ResolvedNamespace ns1 = router.resolveDatabase("beemetrics");
+    Assert.assertEquals("catalog2", ns1.catalogName());
+    Assert.assertEquals("beemetrics", ns1.backendDbName());
+    Assert.assertEquals("beemetrics", ns1.externalDbName());
+
+    CatalogRouter.ResolvedNamespace ns2 = router.resolveDatabase("BEEMETRICS");
+    Assert.assertEquals("catalog2", ns2.catalogName());
+    Assert.assertEquals("BEEMETRICS", ns2.backendDbName());
+    Assert.assertEquals("BEEMETRICS", ns2.externalDbName());
+
+    Assert.assertEquals("beemetrics", router.externalDatabaseName("catalog2", "beemetrics"));
+    Assert.assertEquals("catalog2.other_db", router.externalDatabaseName("catalog2", "other_db"));
+
+    Assert.assertTrue(router.isUnprefixedDatabase("catalog2", "beemetrics"));
+    Assert.assertFalse(router.isUnprefixedDatabase("catalog2", "other_db"));
+    Assert.assertTrue(router.isDatabaseShadowed("catalog1", "beemetrics"));
+    Assert.assertFalse(router.isDatabaseShadowed("catalog2", "beemetrics"));
+
+    Assert.assertTrue(router.canMatchRemoteCatalogs("beemetrics"));
+    Assert.assertEquals(Optional.of("beemetrics"), router.backendDatabasePattern("catalog2", "beemetrics"));
+  }
+
+  @Test
+  public void reconfigureUpdatesUnprefixedDatabases() throws Exception {
+    CatalogRouter router = routerFor(TWO_CATALOG_CONFIG);
+
+    CatalogRouter.ResolvedNamespace initial = router.resolveDatabase("beemetrics");
+    Assert.assertEquals("catalog1", initial.catalogName());
+
+    ProxyConfig newConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator(".")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, java.util.List.of(), null, null,
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", new CatalogConfig(
+                "catalog2", "c2", "file:///c2", false, CatalogAccessMode.READ_WRITE, java.util.List.of(),
+                CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of("beemetrics"), null, null,
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    router.reconfigure(newConfig);
+
+    CatalogRouter.ResolvedNamespace reconfigured = router.resolveDatabase("beemetrics");
+    Assert.assertEquals("catalog2", reconfigured.catalogName());
+    Assert.assertEquals("beemetrics", reconfigured.externalDbName());
   }
 }

@@ -2140,5 +2140,86 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(dummyKeytab);
     }
   }
+
+  @Test
+  public void loadsUnprefixedDatabasesAndReloadPollInterval() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c2.unprefixed-databases=beemetrics, another_db
+          config.reload.poll-interval-seconds=10
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertNotNull(config);
+      Assert.assertEquals(10L, config.reloadPollIntervalSeconds());
+      Assert.assertEquals(List.of("beemetrics", "another_db"),
+          config.catalogs().get("c2").unprefixedDatabases());
+      Assert.assertEquals(List.of(), config.catalogs().get("c1").unprefixedDatabases());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsUnprefixedDatabasesOnDefaultCatalog() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c1.unprefixed-databases=beemetrics
+          """);
+      ProxyConfigLoader.load(file);
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsConflictingUnprefixedDatabasesAcrossCatalogs() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2,c3
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c3.conf.hive.metastore.uris=thrift://hms3:9083
+          catalog.c2.unprefixed-databases=beemetrics
+          catalog.c3.unprefixed-databases=BEEMETRICS
+          """);
+      ProxyConfigLoader.load(file);
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsWildcardsInUnprefixedDatabases() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c2.unprefixed-databases=bee*
+          """);
+      ProxyConfigLoader.load(file);
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }
 

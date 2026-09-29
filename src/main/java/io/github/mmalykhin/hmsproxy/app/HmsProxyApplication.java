@@ -49,12 +49,24 @@ public final class HmsProxyApplication {
       ProxyConfigLogger.logConfiguration(config, configPath);
       ProxyObservability observability = new ProxyObservability(config);
       FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
+      CatalogRouter router = CatalogRouter.open(config, observability.metrics());
+      FederationLayer federationLayer = new FederationLayer(config, router);
+      RoutingMetaStoreProxy handler =
+          new RoutingMetaStoreProxy(config, router, federationLayer, frontDoorSecurity, observability);
+      ConfigReloadManager configReloadManager = new ConfigReloadManager(configPath, config);
+      configReloadManager.addListener(newConfig -> {
+        ProxyConfigLogger.logConfiguration(newConfig, configPath);
+        router.reconfigure(newConfig);
+        federationLayer.reconfigure(newConfig);
+        handler.reconfigure(newConfig);
+      });
+      ManagementHttpServer managementServer =
+          ManagementHttpServer.open(config, router, observability);
       try (frontDoorSecurity;
-           CatalogRouter router = CatalogRouter.open(config, observability.metrics());
-           ManagementHttpServer managementServer = ManagementHttpServer.open(config, router, observability);
-           RoutingMetaStoreProxy handler =
-               new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router),
-                   frontDoorSecurity, observability)) {
+           router;
+           configReloadManager;
+           managementServer;
+           handler) {
         ThriftHiveMetastore.Iface proxy =
             RoutingMetaStoreProxy.newProxy(
                 ThriftHiveMetastore.Iface.class,

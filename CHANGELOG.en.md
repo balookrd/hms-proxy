@@ -10,6 +10,21 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Hard mapping of unprefixed databases to remote catalogs (`catalog.<name>.unprefixed-databases`)**:
+  - Exposes designated databases from a remote catalog directly into the federated namespace without any catalog prefix (e.g. `beemetrics` instead of `remote__beemetrics`).
+  - If a database with the same name exists in the default catalog (`default-catalog`), the remote database automatically shadows (replaces) it in `get_all_databases` and `get_databases`.
+  - All read, write, and DDL operations (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate, and locking) route transparently to the remote catalog.
+  - Strict validation at startup: wildcards (`*`, `%`, `?`) are rejected, configuration on `default-catalog` is prohibited, and database collisions across remote catalogs are blocked.
+- **Dynamic runtime configuration reload without service restart (`ConfigReloadManager`)**:
+  - Automatic configuration file polling on a configurable interval (`config.reload.poll-interval-seconds`, defaults to 5 seconds; set to `0` to disable).
+  - SIGHUP signal support (`kill -HUP <pid>`) for instant configuration reloading.
+  - Safe Reload: syntax or validation errors in updated files are logged in detail while the proxy keeps running safely on its existing configuration.
+  - Live atomic reconfiguration of `CatalogRouter` and `FederationLayer` accompanied by cache invalidation across `DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, and `PartitionMetadataCache`.
+- **Smoke testing for unprefixed databases and dynamic reload**:
+  - Added standalone test script `smoke-stand/run-unprefixed-db-and-reload-smoke.sh` for Docker stand covering unprefixed database routing, default-catalog database shadowing, DDL operations, Safe Reload on invalid configuration via `SIGHUP`, and configuration restore.
+  - Added `--scenario unprefixed` to `scripts/run-real-installation-smoke.sh` (with automatic execution in `--scenario all` when `HMS_SMOKE_UNPREFIXED_DB` is set).
+  - Added `HMS_SMOKE_UNPREFIXED_*` configuration variables to `scripts/hms-real-installation-smoke.{simple,kerberos}.env.example`.
+
 - **Unknown configuration property validation and structured startup logging**:
   - **Unknown property detection and fail-fast with typo suggestions**:
     - Introduced strict property access tracking in `PropertyReader` and unconsumed property key detection in `ProxyConfigLoader`.

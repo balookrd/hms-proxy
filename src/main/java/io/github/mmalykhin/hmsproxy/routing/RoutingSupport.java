@@ -26,7 +26,7 @@ import io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer;
 final class RoutingSupport {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingSupport.class);
 
-  final ProxyConfig config;
+  volatile ProxyConfig config;
   final CatalogRouter router;
   final FederationOperations federationLayer;
   final ProxyObservability observability;
@@ -412,5 +412,21 @@ final class RoutingSupport {
     }
     String normalized = value.trim();
     return normalized.isEmpty() ? null : normalized;
+  }
+
+  synchronized void reconfigure(ProxyConfig newConfig) {
+    this.config = newConfig;
+    if (databaseListCache != null) {
+      databaseListCache.invalidateAll();
+    }
+    if (databaseMetadataCache != null) {
+      databaseMetadataCache.invalidateAll();
+    }
+    if (tableMetadataCache != null) {
+      tableMetadataCache.clear();
+    }
+    if (partitionMetadataCache != null) {
+      partitionMetadataCache.clear();
+    }
   }
 }

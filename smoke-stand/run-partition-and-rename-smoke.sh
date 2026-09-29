@@ -23,8 +23,8 @@ fail() {
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-19085}
 PROXY_CONTAINER=stand-proxy
-HDP_FS_PREFIX=${HDP_FS_PREFIX:-stand-namenode}
-APACHE_FS_PREFIX=${APACHE_FS_PREFIX:-stand-namenode-b}
+HDP_FS_PREFIX=${HDP_FS_PREFIX:-namenode}
+APACHE_FS_PREFIX=${APACHE_FS_PREFIX:-namenode-b}
 
 CLI_JAR="${REPO_DIR}/smoke-stand/proxy/hms-proxy-fat.jar"
 if [[ ! -f "${CLI_JAR}" ]]; then
@@ -98,7 +98,7 @@ log "Negative test: cross-catalog table rename from hdp to apache must be reject
 run_cli admin --op rename_table \
   --db "hdp__default" --table "${TBL_REN_DST}" \
   --new-db "apache__default" --new-table "${TBL_REN_DST}" \
-  --expect-error "Cross-catalog table rename is not supported"
+  --expect-error "Cannot rename/move table across different catalogs"
 
 log "Renaming within federated catalog: apache__default.${TBL_REN_AP_SRC} -> ${TBL_REN_AP_DST}"
 run_cli admin --op create_table --db "apache__default" --table "${TBL_REN_AP_SRC}"
@@ -136,7 +136,7 @@ run_cli admin --op exchange_partition \
   --source-db "hdp__default" --source-table "${TBL_EXCH_DST}" \
   --dest-db "apache__default" --dest-table "${TBL_EXCH_AP}" \
   --partition-specs "p=100" \
-  --expect-error "Cross-catalog exchange partition is not supported"
+  --expect-error "Cannot exchange partitions across different catalogs"
 
 log "=== 3. Partition Rename in Federated (Non-Default) Catalog ==="
 log "Creating partitioned table in apache__default: ${TBL_PART_REN}"

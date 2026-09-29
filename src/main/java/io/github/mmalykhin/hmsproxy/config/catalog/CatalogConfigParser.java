@@ -70,6 +70,24 @@ public final class CatalogConfigParser {
             "catalog." + entry.getKey() + ".fallback-catalog refers to unknown catalog '" + fallback + "'");
       }
     }
+    if (defaultConf != null && !defaultConf.unprefixedDatabases().isEmpty()) {
+      throw new IllegalArgumentException(
+          "routing.default-catalog '" + defaultCatalog
+              + "' cannot have unprefixed-databases configured because default catalog databases are already unprefixed");
+    }
+    Map<String, String> seenDatabases = new LinkedHashMap<>();
+    for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+      String catalog = entry.getKey();
+      for (String db : entry.getValue().unprefixedDatabases()) {
+        String lower = db.toLowerCase(java.util.Locale.ROOT);
+        String existing = seenDatabases.put(lower, catalog);
+        if (existing != null) {
+          throw new IllegalArgumentException(
+              "Conflicting unprefixed database '" + db + "': configured in both catalog '"
+                  + existing + "' and '" + catalog + "'");
+        }
+      }
+    }
   }
 
   private static CatalogConfig parseCatalog(
@@ -154,6 +172,9 @@ public final class CatalogConfigParser {
               + catalogName);
     }
 
+    String[] unprefixedDatabases = PropertyReader.splitCsv(reader.get(prefix + "unprefixed-databases", ""));
+    validateUnprefixedDatabases(prefix, unprefixedDatabases);
+
     return new CatalogConfig(
         catalogName,
         reader.get(prefix + "description", catalogName),
@@ -164,6 +185,7 @@ public final class CatalogConfigParser {
         exposureMode,
         Arrays.asList(exposeDbPatterns),
         exposeTablePatterns,
+        Arrays.asList(unprefixedDatabases),
         runtimeProfile,
         catalogBackendStandaloneMetastoreJar,
         hiveConf,
@@ -222,6 +244,24 @@ public final class CatalogConfigParser {
       throw new IllegalArgumentException(
           prefix + "access-mode=READ_WRITE_DB_WHITELIST requires a non-empty " + prefix
               + "write-db-whitelist. Use " + prefix + "access-mode=READ_ONLY to forbid all writes.");
+    }
+  }
+
+  private static void validateUnprefixedDatabases(String prefix, String[] unprefixedDatabases) {
+    for (String db : unprefixedDatabases) {
+      if (db.isBlank()) {
+        throw new IllegalArgumentException(prefix + "unprefixed-databases contains blank database name");
+      }
+      if (db.contains("*") || db.contains("%") || db.contains("?")) {
+        throw new IllegalArgumentException(
+            prefix + "unprefixed-databases contains invalid database name '" + db
+                + "': wildcards are not allowed in unprefixed-databases");
+      }
+      if (db.contains(" ")) {
+        throw new IllegalArgumentException(
+            prefix + "unprefixed-databases contains invalid database name '" + db
+                + "': database names cannot contain spaces");
+      }
     }
   }
 }

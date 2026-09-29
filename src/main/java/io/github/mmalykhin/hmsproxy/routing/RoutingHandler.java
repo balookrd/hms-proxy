@@ -32,12 +32,12 @@ import org.slf4j.LoggerFactory;
 final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   private static final Logger LOG = LoggerFactory.getLogger(RoutingHandler.class);
 
-  private final ProxyConfig config;
+  private volatile ProxyConfig config;
   private final CatalogRouter router;
   private final CompatibilityLayer compatibilityLayer;
   private final ProxyObservability observability;
   private final RoutingSupport support;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
+  private volatile ExternalTableLocationRewriter externalTableLocationRewriter;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
   private final DropTableHandler dropTableHandler;
   private final Map<String, SpecialCaseHandler> specialCaseHandlers;
@@ -577,5 +577,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       observability.metrics().recordRoutingAmbiguous();
       throw e;
     }
+  }
+
+  public synchronized void reconfigure(ProxyConfig newConfig) {
+    this.config = newConfig;
+    this.externalTableLocationRewriter = new ExternalTableLocationRewriter(newConfig.federation());
+    this.support.reconfigure(newConfig);
   }
 }
