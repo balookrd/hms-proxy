@@ -59,10 +59,6 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   public static FrontDoorSecurity open(ProxyConfig config) throws Exception {
-    if (!config.security().kerberosEnabled()) {
-      return null;
-    }
-
     HiveConf securityConf = new HiveConf();
     config.security().frontDoorConf().forEach(securityConf::set);
     securityConf.set("hadoop.security.authentication", config.security().mode().hadoopAuthValue());
@@ -70,6 +66,11 @@ public final class FrontDoorSecurity implements AutoCloseable {
     configureZooKeeperClientJaas(securityConf);
     emitConfigurationDiagnostics(config, securityConf);
     ProcessKerberosConfiguration.processWide().installFrontDoorConfiguration(securityConf);
+
+    if (!config.security().kerberosEnabled()) {
+      return null;
+    }
+
     ensureKeytabLoginUser(config, securityConf, ProcessKerberosConfiguration.processWide());
     ProxyUsers.refreshSuperUserGroupsConfiguration(securityConf);
 

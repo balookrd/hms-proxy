@@ -1809,6 +1809,10 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`.
    - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав выбрасывается `NoSuchObjectException`, скрывая сам факт существования недоступных объектов.
 
+4. **Разрешение групп Active Directory / LDAP и сопоставление с политиками**:
+   - **Серверный резолвинг групп**: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
+   - **Нормализация регистра и Distinguished Name (DN)**: Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и обогащает запрос нормализованными вариантами в нижнем регистре, гарантируя надежное сопоставление с политиками Ranger без ручного дублирования правил с разным регистром.
+
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
 метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в

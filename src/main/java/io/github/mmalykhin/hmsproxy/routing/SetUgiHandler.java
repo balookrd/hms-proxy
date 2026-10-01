@@ -2,7 +2,9 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
+import java.util.List;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +35,9 @@ final class SetUgiHandler implements SpecialCaseHandler {
     }
 
     if (requestedUser != null) {
+      if (groups.isEmpty()) {
+        groups.addAll(resolveGroups(requestedUser));
+      }
       ImpersonationContext impersonation = new ImpersonationContext(requestedUser, groups);
       io.github.mmalykhin.hmsproxy.security.ClientRequestContext.currentTransport()
           .ifPresent(t -> io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setConnectionUgi(t, impersonation));
@@ -41,5 +46,29 @@ final class SetUgiHandler implements SpecialCaseHandler {
     }
 
     return groups;
+  }
+
+  private List<String> resolveGroups(String userName) {
+    try {
+      UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
+      if (currentUser != null && userName.equals(currentUser.getShortUserName())) {
+        String[] groupNames = currentUser.getGroupNames();
+        if (groupNames != null && groupNames.length > 0) {
+          return List.of(groupNames);
+        }
+      }
+    } catch (Exception ignored) {
+    }
+    try {
+      UserGroupInformation ugi = UserGroupInformation.createRemoteUser(userName);
+      String[] groupNames = ugi.getGroupNames();
+      if (groupNames != null && groupNames.length > 0) {
+        return List.of(groupNames);
+      }
+    } catch (Exception e) {
+      LOG.warn("requestId={} set_ugi unable to resolve groups for user '{}': {}",
+          RequestContext.currentRequestId(), userName, e.getMessage());
+    }
+    return List.of();
   }
 }

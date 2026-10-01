@@ -94,6 +94,22 @@ public class RangerMetadataAuthorizerTest {
     Assert.assertEquals(List.of("reports"), authorizer.filterTables("cat1", "finance", financeTables, bob));
     Assert.assertEquals(List.of(), authorizer.filterTables("cat1", "finance", financeTables, eve));
 
+    // AD Group-based authorization tests (Policy 3 grants database 'analytics' to group 'analysts'):
+    // Case 1: user with mixed-case AD group "Analysts"
+    ImpersonationContext dan = new ImpersonationContext("dan", List.of("Analysts"));
+    Assert.assertTrue(authorizer.isDatabaseAllowed("cat1", "analytics", dan));
+    Assert.assertTrue(authorizer.isTableAllowed("cat1", "analytics", "metrics", dan));
+    Assert.assertFalse(authorizer.isDatabaseAllowed("cat1", "sales", dan));
+
+    // Case 2: user with LDAP DN group "CN=analysts,OU=Groups,DC=corp,DC=example,DC=com"
+    ImpersonationContext erin = new ImpersonationContext("erin", List.of("CN=analysts,OU=Groups,DC=corp,DC=example,DC=com"));
+    Assert.assertTrue(authorizer.isDatabaseAllowed("cat1", "analytics", erin));
+    Assert.assertTrue(authorizer.isTableAllowed("cat1", "analytics", "metrics", erin));
+
+    // Case 3: user with other group is denied
+    ImpersonationContext frank = new ImpersonationContext("frank", List.of("other_group"));
+    Assert.assertFalse(authorizer.isDatabaseAllowed("cat1", "analytics", frank));
+
     String rendered = metrics.render();
     Assert.assertTrue(rendered.contains(
         "hms_proxy_ranger_evaluations_total{catalog=\"cat1\",resource_type=\"database\",access_type=\"select\",result=\"allowed\"}"));
@@ -168,7 +184,21 @@ public class RangerMetadataAuthorizerTest {
     item2.setAccesses(List.of(new RangerPolicy.RangerPolicyItemAccess("select", true)));
     p2.setPolicyItems(List.of(item2));
 
-    sp.setPolicies(List.of(p1, p2));
+    // Policy 3: group 'analysts' -> database: analytics, table: *
+    RangerPolicy p3 = new RangerPolicy();
+    p3.setId(3L);
+    p3.setService(serviceName);
+    p3.setName("analysts_group_policy");
+    p3.setResources(Map.of(
+        "database", new RangerPolicy.RangerPolicyResource("analytics"),
+        "table", new RangerPolicy.RangerPolicyResource("*")
+    ));
+    RangerPolicy.RangerPolicyItem item3 = new RangerPolicy.RangerPolicyItem();
+    item3.setGroups(List.of("analysts"));
+    item3.setAccesses(List.of(new RangerPolicy.RangerPolicyItemAccess("select", true)));
+    p3.setPolicyItems(List.of(item3));
+
+    sp.setPolicies(List.of(p1, p2, p3));
     return sp;
   }
 }

@@ -98,6 +98,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Active Directory / LDAP group authorization in Apache Ranger (AD/LDAP Group Resolution & Matching)**:
+  - Fixed an issue where Apache Ranger policies based on user groups were not evaluated properly for Kerberos-authenticated clients or during `set_ugi` calls:
+    1. **Server-side group resolution for Kerberos clients**: In `ImpersonationResolver`, user groups for authenticated clients (`remoteUser != null`) no longer default to an empty list — they are now automatically resolved via the Hadoop group mapping service (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`).
+    2. **Group backfill on `set_ugi`**: In `SetUgiHandler` and `ImpersonationResolver`, when `set_ugi(user, [])` is received with an empty group list, the proxy transparently resolves user group memberships via Hadoop UGI.
+    3. **Case-insensitive & Distinguished Name (DN) normalization for Ranger**: The Apache Ranger policy engine is case-sensitive and typically configures group names in lowercase (`sales`, `domain users`), whereas Active Directory / LDAP returns groups in mixed-case format (MixedCase) or as full DNs (`CN=Sales,OU=Groups,DC=example,DC=com`). `RangerMetadataAuthorizer` now normalizes group names (extracting CN from DN and injecting lowercase variations `toLowerCase(Locale.ROOT)`), ensuring accurate policy matching regardless of case and directory format.
+    4. **Group mapping configuration propagation (`security.front-door-conf.*`)**: In `FrontDoorSecurity`, front-door configuration properties (including `hadoop.security.group.mapping`) are now installed into the process-wide UGI configuration even when `security.mode=NONE`.
+
 - **Primary & Foreign Keys constraint RPC routing (`get_primary_keys`, `get_foreign_keys`, etc.)**:
   - Fixed `MetaException: Operation get_primary_keys requires explicit namespace ownership...` error that occurred when HiveServer2 / Qlik queried table constraint metadata for tables belonging to secondary federated catalogs.
   - All constraint methods now accurately route to the table's owning catalog backend, and response structures (`SQLPrimaryKey`, `SQLForeignKey`, etc.) return properly externalized database names.

@@ -10,8 +10,11 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import org.apache.ranger.authorization.hadoop.config.RangerPluginConfig;
 import org.apache.ranger.plugin.policyengine.RangerAccessRequestImpl;
 import org.apache.ranger.plugin.policyengine.RangerAccessResourceImpl;
@@ -292,7 +295,22 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     request.setResource(resource);
     request.setUser(impersonation.userName());
     if (impersonation.groupNames() != null && !impersonation.groupNames().isEmpty()) {
-      request.setUserGroups(new HashSet<>(impersonation.groupNames()));
+      Set<String> userGroups = new LinkedHashSet<>();
+      for (String g : impersonation.groupNames()) {
+        if (g != null && !g.isBlank()) {
+          userGroups.add(g);
+          userGroups.add(g.toLowerCase(Locale.ROOT));
+          if (g.regionMatches(true, 0, "cn=", 0, 3)) {
+            int comma = g.indexOf(',');
+            String cn = comma > 3 ? g.substring(3, comma) : g.substring(3);
+            if (!cn.isBlank()) {
+              userGroups.add(cn);
+              userGroups.add(cn.toLowerCase(Locale.ROOT));
+            }
+          }
+        }
+      }
+      request.setUserGroups(userGroups);
     }
     request.setAccessType(accessType);
     request.setAccessTime(new Date());

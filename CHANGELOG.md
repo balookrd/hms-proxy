@@ -98,6 +98,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Авторизация по группам Active Directory / LDAP в Apache Ranger (AD/LDAP Group Resolution & Matching)**:
+  - Исправлена проблема, из-за которой политики Apache Ranger на основе групп пользователей не применялись при аутентификации через Kerberos или при вызове `set_ugi`:
+    1. **Серверный резолвинг групп при Kerberos-аутентификации**: В `ImpersonationResolver` для аутентифицированных клиентов (`remoteUser != null`) группы пользователя больше не остаются пустыми — они автоматически разрешаются через сервис сопоставления групп Hadoop (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`).
+    2. **Дорезолвивание групп при `set_ugi`**: В `SetUgiHandler` и `ImpersonationResolver` при получении вызова `set_ugi(user, [])` с пустым списком групп выполняется автоматическое дорезолвивание членства пользователя в группах через Hadoop UGI.
+    3. **Нормализация регистра и Distinguished Name (DN) групп для Ranger**: Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как Active Directory / LDAP возвращает группы в исходном регистре (MixedCase) либо в формате DN (`CN=Sales,OU=Groups,DC=example,DC=com`). В `RangerMetadataAuthorizer` добавлена нормализация групп (извлечение CN из DN и автоматическое добавление вариантов в нижнем регистре `toLowerCase(Locale.ROOT)`), благодаря чему политики сопоставляются надежно независимо от формата и регистра групп в Active Directory / LDAP.
+    4. **Передача конфигурации сопоставления групп (`security.front-door-conf.*`)**: В `FrontDoorSecurity` обеспечена передача параметров front-door конфигурации (включая `hadoop.security.group.mapping`) в глобальный UGI-контекст процесса даже при `security.mode=NONE`.
+
 - **Маршрутизация вызовов первичных и внешних ключей (`get_primary_keys`, `get_foreign_keys` и constraints)**:
   - Устранена ошибка `MetaException: Operation get_primary_keys requires explicit namespace ownership...`, возникавшая при запросах метаданных ограничений таблиц от HiveServer2 / Qlik для таблиц во вторичных федеративных каталогах.
   - Все методы ограничений целостности теперь маршрутизируются в целевой каталог таблицы, а возвращаемые структуры (`SQLPrimaryKey`, `SQLForeignKey` и др.) содержат корректно экстернализованные имена схем клиента.

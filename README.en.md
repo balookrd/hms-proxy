@@ -1868,6 +1868,10 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`.
    - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. If the caller lacks permission, `NoSuchObjectException` is thrown to hide the existence of unauthorized objects.
 
+4. **Active Directory / LDAP Group Resolution and Policy Matching**:
+   - **Server-Side Group Resolution**: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
+   - **Case-Insensitive & Distinguished Name (DN) Normalization**: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, ensuring reliable matching against Ranger policies without manual duplication of rules across different cases.
+
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
 and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the

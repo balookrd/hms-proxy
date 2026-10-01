@@ -128,4 +128,55 @@ public class ConnectionUgiTest {
       ClientRequestContext.setConnectionUgi(transport, null);
     }
   }
+
+  @Test
+  public void setUgiWithEmptyGroupsResolvesFromUgi() throws Throwable {
+    TTransport transport = new TMemoryBuffer(1024);
+    String prevUser = ClientRequestContext.remoteUser().orElse(null);
+    TTransport prevTransport = ClientRequestContext.setCurrentTransport(transport);
+    try {
+      Method setUgiMethod = ThriftHiveMetastore.Iface.class.getMethod("set_ugi", String.class, List.class);
+
+      SetUgiHandler handler = new SetUgiHandler(
+          new RoutingSupport(null, null, null, null, null, null, null, null, null),
+          new NamespaceFallback() {
+            @Override
+            public Object invokeGlobal(Method method, Object[] args) {
+              return List.of();
+            }
+
+            @Override
+            public Object routeByNamespaceOrFail(Method method, Object[] args) {
+              return null;
+            }
+          }
+      );
+
+      org.apache.hadoop.security.UserGroupInformation ugi =
+          org.apache.hadoop.security.UserGroupInformation.createUserForTesting("testuser", new String[]{"ad_group1", "ad_group2"});
+
+      ugi.doAs((java.security.PrivilegedExceptionAction<Void>) () -> {
+        try {
+          @SuppressWarnings("unchecked")
+          List<String> returnedGroups = (List<String>) handler.handle(setUgiMethod, new Object[]{"testuser", List.of()});
+
+          Assert.assertEquals(List.of("ad_group1", "ad_group2"), returnedGroups);
+          Optional<ImpersonationContext> connUgi = ClientRequestContext.connectionUgi(transport);
+          Assert.assertTrue(connUgi.isPresent());
+          Assert.assertEquals("testuser", connUgi.get().userName());
+          Assert.assertEquals(List.of("ad_group1", "ad_group2"), connUgi.get().groupNames());
+          return null;
+        } catch (Throwable t) {
+          if (t instanceof Exception e) {
+            throw e;
+          }
+          throw new RuntimeException(t);
+        }
+      });
+    } finally {
+      ClientRequestContext.restoreCurrentTransport(prevTransport);
+      ClientRequestContext.restoreRemoteUser(prevUser);
+      ClientRequestContext.setConnectionUgi(transport, null);
+    }
+  }
 }
