@@ -10,6 +10,15 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Встроенный энергонезависимый дисковый кэш групп пользователей (`security.group-disk-cache.*`)**:
+  - Реализован встроенный persistent-кэш групп на диске в формате JSON для мгновенного холодного старта (zero-latency cold start) и отказоустойчивости при сбоях Active Directory / LDAP.
+  - Конфигурационные параметры: `security.group-disk-cache.enabled` (по умолчанию `false`), `security.group-disk-cache.path` (путь к JSON-файлу), `security.group-disk-cache.entry-ttl-seconds` (TTL записей, по умолчанию 86400 / 24ч), `security.group-disk-cache.persist-interval-seconds` (периодический сброс в фоновом потоке, по умолчанию 60с), `security.group-disk-cache.persist-on-shutdown` (атомарное сохранение при graceful shutdown, по умолчанию `true`).
+  - **Мгновенный холодный старт**: предзагрузка записей с диска при старте прокси исключает блокирующие сетевые запросы к контроллерам домена и таймауты при первом подключении пользователей.
+  - **Serve-stale fallback**: при временной недоступности или сетевых сбоях контроллеров AD/LDAP прокси прозрачно отдает последние известные группы пользователя из кэша вместо блокировки доступа.
+  - **Атомарная запись**: безопасная перезапись файла через `.tmp` файл и `AtomicMove` (с fallback на `REPLACE_EXISTING`), исключающая повреждение кэша при аварийном завершении питания или процесса.
+  - Полноценная интеграция в единый резолвер `UserGroupResolver` с поддержкой `ImpersonationResolver` и `SetUgiHandler`.
+  - Метрики Prometheus для мониторинга: запросы (`hms_proxy_cache_requests_total{cache="group_disk",result="hit|miss"}`), сбросы на диск (`hms_proxy_cache_refreshes_total{cache="group_disk",status="success|error"}`) и число активных записей (`hms_proxy_cache_entries{cache="group_disk"}`).
+
 - **Распределенная DDL-инвалидация кэшей метаданных через ZooKeeper (`routing.cache.distributed-invalidation.*`)**:
   - Реализован механизм межсерверной синхронизации инвалидации кэшей метаданных (`TableMetadataCache`, `PartitionMetadataCache`, `DatabaseMetadataCache`) для горизонтально масштабируемых кластеров `hms-proxy` за балансировщиком нагрузки.
   - Поддержка режимов `NONE` (локальная инвалидация в пределах одного JVM процесса) и `ZOOKEEPER` (`DistributedCacheInvalidationMode`).

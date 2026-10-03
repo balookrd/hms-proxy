@@ -18,6 +18,7 @@ final class RoutingPipelineFactory {
       BackendRoutingController backendRoutingController,
       DatabaseCacheRefresher databaseCacheRefresher,
       RoutingHandler routingHandler,
+      io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver,
       InvocationHandler chain
   ) {}
 
@@ -69,7 +70,12 @@ final class RoutingPipelineFactory {
     BackendCallDispatcher dispatcher = new BackendCallDispatcher(
         compatibilityLayer, admissionGate, observability, fanoutExecutor, router);
     long aliveSince = System.currentTimeMillis() / 1000L;
-    ImpersonationResolver impersonationResolver = new ImpersonationResolver(config);
+    io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache groupDiskCache =
+        new io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache(
+            config.security().groupDiskCache(), observability.metrics());
+    io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver =
+        new io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver(groupDiskCache);
+    ImpersonationResolver impersonationResolver = new ImpersonationResolver(config, userGroupResolver);
     MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
         ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs(), observability.metrics())
         : io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE;
@@ -111,6 +117,6 @@ final class RoutingPipelineFactory {
     LockHandler lockHandler = new LockHandler(
         config, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
     InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
-    return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, chain);
+    return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, userGroupResolver, chain);
   }
 }

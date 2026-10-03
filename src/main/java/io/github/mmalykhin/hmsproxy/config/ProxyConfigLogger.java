@@ -92,6 +92,14 @@ public final class ProxyConfigLogger {
       sb.append("  Client Keytab: ").append(security.clientKeytab()).append("\n");
     }
     sb.append("  Impersonation: ").append(security.impersonationEnabled()).append("\n");
+    if (security.groupDiskCache().enabled()) {
+      sb.append("  Group Disk Cache: enabled, path=").append(security.groupDiskCache().path())
+          .append(", entryTtl=").append(security.groupDiskCache().entryTtlSeconds()).append("s")
+          .append(", persistInterval=").append(security.groupDiskCache().persistIntervalSeconds()).append("s")
+          .append(", persistOnShutdown=").append(security.groupDiskCache().persistOnShutdown()).append("\n");
+    } else {
+      sb.append("  Group Disk Cache: disabled\n");
+    }
     if (!security.frontDoorConf().isEmpty()) {
       sb.append("  Front-Door Conf overrides (").append(security.frontDoorConf().size()).append("):\n");
       Map<String, String> sorted = new TreeMap<>(security.frontDoorConf());

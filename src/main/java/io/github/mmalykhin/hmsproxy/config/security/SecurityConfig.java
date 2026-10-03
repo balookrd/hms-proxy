@@ -9,10 +9,24 @@ public record SecurityConfig(
     String keytab,
     String clientKeytab,
     boolean impersonationEnabled,
-    Map<String, String> frontDoorConf
+    Map<String, String> frontDoorConf,
+    GroupDiskCacheConfig groupDiskCache
 ) {
   public SecurityConfig {
     frontDoorConf = Map.copyOf(frontDoorConf);
+    groupDiskCache = groupDiskCache != null ? groupDiskCache : GroupDiskCacheConfig.disabled();
+  }
+
+  public SecurityConfig(
+      SecurityMode mode,
+      String serverPrincipal,
+      String clientPrincipal,
+      String keytab,
+      String clientKeytab,
+      boolean impersonationEnabled,
+      Map<String, String> frontDoorConf
+  ) {
+    this(mode, serverPrincipal, clientPrincipal, keytab, clientKeytab, impersonationEnabled, frontDoorConf, GroupDiskCacheConfig.disabled());
   }
 
   public boolean kerberosEnabled() {

@@ -10,16 +10,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
+import io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver;
+
 final class ImpersonationResolver {
   private static final Logger LOG = LoggerFactory.getLogger(ImpersonationResolver.class);
 
   private final boolean anyImpersonationEnabled;
   private final SecurityConfig security;
+  private final UserGroupResolver groupResolver;
 
   ImpersonationResolver(ProxyConfig config) {
+    this(config, new UserGroupResolver());
+  }
+
+  ImpersonationResolver(ProxyConfig config, UserGroupResolver groupResolver) {
     this.anyImpersonationEnabled = config.ranger().enabled()
         || config.catalogs().values().stream().anyMatch(c -> c.impersonationEnabled() || c.ranger().enabled());
     this.security = config.security();
+    this.groupResolver = groupResolver != null ? groupResolver : new UserGroupResolver();
+  }
+
+  UserGroupResolver groupResolver() {
+    return groupResolver;
   }
 
   Optional<ImpersonationContext> resolve() throws MetaException {
@@ -64,32 +76,7 @@ final class ImpersonationResolver {
     }
   }
 
-  private List<String> resolveGroups(String userName) {
-    if (userName == null || userName.isBlank()) {
-      return List.of();
-    }
-    try {
-      UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
-      if (currentUser != null && userName.equals(currentUser.getShortUserName())) {
-        String[] groupNames = currentUser.getGroupNames();
-        if (groupNames != null && groupNames.length > 0) {
-          return List.of(groupNames);
-        }
-      }
-    } catch (Exception ignored) {
-      // Current user not set or doAs not active
-    }
-
-    try {
-      UserGroupInformation ugi = UserGroupInformation.createRemoteUser(userName);
-      String[] groupNames = ugi.getGroupNames();
-      if (groupNames != null && groupNames.length > 0) {
-        return List.of(groupNames);
-      }
-    } catch (Exception e) {
-      LOG.warn("requestId={} unable to resolve groups for authenticated user '{}', using empty group list: {}",
-          RequestContext.currentRequestId(), userName, e.getMessage());
-    }
-    return List.of();
+  List<String> resolveGroups(String userName) {
+    return groupResolver.resolveGroups(userName);
   }
 }

@@ -32,6 +32,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
   private final BackendRoutingController backendRoutingController;
   private final DatabaseCacheRefresher databaseCacheRefresher;
   private final RoutingHandler routingHandler;
+  private final io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver;
   private final InvocationHandler chain;
 
   public RoutingMetaStoreProxy(
@@ -83,17 +84,30 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       RoutingHandler routingHandler,
       InvocationHandler chain
   ) {
+    this(observability, syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, null, chain);
+  }
+
+  RoutingMetaStoreProxy(
+      ProxyObservability observability,
+      SyntheticReadLockManager syntheticReadLockManager,
+      BackendRoutingController backendRoutingController,
+      DatabaseCacheRefresher databaseCacheRefresher,
+      RoutingHandler routingHandler,
+      io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver,
+      InvocationHandler chain
+  ) {
     this.observability = observability;
     this.syntheticReadLockManager = syntheticReadLockManager;
     this.backendRoutingController = backendRoutingController;
     this.databaseCacheRefresher = databaseCacheRefresher;
     this.routingHandler = routingHandler;
+    this.userGroupResolver = userGroupResolver;
     this.chain = chain;
   }
 
   private RoutingMetaStoreProxy(ProxyObservability observability, RoutingPipelineFactory.Pipeline pipeline) {
     this(observability, pipeline.syntheticReadLockManager(), pipeline.backendRoutingController(),
-        pipeline.databaseCacheRefresher(), pipeline.routingHandler(), pipeline.chain());
+        pipeline.databaseCacheRefresher(), pipeline.routingHandler(), pipeline.userGroupResolver(), pipeline.chain());
   }
 
   @SuppressWarnings("unchecked")
@@ -198,6 +212,9 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     backendRoutingController.close();
     if (databaseCacheRefresher != null) {
       databaseCacheRefresher.close();
+    }
+    if (userGroupResolver != null) {
+      userGroupResolver.close();
     }
   }
 

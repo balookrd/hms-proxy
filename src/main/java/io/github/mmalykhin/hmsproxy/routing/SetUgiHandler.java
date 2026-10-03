@@ -36,7 +36,7 @@ final class SetUgiHandler implements SpecialCaseHandler {
 
     if (requestedUser != null) {
       if (groups.isEmpty()) {
-        groups.addAll(resolveGroups(requestedUser));
+        groups.addAll(support.resolveGroups(requestedUser));
       }
       ImpersonationContext impersonation = new ImpersonationContext(requestedUser, groups);
       io.github.mmalykhin.hmsproxy.security.ClientRequestContext.currentTransport()
@@ -46,29 +46,5 @@ final class SetUgiHandler implements SpecialCaseHandler {
     }
 
     return groups;
-  }
-
-  private List<String> resolveGroups(String userName) {
-    try {
-      UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
-      if (currentUser != null && userName.equals(currentUser.getShortUserName())) {
-        String[] groupNames = currentUser.getGroupNames();
-        if (groupNames != null && groupNames.length > 0) {
-          return List.of(groupNames);
-        }
-      }
-    } catch (Exception ignored) {
-    }
-    try {
-      UserGroupInformation ugi = UserGroupInformation.createRemoteUser(userName);
-      String[] groupNames = ugi.getGroupNames();
-      if (groupNames != null && groupNames.length > 0) {
-        return List.of(groupNames);
-      }
-    } catch (Exception e) {
-      LOG.warn("requestId={} set_ugi unable to resolve groups for user '{}': {}",
-          RequestContext.currentRequestId(), userName, e.getMessage());
-    }
-    return List.of();
   }
 }

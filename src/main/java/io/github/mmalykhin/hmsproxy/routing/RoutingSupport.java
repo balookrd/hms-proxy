@@ -289,6 +289,12 @@ final class RoutingSupport {
     }
   }
 
+  java.util.List<String> resolveGroups(String userName) {
+    return impersonationResolver != null
+        ? impersonationResolver.resolveGroups(userName)
+        : new io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver().resolveGroups(userName);
+  }
+
   void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
       throws NoSuchObjectException {
     ImpersonationContext impersonation = currentImpersonation();

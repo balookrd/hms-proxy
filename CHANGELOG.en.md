@@ -10,6 +10,15 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Persistent On-Disk User Group Cache (`security.group-disk-cache.*`)**:
+  - Implemented an embedded JSON-based on-disk user group cache for instant zero-latency cold starts and resilience against Active Directory / LDAP outages.
+  - Configuration properties: `security.group-disk-cache.enabled` (default `false`), `security.group-disk-cache.path` (path to cache JSON file), `security.group-disk-cache.entry-ttl-seconds` (entry TTL, default 86400 / 24h), `security.group-disk-cache.persist-interval-seconds` (background flush interval, default 60s), and `security.group-disk-cache.persist-on-shutdown` (atomic save on graceful shutdown, default `true`).
+  - **Instant Cold Start**: preloads cached user-group mappings from disk upon proxy startup, eliminating synchronous round-trips to AD/LDAP domain controllers and initial connection latency.
+  - **Serve-Stale Fallback**: when directory services (AD/LDAP) are unreachable or fail, the proxy transparently serves last-known groups from disk instead of rejecting requests.
+  - **Atomic Persistence**: safely writes updates via `.tmp` staging file and `AtomicMove` (with fallback to `REPLACE_EXISTING`), preventing data corruption across unexpected process crashes.
+  - Unified resolution pipeline via `UserGroupResolver`, seamlessly integrated into `ImpersonationResolver` and `SetUgiHandler`.
+  - Prometheus observability metrics: request counters (`hms_proxy_cache_requests_total{cache="group_disk",result="hit|miss"}`), disk flush tracking (`hms_proxy_cache_refreshes_total{cache="group_disk",status="success|error"}`), and cache size gauge (`hms_proxy_cache_entries{cache="group_disk"}`).
+
 - **Distributed ZooKeeper Metadata Cache Invalidation (`routing.cache.distributed-invalidation.*`)**:
   - Implemented cross-replica cache invalidation synchronization for metadata caches (`TableMetadataCache`, `PartitionMetadataCache`, `DatabaseMetadataCache`) in multi-instance `hms-proxy` deployments behind load balancers.
   - Supports `NONE` (local JVM-only invalidation) and `ZOOKEEPER` (`DistributedCacheInvalidationMode`) modes.

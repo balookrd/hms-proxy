@@ -49,6 +49,23 @@ public final class SecurityConfigParser {
       ConfigParsing.requireNonBlank(clientKeytab, "security.client-keytab");
       ConfigParsing.requireReadableFile(clientKeytab, "security.client-keytab");
     }
+
+    boolean groupDiskCacheEnabled = reader.getBoolean("security.group-disk-cache.enabled", false);
+    String groupDiskCachePath = reader.get("security.group-disk-cache.path", GroupDiskCacheConfig.DEFAULT_PATH);
+    long groupDiskCacheEntryTtlSeconds = reader.getNonNegativeLong(
+        "security.group-disk-cache.entry-ttl-seconds", GroupDiskCacheConfig.DEFAULT_ENTRY_TTL_SECONDS);
+    long groupDiskCachePersistIntervalSeconds = reader.getNonNegativeLong(
+        "security.group-disk-cache.persist-interval-seconds", GroupDiskCacheConfig.DEFAULT_PERSIST_INTERVAL_SECONDS);
+    boolean groupDiskCachePersistOnShutdown = reader.getBoolean(
+        "security.group-disk-cache.persist-on-shutdown", GroupDiskCacheConfig.DEFAULT_PERSIST_ON_SHUTDOWN);
+
+    GroupDiskCacheConfig groupDiskCache = new GroupDiskCacheConfig(
+        groupDiskCacheEnabled,
+        groupDiskCachePath,
+        groupDiskCacheEntryTtlSeconds,
+        groupDiskCachePersistIntervalSeconds,
+        groupDiskCachePersistOnShutdown);
+
     return new SecurityConfig(
         securityMode,
         serverPrincipal,
@@ -56,7 +73,8 @@ public final class SecurityConfigParser {
         keytab,
         clientKeytab,
         impersonationEnabled,
-        frontDoorConf);
+        frontDoorConf,
+        groupDiskCache);
   }
 
   /** Hive-owned key, so it keeps Hive's lenient {@code Boolean.parseBoolean} semantics. */
