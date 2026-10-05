@@ -227,6 +227,20 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       Method addToken = childUgiClass.getMethod("addToken", childTokenClass);
       addToken.invoke(tokenUgi, childToken);
 
+      Method get = childConfigurationClass.getMethod("get", String.class);
+      String tokenSig = (String) get.invoke(isolatedConf, "hive.metastore.token.signature");
+      if (tokenSig == null || tokenSig.isBlank()) {
+        tokenSig = (String) get.invoke(isolatedConf, "metastore.token.signature");
+      }
+      if (tokenSig != null && !tokenSig.isBlank()) {
+        Class<?> childTextClass = Class.forName("org.apache.hadoop.io.Text", true, classLoader);
+        Object serviceText = childTextClass.getConstructor(String.class).newInstance(tokenSig);
+        Object signedToken = childTokenClass.getConstructor(childTokenClass).newInstance(childToken);
+        Method setService = childTokenClass.getMethod("setService", childTextClass);
+        setService.invoke(signedToken, serviceText);
+        addToken.invoke(tokenUgi, signedToken);
+      }
+
       Method doAs = childUgiClass.getMethod("doAs", java.security.PrivilegedExceptionAction.class);
       return doAs.invoke(tokenUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
           withContextClassLoader(classLoader, () ->

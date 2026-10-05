@@ -308,6 +308,186 @@ public class BackendRuntimeTest {
         factory);
   }
 
+  @Test
+  public void impersonationSessionWithDelegationTokenFailureFallsBackToKerberos() throws Exception {
+    AtomicInteger delegationTokenAttempts = new AtomicInteger();
+    AtomicInteger directKerberosAttempts = new AtomicInteger();
+
+    BackendInvocationSession fallbackSession = newSession();
+
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public boolean requiresIsolatedClassLoader(MetastoreRuntimeProfile runtimeProfile) {
+        return false;
+      }
+
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        try {
+          return newDelegationTokenSession("token-xyz");
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return openImpersonating(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames, null, null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames,
+          ClassLoader isolatedClassLoader,
+          String delegationToken
+      ) throws MetaException {
+        if (delegationToken != null) {
+          delegationTokenAttempts.incrementAndGet();
+          throw new MetaException("Simulated delegation token connection failure");
+        } else {
+          directKerberosAttempts.incrementAndGet();
+          return fallbackSession;
+        }
+      }
+    };
+
+    ProxyConfig proxyConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.KERBEROS, "hive/proxy@EXAMPLE.COM", null, "/tmp/k.keytab", null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendRuntime runtime = BackendRuntime.open(
+        proxyConfig,
+        catalogConfig(MetastoreRuntimeProfile.APACHE_3_1_3, null),
+        new HiveConf(),
+        true,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+
+    BackendInvocationSession acquired = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user", List.of("users"));
+
+    Assert.assertSame(fallbackSession, acquired);
+    Assert.assertEquals(1, delegationTokenAttempts.get());
+    Assert.assertEquals(1, directKerberosAttempts.get());
+
+    runtime.close();
+  }
+
+  @Test
+  public void impersonationSessionWithDelegationTokenSucceedsWithoutFallback() throws Exception {
+    AtomicInteger delegationTokenAttempts = new AtomicInteger();
+    AtomicInteger directKerberosAttempts = new AtomicInteger();
+
+    BackendInvocationSession tokenSession = newSession();
+
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public boolean requiresIsolatedClassLoader(MetastoreRuntimeProfile runtimeProfile) {
+        return false;
+      }
+
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        try {
+          return newDelegationTokenSession("token-xyz");
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return openImpersonating(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames, null, null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames,
+          ClassLoader isolatedClassLoader,
+          String delegationToken
+      ) throws MetaException {
+        if (delegationToken != null) {
+          delegationTokenAttempts.incrementAndGet();
+          return tokenSession;
+        } else {
+          directKerberosAttempts.incrementAndGet();
+          throw new MetaException("Direct Kerberos should not be invoked when delegation token succeeds");
+        }
+      }
+    };
+
+    ProxyConfig proxyConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.KERBEROS, "hive/proxy@EXAMPLE.COM", null, "/tmp/k.keytab", null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendRuntime runtime = BackendRuntime.open(
+        proxyConfig,
+        catalogConfig(MetastoreRuntimeProfile.APACHE_3_1_3, null),
+        new HiveConf(),
+        true,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+
+    BackendInvocationSession acquired = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user", List.of("users"));
+
+    Assert.assertSame(tokenSession, acquired);
+    Assert.assertEquals(1, delegationTokenAttempts.get());
+    Assert.assertEquals(0, directKerberosAttempts.get());
+
+    runtime.close();
+  }
+
   private static CatalogConfig lenientCatalogConfig() {
     return new CatalogConfig(
         "remote_hdp",
@@ -555,6 +735,24 @@ public class BackendRuntimeTest {
         ThriftHiveMetastore.Iface.class.getClassLoader(),
         new Class<?>[] {ThriftHiveMetastore.Iface.class},
         (proxy, method, args) -> {
+          throw new UnsupportedOperationException(method.getName());
+        });
+    Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+        org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+        ThriftHiveMetastore.Iface.class,
+        IsolatedMetastoreClient.class);
+    ctor.setAccessible(true);
+    return ctor.newInstance(null, thriftClient, null);
+  }
+
+  private static BackendInvocationSession newDelegationTokenSession(String token) throws Exception {
+    ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[] {ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> {
+          if ("get_delegation_token".equals(method.getName())) {
+            return token;
+          }
           throw new UnsupportedOperationException(method.getName());
         });
     Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(

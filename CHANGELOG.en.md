@@ -107,6 +107,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Delegation Token session resilience and service signature matching (`metastore.token.signature`)**:
+  - Resolved `Unable to open isolated backend metastore client for catalog <catalog> with delegation token for user '<user>'` error that caused Spark applications (`HiveDelegationTokenProvider`) and other clients to fail during delegation token acquisition and fail in YARN with `GSSException: No valid credentials provided (Failed to find any Kerberos tgt)`:
+    1. **Automatic Fallback to direct Kerberos connection in `BackendRuntime`**: When opening an impersonation session with an acquired delegation token (`sessionFactory.openImpersonating(..., delegationToken)`) fails, the proxy logs a `WARN` event and automatically falls back to a direct Kerberos connection (via the proxy keytab with `loginUserFromKeytabAndReturnUGI` followed by `set_ugi(userName, groupNames)`), preventing request crashes when backend HMS encounters SASL DIGEST-MD5 errors.
+    2. **Token service signature matching (`metastore.token.signature` / `hive.metastore.token.signature`)**: In `IsolatedMetastoreClient` and `BackendInvocationSession`, when decoding delegation tokens from URL strings, the token service name is now explicitly set to match the configured token signature (`token.setService(...)`). This ensures reliable token lookup by `DelegationTokenSelector` in `HiveMetaStoreClient` and prevents spurious Kerberos GSSAPI fallback when a signature is configured.
+
 - **Active Directory / LDAP group authorization in Apache Ranger (AD/LDAP Group Resolution & Matching)**:
   - Fixed an issue where Apache Ranger policies based on user groups were not evaluated properly for Kerberos-authenticated clients or during `set_ugi` calls:
     1. **Server-side group resolution for Kerberos clients**: In `ImpersonationResolver`, user groups for authenticated clients (`remoteUser != null`) no longer default to an empty list — they are now automatically resolved via the Hadoop group mapping service (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`).

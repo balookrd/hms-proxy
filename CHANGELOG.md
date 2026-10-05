@@ -107,6 +107,11 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Отказоустойчивость сессий с Delegation Token и привязка сигнатуры токена (`metastore.token.signature`)**:
+  - Устранена ошибка `Unable to open isolated backend metastore client for catalog <catalog> with delegation token for user '<user>'`, из-за которой Spark-приложения (`HiveDelegationTokenProvider`) и другие клиенты не могли получить токен метастора и падали при выполнении задач в YARN с `GSSException: No valid credentials provided (Failed to find any Kerberos tgt)`:
+    1. **Автоматический Fallback на прямое Kerberos-подключение в `BackendRuntime`**: При сбое открытия сессии с полученным delegation token (`sessionFactory.openImpersonating(..., delegationToken)`) прокси логирует предупреждение (`WARN`) и автоматически выполняет fallback на прямое Kerberos-соединение (по keytab прокси через `loginUserFromKeytabAndReturnUGI` с последующим `set_ugi(userName, groupNames)`), предотвращая сбои запросов пользователей при проблемах с SASL DIGEST-MD5 на бэкенде.
+    2. **Поддержка сигнатуры сервиса токена (`metastore.token.signature` / `hive.metastore.token.signature`)**: В `IsolatedMetastoreClient` и `BackendInvocationSession` при декодировании токена из URL-строки добавлена корректная привязка имени сервиса токена к настроенной сигнатуре метастора (`token.setService(...)`). Это обеспечивает корректный поиск токена через `DelegationTokenSelector` в `HiveMetaStoreClient` и исключает ложное переключение клиента на Kerberos GSSAPI при наличии сигнатуры токена в конфигурации.
+
 - **Авторизация по группам Active Directory / LDAP в Apache Ranger (AD/LDAP Group Resolution & Matching)**:
   - Исправлена проблема, из-за которой политики Apache Ranger на основе групп пользователей не применялись при аутентификации через Kerberos или при вызове `set_ugi`:
     1. **Серверный резолвинг групп при Kerberos-аутентификации**: В `ImpersonationResolver` для аутентифицированных клиентов (`remoteUser != null`) группы пользователя больше не остаются пустыми — они автоматически разрешаются через сервис сопоставления групп Hadoop (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`).

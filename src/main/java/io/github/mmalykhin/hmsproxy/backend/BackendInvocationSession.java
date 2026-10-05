@@ -371,6 +371,15 @@ public final class BackendInvocationSession implements AutoCloseable {
         token.decodeFromUrlString(delegationToken);
         UserGroupInformation tokenUgi = UserGroupInformation.createRemoteUser(impersonatedUser);
         tokenUgi.addToken(token);
+        String tokenSig = conf.get("hive.metastore.token.signature");
+        if (tokenSig == null || tokenSig.isBlank()) {
+          tokenSig = conf.get("metastore.token.signature");
+        }
+        if (tokenSig != null && !tokenSig.isBlank()) {
+          org.apache.hadoop.security.token.Token<?> signedToken = new org.apache.hadoop.security.token.Token<>(token);
+          signedToken.setService(new org.apache.hadoop.io.Text(tokenSig));
+          tokenUgi.addToken(signedToken);
+        }
         return tokenUgi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
       } catch (Exception e) {
         LOG.error("Failed to open backend metastore client for catalog '{}' with delegation token for user '{}'",

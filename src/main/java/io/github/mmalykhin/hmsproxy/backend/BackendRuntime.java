@@ -246,9 +246,19 @@ public final class BackendRuntime implements AutoCloseable {
             userName, catalogConfig.name(), t);
       }
     }
+    if (delegationToken != null) {
+      try {
+        return sessionFactory.openImpersonating(
+            proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
+            isolatedClassLoader, delegationToken);
+      } catch (Throwable t) {
+        LOG.warn("Failed to open backend metastore session with delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
+            userName, catalogConfig.name(), t);
+      }
+    }
     return sessionFactory.openImpersonating(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-        isolatedClassLoader, delegationToken);
+        isolatedClassLoader, null);
   }
 
   public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
