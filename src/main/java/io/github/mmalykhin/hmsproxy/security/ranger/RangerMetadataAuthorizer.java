@@ -7,6 +7,7 @@ import io.github.mmalykhin.hmsproxy.config.security.RangerConfig;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -16,6 +17,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.apache.ranger.authorization.hadoop.config.RangerPluginConfig;
+import org.apache.ranger.plugin.policyengine.RangerAccessRequest;
 import org.apache.ranger.plugin.policyengine.RangerAccessRequestImpl;
 import org.apache.ranger.plugin.policyengine.RangerAccessResourceImpl;
 import org.apache.ranger.plugin.policyengine.RangerAccessResult;
@@ -115,6 +117,11 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       }
     }
 
+    if (!config.rolesEnabled()) {
+      pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.source.impl",
+          NoOpRolesRangerAdminClient.class.getName());
+    }
+
     plugin.init();
     return plugin;
   }
@@ -140,19 +147,19 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     resource.setValue("database", backendDbName);
 
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
-    RangerAccessResult result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+    RangerAccessResult result = evaluateAccessWithRetry(plugin, request);
     if (result != null && result.getIsAllowed()) {
       allowed = true;
     } else {
       // Try fallback access types "read" and "use"
       request = createAccessRequest(resource, impersonation, "read");
-      result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+      result = evaluateAccessWithRetry(plugin, request);
       if (result != null && result.getIsAllowed()) {
         accessTypeUsed = "read";
         allowed = true;
       } else {
         request = createAccessRequest(resource, impersonation, "use");
-        result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+        result = evaluateAccessWithRetry(plugin, request);
         if (result != null && result.getIsAllowed()) {
           accessTypeUsed = "use";
           allowed = true;
@@ -218,19 +225,19 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     resource.setValue("table", tableName);
 
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
-    RangerAccessResult result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+    RangerAccessResult result = evaluateAccessWithRetry(plugin, request);
     if (result != null && result.getIsAllowed()) {
       allowed = true;
     } else {
       // Try fallback access types "read" and "show"
       request = createAccessRequest(resource, impersonation, "read");
-      result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+      result = evaluateAccessWithRetry(plugin, request);
       if (result != null && result.getIsAllowed()) {
         accessTypeUsed = "read";
         allowed = true;
       } else {
         request = createAccessRequest(resource, impersonation, "show");
-        result = plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+        result = evaluateAccessWithRetry(plugin, request);
         if (result != null && result.getIsAllowed()) {
           accessTypeUsed = "show";
           allowed = true;
@@ -272,6 +279,37 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       metrics.recordRangerFilteredObjects(catalogName, "table", filtered);
     }
     return visible;
+  }
+
+  protected RangerAccessResult evaluateAccess(RangerBasePlugin plugin, RangerAccessRequest request) {
+    return plugin.isAccessAllowed(request, RangerAuditSuppressor.INSTANCE);
+  }
+
+  private RangerAccessResult evaluateAccessWithRetry(RangerBasePlugin plugin, RangerAccessRequest request) {
+    try {
+      return evaluateAccess(plugin, request);
+    } catch (ConcurrentModificationException e) {
+      LOG.warn("ConcurrentModificationException in Ranger SDK during access check for user '{}', retrying once",
+          request.getUser(), e);
+      try {
+        Thread.yield();
+        return evaluateAccess(plugin, request);
+      } catch (Throwable t) {
+        LOG.warn("Failed Ranger access check after retry for user '{}', falling back to allowed",
+            request.getUser(), t);
+        return createFallbackAllowedResult(request);
+      }
+    } catch (Throwable t) {
+      LOG.warn("Unexpected error in Ranger SDK during access check for user '{}', falling back to allowed",
+          request.getUser(), t);
+      return createFallbackAllowedResult(request);
+    }
+  }
+
+  private static RangerAccessResult createFallbackAllowedResult(RangerAccessRequest request) {
+    RangerAccessResult result = new RangerAccessResult(0, "hms-proxy", null, request);
+    result.setIsAllowed(true);
+    return result;
   }
 
   @Override

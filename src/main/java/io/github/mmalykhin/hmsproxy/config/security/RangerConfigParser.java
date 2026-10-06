@@ -28,6 +28,7 @@ public final class RangerConfigParser {
     String globalSslTruststorePassword = getFirst(reader, "ranger.ssl.truststore.password", "ranger.ssl-truststore-password", null);
     String globalConfigDir = getFirst(reader, "ranger.config-dir", "ranger.config.dir", null);
     boolean globalAuditEnabled = reader.getBoolean("ranger.audit.enabled", reader.getBoolean("ranger.audit-enabled", false));
+    boolean globalRolesEnabled = reader.getBoolean("ranger.roles.enabled", reader.getBoolean("ranger.roles-enabled", CatalogRangerConfig.DEFAULT_ROLES_ENABLED));
 
     CatalogRangerConfig defaults = new CatalogRangerConfig(
         globalEnabled,
@@ -42,7 +43,8 @@ public final class RangerConfigParser {
         globalSslTruststoreFile,
         globalSslTruststorePassword,
         globalConfigDir,
-        globalAuditEnabled
+        globalAuditEnabled,
+        globalRolesEnabled
     );
 
     Map<String, CatalogRangerConfig> catalogConfigs = new LinkedHashMap<>();
@@ -91,6 +93,11 @@ public final class RangerConfigParser {
             reader.getBoolean(prefix + "audit-enabled",
                 reader.getBoolean(altPrefix + "audit.enabled",
                     reader.getBoolean(altPrefix + "audit-enabled", globalAuditEnabled))));
+        boolean rolesEnabled = reader.getBoolean(
+            prefix + "roles.enabled",
+            reader.getBoolean(prefix + "roles-enabled",
+                reader.getBoolean(altPrefix + "roles.enabled",
+                    reader.getBoolean(altPrefix + "roles-enabled", globalRolesEnabled))));
 
         if (enabled || hasCatalogSpecific) {
           catalogConfigs.put(catalogName, new CatalogRangerConfig(
@@ -106,7 +113,8 @@ public final class RangerConfigParser {
               sslTruststoreFile,
               sslTruststorePassword,
               configDir,
-              auditEnabled
+              auditEnabled,
+              rolesEnabled
           ));
         }
       }

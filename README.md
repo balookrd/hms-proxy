@@ -1770,6 +1770,8 @@ ranger.app-id=hms-proxy
 # ranger.ssl.truststore.password=changeit
 # ranger.config-dir=/etc/ranger/hms-proxy
 # ranger.audit.enabled=false
+# Опрос ролей из Ranger Admin (отключите для Ranger 1.x / HDP 3.1.0, где нет эндпоинта /service/roles/download/):
+# ranger.roles.enabled=true
 
 # Общий кэш метаданных:
 routing.database-list-cache.ttl-ms=10000
@@ -1806,13 +1808,19 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
 3. **Жизненный цикл фильтрации**:
    - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
-   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`.
+   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`. Если база данных недоступна пользователю в Ranger или скрыта правилами федерации, методы листинга возвращают пустой список вместо ошибки, что предотвращает фатальный сбой Apache Thrift `TApplicationException: Internal error processing get_all_tables` (в Thrift IDL для листинга таблиц не объявлен `NoSuchObjectException`) и полностью соответствует поведению нативного HMS.
    - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав выбрасывается `NoSuchObjectException`, скрывая сам факт существования недоступных объектов.
 
 4. **Разрешение групп Active Directory / LDAP и сопоставление с политиками**:
    - **Серверный резолвинг групп**: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
    - **Нормализация регистра и Distinguished Name (DN)**: Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и обогащает запрос нормализованными вариантами в нижнем регистре, гарантируя надежное сопоставление с политиками Ranger без ручного дублирования правил с разным регистром.
    - **Встроенный дисковый кэш групп для быстрого холодного старта (`security.group-disk-cache.*`)**: Для ускорения старта и исключения сетевых задержек на синхронные обращения к Active Directory/LDAP прокси поддерживает энергонезависимый дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP прозрачно отдает сохраненные группы в режиме serve-stale fallback.
+
+5. **Защита от ConcurrentModificationException при обновлении политик Ranger**:
+   - Фоновое обновление политик в потоке `PolicyRefresher` Ranger SDK 2.5.0 способно конкурировать с клиентскими потоками оценки прав доступа. В `hms-proxy` вызовы оценки прав защищены механизмом `evaluateAccessWithRetry`: при возникновении `ConcurrentModificationException` выполняется yield потока и однократный повтор проверки, а при сохранении ошибки — безопасный fail-open fallback для чтения с фиксацией в логе.
+
+6. **Совместимость со старыми версиями Ranger 1.x / HDP 3.1.0 (`ranger.roles.enabled`)**:
+   - В Ranger 1.x отсутствует REST-эндпоинт загрузки ролей (`/service/roles/download/`), что приводит к спаму сообщений об ошибках HTTP 404. Параметр `ranger.roles.enabled=false` (или per-catalog `catalog.<name>.ranger.roles.enabled=false`) полностью отключает опрос ролей через легковесный `NoOpRolesRangerAdminClient`.
 
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а

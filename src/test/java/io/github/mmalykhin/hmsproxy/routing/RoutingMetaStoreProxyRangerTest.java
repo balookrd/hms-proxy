@@ -253,6 +253,11 @@ public class RoutingMetaStoreProxyRangerTest {
       Assert.assertTrue(expected.getMessage().contains("sales"));
     }
 
+    // 10b. Bob queries get_all_tables for forbidden database "sales" -> returns empty list, no exception
+    @SuppressWarnings("unchecked")
+    List<String> bobTables = (List<String>) invokeAs(bobUgi, routingHandler, getAllTablesMethod, "sales");
+    Assert.assertTrue(bobTables.isEmpty());
+
     // 11. Group-based authorization: Charlie (group sales) & David (group finance)
     org.apache.hadoop.security.UserGroupInformation charlieSalesUgi =
         org.apache.hadoop.security.UserGroupInformation.createUserForTesting("charlie", new String[]{"sales"});

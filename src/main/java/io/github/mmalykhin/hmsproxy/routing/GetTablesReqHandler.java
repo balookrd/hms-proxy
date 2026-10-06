@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.GetTablesRequest;
+import org.apache.hadoop.hive.metastore.api.GetTablesResult;
 
 final class GetTablesReqHandler implements SpecialCaseHandler {
   private final RoutingSupport support;
@@ -20,8 +21,10 @@ final class GetTablesReqHandler implements SpecialCaseHandler {
     CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
+    if (!support.isDatabaseAccessible(method.getName(), namespace)) {
+      return new GetTablesResult(new java.util.ArrayList<>());
+    }
     CatalogBackend backend = namespace.backend();
-    support.validateExposedDatabaseAccess(method.getName(), namespace);
 
     Object result;
     if (backend.runtimeProfile().isHive4() && !(request instanceof GetTablesRequest)) {

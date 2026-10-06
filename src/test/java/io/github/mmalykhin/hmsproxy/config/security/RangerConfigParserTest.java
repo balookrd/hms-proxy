@@ -144,4 +144,23 @@ public class RangerConfigParserTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void testRolesEnabledParsing() {
+    Properties props = new Properties();
+    props.setProperty("ranger.enabled", "true");
+    props.setProperty("ranger.roles.enabled", "false");
+    props.setProperty("catalog.cat2.ranger.roles.enabled", "true");
+
+    PropertyReader reader = new PropertyReader(props);
+    RangerConfig config = RangerConfigParser.parse(reader, Set.of("cat1", "cat2"));
+
+    Assert.assertFalse("cat1 should inherit global roles.enabled=false", config.forCatalog("cat1").rolesEnabled());
+    Assert.assertTrue("cat2 should override roles.enabled=true", config.forCatalog("cat2").rolesEnabled());
+
+    // Default when unspecified
+    Properties defaultProps = new Properties();
+    RangerConfig defaultConfig = RangerConfigParser.parse(new PropertyReader(defaultProps), Set.of("cat1"));
+    Assert.assertTrue("default rolesEnabled should be true", defaultConfig.forCatalog("cat1").rolesEnabled());
+  }
 }

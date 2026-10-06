@@ -4,10 +4,14 @@ import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig;
 import io.github.mmalykhin.hmsproxy.config.security.RangerConfig;
+import java.util.ConcurrentModificationException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.ranger.plugin.model.RangerPolicy;
 import org.apache.ranger.plugin.model.RangerServiceDef;
+import org.apache.ranger.plugin.policyengine.RangerAccessRequest;
+import org.apache.ranger.plugin.policyengine.RangerAccessResult;
 import org.apache.ranger.plugin.service.RangerBasePlugin;
 import org.apache.ranger.plugin.util.ServicePolicies;
 import org.junit.Assert;
@@ -200,5 +204,91 @@ public class RangerMetadataAuthorizerTest {
 
     sp.setPolicies(List.of(p1, p2, p3));
     return sp;
+  }
+
+  @Test
+  public void testConcurrentModificationExceptionRetrySuccess() {
+    CatalogRangerConfig rangerConfig = new CatalogRangerConfig(
+        true, null, "cme_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false);
+    RangerConfig globalRanger = new RangerConfig(true, rangerConfig, Map.of("cat1", rangerConfig));
+    CatalogConfig catConfig = new CatalogConfig(
+        "cat1", "cat1 desc", "file:///tmp/cat1", false,
+        io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode.READ_WRITE,
+        List.of(), io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode.ALLOW_ALL,
+        List.of(), Map.of(),
+        io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile.APACHE_3_1_3,
+        null, Map.of(), 5000L, 10, 60000L, 10, 10, 60000L, rangerConfig);
+
+    AtomicInteger callCount = new AtomicInteger();
+    RangerMetadataAuthorizer authorizer = new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig)) {
+      @Override
+      protected RangerAccessResult evaluateAccess(RangerBasePlugin plugin, RangerAccessRequest request) {
+        int attempt = callCount.incrementAndGet();
+        if (attempt == 1) {
+          throw new ConcurrentModificationException("Simulated CME in Ranger policy engine");
+        }
+        RangerAccessResult res = new RangerAccessResult(0, "cme_svc", null, request);
+        res.setIsAllowed(true);
+        return res;
+      }
+    };
+
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    boolean allowed = authorizer.isDatabaseAllowed("cat1", "test_db", user);
+    Assert.assertTrue("Should be allowed after successful retry", allowed);
+    Assert.assertEquals("Should have called evaluateAccess twice (initial + retry)", 2, callCount.get());
+  }
+
+  @Test
+  public void testConcurrentModificationExceptionFallbackAllowed() {
+    CatalogRangerConfig rangerConfig = new CatalogRangerConfig(
+        true, null, "cme_svc2", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false);
+    RangerConfig globalRanger = new RangerConfig(true, rangerConfig, Map.of("cat1", rangerConfig));
+    CatalogConfig catConfig = new CatalogConfig(
+        "cat1", "cat1 desc", "file:///tmp/cat1", false,
+        io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode.READ_WRITE,
+        List.of(), io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode.ALLOW_ALL,
+        List.of(), Map.of(),
+        io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile.APACHE_3_1_3,
+        null, Map.of(), 5000L, 10, 60000L, 10, 10, 60000L, rangerConfig);
+
+    AtomicInteger callCount = new AtomicInteger();
+    RangerMetadataAuthorizer authorizer = new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig)) {
+      @Override
+      protected RangerAccessResult evaluateAccess(RangerBasePlugin plugin, RangerAccessRequest request) {
+        callCount.incrementAndGet();
+        throw new ConcurrentModificationException("Persistent CME failure in Ranger");
+      }
+    };
+
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    boolean allowed = authorizer.isDatabaseAllowed("cat1", "test_db", user);
+    Assert.assertTrue("Should fall back to allowed on persistent CME to prevent dropping client RPCs", allowed);
+    Assert.assertEquals("Should attempt retry once (total 2 attempts)", 2, callCount.get());
+  }
+
+  @Test
+  public void testRolesDisabledConfigurationUsesNoOpClient() {
+    CatalogRangerConfig rangerConfig = new CatalogRangerConfig(
+        true, null, "roles_off_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false, false);
+    RangerConfig globalRanger = new RangerConfig(true, rangerConfig, Map.of("cat1", rangerConfig));
+    CatalogConfig catConfig = new CatalogConfig(
+        "cat1", "cat1 desc", "file:///tmp/cat1", false,
+        io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode.READ_WRITE,
+        List.of(), io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode.ALLOW_ALL,
+        List.of(), Map.of(),
+        io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile.APACHE_3_1_3,
+        null, Map.of(), 5000L, 10, 60000L, 10, 10, 60000L, rangerConfig);
+
+    RangerMetadataAuthorizer authorizer = new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig)) {
+      @Override
+      protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+        RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+        String policySourceImpl = plugin.getConfig().get("ranger.plugin.hive.policy.source.impl");
+        Assert.assertEquals(NoOpRolesRangerAdminClient.class.getName(), policySourceImpl);
+        return plugin;
+      }
+    };
+    Assert.assertNotNull(authorizer);
   }
 }

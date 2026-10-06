@@ -27,7 +27,9 @@ final class GetTablesExtHandler implements SpecialCaseHandler {
               + "'");
     }
     support.validateCatalogAccess(backend, "get_tables_ext", namespace.backendDbName());
-    support.validateExposedDatabaseAccess("get_tables_ext", namespace);
+    if (!support.isDatabaseAccessible("get_tables_ext", namespace)) {
+      return new java.util.ArrayList<>();
+    }
     Object routedRequest = ThriftReflectionCache.deepCopy(request);
     ThriftReflectionCache.invokeStringSetter(routedRequest, "setDatabase", namespace.backendDbName());
     String internalCatalog = NamespaceTranslator.internalCatalogName(catalogName, dbName, namespace,

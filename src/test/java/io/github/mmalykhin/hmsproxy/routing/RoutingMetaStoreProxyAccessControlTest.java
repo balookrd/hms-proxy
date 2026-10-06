@@ -334,6 +334,48 @@ public class RoutingMetaStoreProxyAccessControlTest {
   }
 
   @Test
+  public void getAllTablesReturnsEmptyListForHiddenDatabaseWithoutBackendCall() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1",
+            catalogConfigWithExposure(
+                "catalog1",
+                "c1",
+                null,
+                null,
+                CatalogExposureMode.DENY_BY_DEFAULT,
+                List.of(),
+                Map.of("sales", List.of("orders")),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      return List.of("orders");
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_tables", String.class);
+
+    @SuppressWarnings("unchecked")
+    List<String> result = (List<String>) handler.invoke(null, method, new Object[] {"hidden_db"});
+
+    Assert.assertTrue(result.isEmpty());
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
+  @Test
   public void getTableMetaFiltersHiddenTablesByExposurePolicy() throws Throwable {
     ProxyConfig config = ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))

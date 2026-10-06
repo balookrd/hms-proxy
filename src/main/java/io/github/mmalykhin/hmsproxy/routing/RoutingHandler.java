@@ -10,6 +10,7 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -349,7 +350,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
-    validateReadExposure(method.getName(), namespace, args);
+    if (List.class.isAssignableFrom(method.getReturnType())
+        && !support.isDatabaseAccessible(method.getName(), namespace)) {
+      return Collections.emptyList();
+    }
+    validateReadExposure(method, namespace, args);
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
     Object result;
     if ("get_database".equals(method.getName())) {
@@ -393,7 +398,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
-    validateReadExposure(method.getName(), namespace, args);
+    if (List.class.isAssignableFrom(method.getReturnType())
+        && !support.isDatabaseAccessible(method.getName(), namespace)) {
+      return Collections.emptyList();
+    }
+    validateReadExposure(method, namespace, args);
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
     String methodName = method.getName();
     Object result;
@@ -440,7 +449,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     RequestContext.currentObservation().recordNamespace(extractedNamespace);
     support.validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
-    validateReadExposure(methodName, extractedNamespace, args);
+    if (List.class.isAssignableFrom(method.getReturnType())
+        && !support.isDatabaseAccessible(methodName, extractedNamespace)) {
+      return Collections.emptyList();
+    }
+    validateReadExposure(method, extractedNamespace, args);
     validateAcidNotOnNonDefaultCatalog(operation, extractedNamespace, methodName);
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = support.federationLayer.internalizeObjectArguments(args, extractedNamespace);
@@ -522,16 +535,17 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     }
   }
 
-  private void validateReadExposure(String methodName, CatalogRouter.ResolvedNamespace namespace, Object[] args)
+  private void validateReadExposure(Method method, CatalogRouter.ResolvedNamespace namespace, Object[] args)
       throws TException {
+    String methodName = method.getName();
     OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     if (operation.mutating()) {
       return;
     }
-    support.validateExposedDatabaseAccess(methodName, namespace);
+    support.validateExposedDatabaseAccess(method, namespace);
     String tableName = extractExplicitTableReadName(operation, args);
     if (tableName != null) {
-      support.validateExposedTableAccess(methodName, namespace, tableName);
+      support.validateExposedTableAccess(method, namespace, tableName);
     }
   }
 

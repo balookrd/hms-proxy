@@ -295,6 +295,32 @@ final class RoutingSupport {
         : new io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver().resolveGroups(userName);
   }
 
+  boolean isDatabaseAccessible(String methodName, CatalogRouter.ResolvedNamespace namespace) {
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      return false;
+    }
+    if (!federationLayer.isDatabaseExposed(namespace)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      return false;
+    }
+    return true;
+  }
+
+  boolean isTableAccessible(String methodName, CatalogRouter.ResolvedNamespace namespace, String tableName) {
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      return false;
+    }
+    if (!federationLayer.isTableExposed(namespace, tableName)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      return false;
+    }
+    return true;
+  }
+
   void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
       throws NoSuchObjectException {
     ImpersonationContext impersonation = currentImpersonation();
@@ -309,6 +335,25 @@ final class RoutingSupport {
     }
     recordFilteredObject(methodName, namespace.catalogName(), "database");
     throw new NoSuchObjectException(
+        "Database '" + namespace.externalDbName() + "' is not exposed by proxy catalog '"
+            + namespace.catalogName() + "'");
+  }
+
+  void validateExposedDatabaseAccess(Method method, CatalogRouter.ResolvedNamespace namespace)
+      throws TException {
+    String methodName = method != null ? method.getName() : "unknown";
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throwAppropriateException(method,
+          "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+              + namespace.catalogName() + "'");
+    }
+    if (federationLayer.isDatabaseExposed(namespace)) {
+      return;
+    }
+    recordFilteredObject(methodName, namespace.catalogName(), "database");
+    throwAppropriateException(method,
         "Database '" + namespace.externalDbName() + "' is not exposed by proxy catalog '"
             + namespace.catalogName() + "'");
   }
@@ -332,6 +377,44 @@ final class RoutingSupport {
     throw new NoSuchObjectException(
         "Table '" + namespace.externalDbName() + "." + tableName + "' is not exposed by proxy catalog '"
             + namespace.catalogName() + "'");
+  }
+
+  void validateExposedTableAccess(
+      Method method,
+      CatalogRouter.ResolvedNamespace namespace,
+      String tableName
+  ) throws TException {
+    String methodName = method != null ? method.getName() : "unknown";
+    ImpersonationContext impersonation = currentImpersonation();
+    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throwAppropriateException(method,
+          "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+              + namespace.catalogName() + "'");
+    }
+    if (federationLayer.isTableExposed(namespace, tableName)) {
+      return;
+    }
+    recordFilteredObject(methodName, namespace.catalogName(), "table");
+    throwAppropriateException(method,
+        "Table '" + namespace.externalDbName() + "." + tableName + "' is not exposed by proxy catalog '"
+            + namespace.catalogName() + "'");
+  }
+
+  private static void throwAppropriateException(Method method, String message) throws TException {
+    if (method != null) {
+      for (Class<?> exc : method.getExceptionTypes()) {
+        if (NoSuchObjectException.class.isAssignableFrom(exc)) {
+          throw new NoSuchObjectException(message);
+        }
+      }
+      for (Class<?> exc : method.getExceptionTypes()) {
+        if (MetaException.class.isAssignableFrom(exc)) {
+          throw new MetaException(message);
+        }
+      }
+    }
+    throw new NoSuchObjectException(message);
   }
 
   CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)

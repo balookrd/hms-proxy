@@ -1829,6 +1829,8 @@ ranger.app-id=hms-proxy
 # ranger.ssl.truststore.password=changeit
 # ranger.config-dir=/etc/ranger/hms-proxy
 # ranger.audit.enabled=false
+# Whether to poll roles from Ranger Admin (disable for Ranger 1.x / HDP 3.1.0 where /service/roles/download/ endpoint does not exist):
+# ranger.roles.enabled=true
 
 # Global shared metadata caches:
 routing.database-list-cache.ttl-ms=10000
@@ -1865,13 +1867,19 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
 3. **Filtering Lifecycle**:
    - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
-   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`.
+   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`. If a database is inaccessible to the caller in Ranger or hidden by federation exposure rules, table listing methods return an empty list rather than an error, preventing fatal Apache Thrift `TApplicationException: Internal error processing get_all_tables` crashes (since Thrift IDL does not declare `NoSuchObjectException` for table listing RPCs) and matching canonical Hive Metastore behavior.
    - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. If the caller lacks permission, `NoSuchObjectException` is thrown to hide the existence of unauthorized objects.
 
 4. **Active Directory / LDAP Group Resolution and Policy Matching**:
    - **Server-Side Group Resolution**: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
    - **Case-Insensitive & Distinguished Name (DN) Normalization**: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, ensuring reliable matching against Ranger policies without manual duplication of rules across different cases.
    - **Persistent On-Disk Group Cache for Fast Cold Start (`security.group-disk-cache.*`)**: To speed up startup and avoid synchronous network round-trips to Active Directory / LDAP domain controllers, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable.
+
+5. **Ranger Policy Engine ConcurrentModificationException Protection**:
+   - Background policy refreshing in Ranger SDK 2.5.0 (`PolicyRefresher` thread) can contend with client worker threads evaluating access permissions. In `hms-proxy`, access checks are protected via `evaluateAccessWithRetry`: on `ConcurrentModificationException`, it yields thread execution and retries once, with a safe fail-open fallback for reads if contention persists.
+
+6. **Compatibility with Older Ranger 1.x / HDP 3.1.0 Deployments (`ranger.roles.enabled`)**:
+   - Older Ranger releases lack the `/service/roles/download/` REST endpoint, generating persistent HTTP 404 error logs. Setting `ranger.roles.enabled=false` (or per-catalog `catalog.<name>.ranger.roles.enabled=false`) disables roles polling via lightweight `NoOpRolesRangerAdminClient`.
 
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
