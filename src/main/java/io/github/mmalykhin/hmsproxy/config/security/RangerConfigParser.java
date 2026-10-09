@@ -29,6 +29,11 @@ public final class RangerConfigParser {
     String globalConfigDir = getFirst(reader, "ranger.config-dir", "ranger.config.dir", null);
     boolean globalAuditEnabled = reader.getBoolean("ranger.audit.enabled", reader.getBoolean("ranger.audit-enabled", false));
     boolean globalRolesEnabled = reader.getBoolean("ranger.roles.enabled", reader.getBoolean("ranger.roles-enabled", CatalogRangerConfig.DEFAULT_ROLES_ENABLED));
+    boolean globalMaskUnauthorizedAsNotFound = reader.getBoolean(
+        "ranger.mask-unauthorized-as-not-found",
+        reader.getBoolean(
+            "ranger.mask.unauthorized.as.not.found",
+            CatalogRangerConfig.DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND));
 
     CatalogRangerConfig defaults = new CatalogRangerConfig(
         globalEnabled,
@@ -44,7 +49,8 @@ public final class RangerConfigParser {
         globalSslTruststorePassword,
         globalConfigDir,
         globalAuditEnabled,
-        globalRolesEnabled
+        globalRolesEnabled,
+        globalMaskUnauthorizedAsNotFound
     );
 
     Map<String, CatalogRangerConfig> catalogConfigs = new LinkedHashMap<>();
@@ -98,6 +104,15 @@ public final class RangerConfigParser {
             reader.getBoolean(prefix + "roles-enabled",
                 reader.getBoolean(altPrefix + "roles.enabled",
                     reader.getBoolean(altPrefix + "roles-enabled", globalRolesEnabled))));
+        boolean maskUnauthorizedAsNotFound = reader.getBoolean(
+            prefix + "mask-unauthorized-as-not-found",
+            reader.getBoolean(
+                prefix + "mask.unauthorized.as.not.found",
+                reader.getBoolean(
+                    altPrefix + "mask-unauthorized-as-not-found",
+                    reader.getBoolean(
+                        altPrefix + "mask.unauthorized.as.not.found",
+                        globalMaskUnauthorizedAsNotFound))));
 
         if (enabled || hasCatalogSpecific) {
           catalogConfigs.put(catalogName, new CatalogRangerConfig(
@@ -114,7 +129,8 @@ public final class RangerConfigParser {
               sslTruststorePassword,
               configDir,
               auditEnabled,
-              rolesEnabled
+              rolesEnabled,
+              maskUnauthorizedAsNotFound
           ));
         }
       }

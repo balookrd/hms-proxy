@@ -207,12 +207,13 @@ public class RoutingMetaStoreProxyRangerTest {
     Assert.assertEquals("sales", aliceSales.getName());
     Assert.assertEquals(1, getDatabaseCalls.get());
 
-    // 4. Bob queries get_database("sales") -> rejected by Ranger with NoSuchObjectException, no extra backend call
+    // 4. Bob queries get_database("sales") -> rejected by Ranger with MetaException, no extra backend call
     try {
       invokeAs(bobUgi, routingHandler, getDbMethod, "sales");
       Assert.fail("Bob should not have access to 'sales'");
-    } catch (NoSuchObjectException expected) {
+    } catch (org.apache.hadoop.hive.metastore.api.MetaException expected) {
       Assert.assertTrue(expected.getMessage().contains("sales"));
+      Assert.assertTrue(expected.getMessage().startsWith("Access denied:"));
     }
     Assert.assertEquals(1, getDatabaseCalls.get());
 
@@ -237,20 +238,22 @@ public class RoutingMetaStoreProxyRangerTest {
     Table aliceOrderTable = (Table) invokeAs(aliceUgi, routingHandler, getTableMethod, "sales", "orders");
     Assert.assertEquals("orders", aliceOrderTable.getTableName());
 
-    // 9. Alice queries get_table for forbidden table "secret_reports" in allowed db -> rejected by Ranger
+    // 9. Alice queries get_table for forbidden table "secret_reports" in allowed db -> rejected by Ranger with MetaException
     try {
       invokeAs(aliceUgi, routingHandler, getTableMethod, "sales", "secret_reports");
       Assert.fail("Alice should not have access to 'secret_reports'");
-    } catch (NoSuchObjectException expected) {
+    } catch (org.apache.hadoop.hive.metastore.api.MetaException expected) {
       Assert.assertTrue(expected.getMessage().contains("secret_reports"));
+      Assert.assertTrue(expected.getMessage().startsWith("Access denied:"));
     }
 
-    // 10. Bob queries get_table for "sales.orders" -> rejected by Ranger
+    // 10. Bob queries get_table for "sales.orders" -> rejected by Ranger with MetaException
     try {
       invokeAs(bobUgi, routingHandler, getTableMethod, "sales", "orders");
       Assert.fail("Bob should not have access to 'sales.orders'");
-    } catch (NoSuchObjectException expected) {
+    } catch (org.apache.hadoop.hive.metastore.api.MetaException expected) {
       Assert.assertTrue(expected.getMessage().contains("sales"));
+      Assert.assertTrue(expected.getMessage().startsWith("Access denied:"));
     }
 
     // 10b. Bob queries get_all_tables for forbidden database "sales" -> returns empty list, no exception
@@ -271,8 +274,9 @@ public class RoutingMetaStoreProxyRangerTest {
     try {
       invokeAs(charlieSalesUgi, routingHandler, getDbMethod, "finance");
       Assert.fail("Charlie (sales group) should not have access to 'finance'");
-    } catch (NoSuchObjectException expected) {
+    } catch (org.apache.hadoop.hive.metastore.api.MetaException expected) {
       Assert.assertTrue(expected.getMessage().contains("finance"));
+      Assert.assertTrue(expected.getMessage().startsWith("Access denied:"));
     }
 
     org.apache.hadoop.security.UserGroupInformation davidFinanceUgi =
@@ -280,6 +284,142 @@ public class RoutingMetaStoreProxyRangerTest {
     @SuppressWarnings("unchecked")
     List<String> davidDbs = (List<String>) invokeAs(davidFinanceUgi, routingHandler, getAllDbsMethod);
     Assert.assertEquals(List.of("finance"), davidDbs);
+
+    customAuthorizer.close();
+  }
+
+  @Test
+  public void testMaskUnauthorizedAsNotFound() throws Throwable {
+    CatalogRangerConfig cat1Ranger = new CatalogRangerConfig(
+        true, null, "c1_hive_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false, true, true);
+    RangerConfig ranger = new RangerConfig(
+        true, cat1Ranger, Map.of("catalog1", cat1Ranger));
+
+    CatalogConfig catalog1Config = new CatalogConfig(
+        "catalog1", "c1", null, true, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), MetastoreRuntimeProfile.APACHE_3_1_3, null,
+        Map.of("hive.metastore.uris", "thrift://one"), 5000L, 10, 60000L, 10, 10, 60000L, cat1Ranger);
+
+    ProxyConfig config = new ProxyConfig(
+        new ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new SecurityConfig(SecurityMode.NONE, null, null, null, null, true, Map.of()),
+        ".",
+        "catalog1",
+        Map.of("catalog1", catalog1Config),
+        new BackendConfig(Map.of()),
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
+        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
+        new ManagementConfig(false, "127.0.0.1", 10083),
+        null,
+        SyntheticReadLockStoreConfig.inMemory(),
+        RateLimitConfig.disabled(),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 1, 200L),
+            new HedgedReadConfig(false, 1, 30_000L),
+            DegradedRoutingPolicy.STRICT,
+            new DatabaseListCacheConfig(60_000L, 100, true),
+            new DatabaseMetadataCacheConfig(60_000L, 100, true)),
+        IcebergPointerGuardConfig.defaults(),
+        List.of(),
+        ranger
+    );
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        catalog1Config,
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            catalog1Config,
+            newSession((proxy, method, args) -> {
+              if ("get_database".equals(method.getName())) {
+                Database db = new Database();
+                db.setName((String) args[0]);
+                return db;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table t = new Table();
+                t.setDbName((String) args[0]);
+                t.setTableName((String) args[1]);
+                return t;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+
+    ServicePolicies servicePolicies = buildServicePolicies("c1_hive_svc");
+    MetadataAuthorizer customAuthorizer = new RangerMetadataAuthorizer(ranger, config.catalogs()) {
+      @Override
+      protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+        RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+        plugin.setPolicies(servicePolicies);
+        return plugin;
+      }
+    };
+
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    DatabaseListCache listCache = new DatabaseListCache(config.latencyRouting().databaseListCache());
+    DatabaseMetadataCache metaCache = new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), listCache);
+    RequestRateLimiter rateLimiter = new RequestRateLimiter(config, observability.metrics());
+    AdmissionGate admissionGate = new AdmissionGate(new BackendRoutingController(config, router, observability), rateLimiter);
+    BackendCallDispatcher dispatcher = new BackendCallDispatcher(
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        admissionGate,
+        observability,
+        new FanoutExecutor(new BackendRoutingController(config, router, observability), router, admissionGate));
+
+    RoutingHandler routingHandler = new RoutingHandler(
+        config,
+        router,
+        federationLayer,
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        observability,
+        dispatcher,
+        new ImpersonationResolver(config),
+        listCache,
+        metaCache,
+        null,
+        customAuthorizer);
+
+    Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+    Method getTableMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+
+    org.apache.hadoop.security.UserGroupInformation aliceUgi =
+        org.apache.hadoop.security.UserGroupInformation.createRemoteUser("alice");
+    org.apache.hadoop.security.UserGroupInformation bobUgi =
+        org.apache.hadoop.security.UserGroupInformation.createRemoteUser("bob");
+
+    // With maskUnauthorizedAsNotFound = true, unauthorized objects throw NoSuchObjectException
+    try {
+      invokeAs(bobUgi, routingHandler, getDbMethod, "sales");
+      Assert.fail("Bob should not have access to 'sales'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("sales"));
+      Assert.assertTrue(expected.getMessage().contains("is not accessible"));
+    }
+
+    try {
+      invokeAs(aliceUgi, routingHandler, getTableMethod, "sales", "secret_reports");
+      Assert.fail("Alice should not have access to 'secret_reports'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("secret_reports"));
+      Assert.assertTrue(expected.getMessage().contains("is not accessible"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "sales", "orders");
+      Assert.fail("Bob should not have access to 'sales.orders'");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("sales"));
+      Assert.assertTrue(expected.getMessage().contains("is not accessible"));
+    }
 
     customAuthorizer.close();
   }

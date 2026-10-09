@@ -14,7 +14,8 @@ public record CatalogRangerConfig(
     String sslTruststorePassword,
     String configDir,
     boolean auditEnabled,
-    boolean rolesEnabled
+    boolean rolesEnabled,
+    boolean maskUnauthorizedAsNotFound
 ) {
   public static final String DEFAULT_SERVICE_TYPE = "hive";
   public static final String DEFAULT_APP_ID = "hms-proxy";
@@ -22,6 +23,7 @@ public record CatalogRangerConfig(
   public static final int DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
   public static final int DEFAULT_READ_TIMEOUT_MS = 10_000;
   public static final boolean DEFAULT_ROLES_ENABLED = true;
+  public static final boolean DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND = false;
 
   public CatalogRangerConfig(
       boolean enabled,
@@ -41,7 +43,31 @@ public record CatalogRangerConfig(
     this(
         enabled, policyRestUrl, serviceName, serviceType, appId, policyCacheDir,
         policyPollIntervalMs, connectionTimeoutMs, readTimeoutMs, sslTruststoreFile,
-        sslTruststorePassword, configDir, auditEnabled, DEFAULT_ROLES_ENABLED);
+        sslTruststorePassword, configDir, auditEnabled, DEFAULT_ROLES_ENABLED,
+        DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND);
+  }
+
+  public CatalogRangerConfig(
+      boolean enabled,
+      String policyRestUrl,
+      String serviceName,
+      String serviceType,
+      String appId,
+      String policyCacheDir,
+      long policyPollIntervalMs,
+      int connectionTimeoutMs,
+      int readTimeoutMs,
+      String sslTruststoreFile,
+      String sslTruststorePassword,
+      String configDir,
+      boolean auditEnabled,
+      boolean rolesEnabled
+  ) {
+    this(
+        enabled, policyRestUrl, serviceName, serviceType, appId, policyCacheDir,
+        policyPollIntervalMs, connectionTimeoutMs, readTimeoutMs, sslTruststoreFile,
+        sslTruststorePassword, configDir, auditEnabled, rolesEnabled,
+        DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND);
   }
 
   public CatalogRangerConfig {
@@ -56,6 +82,6 @@ public record CatalogRangerConfig(
     return new CatalogRangerConfig(
         false, null, null, DEFAULT_SERVICE_TYPE, DEFAULT_APP_ID, null,
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_CONNECTION_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS,
-        null, null, null, false, false);
+        null, null, null, false, false, DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND);
   }
 }

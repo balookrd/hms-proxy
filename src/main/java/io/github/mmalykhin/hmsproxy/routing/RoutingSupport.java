@@ -321,13 +321,25 @@ final class RoutingSupport {
     return true;
   }
 
+  boolean maskUnauthorizedAsNotFound(String catalogName) {
+    if (config.ranger() == null || !config.ranger().enabled()) {
+      return io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.DEFAULT_MASK_UNAUTHORIZED_AS_NOT_FOUND;
+    }
+    return config.ranger().forCatalog(catalogName).maskUnauthorizedAsNotFound();
+  }
+
   void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
-      throws NoSuchObjectException {
+      throws TException {
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
-      throw new NoSuchObjectException(
-          "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+        throw new NoSuchObjectException(
+            "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+                + namespace.catalogName() + "'");
+      }
+      throw new MetaException(
+          "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
               + namespace.catalogName() + "'");
     }
     if (federationLayer.isDatabaseExposed(namespace)) {
@@ -345,8 +357,13 @@ final class RoutingSupport {
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
-      throwAppropriateException(method,
-          "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+        throwAppropriateException(method,
+            "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+                + namespace.catalogName() + "'");
+      }
+      throwAccessDeniedException(method,
+          "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
               + namespace.catalogName() + "'");
     }
     if (federationLayer.isDatabaseExposed(namespace)) {
@@ -362,12 +379,17 @@ final class RoutingSupport {
       String methodName,
       CatalogRouter.ResolvedNamespace namespace,
       String tableName
-  ) throws NoSuchObjectException {
+  ) throws TException {
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
-      throw new NoSuchObjectException(
-          "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+        throw new NoSuchObjectException(
+            "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+                + namespace.catalogName() + "'");
+      }
+      throw new MetaException(
+          "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
               + namespace.catalogName() + "'");
     }
     if (federationLayer.isTableExposed(namespace, tableName)) {
@@ -388,8 +410,13 @@ final class RoutingSupport {
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
-      throwAppropriateException(method,
-          "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+        throwAppropriateException(method,
+            "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+                + namespace.catalogName() + "'");
+      }
+      throwAccessDeniedException(method,
+          "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
               + namespace.catalogName() + "'");
     }
     if (federationLayer.isTableExposed(namespace, tableName)) {
@@ -415,6 +442,22 @@ final class RoutingSupport {
       }
     }
     throw new NoSuchObjectException(message);
+  }
+
+  private static void throwAccessDeniedException(Method method, String message) throws TException {
+    if (method != null) {
+      for (Class<?> exc : method.getExceptionTypes()) {
+        if (MetaException.class.isAssignableFrom(exc)) {
+          throw new MetaException(message);
+        }
+      }
+      for (Class<?> exc : method.getExceptionTypes()) {
+        if (NoSuchObjectException.class.isAssignableFrom(exc)) {
+          throw new NoSuchObjectException(message);
+        }
+      }
+    }
+    throw new MetaException(message);
   }
 
   CatalogRouter.ResolvedNamespace resolveRequestNamespace(String catName, String dbName)

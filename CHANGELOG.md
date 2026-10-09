@@ -10,6 +10,11 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Настройка маскировки недоступных объектов в Apache Ranger (`ranger.mask-unauthorized-as-not-found`)**:
+  - Добавлен параметр конфигурации `ranger.mask-unauthorized-as-not-found` (глобальный и per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found`) со значением по умолчанию `false`.
+  - По умолчанию (`false`) при запрете доступа к базам данных и таблицам в Ranger прокси выбрасывает `MetaException` с явным префиксом `Access denied: ...`. Это устраняет вводящую в заблуждение ошибку Hive `Table not found` / `Database not found` (когда HiveServer2 ошибочно интерпретировал `NoSuchObjectException` как физическое отсутствие таблицы в БД) и возвращает клиентам понятный отказ в доступе.
+  - При значении `true` сохраняется строгое поведение zero-information-disclosure: недоступные объекты выбрасывают `NoSuchObjectException`, маскируя факт их существования в системе.
+
 - **Встроенный энергонезависимый дисковый кэш групп пользователей (`security.group-disk-cache.*`)**:
   - Реализован встроенный persistent-кэш групп на диске в формате JSON для мгновенного холодного старта (zero-latency cold start) и отказоустойчивости при сбоях Active Directory / LDAP.
   - Конфигурационные параметры: `security.group-disk-cache.enabled` (по умолчанию `false`), `security.group-disk-cache.path` (путь к JSON-файлу), `security.group-disk-cache.entry-ttl-seconds` (TTL записей, по умолчанию 86400 / 24ч), `security.group-disk-cache.persist-interval-seconds` (периодический сброс в фоновом потоке, по умолчанию 60с), `security.group-disk-cache.persist-on-shutdown` (атомарное сохранение при graceful shutdown, по умолчанию `true`).

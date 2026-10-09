@@ -163,4 +163,26 @@ public class RangerConfigParserTest {
     RangerConfig defaultConfig = RangerConfigParser.parse(new PropertyReader(defaultProps), Set.of("cat1"));
     Assert.assertTrue("default rolesEnabled should be true", defaultConfig.forCatalog("cat1").rolesEnabled());
   }
+
+  @Test
+  public void testMaskUnauthorizedAsNotFoundParsing() {
+    Properties props = new Properties();
+    props.setProperty("ranger.enabled", "true");
+    props.setProperty("ranger.mask-unauthorized-as-not-found", "true");
+    props.setProperty("catalog.cat2.ranger.mask-unauthorized-as-not-found", "false");
+
+    PropertyReader reader = new PropertyReader(props);
+    RangerConfig config = RangerConfigParser.parse(reader, Set.of("cat1", "cat2"));
+
+    Assert.assertTrue("cat1 should inherit global mask-unauthorized-as-not-found=true",
+        config.forCatalog("cat1").maskUnauthorizedAsNotFound());
+    Assert.assertFalse("cat2 should override mask-unauthorized-as-not-found=false",
+        config.forCatalog("cat2").maskUnauthorizedAsNotFound());
+
+    // Default when unspecified should be false
+    Properties defaultProps = new Properties();
+    RangerConfig defaultConfig = RangerConfigParser.parse(new PropertyReader(defaultProps), Set.of("cat1"));
+    Assert.assertFalse("default maskUnauthorizedAsNotFound should be false",
+        defaultConfig.forCatalog("cat1").maskUnauthorizedAsNotFound());
+  }
 }

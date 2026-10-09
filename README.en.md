@@ -1831,6 +1831,8 @@ ranger.app-id=hms-proxy
 # ranger.audit.enabled=false
 # Whether to poll roles from Ranger Admin (disable for Ranger 1.x / HDP 3.1.0 where /service/roles/download/ endpoint does not exist):
 # ranger.roles.enabled=true
+# Whether to mask unauthorized tables/databases as "not found" (default: false - throw explicit MetaException: Access denied):
+# ranger.mask-unauthorized-as-not-found=false
 
 # Global shared metadata caches:
 routing.database-list-cache.ttl-ms=10000
@@ -1845,6 +1847,7 @@ routing.database-cache.background-refresh.activity-window-ms=3600000
 # Per-catalog Ranger overrides (e.g. separate Ranger service or Admin per catalog):
 catalog.catalog1.ranger.enabled=true
 catalog.catalog1.ranger.service-name=c1_hive_service
+# catalog.catalog1.ranger.mask-unauthorized-as-not-found=false
 catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
@@ -1868,7 +1871,7 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 3. **Filtering Lifecycle**:
    - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
    - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`. If a database is inaccessible to the caller in Ranger or hidden by federation exposure rules, table listing methods return an empty list rather than an error, preventing fatal Apache Thrift `TApplicationException: Internal error processing get_all_tables` crashes (since Thrift IDL does not declare `NoSuchObjectException` for table listing RPCs) and matching canonical Hive Metastore behavior.
-   - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. If the caller lacks permission, `NoSuchObjectException` is thrown to hide the existence of unauthorized objects.
+   - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. Unauthorized access behavior is governed by `ranger.mask-unauthorized-as-not-found`: by default (`false`), an explicit `MetaException` prefixed with `Access denied: ...` is thrown; when set to `true`, `NoSuchObjectException` is thrown to mask unauthorized objects as non-existent.
 
 4. **Active Directory / LDAP Group Resolution and Policy Matching**:
    - **Server-Side Group Resolution**: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
@@ -1880,6 +1883,10 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
 6. **Compatibility with Older Ranger 1.x / HDP 3.1.0 Deployments (`ranger.roles.enabled`)**:
    - Older Ranger releases lack the `/service/roles/download/` REST endpoint, generating persistent HTTP 404 error logs. Setting `ranger.roles.enabled=false` (or per-catalog `catalog.<name>.ranger.roles.enabled=false`) disables roles polling via lightweight `NoOpRolesRangerAdminClient`.
+
+7. **Configurable Masking for Unauthorized Objects (`ranger.mask-unauthorized-as-not-found`)**:
+   - By default (`ranger.mask-unauthorized-as-not-found=false`), unauthorized database or table access in Ranger causes the proxy to throw a `MetaException` with an explicit `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (or `Database '<db>' is not accessible...`). This ensures that HiveServer2 and Beeline present callers with a clear access denial rather than confusing them with `Table not found` / `Database not found` compiler errors for tables that exist in the corporate catalog.
+   - When set to `true` (or per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`), the proxy throws `NoSuchObjectException`, adhering to a zero-information-disclosure security model by hiding the existence of unauthorized metadata objects.
 
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,

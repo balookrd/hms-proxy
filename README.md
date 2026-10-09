@@ -1772,6 +1772,8 @@ ranger.app-id=hms-proxy
 # ranger.audit.enabled=false
 # Опрос ролей из Ranger Admin (отключите для Ranger 1.x / HDP 3.1.0, где нет эндпоинта /service/roles/download/):
 # ranger.roles.enabled=true
+# Маскировка недоступных таблиц/баз под "not found" (default: false - выдавать явный MetaException: Access denied):
+# ranger.mask-unauthorized-as-not-found=false
 
 # Общий кэш метаданных:
 routing.database-list-cache.ttl-ms=10000
@@ -1786,6 +1788,7 @@ routing.database-cache.background-refresh.activity-window-ms=3600000
 # Переопределения для отдельных каталогов (отдельный сервис Ranger для каталога):
 catalog.catalog1.ranger.enabled=true
 catalog.catalog1.ranger.service-name=c1_hive_service
+# catalog.catalog1.ranger.mask-unauthorized-as-not-found=false
 catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
@@ -1809,7 +1812,7 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 3. **Жизненный цикл фильтрации**:
    - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
    - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`. Если база данных недоступна пользователю в Ranger или скрыта правилами федерации, методы листинга возвращают пустой список вместо ошибки, что предотвращает фатальный сбой Apache Thrift `TApplicationException: Internal error processing get_all_tables` (в Thrift IDL для листинга таблиц не объявлен `NoSuchObjectException`) и полностью соответствует поведению нативного HMS.
-   - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав выбрасывается `NoSuchObjectException`, скрывая сам факт существования недоступных объектов.
+   - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав поведение определяется параметром `ranger.mask-unauthorized-as-not-found`: по умолчанию (`false`) выбрасывается `MetaException` с префиксом `Access denied: ...`, а при `true` — `NoSuchObjectException` (маскировка под отсутствие объекта).
 
 4. **Разрешение групп Active Directory / LDAP и сопоставление с политиками**:
    - **Серверный резолвинг групп**: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
@@ -1821,6 +1824,10 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
 6. **Совместимость со старыми версиями Ranger 1.x / HDP 3.1.0 (`ranger.roles.enabled`)**:
    - В Ranger 1.x отсутствует REST-эндпоинт загрузки ролей (`/service/roles/download/`), что приводит к спаму сообщений об ошибках HTTP 404. Параметр `ranger.roles.enabled=false` (или per-catalog `catalog.<name>.ranger.roles.enabled=false`) полностью отключает опрос ролей через легковесный `NoOpRolesRangerAdminClient`.
+
+7. **Управление маскировкой недоступных объектов (`ranger.mask-unauthorized-as-not-found`)**:
+   - По умолчанию (`ranger.mask-unauthorized-as-not-found=false`) при запрете доступа в Ranger прокси выбрасывает `MetaException` с явным сообщением `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (или `Database '<db>' is not accessible...`). Это гарантирует, что HiveServer2 и клиенты Beeline показывают пользователю понятную ошибку отказа в доступе вместо маскировки под `Table not found` / `Database not found` (которая вводила пользователей в заблуждение).
+   - При `ranger.mask-unauthorized-as-not-found=true` (или per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`) прокси возвращает `NoSuchObjectException`, реализуя политику zero-information-disclosure (сокрытие самого факта существования защищенных объектов).
 
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а

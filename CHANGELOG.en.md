@@ -10,6 +10,11 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Configurable masking for unauthorized objects in Apache Ranger (`ranger.mask-unauthorized-as-not-found`)**:
+  - Added configuration property `ranger.mask-unauthorized-as-not-found` (global and per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found`), defaulting to `false`.
+  - By default (`false`), unauthorized database and table metadata requests rejected by Ranger throw `MetaException` prefixed with `Access denied: ...`. This prevents HiveServer2 from masking authorization failures as confusing `Table not found` / `Database not found` compilation errors and provides clear permission denied feedback to clients.
+  - When set to `true`, zero-information-disclosure masking is preserved: unauthorized accesses throw `NoSuchObjectException`, concealing the existence of protected objects.
+
 - **Persistent On-Disk User Group Cache (`security.group-disk-cache.*`)**:
   - Implemented an embedded JSON-based on-disk user group cache for instant zero-latency cold starts and resilience against Active Directory / LDAP outages.
   - Configuration properties: `security.group-disk-cache.enabled` (default `false`), `security.group-disk-cache.path` (path to cache JSON file), `security.group-disk-cache.entry-ttl-seconds` (entry TTL, default 86400 / 24h), `security.group-disk-cache.persist-interval-seconds` (background flush interval, default 60s), and `security.group-disk-cache.persist-on-shutdown` (atomic save on graceful shutdown, default `true`).

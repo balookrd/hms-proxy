@@ -35,9 +35,15 @@ public record RangerConfig(
           defaults.sslTruststoreFile(),
           defaults.sslTruststorePassword(),
           defaults.configDir(),
-          defaults.auditEnabled());
+          defaults.auditEnabled(),
+          defaults.rolesEnabled(),
+          defaults.maskUnauthorizedAsNotFound());
     }
     return defaults;
+  }
+
+  public boolean maskUnauthorizedAsNotFound() {
+    return defaults.maskUnauthorizedAsNotFound();
   }
 
   public String policyRestUrl() {
