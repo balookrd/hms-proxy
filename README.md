@@ -501,6 +501,10 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_cache_requests_total{cache,catalog,result}`
 - `hms_proxy_cache_entries{cache,catalog}`
 - `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
+- `hms_proxy_cache_refreshes_total{cache,status}`
+- `hms_proxy_cache_invalidation_events_published_total{target}`
+- `hms_proxy_cache_invalidation_events_received_total{target}`
+- `hms_proxy_cache_invalidation_errors_total{action}`
 - `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
@@ -551,6 +555,9 @@ scrape_configs:
 - `hms_proxy_cache_requests_total` считает обращения к кэшу метаданных с группировкой по `cache` (`database_list`, `database_metadata`), `catalog` и `result` (`hit`, `miss`)
 - `hms_proxy_cache_entries` отслеживает текущее число записей в кэшах метаданных с группировкой по `cache` и `catalog`
 - `hms_proxy_cache_invalidations_total` считает инвалидации записей кэша с группировкой по `cache`, `catalog` и `reason` (`write`, `catalog`, `prune`, `all`)
+- `hms_proxy_cache_refreshes_total` считает фоновые обновления кэшей метаданных и сбросы дискового кэша групп с группировкой по `cache` (`database_list`, `database_metadata`, `group_disk`) и `status` (`success`, `error`)
+- `hms_proxy_cache_invalidation_events_published_total` и `hms_proxy_cache_invalidation_events_received_total` отслеживают публикацию и получение событий распределенной инвалидации кэшей через ZooKeeper с группировкой по `target` (`table`, `database`, `catalog`, `all`)
+- `hms_proxy_cache_invalidation_errors_total` считает ошибки распределенной инвалидации кэшей через ZooKeeper с группировкой по `action` (`publish`, `receive`, `purge`)
 - `hms_proxy_ranger_evaluations_total` считает проверки политик Apache Ranger с группировкой по `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`) и `result` (`allowed`, `denied`)
 - `hms_proxy_ranger_evaluation_duration_seconds` измеряет длительность вычисления политик Ranger в секундах с группировкой по `catalog` и `resource_type`
 - `hms_proxy_ranger_filtered_objects_total` считает базы и таблицы, скрытые фильтрами Ranger при multi-object listing с группировкой по `catalog` и `resource_type`
@@ -1072,6 +1079,26 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 держит Thrift worker всё время удаления. Значит, успешный `DROP TABLE` ещё не гарантирует, что
 данные уже удалены — результат purge фиксируется в логе proxy. При остановке proxy запущенные purge
 дожидаются завершения; оставшиеся в очереди логируются и пропускаются.
+
+### Переписывание и нормализация локаций внешних таблиц и партиций
+
+При работе клиентов в мультикластерной среде (например, когда клиент настроен на `hdfs://frontend-ns` или указывает относительные пути `/data/...`) прокси умеет автоматически нормализовать локации внешних таблиц и разделов под HDFS целевого каталога:
+
+```properties
+# Автоматическая квалификация путей без схемы (e.g. /data/ext -> hdfs://backend-ns/data/ext)
+federation.external-table-location-rewrite.mode=QUALIFY_UNQUALIFIED
+
+# Или замена source-кластера на backend-кластер (e.g. hdfs://frontend-ns/data -> hdfs://backend-ns/data)
+# federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
+# federation.external-table-location-rewrite.source-default-fs=hdfs://frontend-ns
+```
+
+Режимы `federation.external-table-location-rewrite.mode`:
+- `DISABLED` (по умолчанию): пути `sd.location` передаются в бэкенд без изменений.
+- `QUALIFY_UNQUALIFIED`: неквалифицированные пути (без схемы и authority) автоматически дополняются схемой и authority целевого каталога (`fs.defaultFS` из `catalog.<name>.conf.fs.defaultFS`).
+- `REWRITE_IF_SOURCE_DEFAULT_FS`: если входящий путь совпадает с `federation.external-table-location-rewrite.source-default-fs` (по умолчанию `fs.defaultFS` каталога по умолчанию), authority заменяется на `fs.defaultFS` целевого каталога.
+
+Переписывание применяется к объектам `Table` и `Partition` во всех мутирующих RPC (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`).
 
 ## Iceberg REST Catalog frontend
 
@@ -1817,7 +1844,15 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 4. **Разрешение групп Active Directory / LDAP и сопоставление с политиками**:
    - **Серверный резолвинг групп**: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
    - **Нормализация регистра и Distinguished Name (DN)**: Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и обогащает запрос нормализованными вариантами в нижнем регистре, гарантируя надежное сопоставление с политиками Ranger без ручного дублирования правил с разным регистром.
-   - **Встроенный дисковый кэш групп для быстрого холодного старта (`security.group-disk-cache.*`)**: Для ускорения старта и исключения сетевых задержек на синхронные обращения к Active Directory/LDAP прокси поддерживает энергонезависимый дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP прозрачно отдает сохраненные группы в режиме serve-stale fallback.
+   - **Встроенный дисковый кэш групп для быстрого холодного старта (`security.group-disk-cache.*`)**: Для ускорения старта и исключения сетевых задержек на синхронные обращения к Active Directory/LDAP прокси поддерживает энергонезависимый дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP прозрачно отдает сохраненные группы в режиме serve-stale fallback:
+
+     ```properties
+     security.group-disk-cache.enabled=true
+     security.group-disk-cache.path=/var/cache/hms-proxy/user-groups.json
+     security.group-disk-cache.entry-ttl-seconds=86400
+     security.group-disk-cache.persist-interval-seconds=60
+     security.group-disk-cache.persist-on-shutdown=true
+     ```
 
 5. **Защита от ConcurrentModificationException при обновлении политик Ranger**:
    - Фоновое обновление политик в потоке `PolicyRefresher` Ranger SDK 2.5.0 способно конкурировать с клиентскими потоками оценки прав доступа. В `hms-proxy` вызовы оценки прав защищены механизмом `evaluateAccessWithRetry`: при возникновении `ConcurrentModificationException` выполняется yield потока и однократный повтор проверки, а при сохранении ошибки — безопасный fail-open fallback для чтения с фиксацией в логе.

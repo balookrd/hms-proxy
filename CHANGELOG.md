@@ -112,6 +112,17 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Исправлено
 
+- **Синхронизация документации и исправление валидатора свойств конфигурации**:
+  - **Регистрация свойств Apache Ranger в `ProxyConfigLoader`**: в списки известных статических и per-catalog ключей (`STATIC_KNOWN_KEYS`, `PER_CATALOG_KNOWN_SUFFIXES`) добавлены все поддерживаемые свойства Ranger (`ranger.roles.enabled`, `ranger.mask-unauthorized-as-not-found`, `ranger.client.*`, `ranger.ssl.*`, `ranger.policy.*`, `ranger.config-dir`, `ranger.audit.enabled` и их kebab/dot алиасы), предотвращая ложные ошибки неизвестных параметров при `config.strict-validation=true`.
+  - **Синхронизация двуязычной документации (`README.md` / `README.en.md`)**:
+    - В англоязычную документацию восстановлены пропущенные разделы `## Frontend profile and runtime jars` и `## ACID / txn / lock policy`, а устаревший фрагмент конфигурации заменен на актуальный пример смешанного окружения (`## Mixed configuration example: Hortonworks front + hdp backend + apache backend + Kerberos`).
+    - В оба руководства добавлен раздел `### External Table and Partition Location Rewriting & Normalization` (`federation.external-table-location-rewrite.*`).
+    - В таблицы Prometheus-метрик и описания добавлены `hms_proxy_cache_refreshes_total` и метрики распределенной инвалидации ZooKeeper (`hms_proxy_cache_invalidation_events_*`, `hms_proxy_cache_invalidation_errors_total`).
+    - Добавлен пример конфигурации энергонезависимого дискового кэша групп `security.group-disk-cache.*` в раздел безопасности.
+  - **Синхронизация smoke-документации (`SMOKE.md` / `SMOKE.en.md`, `smoke-stand/README.en.md`)**:
+    - В англоязычное руководство стенда портирован раздел `## Table/Partition Rename and Partition Exchange (run-partition-and-rename-smoke.sh)`.
+    - В чеклисты smoke-тестирования добавлен сценарий 18 `Проверка беспрефиксных баз данных и динамической перезагрузки конфига` (`--scenario unprefixed` / `smoke-stand/run-unprefixed-db-and-reload-smoke.sh`).
+
 - **Устранение ошибок листинга таблиц при запрете или скрытии баз данных (`NoSuchObjectException` в `get_all_tables`)**:
   - Ранее при попытке клиента запросить список таблиц (`get_all_tables`, `get_tables`, `get_tables_by_type`, `get_table_objects_by_name`, `get_materialized_views_for_rewriting`, `get_tables_req`, `get_tables_ext` и др.) в базе данных, к которой у пользователя нет прав доступа (Ranger/authorizer) или которая скрыта федеративным уровнем (`FederationLayer`), прокси выбрасывал `NoSuchObjectException`.
   - Так как Thrift IDL метастора не объявляет `NoSuchObjectException` для списочных методов таблиц (их Thrift-сигнатура содержит только `MetaException`), Apache Thrift оборачивал исключение в фатальный `TApplicationException: Internal error processing get_all_tables`, приводя к сбоям клиентов (DataGrip, Beeline, HiveServer2, BI-инструменты).

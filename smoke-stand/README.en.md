@@ -566,6 +566,22 @@ The scenario:
 - Executes `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` evaluating SQL expressions (`CAST`, `COALESCE`, `parse_url`, `NULL`).
 - Asserts that the inserted row is read back through the target partition and cleans up test metadata.
 
+## Table/Partition Rename and Partition Exchange (`run-partition-and-rename-smoke.sh`)
+
+Validates mutation routing, federation, and path normalization across catalogs:
+
+```bash
+cd smoke-stand
+./run-partition-and-rename-smoke.sh
+```
+
+The scenario validates:
+- Intra-catalog table renames and safe rejection of cross-catalog table renames (`MetaException: Cross-catalog table rename is not supported`).
+- Table renaming inside a federated (non-default) catalog (`apache__default`).
+- Intra-catalog partition exchange (`EXCHANGE PARTITION`) and safe rejection of cross-catalog partition exchange (`MetaException: Cross-catalog exchange partition is not supported`).
+- Partition renaming inside a federated catalog (`apache__default`) with correct namespace translation.
+- External partition location rewriting and normalization (`ExternalTableLocationRewriter`) during partition additions (`add_partition`) and modifications (`alter_partition`).
+
 ## Cross-DC and WAN Resilience (`run-cross-dc-resilience-smoke.sh`)
 
 Exercises cross-datacenter resilience, WAN degradation survivability, and failover capabilities:

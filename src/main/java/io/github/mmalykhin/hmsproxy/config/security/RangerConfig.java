@@ -46,6 +46,10 @@ public record RangerConfig(
     return defaults.maskUnauthorizedAsNotFound();
   }
 
+  public boolean rolesEnabled() {
+    return defaults.rolesEnabled();
+  }
+
   public String policyRestUrl() {
     return defaults.policyRestUrl();
   }

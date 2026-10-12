@@ -512,7 +512,26 @@ smoke-stand/run-partition-and-rename-smoke.sh
 
 In the Beeline SQL scenario (`scripts/run-real-installation-smoke-simple.sh --scenario sql`), `EXCHANGE PARTITION` and external partition location steps run automatically and can be opted out via `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` and `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
 
-**18. What To Watch In Proxy Logs**
+**18. Unprefixed Databases and Dynamic Config Reload Verification**
+Validates hard mapping of schema names to remote catalogs (`catalog.<name>.unprefixed-databases`), shadowing of identical local database names in the default catalog, and online configuration reload without restarting the proxy process (Safe Reload / `SIGHUP`):
+- `get_database`: verifies that unprefixed database lookups (e.g., `marketing`) route transparently to the target remote catalog.
+- `get_all_databases` and `get_databases`: confirms that mapped databases are returned without catalog prefixes (`${unprefixed_db}` instead of `${remote_catalog}__${unprefixed_db}`), while any conflicting local database in the default catalog is cleanly shadowed.
+- `get_table`: verifies metadata retrieval for tables located within unprefixed databases.
+- Dynamic Safe Reload (`SIGHUP`): verifies re-reading `unprefixed-databases` mappings and exposure filters on the fly without dropping active client connections.
+
+Practical runner:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario unprefixed
+# or with Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario unprefixed
+```
+
+For complete end-to-end mapping, DDL, and SIGHUP reload verification on the Docker stand:
+```bash
+smoke-stand/run-unprefixed-db-and-reload-smoke.sh
+```
+
+**19. What To Watch In Proxy Logs**
 Look for:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`

@@ -500,6 +500,10 @@ Current Prometheus metrics:
 - `hms_proxy_cache_requests_total{cache,catalog,result}`
 - `hms_proxy_cache_entries{cache,catalog}`
 - `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
+- `hms_proxy_cache_refreshes_total{cache,status}`
+- `hms_proxy_cache_invalidation_events_published_total{target}`
+- `hms_proxy_cache_invalidation_events_received_total{target}`
+- `hms_proxy_cache_invalidation_errors_total{action}`
 - `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
@@ -550,6 +554,9 @@ Metric semantics:
 - `hms_proxy_cache_requests_total` counts metadata cache lookups grouped by `cache` (`database_list`, `database_metadata`), `catalog`, and `result` (`hit`, `miss`)
 - `hms_proxy_cache_entries` tracks the number of live entries stored in metadata caches grouped by `cache` and `catalog`
 - `hms_proxy_cache_invalidations_total` counts metadata cache entry invalidations grouped by `cache`, `catalog`, and `reason` (`write`, `catalog`, `prune`, `all`)
+- `hms_proxy_cache_refreshes_total` counts background proactive metadata cache refreshes and group disk cache flushes grouped by `cache` (`database_list`, `database_metadata`, `group_disk`) and `status` (`success`, `error`)
+- `hms_proxy_cache_invalidation_events_published_total` and `hms_proxy_cache_invalidation_events_received_total` track published and received ZooKeeper distributed cache invalidation events grouped by `target` (`table`, `database`, `catalog`, `all`)
+- `hms_proxy_cache_invalidation_errors_total` counts ZooKeeper distributed cache invalidation errors grouped by `action` (`publish`, `receive`, `purge`)
 - `hms_proxy_ranger_evaluations_total` counts Apache Ranger policy evaluations grouped by `catalog`, `resource_type` (`database`, `table`), `access_type` (`select`, `read`, `use`, `show`), and `result` (`allowed`, `denied`)
 - `hms_proxy_ranger_evaluation_duration_seconds` measures Apache Ranger policy evaluation duration in seconds grouped by `catalog` and `resource_type`
 - `hms_proxy_ranger_filtered_objects_total` counts databases and tables hidden by Ranger authorization filters during listing RPCs grouped by `catalog` and `resource_type`
@@ -790,6 +797,8 @@ Recommended production starting point:
 - use `catalog.<name>` to keep one hot catalog from starving the others
 - keep stricter limits on `ddl`, `txn`, and `lock` than on plain metadata reads
 
+## Frontend profile and runtime jars
+
 You can also choose which HMS version the proxy advertises on the front door:
 
 ```properties
@@ -951,6 +960,18 @@ View/materialized-view notes:
 - dialect-specific text (variable substitution such as `${hiveconf:db}`, macros, engine-specific
   hints) is out of scope and still needs validation in your environment
 
+## ACID / txn / lock policy
+
+- request-based ACID methods carrying a routable namespace in their payload, such as
+  `get_valid_write_ids`, `allocate_table_write_ids`, `compact`, `compact2`,
+  `add_dynamic_partitions`, `fire_listener_event`, `repl_tbl_writeid_state`,
+  route by payload
+- id-only lifecycle methods, such as `open_txns`, `commit_txn`, `abort_txn`,
+  `abort_txns`, `check_lock`, `unlock`, `heartbeat`, `heartbeat_txn_range`,
+  are pinned to `routing.default-catalog`
+- this is an intentional design choice: the proxy does not attempt to act as a distributed ACID coordinator across
+  multiple backend metastores
+
 ## Logging
 
 The bundled `log4j.properties` is the default configuration, and the proxy bootstraps it at runtime
@@ -1062,6 +1083,26 @@ The recursive delete runs on a small background worker pool (threads named
 not hold a Thrift worker for the whole delete. A successful `DROP TABLE` therefore does not
 guarantee that the data is already gone — watch the proxy log for the purge outcome. Pending purges
 are awaited during proxy shutdown; purges still queued after that are logged and skipped.
+
+### External Table and Partition Location Rewriting & Normalization
+
+When clients operate across multiple Hadoop clusters (e.g., when upstream engines are configured with `hdfs://frontend-ns` or specify unqualified paths such as `/data/...`), the proxy can automatically normalize storage locations of external tables and partitions targeting the underlying catalog's HDFS:
+
+```properties
+# Automatically qualify paths missing a scheme/authority (e.g. /data/ext -> hdfs://backend-ns/data/ext)
+federation.external-table-location-rewrite.mode=QUALIFY_UNQUALIFIED
+
+# Or replace the frontend source cluster authority with the target backend cluster authority
+# federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS
+# federation.external-table-location-rewrite.source-default-fs=hdfs://frontend-ns
+```
+
+Modes for `federation.external-table-location-rewrite.mode`:
+- `DISABLED` (default): storage location URIs (`sd.location`) are passed to the backend without modification.
+- `QUALIFY_UNQUALIFIED`: unqualified paths (missing scheme and authority) are automatically qualified with the target catalog's default filesystem (`fs.defaultFS` from `catalog.<name>.conf.fs.defaultFS`).
+- `REWRITE_IF_SOURCE_DEFAULT_FS`: if the incoming URI matches `federation.external-table-location-rewrite.source-default-fs` (defaults to default-catalog `fs.defaultFS`), its authority is replaced with the target catalog's `fs.defaultFS`.
+
+Location rewriting applies to `Table` and `Partition` objects across all mutating RPCs (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`).
 
 Then a non-default catalog is used through the external database name:
 
@@ -1876,7 +1917,15 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 4. **Active Directory / LDAP Group Resolution and Policy Matching**:
    - **Server-Side Group Resolution**: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
    - **Case-Insensitive & Distinguished Name (DN) Normalization**: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, ensuring reliable matching against Ranger policies without manual duplication of rules across different cases.
-   - **Persistent On-Disk Group Cache for Fast Cold Start (`security.group-disk-cache.*`)**: To speed up startup and avoid synchronous network round-trips to Active Directory / LDAP domain controllers, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable.
+   - **Persistent On-Disk Group Cache for Fast Cold Start (`security.group-disk-cache.*`)**: To speed up startup and avoid synchronous network round-trips to Active Directory / LDAP domain controllers, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable:
+
+     ```properties
+     security.group-disk-cache.enabled=true
+     security.group-disk-cache.path=/var/cache/hms-proxy/user-groups.json
+     security.group-disk-cache.entry-ttl-seconds=86400
+     security.group-disk-cache.persist-interval-seconds=60
+     security.group-disk-cache.persist-on-shutdown=true
+     ```
 
 5. **Ranger Policy Engine ConcurrentModificationException Protection**:
    - Background policy refreshing in Ranger SDK 2.5.0 (`PolicyRefresher` thread) can contend with client worker threads evaluating access permissions. In `hms-proxy`, access checks are protected via `evaluateAccessWithRetry`: on `ConcurrentModificationException`, it yields thread execution and retries once, with a safe fail-open fallback for reads if contention persists.
@@ -1933,38 +1982,48 @@ connections using `security.client-principal` and `security.client-keytab`. If t
 it falls back to `security.server-principal` and `security.keytab`.
 
 Front and backend security are independent: you can run the front door without Kerberos and
-still connect to Kerberos-protected backends, or vice versa. In that case, set
-`security.mode=NONE` and provide `security.client-principal` plus `security.client-keytab`.
-
-**Full example:**
+## Mixed configuration example: Hortonworks front + hdp backend + apache backend + Kerberos
 
 ```properties
-server.port=9083
+server.name=hms-proxy
 server.bind-host=0.0.0.0
+server.port=9083
+
+routing.default-catalog=hdp
+routing.catalog-db-separator=__
+
+compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+compatibility.frontend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+compatibility.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
 
 security.mode=KERBEROS
-security.server-principal=hive/_HOST@REALM.COM
+security.server-principal=hive/_HOST@EXAMPLE.COM
 security.keytab=/etc/security/keytabs/hms-proxy.keytab
-security.client-principal=hive/_HOST@REALM.COM
+security.client-principal=hive/_HOST@EXAMPLE.COM
 security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
+security.impersonation-enabled=true
 
-catalogs=catalog1,catalog2
-routing.default-catalog=catalog1
+catalogs=hdp,apache
 routing.backend-state-polling.enabled=true
 routing.adaptive-timeout.enabled=true
 routing.circuit-breaker.enabled=true
 routing.hedged-read.enabled=true
 routing.degraded-routing-policy=SAFE_FANOUT_READS
 
-catalog.catalog1.conf.hive.metastore.uris=thrift://hms-a.internal:9083
-catalog.catalog1.conf.hive.metastore.sasl.enabled=true
-catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
-catalog.catalog1.latency-budget-ms=1500
+catalog.hdp.runtime-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
+catalog.hdp.backend-standalone-metastore-jar=/opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.5.6150-1.jar
+catalog.hdp.impersonation-enabled=true
+catalog.hdp.conf.hive.metastore.uris=thrift://hdp-hms.example.com:9083
+catalog.hdp.conf.hive.metastore.sasl.enabled=true
+catalog.hdp.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.hdp.latency-budget-ms=1500
 
-catalog.catalog2.conf.hive.metastore.uris=thrift://hms-b.internal:9083
-catalog.catalog2.conf.hive.metastore.sasl.enabled=true
-catalog.catalog2.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
-catalog.catalog2.latency-budget-ms=5000
+catalog.apache.runtime-profile=APACHE_3_1_3
+catalog.apache.impersonation-enabled=true
+catalog.apache.conf.hive.metastore.uris=thrift://apache-hms.example.com:9083
+catalog.apache.conf.hive.metastore.sasl.enabled=true
+catalog.apache.conf.hive.metastore.kerberos.principal=hive/_HOST@EXAMPLE.COM
+catalog.apache.latency-budget-ms=5000
 ```
 
 ## Manual HMS smoke client

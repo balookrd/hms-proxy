@@ -112,6 +112,17 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Documentation synchronization and configuration property validator fix**:
+  - **Apache Ranger properties registered in `ProxyConfigLoader`**: added all supported Ranger configuration properties (`ranger.roles.enabled`, `ranger.mask-unauthorized-as-not-found`, `ranger.client.*`, `ranger.ssl.*`, `ranger.policy.*`, `ranger.config-dir`, `ranger.audit.enabled` and their kebab/dot variants) to `STATIC_KNOWN_KEYS` and `PER_CATALOG_KNOWN_SUFFIXES`, preventing false-positive unknown property failures under `config.strict-validation=true`.
+  - **Bilingual documentation sync (`README.md` / `README.en.md`)**:
+    - Restored missing `## Frontend profile and runtime jars` and `## ACID / txn / lock policy` sections in `README.en.md`, and replaced the outdated example stub with the comprehensive mixed configuration guide (`## Mixed configuration example: Hortonworks front + hdp backend + apache backend + Kerberos`).
+    - Documented `### External Table and Partition Location Rewriting & Normalization` (`federation.external-table-location-rewrite.*`) in both guides.
+    - Added `hms_proxy_cache_refreshes_total` and distributed ZooKeeper cache invalidation metrics (`hms_proxy_cache_invalidation_events_*`, `hms_proxy_cache_invalidation_errors_total`) to Prometheus tables and metric descriptions.
+    - Added configuration snippet for persistent group disk cache (`security.group-disk-cache.*`) under security documentation.
+  - **Smoke testing guides sync (`SMOKE.md` / `SMOKE.en.md`, `smoke-stand/README.en.md`)**:
+    - Ported `## Table/Partition Rename and Partition Exchange (run-partition-and-rename-smoke.sh)` to `smoke-stand/README.en.md`.
+    - Added scenario 18 `Unprefixed Databases and Dynamic Config Reload Verification` (`--scenario unprefixed` / `smoke-stand/run-unprefixed-db-and-reload-smoke.sh`) to the smoke checklists.
+
 - **Table listing errors on unauthorized or hidden databases (`NoSuchObjectException` in `get_all_tables`)**:
   - Previously, when a client requested a list of tables (`get_all_tables`, `get_tables`, `get_tables_by_type`, `get_table_objects_by_name`, `get_materialized_views_for_rewriting`, `get_tables_req`, `get_tables_ext`, etc.) in a database to which the user had no access (Ranger/authorizer) or which was hidden by `FederationLayer`, the proxy threw `NoSuchObjectException`.
   - Because the Hive Metastore Thrift IDL does not declare `NoSuchObjectException` for table listing RPCs (their Thrift signatures only declare `MetaException`), Apache Thrift wrapped the exception into a fatal `TApplicationException: Internal error processing get_all_tables`, breaking clients (DataGrip, Beeline, HiveServer2, BI tools).

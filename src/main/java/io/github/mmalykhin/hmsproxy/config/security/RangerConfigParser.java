@@ -15,7 +15,7 @@ public final class RangerConfigParser {
     String globalServiceName = getFirst(reader, "ranger.service-name", "ranger.service.name", null);
     String globalServiceType = getFirst(reader, "ranger.service-type", "ranger.service.type", CatalogRangerConfig.DEFAULT_SERVICE_TYPE);
     String globalAppId = getFirst(reader, "ranger.app-id", "ranger.app.id", CatalogRangerConfig.DEFAULT_APP_ID);
-    String globalPolicyCacheDir = getFirst(reader, "ranger.policy.cache.dir", "ranger.policy-cache-dir", null);
+    String globalPolicyCacheDir = getFirst(reader, "ranger.policy.cache.dir", "ranger.policy-cache-dir", "ranger.policy.cache-dir", null);
     long globalPolicyPollIntervalMs = getLongFirst(
         reader, "ranger.policy.poll-interval-ms", "ranger.policy-poll-interval-ms", CatalogRangerConfig.DEFAULT_POLL_INTERVAL_MS);
     int globalConnTimeoutMs = getIntFirst(
@@ -80,8 +80,8 @@ public final class RangerConfigParser {
             getFirst(reader, altPrefix + "service-type", altPrefix + "service.type", globalServiceType));
         String appId = getFirst(reader, prefix + "app-id", prefix + "app.id",
             getFirst(reader, altPrefix + "app-id", altPrefix + "app.id", globalAppId));
-        String policyCacheDir = getFirst(reader, prefix + "policy.cache.dir", prefix + "policy-cache-dir",
-            getFirst(reader, altPrefix + "policy.cache.dir", altPrefix + "policy-cache-dir", globalPolicyCacheDir));
+        String policyCacheDir = getFirst(reader, prefix + "policy.cache.dir", prefix + "policy-cache-dir", prefix + "policy.cache-dir",
+            getFirst(reader, altPrefix + "policy.cache.dir", altPrefix + "policy-cache-dir", altPrefix + "policy.cache-dir", globalPolicyCacheDir));
         long pollIntervalMs = getLongFirst(reader, prefix + "policy.poll-interval-ms", prefix + "policy-poll-interval-ms",
             getLongFirst(reader, altPrefix + "policy.poll-interval-ms", altPrefix + "policy-poll-interval-ms", globalPolicyPollIntervalMs));
         int connTimeoutMs = getIntFirst(reader, prefix + "policy.connection-timeout-ms", prefix + "client.connection-timeout-ms",
@@ -150,6 +150,20 @@ public final class RangerConfigParser {
       String v2 = reader.getOrNull(key2);
       if (v2 != null) {
         return v2;
+      }
+    }
+    return defaultVal;
+  }
+
+  private static String getFirst(PropertyReader reader, String key1, String key2, String key3, String defaultVal) {
+    String v = getFirst(reader, key1, key2, null);
+    if (v != null) {
+      return v;
+    }
+    if (key3 != null) {
+      String v3 = reader.getOrNull(key3);
+      if (v3 != null) {
+        return v3;
       }
     }
     return defaultVal;

@@ -519,7 +519,27 @@ smoke-stand/run-partition-and-rename-smoke.sh
 
 В сценарии Beeline SQL (`scripts/run-real-installation-smoke-simple.sh --scenario sql`) шаги `EXCHANGE PARTITION` и проверка внешних партиций выполняются автоматически и могут быть выключены флагами `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` и `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
 
-**18. Что смотреть в логах proxy**
+**18. Проверка беспрефиксных баз данных и динамической перезагрузки конфига**
+
+Проверяет жесткий маппинг схем на удаленный каталог (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) локальных баз дефолтного каталога и динамическую перезагрузку конфигурации без перезапуска процесса (Safe Reload / `SIGHUP`):
+- `get_database`: проверяет, что обращение к базе данных без префикса (например, `marketing`) прозрачно маршрутизируется в целевой удаленный каталог.
+- `get_all_databases` и `get_databases`: подтверждает, что мапированная база возвращается клиенту в оригинальном виде (без префикса каталога `${remote_catalog}__${db}`), а одноименная база дефолтного каталога корректно вытесняется (shadowed).
+- `get_table`: проверяет чтение метаданных таблиц внутри беспрефиксной базы данных.
+- Dynamic Safe Reload (`SIGHUP`): проверяет перечитку параметров `unprefixed-databases` и exposure-фильтров на лету без прерывания активных клиентских соединений.
+
+Запуск сценария в smoke runner:
+```bash
+scripts/run-real-installation-smoke-simple.sh --scenario unprefixed
+# или с Kerberos:
+scripts/run-real-installation-smoke-kerberos.sh --scenario unprefixed
+```
+
+Для полной сквозной проверки маппинга, DDL и SIGHUP reload на Docker-стенде:
+```bash
+smoke-stand/run-unprefixed-db-and-reload-smoke.sh
+```
+
+**19. Что смотреть в логах proxy**
 
 Обращайте внимание на следующие маркеры в логах:
 - `Starting HMS proxy`
@@ -534,4 +554,5 @@ smoke-stand/run-partition-and-rename-smoke.sh
 - ошибки `requires a Hortonworks backend runtime`
 - trace-записи для `add_write_notification_log`, `open_txns`, `commit_txn`, `lock`
 - Ranger-сообщения: `Ranger authorization plugin initialized`, `Ranger access evaluation: user=..., resource=..., accessType=..., result=...`
+
 

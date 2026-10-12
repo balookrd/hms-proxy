@@ -2221,5 +2221,44 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void allowsAllKnownRangerPropertiesUnderStrictValidation() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          ranger.enabled=true
+          ranger.service-name=hive_service
+          ranger.app-id=hms-proxy
+          ranger.roles.enabled=false
+          ranger.roles-enabled=false
+          ranger.mask-unauthorized-as-not-found=true
+          ranger.mask.unauthorized.as.not.found=true
+          ranger.client.connection-timeout-ms=5000
+          ranger.client.read-timeout-ms=5000
+          ranger.ssl.truststore.file=/tmp/truststore.jks
+          ranger.ssl.truststore.password=secret
+          ranger.policy.poll-interval-ms=30000
+          ranger.policy.cache-dir=/tmp/ranger-cache
+          ranger.config-dir=/tmp/ranger-conf
+          ranger.audit.enabled=false
+          catalog.c1.ranger.enabled=true
+          catalog.c1.ranger.service-name=c1_service
+          catalog.c1.ranger.roles.enabled=false
+          catalog.c1.ranger.mask-unauthorized-as-not-found=true
+          """);
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertNotNull(config);
+      Assert.assertTrue(config.ranger().enabled());
+      Assert.assertFalse(config.ranger().rolesEnabled());
+      Assert.assertTrue(config.ranger().maskUnauthorizedAsNotFound());
+      Assert.assertTrue(config.catalogs().get("c1").ranger().maskUnauthorizedAsNotFound());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }
 
