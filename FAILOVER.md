@@ -2,7 +2,7 @@
 
 English version: [FAILOVER.en.md](FAILOVER.en.md)
 
-В этом документе описано, как **hms-proxy** обрабатывает недоступность, сетевые сбои и деградацию удалённых бэкендов Hive Metastore (HMS) на различных этапах жизненного цикла.
+В этом руководстве описано, как **hms-proxy** обрабатывает недоступность, сетевые сбои и деградацию удалённых бэкендов Hive Metastore (HMS) на разных этапах жизненного цикла.
 
 ---
 
@@ -11,9 +11,9 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 При запуске приложения ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
 1. Прокси читает конфигурацию и инициализирует роутер каталогов ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
 2. Для каждого сконфигурированного каталога (`catalog.<name>.*`) создаётся экземпляр [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) и открывается runtime-слой ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
-3. В зависимости от настройки `catalog.<name>.startup-mode` поведение отличается:
+3. Поведение зависит от настройки `catalog.<name>.startup-mode`:
    * **`STRICT` (по умолчанию)**: фабрика сессий немедленно пытается создать первичное соединение (`initialSession`). Если бэкенд недоступен, прокси исчерпывает попытки переподключения, выбрасывает `MetaException` и аварийно завершает работу с ненулевым кодом выхода (**Startup Fail-Fast**), не открывая клиентские порты. Для дефолтного каталога (`routing.default-catalog`) гарантируется только режим `STRICT`.
-   * **`LENIENT` (мягкий запуск)**: при сбое подключения к удаленному/вторичному бэкенду на старте прокси логирует предупреждение `proceeding in degraded mode (startup-mode=LENIENT)` и успешно продолжает запуск, открывая клиентские порты. Соединения к такому каталогу создаются лениво при поступлении первого запроса или при восстановлении сетевой доступности.
+   * **`LENIENT` (мягкий запуск)**: при сбое подключения к удалённому или вторичному бэкенду на старте прокси пишет предупреждение `proceeding in degraded mode (startup-mode=LENIENT)` и успешно продолжает запуск, открывая клиентские порты. Соединения к такому каталогу создаются лениво при поступлении первого запроса или при восстановлении сетевой доступности.
 
 > [!NOTE]
 > Режим `catalog.<name>.startup-mode=LENIENT` рекомендуется для вторичных каталогов, расположенных в других ЦОД или за WAN-каналами, чтобы временная авария межгородского канала не препятствовала запуску локального прокси и обслуживанию основного датацентра.
@@ -28,13 +28,13 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 * Все сетевые вызовы к бэкенду обслуживаются пулами сессий:
   * Общим пулом shared-сессий ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) размером `catalog.<name>.shared-session-pool-size`.
   * Пулом impersonation-сессий пользователя ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) размером `catalog.<name>.impersonation-pool-max-size`.
-* При возникновении транспортной ошибки (`TTransportException`, разрыв TCP-соединения, сброс сокета) повреждённая сессия признаётся невалидной и уничтожается (`discard`).
-* Прокси берёт/создаёт из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
-* Если повторный вызов также завершается ошибкой, сбой регистрируется подсистемой контроля допуска запросов (admission control).
+* При транспортной ошибке (`TTransportException`, разрыв TCP-соединения, сброс сокета) повреждённая сессия признаётся невалидной и уничтожается (`discard`).
+* Прокси берёт или создаёт из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
+* Если повторный вызов также завершается ошибкой, сбой регистрирует подсистема контроля допуска запросов (admission control).
 
 ### 2.2. Circuit Breaker (Предохранитель)
 Если включён механизм защиты `routing.circuit-breaker.enabled=true`:
-1. **Регистрация сбоев**: Ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и сбои протокола учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
+1. **Регистрация сбоев**: ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и сбои протокола учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
 2. **Переход в `OPEN`**: При накоплении серии ошибок подряд (`routing.circuit-breaker.failure-threshold`, по умолчанию `3`), состояние контура переходит в `OPEN`.
 3. **Мгновенный отказ клиентам (fast-fail)**: Все последующие запросы к данному каталогу отклоняются мгновенно без блокировки потоков и ожидания сетевого таймаута:
    ```text
@@ -67,7 +67,7 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
   * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) для вызовов `get_partition*`, `get_part_specs*`.
 * **SingleFlight Coalescing**: параллельные запросы к одной таблице объединяются, исключая шквал запросов в WAN-канал (cache stampede).
 * **Автоматическая DDL-инвалидация**: любые операции изменения (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) мгновенно сбрасывают закэшированные записи для затронутых таблиц, разделов и баз данных.
-* **Распределенная DDL-инвалидация через ZooKeeper (Multi-Instance HA)** (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
+* **Распределённая DDL-инвалидация через ZooKeeper (Multi-Instance HA)** (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
   * При горизонтальном масштабировании `hms-proxy` на группу реплик за L4/L7-балансировщиком DDL-мутация, поступившая на любой из инстансов, публикует событие инвалидации в ZooKeeper znode (`routing.cache.distributed-invalidation.base-path`, по умолчанию `/hms-proxy-cache-invalidation`).
   * Все подключенные реплики `hms-proxy` через Apache Curator `PathChildrenCache` мгновенно получают нотификацию и сбрасывают локальные кэши затронутых таблиц, разделов и баз данных.
   * **Подавление эха**: каждый инстанс идентифицируется через `instance-id` и отфильтровывает собственные события инвалидации.
@@ -116,7 +116,7 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
 
 ### Недоступен `default-catalog`
 * **Критический отказ control-plane**:
-  * Все глобальные Thrift RPC без квалифицированного имени БД (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) жёстко привязаны к `default-catalog`. При его отказе данные вызовы не могут быть обслужены.
+  * Все глобальные Thrift RPC без квалифицированного имени БД (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) жёстко привязаны к `default-catalog`. При его отказе эти вызовы невозможно обслужить.
   * Механизм транзакций и распределённых блокировок Hive (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) управляется бэкендом `default-catalog`. При его недоступности транзакционные DDL/DML блокируются.
   * Все операции изменения схемы и данных через шлюз Iceberg REST Catalog (`WriteRouteGate`) разрешены только для таблиц `default-catalog`. Соответственно, запись в Iceberg-таблицы прекращается.
 

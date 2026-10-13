@@ -122,6 +122,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - **Smoke testing guides sync (`SMOKE.md` / `SMOKE.en.md`, `smoke-stand/README.en.md`)**:
     - Ported `## Table/Partition Rename and Partition Exchange (run-partition-and-rename-smoke.sh)` to `smoke-stand/README.en.md`.
     - Added scenario 18 `Unprefixed Databases and Dynamic Config Reload Verification` (`--scenario unprefixed` / `smoke-stand/run-unprefixed-db-and-reload-smoke.sh`) to the smoke checklists.
+  - **Russian documentation style polish**:
+    - Polished Russian documentation styling across `README.md`, `SMOKE.md`, `smoke-stand/README.md`, `COMPATIBILITY.md`, and `FAILOVER.md`, eliminating passive voice, nominalizations, and bureaucratic jargon while strictly preserving technical identifiers, configuration parameters, and invariants.
 
 - **Table listing errors on unauthorized or hidden databases (`NoSuchObjectException` in `get_all_tables`)**:
   - Previously, when a client requested a list of tables (`get_all_tables`, `get_tables`, `get_tables_by_type`, `get_table_objects_by_name`, `get_materialized_views_for_rewriting`, `get_tables_req`, `get_tables_ext`, etc.) in a database to which the user had no access (Ranger/authorizer) or which was hidden by `FederationLayer`, the proxy threw `NoSuchObjectException`.

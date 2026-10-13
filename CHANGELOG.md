@@ -24,7 +24,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - Полноценная интеграция в единый резолвер `UserGroupResolver` с поддержкой `ImpersonationResolver` и `SetUgiHandler`.
   - Метрики Prometheus для мониторинга: запросы (`hms_proxy_cache_requests_total{cache="group_disk",result="hit|miss"}`), сбросы на диск (`hms_proxy_cache_refreshes_total{cache="group_disk",status="success|error"}`) и число активных записей (`hms_proxy_cache_entries{cache="group_disk"}`).
 
-- **Распределенная DDL-инвалидация кэшей метаданных через ZooKeeper (`routing.cache.distributed-invalidation.*`)**:
+- **Распределённая DDL-инвалидация кэшей метаданных через ZooKeeper (`routing.cache.distributed-invalidation.*`)**:
   - Реализован механизм межсерверной синхронизации инвалидации кэшей метаданных (`TableMetadataCache`, `PartitionMetadataCache`, `DatabaseMetadataCache`) для горизонтально масштабируемых кластеров `hms-proxy` за балансировщиком нагрузки.
   - Поддержка режимов `NONE` (локальная инвалидация в пределах одного JVM процесса) и `ZOOKEEPER` (`DistributedCacheInvalidationMode`).
   - При выполнении DDL-мутаций (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) на любом из инстансов прокси формируется и публикуется бинарное событие инвалидации (`CacheInvalidationEvent`) в ZooKeeper под znode `routing.cache.distributed-invalidation.base-path` (по умолчанию `/hms-proxy-cache-invalidation`).
@@ -122,6 +122,8 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - **Синхронизация smoke-документации (`SMOKE.md` / `SMOKE.en.md`, `smoke-stand/README.en.md`)**:
     - В англоязычное руководство стенда портирован раздел `## Table/Partition Rename and Partition Exchange (run-partition-and-rename-smoke.sh)`.
     - В чеклисты smoke-тестирования добавлен сценарий 18 `Проверка беспрефиксных баз данных и динамической перезагрузки конфига` (`--scenario unprefixed` / `smoke-stand/run-unprefixed-db-and-reload-smoke.sh`).
+  - **Стилистическая редактура русскоязычной документации**:
+    - Выполнена стилистическая вычитка руководств (`README.md`, `SMOKE.md`, `smoke-stand/README.md`, `COMPATIBILITY.md`, `FAILOVER.md`) с устранением канцеляризмов, страдательного залога и опечаток при строгом сохранении технических идентификаторов, параметров и инвариантов.
 
 - **Устранение ошибок листинга таблиц при запрете или скрытии баз данных (`NoSuchObjectException` в `get_all_tables`)**:
   - Ранее при попытке клиента запросить список таблиц (`get_all_tables`, `get_tables`, `get_tables_by_type`, `get_table_objects_by_name`, `get_materialized_views_for_rewriting`, `get_tables_req`, `get_tables_ext` и др.) в базе данных, к которой у пользователя нет прав доступа (Ranger/authorizer) или которая скрыта федеративным уровнем (`FederationLayer`), прокси выбрасывал `NoSuchObjectException`.
@@ -137,7 +139,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - В `log4j.properties` уровень логирования для `org.apache.ranger.admin.client.RangerAdminRESTClient` повышен до `FATAL`, гарантируя чистоту логов даже при включенном опросе ролей со старыми версиями Ranger.
 - **Отказоустойчивость сессий с Delegation Token и привязка сигнатуры токена (`metastore.token.signature`)**:
   - Устранена ошибка `Unable to open isolated backend metastore client for catalog <catalog> with delegation token for user '<user>'`, из-за которой Spark-приложения (`HiveDelegationTokenProvider`) и другие клиенты не могли получить токен метастора и падали при выполнении задач в YARN с `GSSException: No valid credentials provided (Failed to find any Kerberos tgt)`:
-    1. **Автоматический Fallback на прямое Kerberos-подключение в `BackendRuntime`**: При сбое открытия сессии с полученным delegation token (`sessionFactory.openImpersonating(..., delegationToken)`) прокси логирует предупреждение (`WARN`) и автоматически выполняет fallback на прямое Kerberos-соединение (по keytab прокси через `loginUserFromKeytabAndReturnUGI` с последующим `set_ugi(userName, groupNames)`), предотвращая сбои запросов пользователей при проблемах с SASL DIGEST-MD5 на бэкенде.
+    1. **Автоматический fallback на прямое Kerberos-подключение в `BackendRuntime`**: При сбое открытия сессии с полученным delegation token (`sessionFactory.openImpersonating(..., delegationToken)`) прокси логирует предупреждение (`WARN`) и автоматически выполняет fallback на прямое Kerberos-соединение (по keytab прокси через `loginUserFromKeytabAndReturnUGI` с последующим `set_ugi(userName, groupNames)`), предотвращая сбои запросов пользователей при проблемах с SASL DIGEST-MD5 на бэкенде.
     2. **Поддержка сигнатуры сервиса токена (`metastore.token.signature` / `hive.metastore.token.signature`)**: В `IsolatedMetastoreClient` и `BackendInvocationSession` при декодировании токена из URL-строки добавлена корректная привязка имени сервиса токена к настроенной сигнатуре метастора (`token.setService(...)`). Это обеспечивает корректный поиск токена через `DelegationTokenSelector` в `HiveMetaStoreClient` и исключает ложное переключение клиента на Kerberos GSSAPI при наличии сигнатуры токена в конфигурации.
 
 - **Авторизация по группам Active Directory / LDAP в Apache Ranger (AD/LDAP Group Resolution & Matching)**:
@@ -152,7 +154,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - Все методы ограничений целостности теперь маршрутизируются в целевой каталог таблицы, а возвращаемые структуры (`SQLPrimaryKey`, `SQLForeignKey` и др.) содержат корректно экстернализованные имена схем клиента.
 - **Устранение шума в логах и ложных ошибок метрик для служебных запросов `_dummy_database._dummy_table`**:
   - Устранены десятки тысяч сообщений `WARN client-error/proxy-error` со стектрейсами `NoSuchObjectException` при обращениях HiveServer2 к служебному плейсхолдеру `_dummy_database._dummy_table`.
-  - Запросы обрабатываются на уровне прокси, логируются в `DEBUG` и не искажают счетчики ошибок в мониторинге.
+  - Запросы обрабатываются на уровне прокси, логируются в `DEBUG` и не искажают счётчики ошибок в мониторинге.
 
 - **Нормализация dot-separated префиксов и имен схем в `CatalogRouter` для ODBC-клиентов (Qlik, Simba/Cloudera ODBC)**:
   - Исправлена маршрутизация запросов к удаленным каталогам при обращении ODBC-клиентов (в частности Qlik через Cloudera/Simba ODBC), когда HiveServer2 преобразует символы подчёркивания `_` в шаблонах и квалификаторах в точки `.` (`MetadataOperation.convertPattern`), приводя к именам вида `bt..acp.clc` или шаблонам `@hive#bt..acp.clc`.

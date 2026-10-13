@@ -7,49 +7,34 @@ English documentation: [README.en.md](README.en.md), [SMOKE.en.md](SMOKE.en.md),
 HMS Proxy — это catalog-aware Hive Metastore federation and compatibility proxy для смешанных
 окружений с Apache Hive `3.1.3`, Hive `4.1.x` и Hortonworks Data Platform `3.1.0.x`.
 
-Он предоставляет одну или несколько рабочих точек входа (production-facing Thrift endpoints) HMS, которые федеративно
-маршрутизируют запросы к каталогам между несколькими бэкендами metastore, сглаживают различия в API Apache 3.1.3 /
-HDP 3.1.0.x / Hive 4.1.x в обе стороны и формируют явную границу безопасности (security boundary) между клиентами и
-бэкенд-сервисами HMS.
+Прокси открывает рабочие точки входа (Thrift endpoints) HMS, которые маршрутизируют запросы к каталогам между бэкендами metastore, сглаживают различия в API Apache 3.1.3, HDP 3.1.0.x и Hive 4.1.x в обе стороны и задают границу безопасности (security boundary) между клиентами и бэкендами HMS.
 
 ## Три ключевых принципа
 
 ### 1. Federation
 
-Единая рабочая точка входа (production-facing Thrift endpoint) HMS для HiveServer2 и прямых клиентов HMS API (или
-несколько на разных портах, когда клиенты разных версий Hive не могут использовать общую точку
-входа — в протоколе Thrift отсутствует согласование версий через рукопожатие), которая маршрутизирует запросы
-в несколько бэкендов metastore по явному `catName` либо по устаревшему имени базы данных в формате
-`catalog<separator>db`.
+HiveServer2 и прямые клиенты HMS API подключаются к единой точке входа (Thrift endpoint) или к разным портам, когда клиенты разных версий Hive не могут использовать общую точку входа — в протоколе Thrift отсутствует согласование версий через рукопожатие. Прокси маршрутизирует запросы в бэкенды metastore по явному `catName` или по имени базы данных вида `catalog<separator>db`.
 
-Это позволяет централизовать маршрутизацию каталогов и выборочную публикацию (selective exposure), не требуя от клиентов
-знания внутренней структуры бэкендов metastore.
+Так маршрутизация каталогов и выборочная публикация (selective exposure) работают централизованно, а клиентам не нужно знать внутреннее устройство бэкендов metastore.
 
 ### 2. Compatibility bridge
 
-Поддержка интерфейсов Apache Hive Metastore `3.1.3`, Hortonworks `3.1.0.x` или Hive `4.1.x` на стороне входа (один основной
-listener плюс опциональные дополнительные listener'ы на отдельных портах) поверх любой
-комбинации бэкендов Apache 3.1.3, Hortonworks 3.1.0.x и Hive 4.1.x. Прокси выполняет
-обратную трансляцию (compatibility downgrade) выбранных API `*_req` для старых бэкендов Hortonworks; повышает (upgrade)
-два позиционных метода чтения, удалённых в Hive 4 (`get_table`, `get_table_objects_by_name`),
-когда выступает фронтендом к бэкенду Hive 4 для клиента Apache 3.1.3; и адаптирует вызовы специфичных для Hive 4 методов-обёрток `*_req`
-для чтения и стандартного DDL до их позиционных эквивалентов Apache 3.1.3, когда
-обслуживает клиентов Hive 4 при их обращении к бэкенду Apache 3.1.3. Специфичные для Hortonworks RPC
-доступны через jar-файл HDP `standalone-metastore` при сконфигурированном бэкенде HDP; API,
-присутствующие исключительно в Hive 4 (data connectors, scheduled queries, stored procedures, packages, ACID v2
-extensions), отвечают ошибкой `TApplicationException UNKNOWN_METHOD`.
+Прокси поддерживает интерфейсы Apache Hive Metastore `3.1.3`, Hortonworks `3.1.0.x` и Hive `4.1.x` на стороне входа (основной слушатель и дополнительные порты) поверх любой комбинации бэкендов Apache 3.1.3, Hortonworks 3.1.0.x и Hive 4.1.x.
 
-На практике прокси становится мостом для смешанной инфраструктуры (estate) Apache/HDP/Hive 4 и поэтапных
-миграций в обе стороны, а не просто маршрутизатором запросов (request router).
+Прокси переводит вызовы в обе стороны:
+- для старых бэкендов Hortonworks выполняет обратную трансляцию (downgrade) методов `*_req`;
+- для клиентов Apache 3.1.3 к бэкенду Hive 4 повышает (upgrade) два позиционных метода чтения, удалённых в Hive 4 (`get_table` и `get_table_objects_by_name`);
+- для клиентов Hive 4 к бэкенду Apache 3.1.3 переводит методы-обёртки `*_req` для чтения и стандартного DDL в позиционные эквиваленты Apache 3.1.3.
+
+Специфичные для Hortonworks RPC доступны через jar-файл HDP `standalone-metastore` при настроенном бэкенде HDP. Вызовы API, появившихся только в Hive 4 (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions), возвращают ошибку `TApplicationException UNKNOWN_METHOD`.
+
+На практике прокси становится мостом для смешанной инфраструктуры (estate) Apache, HDP и Hive 4 и поэтапных миграций в обе стороны, а не просто маршрутизатором запросов.
 
 ### 3. Security boundary
 
-Прокси выступает границей безопасности (security boundary) между клиентами и бэкендами metastore: Kerberos/SASL на входе,
-опциональный исходящий Kerberos к бэкенду и опциональная имперсонация аутентифицированного
-пользователя Kerberos.
+Прокси работает границей безопасности (security boundary) между клиентами и бэкендами metastore: принимает Kerberos/SASL на входе, при необходимости использует исходящий Kerberos к бэкенду и выполняет имперсонацию аутентифицированного пользователя Kerberos.
 
-Благодаря этому аутентификация, передача контекста пользователя (identity propagation) и политика доступа к бэкендам сосредоточены в единой
-точке.
+Благодаря этому входная аутентификация, передача контекста пользователя (identity propagation) и политики доступа к бэкендам собраны в одной точке.
 
 ## Каноническая модель маршрутизации
 
@@ -69,16 +54,14 @@ extensions), отвечают ошибкой `TApplicationException UNKNOWN_METH
 | Object-scoped read/write RPC | Сначала явный proxy `catName`. Иначе внешний `dbName` / `fullTableName` вида `catalog2__sales`. Иначе `routing.default-catalog` для совместимости. | Идёт в `routing.default-catalog`. |
 | Session-level и global read RPC | Используется `routing.default-catalog`. | Идёт в `routing.default-catalog`. |
 | ACID RPC, где в payload ещё назван объект | Routing по этому payload, например по `dbName` или `fullTableName` в `get_valid_write_ids`, `allocate_table_write_ids`, `compact` или `add_dynamic_partitions`. | Если routable object namespace уже нет, применяется строка ниже. |
-| Txn / lock lifecycle RPC, где остались только ids | Пинятся к `routing.default-catalog`, например `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`. | Идут в `routing.default-catalog`; non-ACID `SELECT`, допустимые `NO_TXN` DDL и non-transactional write lock на non-default catalog может обслужить synthetic shim. |
-| Global write и catalog-registry RPC | Требуют ровно один owned namespace в multi-catalog deployment. | Если ownership получается ambiguous, proxy безопасно падает вместо того, чтобы угадывать target catalog. |
+| Txn / lock lifecycle RPC, где остались только ids | Привязаны к `routing.default-catalog`, например `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat`. | Идут в `routing.default-catalog`; non-ACID `SELECT`, допустимые `NO_TXN` DDL и non-transactional write lock на non-default catalog может обслужить synthetic shim. |
+| Global write и catalog-registry RPC | Требуют ровно один owned namespace в multi-catalog deployment. | Если принадлежность каталогу неоднозначна, прокси завершает вызов ошибкой, не пытаясь угадать целевой каталог. |
 
 Если запрос несёт backend `catName` вроде `hive`, а не proxy catalog id, это поле для
 совместимости не считается авторитетным: proxy пытается маршрутизировать по `dbName`, а если
 этого мало, идёт в `routing.default-catalog`.
 
-Для mutation path proxy предпочитает policy-driven guarantees, а не best-effort guessing:
-deterministic routing, explicit namespace ownership, отсутствие silent split-brain writes и safe
-failure, если mutation остаётся ambiguous.
+При мутациях и записи прокси опирается на строгие гарантии, а не на эвристические догадки: детерминированная маршрутизация, явное владение пространством имён, защита от рассинхронизации (silent split-brain writes) и безопасный отказ при любой неоднозначности.
 
 Следующие настройки меняют клиентское представление имён или SQL, но не сам выбор backend:
 
@@ -149,14 +132,13 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
   `default-catalog`, если из payload нельзя извлечь namespace
 - request-based ACID методы, где в payload есть `dbName` или `fullTableName`, продолжают
   маршрутизироваться по этому payload
-- proxy умеет синтетически обслуживать non-ACID `SHARED_READ` `SELECT` lock, допустимые
-  non-transactional `NO_TXN` DDL lock и non-transactional write lock (`INSERT`, `UPDATE`,
-  `DELETE`) для non-default catalog, чтобы HS2 read path, non-ACID DDL path и non-ACID
-  `INSERT` не зависели от рассинхрона backend txn state
-- этот synthetic lock state по умолчанию хранится в памяти, а для multi-instance failover может
-  быть вынесен в ZooKeeper, но это не делает multi-catalog ACID writes безопасными
-- Hive ACID, lock, token и другие по-настоящему global metastore операции всё ещё требуют
-  отдельной валидации в вашей среде перед включением их за multi-catalog proxy
+- Обращения к базам данных без префикса каталога направляются в `routing.default-catalog`.
+- Это сохраняет совместимость со Spark и Hive и обеспечивает детерминированную маршрутизацию без риска незаметной рассинхронизации (silent split-brain).
+- На практике жизненный цикл ACID-записи полноценно поддерживается только для `default-catalog`, если из полезной нагрузки нельзя извлечь пространство имён.
+- Запросные ACID-методы, где в полезной нагрузке указаны `dbName` или `fullTableName`, продолжают маршрутизироваться по этим объектам.
+- Прокси синтетически обслуживает не-ACID блокировки `SHARED_READ` `SELECT`, допустимые блокировки `NO_TXN` DDL и блокировки не-транзакционной записи (`INSERT`, `UPDATE`, `DELETE`) для каталогов, отличных от default. Благодаря этому чтения в HiveServer2, DDL и не-ACID `INSERT` не зависят от рассинхронизации транзакций на бэкендах.
+- Состояние синтетических блокировок по умолчанию хранится в памяти, а для отказоустойчивости нескольких инстансов может выноситься в ZooKeeper. Это не делает распределенную запись ACID в несколько каталогов безопасной.
+- Операции Hive ACID, блокировки, токены и другие глобальные функции метастора требуют предварительной проверки в вашей среде перед переводом за multi-catalog прокси.
 
 ### Жесткий маппинг схем на удаленный каталог (`unprefixed-databases`)
 
@@ -201,17 +183,9 @@ metastore. Этот слой по умолчанию выключен, поэт�
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
 - подробное руководство по сценариям отказов и архитектуре cross-DC см. в [FAILOVER.md](FAILOVER.md) (EN: [FAILOVER.en.md](FAILOVER.en.md))
 
-Это намеренно узкий механизм: hedged read и degraded omission применяются только к безопасным
-read-only fanout method, сейчас это `get_all_databases`, `get_databases` и `get_table_meta`.
-Операции записи в один бэкенд и чувствительные к пространству имён мутации по-прежнему следуют
-детерминированной маршрутизации и не вызывают состояния гонки между несколькими метасторами.
-Кэш списков баз и кэш метаданных баз выключены по умолчанию (`ttl-ms=0`). Когда они включены,
-повторные `SHOW DATABASES` или `get_database` не ходят в backend до истечения TTL. Оба кэша
-используют single-flight коалесцирование, возвращают защитные копии (defensive copies) Thrift-структур,
-поддерживают скользящую батчевую экспирацию (пошаговая загрузка баз при длинных сканах HiveServer2 / Ranger
-продлевает TTL ранее загруженных баз, исключая их преждевременное устаревание до окончания всего цикла сканирования) и
-автоматически инвалидируются при выполнении DDL-мутаций (`create_database`, `alter_database`, `drop_database`)
-через прокси.
+Это намеренно узкий механизм: hedged read и пропуск деградировавших каталогов действуют только для безопасных методов чтения веером (fanout), сейчас это `get_all_databases`, `get_databases` и `get_table_meta`. Запись в конкретный бэкенд и чувствительные к пространству имён мутации по-прежнему маршрутизируются строго детерминированно и не создают гонок между метасторами.
+
+Кэши списков баз и метаданных баз по умолчанию выключены (`ttl-ms=0`). При их включении повторные запросы `SHOW DATABASES` или `get_database` не обращаются к бэкенду до истечения срока жизни (TTL). Оба кэша объединяют одинаковые параллельные запросы (single-flight), возвращают защитные копии (defensive copies) Thrift-структур, поддерживают скользящее продление срока жизни при пакетной загрузке (чтобы длинные сканирования HiveServer2 и Ranger не приводили к устареванию данных в середине цикла) и автоматически сбрасываются при DDL-мутациях (`create_database`, `alter_database`, `drop_database`) через прокси.
 
 ## Пул shared backend-сессий
 
