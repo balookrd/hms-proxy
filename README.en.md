@@ -168,6 +168,20 @@ catalog.remote.unprefixed-databases=beemetrics,another_db
 - **Direct routing**: all requests targeting this database (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate, and locks) route directly to the designated remote catalog.
 - **Constraints**: cannot be configured on `routing.default-catalog`, wildcards (`*`, `%`, `?`) are prohibited, and the same database name cannot be assigned to multiple remote catalogs.
 
+### Soft remote catalog merging (`merge-with-default`)
+
+Unlike the static database list in `unprefixed-databases`, configuring `catalog.<name>.merge-with-default=true` enables dynamic soft merging of all databases from a remote catalog with the default catalog:
+
+```properties
+catalog.remote.merge-with-default=true
+```
+
+- **No manual lists**: you do not need to enumerate database names manually — they are discovered dynamically.
+- **No shadowing**: if a database exists in the default catalog (`routing.default-catalog`), it remains in the default catalog and is served without a prefix. The identically named remote database **is not hidden and remains accessible via its explicit prefix** (e.g. `remote__finance`).
+- **Unprefixed unique schemas**: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work).
+- **Database creation (`create_database`)**: creating a new database without an explicit prefix when this feature is enabled **always routes to the default catalog**. To create a database in the remote catalog, an explicit prefix must be supplied (`create_database("remote__new_db")`).
+- **Constraints**: cannot be set on `routing.default-catalog`, and cannot be combined with `unprefixed-databases` on the same catalog.
+
 ## Latency-aware backend routing
 
 The proxy can also apply optional latency-aware backend handling for slow or intermittently failing

@@ -382,6 +382,9 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       result = support.invokeDirect(namespace.backend(), method, routedArgs);
       if ("drop_database".equals(method.getName()) || "alter_database".equals(method.getName())) {
         support.invalidateDatabase(namespace.catalogName(), namespace.backendDbName());
+        if ("drop_database".equals(method.getName())) {
+          router.unregisterDatabase(namespace.catalogName(), namespace.backendDbName());
+        }
       } else if ("truncate_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
         support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
       }
@@ -441,11 +444,21 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   }
 
   private Object routeByExtractedNamespace(Method method, Object[] args) throws Throwable {
-    CatalogRouter.ResolvedNamespace extractedNamespace = findNamespaceInArgs(args);
+    CatalogRouter.ResolvedNamespace extractedNamespace;
+    String methodName = method.getName();
+    if (methodName.startsWith("create_database") && args != null && args.length > 0) {
+      String dbName = NamespaceTranslator.extractDbName(args[0]);
+      if (dbName != null && router.prefixedCatalog(dbName) == null) {
+        extractedNamespace = router.resolveCatalog(config.defaultCatalog(), dbName);
+      } else {
+        extractedNamespace = findNamespaceInArgs(args);
+      }
+    } else {
+      extractedNamespace = findNamespaceInArgs(args);
+    }
     if (extractedNamespace == null) {
       return invokeGlobal(method, args);
     }
-    String methodName = method.getName();
     OperationMetadata operation = HmsOperationPolicy.describe(methodName);
     RequestContext.currentObservation().recordNamespace(extractedNamespace);
     support.validateCatalogAccess(extractedNamespace.backend(), methodName, extractedNamespace.backendDbName());
@@ -469,6 +482,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         || methodName.startsWith("alter_database")
         || methodName.startsWith("drop_database")) {
       support.invalidateDatabase(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
+      if (methodName.startsWith("create_database")) {
+        router.registerDatabase(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
+      } else if (methodName.startsWith("drop_database")) {
+        router.unregisterDatabase(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
+      }
     } else if (methodName.contains("table") || methodName.contains("partition")) {
       String tableName = RoutingSupport.extractTableName(args != null && args.length > 0 ? args[0] : null);
       if (tableName != null) {

@@ -96,7 +96,8 @@ public final class ProxyConfigLoader {
             orig.maxConcurrentCalls(),
             orig.concurrencyTimeoutMs(),
             orig.fallbackCatalog(),
-            orig.fallbackOnOutage()
+            orig.fallbackOnOutage(),
+            orig.mergeWithDefault()
         ));
       }
       catalogs = enrichedCatalogs;
@@ -428,6 +429,7 @@ public final class ProxyConfigLoader {
       "expose-mode",
       "expose-db-patterns",
       "unprefixed-databases",
+      "merge-with-default",
       "runtime-profile",
       "backend-standalone-metastore-jar",
       "standalone-metastore-jar",

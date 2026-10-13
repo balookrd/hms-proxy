@@ -10,6 +10,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Soft remote catalog merging (`catalog.<name>.merge-with-default`)**:
+  - Added support for `catalog.<name>.merge-with-default=true` to enable dynamic soft merging of remote catalog databases into the default catalog without static schema enumeration and without shadowing.
+  - Databases unique to the remote catalog (not present in the default catalog) are automatically exposed to clients without a catalog prefix and routed to the remote catalog (canonical access via `catalog__db` is also preserved).
+  - When a database exists in both the default and remote catalogs, the default catalog database is served without a prefix, while the remote database is not shadowed and remains accessible via its explicit prefix (`catalog__db`).
+  - Database creation (`create_database`) without an explicit prefix when soft merging is active is guaranteed to route to the default catalog.
+  - Full support for dynamic schema discovery (on-demand lookup and background refresh), mutual exclusivity validation with `unprefixed-databases`, and prohibition on `routing.default-catalog`.
+
 - **Configurable masking for unauthorized objects in Apache Ranger (`ranger.mask-unauthorized-as-not-found`)**:
   - Added configuration property `ranger.mask-unauthorized-as-not-found` (global and per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found`), defaulting to `false`.
   - By default (`false`), unauthorized database and table metadata requests rejected by Ranger throw `MetaException` prefixed with `Access denied: ...`. This prevents HiveServer2 from masking authorization failures as confusing `Table not found` / `Database not found` compilation errors and provides clear permission denied feedback to clients.

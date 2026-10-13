@@ -33,7 +33,8 @@ public record CatalogConfig(
     int maxConcurrentCalls,
     long concurrencyTimeoutMs,
     String fallbackCatalog,
-    boolean fallbackOnOutage
+    boolean fallbackOnOutage,
+    boolean mergeWithDefault
 ) {
   public static final CatalogAccessMode DEFAULT_ACCESS_MODE = CatalogAccessMode.READ_WRITE;
   public static final CatalogExposureMode DEFAULT_EXPOSE_MODE = CatalogExposureMode.ALLOW_ALL;
@@ -42,6 +43,7 @@ public record CatalogConfig(
   public static final int DEFAULT_MAX_CONCURRENT_CALLS = 0;
   public static final long DEFAULT_CONCURRENCY_TIMEOUT_MS = 10000L;
   public static final boolean DEFAULT_FALLBACK_ON_OUTAGE = false;
+  public static final boolean DEFAULT_MERGE_WITH_DEFAULT = false;
   public static final long DEFAULT_LATENCY_BUDGET_MS = 0L;
   public static final int DEFAULT_MAX_IMPERSONATION_CLIENTS = 128;
   public static final long DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS = 0L;
@@ -118,7 +120,8 @@ public record CatalogConfig(
         DEFAULT_MAX_CONCURRENT_CALLS,
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
-        DEFAULT_FALLBACK_ON_OUTAGE);
+        DEFAULT_FALLBACK_ON_OUTAGE,
+        DEFAULT_MERGE_WITH_DEFAULT);
   }
 
   public CatalogConfig(
@@ -161,7 +164,8 @@ public record CatalogConfig(
         DEFAULT_MAX_CONCURRENT_CALLS,
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
-        DEFAULT_FALLBACK_ON_OUTAGE);
+        DEFAULT_FALLBACK_ON_OUTAGE,
+        DEFAULT_MERGE_WITH_DEFAULT);
   }
 
   public CatalogConfig(
@@ -175,6 +179,39 @@ public record CatalogConfig(
       List<String> exposeDbPatterns,
       Map<String, List<String>> exposeTablePatterns,
       List<String> unprefixedDatabases,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        unprefixedDatabases,
+        DEFAULT_MERGE_WITH_DEFAULT,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf);
+  }
+
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      List<String> unprefixedDatabases,
+      boolean mergeWithDefault,
       MetastoreRuntimeProfile runtimeProfile,
       String backendStandaloneMetastoreJar,
       Map<String, String> hiveConf
@@ -205,7 +242,8 @@ public record CatalogConfig(
         DEFAULT_MAX_CONCURRENT_CALLS,
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
-        DEFAULT_FALLBACK_ON_OUTAGE);
+        DEFAULT_FALLBACK_ON_OUTAGE,
+        mergeWithDefault);
   }
 
   public CatalogConfig(
@@ -254,7 +292,8 @@ public record CatalogConfig(
         DEFAULT_MAX_CONCURRENT_CALLS,
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
-        DEFAULT_FALLBACK_ON_OUTAGE);
+        DEFAULT_FALLBACK_ON_OUTAGE,
+        DEFAULT_MERGE_WITH_DEFAULT);
   }
 
   public CatalogConfig(
@@ -304,7 +343,8 @@ public record CatalogConfig(
         DEFAULT_MAX_CONCURRENT_CALLS,
         DEFAULT_CONCURRENCY_TIMEOUT_MS,
         null,
-        DEFAULT_FALLBACK_ON_OUTAGE);
+        DEFAULT_FALLBACK_ON_OUTAGE,
+        DEFAULT_MERGE_WITH_DEFAULT);
   }
 
   public CatalogConfig(
@@ -360,6 +400,7 @@ public record CatalogConfig(
         maxConcurrentCalls,
         concurrencyTimeoutMs,
         fallbackCatalog,
-        fallbackOnOutage);
+        fallbackOnOutage,
+        DEFAULT_MERGE_WITH_DEFAULT);
   }
 }

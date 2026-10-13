@@ -75,6 +75,17 @@ public final class CatalogConfigParser {
           "routing.default-catalog '" + defaultCatalog
               + "' cannot have unprefixed-databases configured because default catalog databases are already unprefixed");
     }
+    if (defaultConf != null && defaultConf.mergeWithDefault()) {
+      throw new IllegalArgumentException(
+          "routing.default-catalog '" + defaultCatalog
+              + "' cannot have merge-with-default configured because default catalog databases are already unprefixed");
+    }
+    for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+      if (entry.getValue().mergeWithDefault() && !entry.getValue().unprefixedDatabases().isEmpty()) {
+        throw new IllegalArgumentException(
+            "catalog." + entry.getKey() + " cannot configure both 'merge-with-default' and 'unprefixed-databases'");
+      }
+    }
     Map<String, String> seenDatabases = new LinkedHashMap<>();
     for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
       String catalog = entry.getKey();
@@ -174,6 +185,9 @@ public final class CatalogConfigParser {
 
     String[] unprefixedDatabases = PropertyReader.splitCsv(reader.get(prefix + "unprefixed-databases", ""));
     validateUnprefixedDatabases(prefix, unprefixedDatabases);
+    boolean mergeWithDefault = reader.getBoolean(
+        prefix + "merge-with-default",
+        CatalogConfig.DEFAULT_MERGE_WITH_DEFAULT);
 
     return new CatalogConfig(
         catalogName,
@@ -201,7 +215,8 @@ public final class CatalogConfigParser {
         maxConcurrentCalls,
         concurrencyTimeoutMs,
         fallbackCatalog,
-        fallbackOnOutage);
+        fallbackOnOutage,
+        mergeWithDefault);
   }
 
   private static Map<String, List<String>> parseExposeTablePatterns(PropertyReader reader, String prefix) {

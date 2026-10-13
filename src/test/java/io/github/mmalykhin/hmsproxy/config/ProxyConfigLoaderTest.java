@@ -2204,8 +2204,8 @@ public class ProxyConfigLoaderTest {
     }
   }
 
-  @Test(expected = IllegalArgumentException.class)
-  public void rejectsWildcardsInUnprefixedDatabases() throws Exception {
+  @Test
+  public void parsesMergeWithDefaultConfiguration() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {
       Files.writeString(file, """
@@ -2214,7 +2214,46 @@ public class ProxyConfigLoaderTest {
           routing.default-catalog=c1
           catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
           catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
-          catalog.c2.unprefixed-databases=bee*
+          catalog.c2.merge-with-default=true
+          """);
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertTrue(config.catalogs().get("c2").mergeWithDefault());
+      Assert.assertFalse(config.catalogs().get("c1").mergeWithDefault());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsMergeWithDefaultOnDefaultCatalog() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c1.merge-with-default=true
+          """);
+      ProxyConfigLoader.load(file);
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsBothMergeWithDefaultAndUnprefixedDatabases() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=c1,c2
+          routing.default-catalog=c1
+          catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.c2.merge-with-default=true
+          catalog.c2.unprefixed-databases=beemetrics
           """);
       ProxyConfigLoader.load(file);
     } finally {

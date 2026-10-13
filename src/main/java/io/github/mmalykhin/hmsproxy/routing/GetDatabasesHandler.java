@@ -64,7 +64,7 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
 
     RequestContext.currentObservation().recordFanout();
     List<String> databases = new ArrayList<>();
-    for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : support.invokeFanoutRead(
+    List<FanoutExecutor.FanoutBackendResult<List<String>>> fanoutResults = support.invokeFanoutRead(
         method.getName(),
         (backend, impersonation, requestId) -> {
           Optional<String> backendPatternOpt = support.router.backendDatabasePattern(backend.name(), pattern);
@@ -81,7 +81,22 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
               () -> (List<String>) support.dispatcher.invokeDirect(
                   backend, method, new Object[]{backendPattern}, impersonation, requestId, false, false));
           return result;
-        })) {
+        });
+
+    if (support.router.hasMergeWithDefaultCatalogs()) {
+      for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
+        if (fanoutResult.backend().name().equals(support.router.defaultBackend().name())) {
+          support.router.updateDatabases(fanoutResult.backend().name(), fanoutResult.value());
+        }
+      }
+      for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
+        if (!fanoutResult.backend().name().equals(support.router.defaultBackend().name())) {
+          support.router.updateDatabases(fanoutResult.backend().name(), fanoutResult.value());
+        }
+      }
+    }
+
+    for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
       databases.addAll(support.exposedDatabaseNames(
           method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
     }
