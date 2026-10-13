@@ -44,11 +44,19 @@ JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
 docker compose --env-file .env.kerberos --profile kerberos up -d --build
 ```
 
-A fresh HDFS needs its directories once:
+A fresh HDFS needs its directories once (on both clusters), and smoke scenarios need baseline tables. The `init-stand.sh` script sets all of this up automatically (scenario runners also invoke it automatically):
 
 ```bash
-docker exec stand-namenode bash -c \
-  'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external'
+cd smoke-stand && ./init-stand.sh
+```
+
+Manually, these steps look like:
+
+```bash
+for n in stand-namenode stand-namenode-b; do
+  docker exec $n bash -c \
+    'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external'
+done
 ```
 
 The notification scenario needs its table to exist on the HDP backend — `add_write_notification_log`
@@ -536,6 +544,25 @@ The scenario exercises:
 - Creating and dropping a table via DDL inside the unprefixed database.
 - Verifying Safe Reload: injecting an invalid configuration property and sending `SIGHUP` does not crash the service (the proxy responds on `/readyz` and continues serving requests on the previous valid configuration).
 - Reverting the configuration and confirming un-shadowing after `SIGHUP`.
+
+## Soft remote catalog merging and live configuration reload (`run-merged-databases-smoke.sh`)
+
+Validates dynamic soft merging of remote catalog schemas with the default catalog (`catalog.<name>.merge-with-default=true`) without static schema lists and without shadowing:
+
+```bash
+cd smoke-stand && ./prepare.sh
+./run-merged-databases-smoke.sh
+```
+
+The scenario exercises:
+- Creating a unique database in the remote catalog (`apache__smoke_merged_unique_db`) and colliding databases (`smoke_collision_db`) in both catalogs.
+- Dynamically enabling `catalog.apache.merge-with-default=true` via `SIGHUP` without restarting the service.
+- `get_all_databases`: the unique remote database is exposed to clients without a prefix (`smoke_merged_unique_db`), while canonical prefixed access is retained via `get_database`.
+- No shadowing: the colliding default catalog database remains unprefixed, while the identically named remote database remains accessible via its explicit prefix (`apache__smoke_collision_db`).
+- Routing of table calls (`get_all_tables`) for both unique and colliding schemas.
+- Database creation without explicit prefix (`create_database`): the newly created database is routed strictly to the default catalog (`hdp`), not the remote one.
+- Safe Reload: an attempt to apply an invalid configuration is rejected while the proxy continues serving traffic on the last valid configuration.
+- Restoring initial configuration and returning the unique database to prefixed mode after a subsequent `SIGHUP`.
 
 ## Converted Schema Patterns for DBeaver / Hue (`run-schema-pattern-smoke.sh`)
 

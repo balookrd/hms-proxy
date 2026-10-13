@@ -40,6 +40,8 @@ import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.log4j.Level;
+import org.apache.log4j.LogManager;
 
 public final class HmsMetastoreSmokeCli {
   private static final String MODE_TXN = "txn";
@@ -56,7 +58,18 @@ public final class HmsMetastoreSmokeCli {
   private HmsMetastoreSmokeCli() {
   }
 
+  private static void initClientLogging() {
+    try {
+      LogManager.getLogger("org.apache.hadoop.util.NativeCodeLoader").setLevel(Level.ERROR);
+      LogManager.getLogger("org.apache.hadoop.security.ShellBasedUnixGroupsMapping").setLevel(Level.ERROR);
+      LogManager.getLogger("org.apache.hadoop.security.UserGroupInformation").setLevel(Level.ERROR);
+    } catch (Throwable ignored) {
+      // Ignore if LogManager is not on classpath
+    }
+  }
+
   public static void main(String[] args) throws Exception {
+    initClientLogging();
     if (args.length == 0 || "--help".equals(args[0]) || "-h".equals(args[0])) {
       printUsage();
       return;

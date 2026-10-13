@@ -17,6 +17,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - Создание новых баз данных (`create_database`) без указания префикса каталога при включенном объединении гарантированно направляется в каталог по умолчанию.
   - Поддержка динамического обнаружения баз данных (on-demand lookup и фоновое обновление), валидация несовместимости с `unprefixed-databases` и запрет использования на `routing.default-catalog`.
 
+- **Автоматизация подготовки smoke-стенда и тестирование мягкого объединения каталогов**:
+  - Создан скрипт `smoke-stand/init-stand.sh` для полной автоматической подготовки свежего docker-стенда (ожидание выхода HDFS из Safemode на обоих кластерах, создание директорий `/warehouse` и `/external` с правами `1777`, предварительное создание `smoke_txn_tbl` и регистрация Iceberg-таблиц `smoke_iceberg_tbl`, `smoke_iceberg_tbl_ap` через REST writer).
+  - Раннеры `scripts/run-real-installation-smoke.sh` и `scripts/run-real-installation-smoke-simple.sh` теперь автоматически вызывают `init-stand.sh` при обнаружении работающего `stand-proxy`, устраняя необходимость ручной подготовки стенда перед первым запуском.
+  - Добавлено автоматическое определение Java 17 в `prepare.sh` и `run-real-installation-smoke.sh` через `JAVA_HOME`, `/usr/libexec/java_home` и системные пути Liberica/OpenJDK, предотвращающее сбои при запуске на macOS.
+  - Подавлены шумные предупреждения и ошибки Hadoop-библиотек (`NativeCodeLoader`, `ShellBasedUnixGroupsMapping`, `UserGroupInformation`) в клиентском логгере `HmsMetastoreSmokeCli` и `log4j.properties`.
+  - Добавлен сквозной сценарий smoke-тестирования `smoke-stand/run-merged-databases-smoke.sh` и поддержка сценария `merge_with_default` в `scripts/run-real-installation-smoke.sh` для проверки мягкого объединения каталогов без вытеснения, изоляции `create_database`, динамического включения через `SIGHUP` и проверки Safe Reload на невалидной конфигурации.
+
 - **Настройка маскировки недоступных объектов в Apache Ranger (`ranger.mask-unauthorized-as-not-found`)**:
   - Добавлен параметр конфигурации `ranger.mask-unauthorized-as-not-found` (глобальный и per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found`) со значением по умолчанию `false`.
   - По умолчанию (`false`) при запрете доступа к базам данных и таблицам в Ranger прокси выбрасывает `MetaException` с явным префиксом `Access denied: ...`. Это устраняет вводящую в заблуждение ошибку Hive `Table not found` / `Database not found` (когда HiveServer2 ошибочно интерпретировал `NoSuchObjectException` как физическое отсутствие таблицы в БД) и возвращает клиентам понятный отказ в доступе.

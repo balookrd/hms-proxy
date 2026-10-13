@@ -5,7 +5,40 @@ set -euo pipefail
 
 STAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${STAND_DIR}/.." && pwd)"
-JAVA_HOME_17=${JAVA_HOME_17:-/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19}
+
+resolve_java_home_17() {
+  if [[ -n "${JAVA_HOME_17:-}" && -d "${JAVA_HOME_17}" ]]; then
+    return
+  fi
+  if [[ -n "${JAVA_HOME:-}" && -d "${JAVA_HOME}" && -x "${JAVA_HOME}/bin/java" ]]; then
+    local version
+    version="$("${JAVA_HOME}/bin/java" -version 2>&1 | awk -F '"' '/version/ {print $2}' || true)"
+    if [[ "${version}" =~ ^17\. ]]; then
+      JAVA_HOME_17="${JAVA_HOME}"
+      return
+    fi
+  fi
+  if command -v /usr/libexec/java_home >/dev/null 2>&1; then
+    local candidate
+    candidate="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
+    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+      JAVA_HOME_17="${candidate}"
+      return
+    fi
+  fi
+  for path in \
+    /Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 \
+    /Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
+    /Library/Java/JavaVirtualMachines/liberica-17.jdk/Contents/Home \
+    /usr/lib/jvm/java-17-openjdk; do
+    if [[ -d "${path}" ]]; then
+      JAVA_HOME_17="${path}"
+      return
+    fi
+  done
+  JAVA_HOME_17="${JAVA_HOME:-}"
+}
+resolve_java_home_17
 
 # A real Hortonworks HiveServer2 needs the vendor distribution, which is not redistributable and
 # not in any open Maven repository - Cloudera closed the HDP repositories. Point HDP_DIST_DIR at an

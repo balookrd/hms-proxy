@@ -14,7 +14,7 @@ ENV_FILE=""
 usage() {
   cat <<EOF
 Usage:
-  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern|ranger|unprefixed]
+  ${RUNNER_NAME} [--env-file /path/to/file.env] [--scenario all|sql|impersonation|txn|locks|notification|rest|schema_pattern|ranger|unprefixed|merge_with_default]
 
 Behavior:
   - loads HMS_SMOKE_* settings from --env-file or from ${DEFAULT_ENV_FILE} when present
@@ -23,7 +23,7 @@ Behavior:
   - exits on the first failed smoke step
 
 Scenarios:
-  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke + optional Ranger policy smoke + optional unprefixed database smoke
+  all           run optional beeline SQL smoke + impersonation table create + txn + non-default DB lock + optional partition lock + optional notification + optional Iceberg REST smoke + schema pattern smoke + optional Ranger policy smoke + optional unprefixed database smoke + optional merge-with-default smoke
   sql           run only beeline / HiveServer2 SQL smoke from SMOKE.md
   impersonation run only the table creation user impersonation smoke
   txn           run only the direct ACID/txn smoke
@@ -33,6 +33,7 @@ Scenarios:
   schema_pattern run only the DBeaver/Hue converted schema pattern smoke
   ranger        run only Apache Ranger authorization policy smoke (supports simple and kerberos auth)
   unprefixed    run only unprefixed database routing smoke
+  merge_with_default run only soft remote catalog merging (merge-with-default) smoke
 
 Important env vars:
   HMS_SMOKE_URI
@@ -305,9 +306,48 @@ resolve_fat_jar() {
 }
 
 build_java_cmd() {
-  JAVA_CMD=("${HMS_SMOKE_JAVA_BIN:-java}")
+  local java_bin="${HMS_SMOKE_JAVA_BIN:-}"
+  if [[ -z "${java_bin}" ]]; then
+    if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
+      java_bin="${JAVA_HOME}/bin/java"
+    elif command -v /usr/libexec/java_home >/dev/null 2>&1; then
+      local candidate
+      candidate="$(/usr/libexec/java_home -v 17 2>/dev/null || true)"
+      if [[ -n "${candidate}" && -x "${candidate}/bin/java" ]]; then
+        java_bin="${candidate}/bin/java"
+      fi
+    fi
+    if [[ -z "${java_bin}" ]]; then
+      for p in \
+        /Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1/bin/java \
+        /Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19/bin/java \
+        /Library/Java/JavaVirtualMachines/liberica-17.jdk/Contents/Home/bin/java \
+        /usr/lib/jvm/java-17-openjdk/bin/java; do
+        if [[ -x "${p}" ]]; then
+          java_bin="${p}"
+          break
+        fi
+      done
+    fi
+  fi
+  JAVA_CMD=("${java_bin:-java}")
   JAVA_CMD+=("--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED")
   JAVA_CMD+=("--add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED")
+}
+
+ensure_stand_prerequisites() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  if ! docker ps --format '{{.Names}}' | grep -q '^stand-proxy$'; then
+    return
+  fi
+
+  local init_script="${ROOT_DIR}/smoke-stand/init-stand.sh"
+  if [[ -x "${init_script}" ]]; then
+    log "ensuring docker stand prerequisites via smoke-stand/init-stand.sh"
+    "${init_script}"
+  fi
 }
 
 build_common_args() {
@@ -654,6 +694,80 @@ run_unprefixed_smoke() {
 
   rm -f "${output_file}"
   log "unprefixed database routing smoke passed"
+}
+
+merge_with_default_is_configured() {
+  [[ -n "${HMS_SMOKE_MERGE_WITH_DEFAULT_DB:-}" ]]
+}
+
+run_merge_with_default_smoke() {
+  if ! merge_with_default_is_configured; then
+    if [[ "${SCENARIO}" == "merge_with_default" ]]; then
+      fail "merge_with_default scenario requires HMS_SMOKE_MERGE_WITH_DEFAULT_DB"
+    fi
+    log "skipping merge-with-default smoke because HMS_SMOKE_MERGE_WITH_DEFAULT_DB is not configured"
+    return
+  fi
+
+  local merge_db="${HMS_SMOKE_MERGE_WITH_DEFAULT_DB}"
+  local remote_catalog="${HMS_SMOKE_MERGE_WITH_DEFAULT_CATALOG:-${HMS_SMOKE_APACHE_CATALOG:-apache}}"
+  local collision_db="${HMS_SMOKE_MERGE_WITH_DEFAULT_COLLISION_DB:-}"
+  log "running merge-with-default smoke (unique db: ${merge_db}, remote catalog: ${remote_catalog})"
+
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hms-merged.XXXXXX")"
+
+  # 1. get_database: unique remote db is accessible both unprefixed and with explicit catalog prefix
+  local -a get_db_args=()
+  get_db_args+=("--op" "get_database")
+  get_db_args+=("--db" "${merge_db}")
+  run_cli "get_database for merged unprefixed database" "metadata" "${get_db_args[@]}" | tee "${output_file}"
+  grep -q "database=${merge_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_database '${merge_db}' failed"; }
+
+  local -a get_prefixed_args=()
+  get_prefixed_args+=("--op" "get_database")
+  get_prefixed_args+=("--db" "${remote_catalog}__${merge_db}")
+  run_cli "get_database for prefixed unique database" "metadata" "${get_prefixed_args[@]}" | tee "${output_file}"
+  grep -q "database=${remote_catalog}__${merge_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_database '${remote_catalog}__${merge_db}' failed"; }
+
+  # 2. get_all_databases: contains unique db unprefixed
+  local -a all_dbs_args=()
+  all_dbs_args+=("--op" "get_all_databases")
+  run_cli "get_all_databases for merge-with-default check" "metadata" "${all_dbs_args[@]}" | tee "${output_file}"
+  grep -q "${merge_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_all_databases did not contain merged '${merge_db}'"; }
+
+  # 3. Collision db: default catalog db is served unprefixed, remote db is preserved with prefix (no shadowing)
+  if [[ -n "${collision_db}" ]]; then
+    grep -q "${collision_db}" "${output_file}" \
+      || { rm -f "${output_file}"; fail "get_all_databases did not contain collision db '${collision_db}'"; }
+    grep -q "${remote_catalog}__${collision_db}" "${output_file}" \
+      || { rm -f "${output_file}"; fail "get_all_databases did not contain prefixed collision db '${remote_catalog}__${collision_db}'"; }
+  fi
+
+  # 4. Pattern matching
+  local -a pattern_args=()
+  pattern_args+=("--op" "get_databases")
+  pattern_args+=("--pattern" "${merge_db}")
+  run_cli "get_databases pattern for merged db" "metadata" "${pattern_args[@]}" | tee "${output_file}"
+  grep -q "${merge_db}" "${output_file}" \
+    || { rm -f "${output_file}"; fail "get_databases with pattern '${merge_db}' did not return '${merge_db}'"; }
+
+  # 5. Table lookup if configured
+  if [[ -n "${HMS_SMOKE_MERGE_WITH_DEFAULT_TABLE:-}" ]]; then
+    local -a table_args=()
+    table_args+=("--op" "get_table")
+    table_args+=("--db" "${merge_db}")
+    table_args+=("--table" "${HMS_SMOKE_MERGE_WITH_DEFAULT_TABLE}")
+    run_cli "get_table in merged database" "metadata" "${table_args[@]}" | tee "${output_file}"
+    grep -q "table=${merge_db}.${HMS_SMOKE_MERGE_WITH_DEFAULT_TABLE}" "${output_file}" \
+      || { rm -f "${output_file}"; fail "get_table in merged database failed"; }
+  fi
+
+  rm -f "${output_file}"
+  log "merge-with-default smoke passed"
 }
 
 ranger_is_configured() {
@@ -2751,6 +2865,7 @@ main() {
   resolve_fat_jar
   build_java_cmd
   build_common_args
+  ensure_stand_prerequisites
 
   case "${SCENARIO}" in
     all)
@@ -2768,6 +2883,9 @@ main() {
       fi
       if unprefixed_is_configured; then
         run_unprefixed_smoke
+      fi
+      if merge_with_default_is_configured; then
+        run_merge_with_default_smoke
       fi
       ;;
     sql)
@@ -2799,8 +2917,11 @@ main() {
     unprefixed)
       run_unprefixed_smoke
       ;;
+    merge_with_default)
+      run_merge_with_default_smoke
+      ;;
     *)
-      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern, ranger, unprefixed"
+      fail "unsupported scenario '${SCENARIO}'. Expected one of: all, sql, impersonation, txn, locks, notification, rest, schema_pattern, ranger, unprefixed, merge_with_default"
       ;;
   esac
 

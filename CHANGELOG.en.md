@@ -17,6 +17,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Database creation (`create_database`) without an explicit prefix when soft merging is active is guaranteed to route to the default catalog.
   - Full support for dynamic schema discovery (on-demand lookup and background refresh), mutual exclusivity validation with `unprefixed-databases`, and prohibition on `routing.default-catalog`.
 
+- **Automated smoke test environment initialization and merged catalogs smoke suite**:
+  - Added `smoke-stand/init-stand.sh` for full automated bootstrap of fresh docker-compose environments (waiting for HDFS to exit Safemode across both clusters, provisioning `/warehouse` and `/external` with `1777` permissions, pre-creating `smoke_txn_tbl`, and registering Iceberg tables `smoke_iceberg_tbl` and `smoke_iceberg_tbl_ap` via REST writer).
+  - Scenario runners `scripts/run-real-installation-smoke.sh` and `scripts/run-real-installation-smoke-simple.sh` now automatically trigger `init-stand.sh` when `stand-proxy` is detected, eliminating manual setup steps on first launch.
+  - Added automated Java 17 resolution in `prepare.sh` and `run-real-installation-smoke.sh` via `JAVA_HOME`, `/usr/libexec/java_home`, and Liberica/OpenJDK system directories, preventing macOS launch failures when system Java is absent from PATH.
+  - Suppressed noisy Hadoop client logging warnings and errors (`NativeCodeLoader`, `ShellBasedUnixGroupsMapping`, `UserGroupInformation`) in `HmsMetastoreSmokeCli` and `log4j.properties`.
+  - Added end-to-end smoke verification script `smoke-stand/run-merged-databases-smoke.sh` and integrated the `merge_with_default` scenario into `scripts/run-real-installation-smoke.sh` to validate soft catalog merging without shadowing, default catalog `create_database` routing, live `SIGHUP` reload, and Safe Reload fault-tolerance.
+
 - **Configurable masking for unauthorized objects in Apache Ranger (`ranger.mask-unauthorized-as-not-found`)**:
   - Added configuration property `ranger.mask-unauthorized-as-not-found` (global and per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found`), defaulting to `false`.
   - By default (`false`), unauthorized database and table metadata requests rejected by Ranger throw `MetaException` prefixed with `Access denied: ...`. This prevents HiveServer2 from masking authorization failures as confusing `Table not found` / `Database not found` compilation errors and provides clear permission denied feedback to clients.
