@@ -1951,6 +1951,11 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - By default (`ranger.mask-unauthorized-as-not-found=false`), unauthorized database or table access in Ranger causes the proxy to throw a `MetaException` with an explicit `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (or `Database '<db>' is not accessible...`). This ensures that HiveServer2 and Beeline present callers with a clear access denial rather than confusing them with `Table not found` / `Database not found` compiler errors for tables that exist in the corporate catalog.
    - When set to `true` (or per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`), the proxy throws `NoSuchObjectException`, adhering to a zero-information-disclosure security model by hiding the existence of unauthorized metadata objects.
 
+8. **Engine System Placeholders (Spark SQL `global_temp` and Hive `_dummy_database`)**:
+   - The Apache Spark SQL in-memory system database `global_temp` and the Hive `_dummy_database` placeholder do not belong to any physical metastore backend.
+   - The proxy intercepts requests targeting them early in the routing pipeline before evaluating Ranger permissions: `get_database` RPCs immediately return `NoSuchObjectException` without hitting backend metastores or querying authorization policies. This avoids false-positive `MetaException: Access denied` errors under `mask-unauthorized-as-not-found=false` and ensures seamless startup for Spark SQL applications on YARN (`ApplicationMaster`) and Hive `INSERT ... VALUES`.
+
+
 **Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
 and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the

@@ -50,7 +50,14 @@ final class TableConstraintsHandler implements SpecialCaseHandler {
     }
 
     String catName = extractCatName(request);
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)) {
+      return emptyResponse(method.getName(), request);
+    }
     CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
+    if (HivePlaceholderNamespace.isPlaceholderDbName(namespace.backendDbName())
+        || SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
+      return emptyResponse(method.getName(), request);
+    }
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
@@ -259,6 +266,32 @@ final class TableConstraintsHandler implements SpecialCaseHandler {
         }
       }
     }
+  }
+
+  private Object emptyResponse(String methodName, Object request) throws Exception {
+    return switch (methodName) {
+      case "get_primary_keys" -> new PrimaryKeysResponse(List.of());
+      case "get_foreign_keys" -> new ForeignKeysResponse(List.of());
+      case "get_unique_constraints" -> new UniqueConstraintsResponse(List.of());
+      case "get_not_null_constraints" -> new NotNullConstraintsResponse(List.of());
+      case "get_default_constraints" -> new DefaultConstraintsResponse(List.of());
+      case "get_check_constraints" -> new CheckConstraintsResponse(List.of());
+      case "get_all_table_constraints" -> {
+        ClassLoader cl = request.getClass().getClassLoader();
+        Class<?> allConstraintsClass = Class.forName("org.apache.hadoop.hive.metastore.api.SQLAllTableConstraints", true, cl);
+        Object allConstraints = allConstraintsClass.getConstructor().newInstance();
+        setListField(allConstraints, "setPrimaryKeys", List.of(), cl);
+        setListField(allConstraints, "setForeignKeys", List.of(), cl);
+        setListField(allConstraints, "setUniqueConstraints", List.of(), cl);
+        setListField(allConstraints, "setNotNullConstraints", List.of(), cl);
+        setListField(allConstraints, "setDefaultConstraints", List.of(), cl);
+        setListField(allConstraints, "setCheckConstraints", List.of(), cl);
+        Class<?> responseClass = Class.forName("org.apache.hadoop.hive.metastore.api.AllTableConstraintsResponse", true, cl);
+        Constructor<?> respCtor = responseClass.getConstructor(allConstraintsClass);
+        yield respCtor.newInstance(allConstraints);
+      }
+      default -> null;
+    };
   }
 
   private static Method findMethod(String name, Class<?>... parameterTypes) {

@@ -10,6 +10,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Поддержка системной базы данных Spark SQL `global_temp` и ранняя обработка плейсхолдеров**:
+  - Добавлена встроенная поддержка системной зарезервированной in-memory базы данных Apache Spark SQL `global_temp` (`SparkPlaceholderNamespace`).
+  - При запуске Spark-приложений (включая YARN ApplicationMaster) проверка существования базы данных `externalCatalog.databaseExists("global_temp")` (RPC `get_database`) теперь немедленно возвращает `NoSuchObjectException: Database global_temp not found` без обращения в бэкенд HMS и без проверок в Apache Ranger.
+  - Исправлен порядок валидации плейсхолдеров в `RoutingHandler`: проверки плейсхолдеров (`HivePlaceholderNamespace` для `_dummy_database`/`_dummy_table` и `SparkPlaceholderNamespace` для `global_temp`) перенесены в самое начало маршрутизации до вызова `validateReadExposure`. Это предотвращает ложные отказы в доступе `MetaException: Access denied: Database 'global_temp' is not accessible in proxy catalog ...` при включенной авторизации Ranger с `mask-unauthorized-as-not-found=false`, устраняя сбой `AnalysisException` при старте Spark.
+  - Поддержана ранняя обработка в специализированных обработчиках (`GetTableReqHandler`, `GetTablesReqHandler`, `GetTableMetaHandler`, `TableConstraintsHandler`) и эшелонированная защита в `RoutingSupport`.
+
+
 - **Мягкое объединение удаленных каталогов с дефолтным (`catalog.<name>.merge-with-default`)**:
   - Добавлена поддержка параметра `catalog.<name>.merge-with-default=true` для мягкого динамического объединения схем удаленного каталога с каталогом по умолчанию без статического указания списка схем и без вытеснения (shadowing).
   - Схемы, уникальные для удаленного каталога (отсутствующие в каталоге по умолчанию), автоматически становятся доступны клиентам без префикса каталога и маршрутизируются в удаленный каталог (при этом канонический доступ с префиксом `catalog__db` также сохраняется).

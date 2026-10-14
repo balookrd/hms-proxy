@@ -22,6 +22,10 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
     @SuppressWarnings("unchecked")
     List<String> tableTypes = (List<String>) args[2];
 
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbPattern) || SparkPlaceholderNamespace.isSparkReservedDbName(dbPattern)) {
+      return List.of();
+    }
+
     ImpersonationContext impersonation = support.currentImpersonation();
 
     CatalogRouter.ResolvedNamespace resolved = support.router.resolvePattern(dbPattern).orElse(null);

@@ -349,6 +349,34 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
+
+    String backendDb = namespace.backendDbName();
+    String tblName = (args.length >= 2 && args[1] instanceof String t) ? t : null;
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
+        || HivePlaceholderNamespace.isPlaceholderDbName(backendDb)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+      if ("get_database".equals(method.getName())) {
+        if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+          throw SparkPlaceholderNamespace.newNoSuchDatabaseException(dbName);
+        }
+        throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
+      }
+      if ("get_table".equals(method.getName())) {
+        if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+          throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
+        }
+        throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);
+      }
+      if (List.class.isAssignableFrom(method.getReturnType())) {
+        return Collections.emptyList();
+      }
+      if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        throw SparkPlaceholderNamespace.newNoSuchDatabaseException(dbName);
+      }
+      throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
+    }
+
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     if (List.class.isAssignableFrom(method.getReturnType())
         && !support.isDatabaseAccessible(method.getName(), namespace)) {
@@ -358,24 +386,18 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
     Object result;
     if ("get_database".equals(method.getName())) {
-      if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)) {
-        throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
-      }
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
       result = support.databaseMetadataCache.get(
           namespace.catalogName(),
           namespace.backendDbName(),
           impersonation,
           () -> (org.apache.hadoop.hive.metastore.api.Database) support.invokeDirect(namespace.backend(), method, routedArgs));
-    } else if ("get_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
-      if (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)) {
-        throw HivePlaceholderNamespace.newNoSuchObjectException(null, dbName, tblName);
-      }
+    } else if ("get_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblNameArg) {
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
       result = support.tableMetadataCache.get(
           namespace.catalogName(),
           namespace.backendDbName(),
-          tblName,
+          tblNameArg,
           impersonation,
           () -> (org.apache.hadoop.hive.metastore.api.Table) support.invokeDirect(namespace.backend(), method, routedArgs));
     } else {
@@ -385,7 +407,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         if ("drop_database".equals(method.getName())) {
           router.unregisterDatabase(namespace.catalogName(), namespace.backendDbName());
         }
-      } else if ("truncate_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblName) {
+      } else if ("truncate_table".equals(method.getName()) && tblName != null) {
         support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
       }
     }
@@ -400,6 +422,21 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     CatalogRouter.ResolvedNamespace namespace = router.resolveDatabase(dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
+
+    String backendDb = namespace.backendDbName();
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
+        || HivePlaceholderNamespace.isPlaceholderDbName(backendDb)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+      if (List.class.isAssignableFrom(method.getReturnType())) {
+        return Collections.emptyList();
+      }
+      if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
+      }
+      throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);
+    }
+
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     if (List.class.isAssignableFrom(method.getReturnType())
         && !support.isDatabaseAccessible(method.getName(), namespace)) {

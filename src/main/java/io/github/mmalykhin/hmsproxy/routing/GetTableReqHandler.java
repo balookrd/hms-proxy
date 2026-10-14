@@ -22,8 +22,17 @@ final class GetTableReqHandler implements SpecialCaseHandler {
     if (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)) {
       throw HivePlaceholderNamespace.newNoSuchObjectException(catName, dbName, tblName);
     }
+    if (SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)) {
+      throw SparkPlaceholderNamespace.newNoSuchTableException(catName, dbName, tblName);
+    }
 
     CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
+    if (HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tblName)) {
+      throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);
+    }
+    if (SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tblName)) {
+      throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
+    }
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();

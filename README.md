@@ -1852,6 +1852,11 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - По умолчанию (`ranger.mask-unauthorized-as-not-found=false`) при запрете доступа в Ranger прокси выбрасывает `MetaException` с явным сообщением `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (или `Database '<db>' is not accessible...`). Это гарантирует, что HiveServer2 и клиенты Beeline показывают пользователю понятную ошибку отказа в доступе вместо маскировки под `Table not found` / `Database not found` (которая вводила пользователей в заблуждение).
    - При `ranger.mask-unauthorized-as-not-found=true` (или per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`) прокси возвращает `NoSuchObjectException`, реализуя политику zero-information-disclosure (сокрытие самого факта существования защищенных объектов).
 
+8. **Системные плейсхолдеры движков (Spark SQL `global_temp` и Hive `_dummy_database`)**:
+   - Служебная in-memory база данных Apache Spark SQL `global_temp` и плейсхолдер Hive `_dummy_database` не принадлежат ни одному реальному метастору.
+   - Прокси перехватывает запросы к ним на раннем этапе маршрутизации до обращения к Ranger: RPC-вызовы `get_database` немедленно возвращают `NoSuchObjectException` без выполнения сетевых вызовов в бэкенд и без проверки авторизации. Это предотвращает ложные отказы в доступе `MetaException: Access denied` при `mask-unauthorized-as-not-found=false` и обеспечивает бесперебойный запуск приложений Spark SQL на YARN (`ApplicationMaster`) и Hive `INSERT ... VALUES`.
+
+
 **Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
 метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в

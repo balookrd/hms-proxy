@@ -3245,6 +3245,75 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals(0, backendCalls.get());
   }
 
+  @Test
+  public void sparkGlobalTempRequestsFastFailWithoutCallingBackend() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      backendCalls.incrementAndGet();
+      throw new NoSuchMethodException(method.getName());
+    });
+    CatalogBackend b1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", b1);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    // 1. get_table_req on global_temp.some_view
+    try {
+      GetTableRequest req = new GetTableRequest();
+      req.setCatName("catalog1");
+      req.setDbName("global_temp");
+      req.setTblName("some_view");
+      Method getTableReqMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table_req", GetTableRequest.class);
+      handler.invoke(null, getTableReqMethod, new Object[] {req});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("global_temp"));
+      Assert.assertTrue(e.getMessage().contains("some_view"));
+    }
+
+    // 2. get_table on global_temp.some_view
+    try {
+      Method getTableMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+      handler.invoke(null, getTableMethod, new Object[] {"global_temp", "some_view"});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("global_temp"));
+      Assert.assertTrue(e.getMessage().contains("some_view"));
+    }
+
+    // 3. get_database on global_temp
+    try {
+      Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+      handler.invoke(null, getDbMethod, new Object[] {"global_temp"});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("global_temp"));
+    }
+
+    // 4. get_tables on global_temp -> empty list
+    Method getTablesMethod = ThriftHiveMetastore.Iface.class.getMethod("get_tables", String.class, String.class);
+    @SuppressWarnings("unchecked")
+    List<String> tables = (List<String>) handler.invoke(null, getTablesMethod, new Object[] {"global_temp", ".*"});
+    Assert.assertNotNull(tables);
+    Assert.assertTrue(tables.isEmpty());
+
+    // Backend must not have been contacted
+    Assert.assertEquals(0, backendCalls.get());
+  }
+
   public static class TestRenamePartitionRequest {
     private String dbName;
     private String tableName;

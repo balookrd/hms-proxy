@@ -296,6 +296,10 @@ final class RoutingSupport {
   }
 
   boolean isDatabaseAccessible(String methodName, CatalogRouter.ResolvedNamespace namespace) {
+    if (HivePlaceholderNamespace.isPlaceholderDbName(namespace.backendDbName())
+        || SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
+      return false;
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
@@ -309,6 +313,10 @@ final class RoutingSupport {
   }
 
   boolean isTableAccessible(String methodName, CatalogRouter.ResolvedNamespace namespace, String tableName) {
+    if (HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tableName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tableName)) {
+      return false;
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
@@ -330,6 +338,14 @@ final class RoutingSupport {
 
   void validateExposedDatabaseAccess(String methodName, CatalogRouter.ResolvedNamespace namespace)
       throws TException {
+    if (HivePlaceholderNamespace.isPlaceholderDbName(namespace.backendDbName())) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throw new NoSuchObjectException(namespace.externalDbName());
+    }
+    if (SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throw SparkPlaceholderNamespace.newNoSuchDatabaseException(namespace.externalDbName());
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
@@ -354,6 +370,14 @@ final class RoutingSupport {
   void validateExposedDatabaseAccess(Method method, CatalogRouter.ResolvedNamespace namespace)
       throws TException {
     String methodName = method != null ? method.getName() : "unknown";
+    if (HivePlaceholderNamespace.isPlaceholderDbName(namespace.backendDbName())) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throwAppropriateException(method, namespace.externalDbName());
+    }
+    if (SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
+      recordFilteredObject(methodName, namespace.catalogName(), "database");
+      throwAppropriateException(method, "Database " + namespace.externalDbName() + " not found");
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");

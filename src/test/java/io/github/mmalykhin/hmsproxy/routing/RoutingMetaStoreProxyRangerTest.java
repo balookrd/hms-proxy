@@ -285,6 +285,37 @@ public class RoutingMetaStoreProxyRangerTest {
     List<String> davidDbs = (List<String>) invokeAs(davidFinanceUgi, routingHandler, getAllDbsMethod);
     Assert.assertEquals(List.of("finance"), davidDbs);
 
+    // 12. Spark system reserved database 'global_temp' and Hive placeholder '_dummy_database'
+    // must bypass Ranger access denial and throw NoSuchObjectException (not MetaException)
+    // even when maskUnauthorizedAsNotFound = false.
+    try {
+      invokeAs(bobUgi, routingHandler, getDbMethod, "global_temp");
+      Assert.fail("Expected NoSuchObjectException for global_temp");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("global_temp"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getDbMethod, "_dummy_database");
+      Assert.fail("Expected NoSuchObjectException for _dummy_database");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("_dummy_database"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "global_temp", "some_view");
+      Assert.fail("Expected NoSuchObjectException for global_temp table");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("global_temp"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "_dummy_database", "_dummy_table");
+      Assert.fail("Expected NoSuchObjectException for _dummy_database table");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("_dummy_database"));
+    }
+
     customAuthorizer.close();
   }
 

@@ -10,6 +10,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Spark SQL `global_temp` system database support and early placeholder resolution**:
+  - Added native handling for Apache Spark SQL's reserved in-memory database `global_temp` (`SparkPlaceholderNamespace`).
+  - When Spark applications launch (including YARN ApplicationMaster), `externalCatalog.databaseExists("global_temp")` metadata checks (RPC `get_database`) immediately return `NoSuchObjectException: Database global_temp not found` without contacting backend metastores or querying Apache Ranger authorizers.
+  - Fixed placeholder evaluation order in `RoutingHandler`: placeholder validation (`HivePlaceholderNamespace` for `_dummy_database`/`_dummy_table` and `SparkPlaceholderNamespace` for `global_temp`) is now performed at the very beginning of routing before `validateReadExposure`. This eliminates false-positive `MetaException: Access denied: Database 'global_temp' is not accessible in proxy catalog ...` failures under Apache Ranger authorization with `mask-unauthorized-as-not-found=false`, resolving startup `AnalysisException` crashes in Spark.
+  - Integrated early return handling across dedicated handlers (`GetTableReqHandler`, `GetTablesReqHandler`, `GetTableMetaHandler`, `TableConstraintsHandler`) and defensive guard rails in `RoutingSupport`.
+
+
 - **Soft remote catalog merging (`catalog.<name>.merge-with-default`)**:
   - Added support for `catalog.<name>.merge-with-default=true` to enable dynamic soft merging of remote catalog databases into the default catalog without static schema enumeration and without shadowing.
   - Databases unique to the remote catalog (not present in the default catalog) are automatically exposed to clients without a catalog prefix and routed to the remote catalog (canonical access via `catalog__db` is also preserved).

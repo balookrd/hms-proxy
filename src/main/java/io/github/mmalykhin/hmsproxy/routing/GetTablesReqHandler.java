@@ -18,6 +18,10 @@ final class GetTablesReqHandler implements SpecialCaseHandler {
     String catName = ThriftReflectionCache.readString(request, "catName", "getCatName");
     String dbName = ThriftReflectionCache.readString(request, "dbName", "getDbName");
 
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)) {
+      return new GetTablesResult(new java.util.ArrayList<>());
+    }
+
     CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
