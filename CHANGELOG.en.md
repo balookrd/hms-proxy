@@ -10,10 +10,12 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
-- **Spark SQL `global_temp` system database support and early placeholder resolution**:
-  - Added native handling for Apache Spark SQL's reserved in-memory database `global_temp` (`SparkPlaceholderNamespace`).
+- **Spark SQL `global_temp` system database, file data sources (path-based tables), and early placeholder resolution**:
+  - Added native handling for Apache Spark SQL's reserved in-memory database `global_temp` and direct path-based queries (e.g. `SELECT ... FROM csv.hdfs://...` or `parquet.`/path/to/data``) in `SparkPlaceholderNamespace`.
+  - When executing direct file relation queries, Spark SQL and table format catalogs (such as Apache Iceberg `HiveTableOperations`) probe the metastore for table existence via Thrift RPC `get_table(format, path)` or `get_table_req` before falling back to direct file reading.
+  - The proxy recognizes storage paths and URI schemes (`hdfs://`, `s3a://`, `file://`, slashes `/`) as well as standard file formats (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) and immediately returns `NoSuchObjectException` prior to Apache Ranger authorization checks. This avoids false-positive `MetaException: Access denied` failures under `mask-unauthorized-as-not-found=false`, preventing fatal Iceberg `RuntimeException: Failed to get table info from metastore ...` errors and Spark data pipeline failures.
   - When Spark applications launch (including YARN ApplicationMaster), `externalCatalog.databaseExists("global_temp")` metadata checks (RPC `get_database`) immediately return `NoSuchObjectException: Database global_temp not found` without contacting backend metastores or querying Apache Ranger authorizers.
-  - Fixed placeholder evaluation order in `RoutingHandler`: placeholder validation (`HivePlaceholderNamespace` for `_dummy_database`/`_dummy_table` and `SparkPlaceholderNamespace` for `global_temp`) is now performed at the very beginning of routing before `validateReadExposure`. This eliminates false-positive `MetaException: Access denied: Database 'global_temp' is not accessible in proxy catalog ...` failures under Apache Ranger authorization with `mask-unauthorized-as-not-found=false`, resolving startup `AnalysisException` crashes in Spark.
+  - Fixed placeholder evaluation order in `RoutingHandler`: placeholder validation (`HivePlaceholderNamespace` for `_dummy_database`/`_dummy_table` and `SparkPlaceholderNamespace` for `global_temp` and path-based tables) is now performed at the very beginning of routing before `validateReadExposure`. This eliminates false-positive `MetaException: Access denied` failures under Apache Ranger authorization with `mask-unauthorized-as-not-found=false`, resolving startup `AnalysisException` crashes in Spark.
   - Integrated early return handling across dedicated handlers (`GetTableReqHandler`, `GetTablesReqHandler`, `GetTableMetaHandler`, `TableConstraintsHandler`) and defensive guard rails in `RoutingSupport`.
 
 

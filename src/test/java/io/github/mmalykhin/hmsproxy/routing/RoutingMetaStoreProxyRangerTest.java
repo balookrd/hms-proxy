@@ -316,6 +316,15 @@ public class RoutingMetaStoreProxyRangerTest {
       Assert.assertTrue(expected.getMessage().contains("_dummy_database"));
     }
 
+    String hdfsPath = "hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/";
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "csv", hdfsPath);
+      Assert.fail("Expected NoSuchObjectException for Spark path-based table csv.hdfs://...");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("csv"));
+      Assert.assertTrue(expected.getMessage().contains(hdfsPath));
+    }
+
     customAuthorizer.close();
   }
 

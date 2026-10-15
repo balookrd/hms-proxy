@@ -22,7 +22,9 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
     @SuppressWarnings("unchecked")
     List<String> tableTypes = (List<String>) args[2];
 
-    if (HivePlaceholderNamespace.isPlaceholderDbName(dbPattern) || SparkPlaceholderNamespace.isSparkReservedDbName(dbPattern)) {
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbPattern)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(dbPattern)
+        || SparkPlaceholderNamespace.isSparkPathBasedTable(tablePattern)) {
       return List.of();
     }
 

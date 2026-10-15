@@ -31,6 +31,51 @@ public class SparkPlaceholderNamespaceTest {
   }
 
   @Test
+  public void isSparkFileFormatDbNameRecognizesStandardFormats() {
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("csv"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("CSV"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("parquet"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("orc"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("json"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("avro"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("text"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("delta"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkFileFormatDbName("iceberg"));
+
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkFileFormatDbName("default"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkFileFormatDbName("sales"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkFileFormatDbName(null));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkFileFormatDbName(""));
+  }
+
+  @Test
+  public void isSparkPathBasedTableRecognizesUriSchemesAndPaths() {
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("file:///tmp/data"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("s3a://bucket/path/to/table"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("/warehouse/tablespace/external/hive/db/table"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("sub/dir/path"));
+
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable("tasks"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable("my_table_123"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable(null));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable(""));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable("   "));
+  }
+
+  @Test
+  public void isSparkReservedTableRecognizesPathBasedTablesForAnyDatabase() {
+    String hdfsPath = "hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/";
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("csv", hdfsPath));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("parquet", "/tmp/parquet_data"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("default", "s3a://bucket/data"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("amdocs_arena_lz", hdfsPath));
+
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedTable("csv", "regular_table"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedTable("default", "users"));
+  }
+
+  @Test
   public void newNoSuchDatabaseExceptionFormatsCorrectly() {
     NoSuchObjectException exc = SparkPlaceholderNamespace.newNoSuchDatabaseException("global_temp");
     Assert.assertNotNull(exc);
@@ -45,6 +90,13 @@ public class SparkPlaceholderNamespaceTest {
     NoSuchObjectException exc = SparkPlaceholderNamespace.newNoSuchTableException("hdp", "global_temp", "my_view");
     Assert.assertNotNull(exc);
     Assert.assertEquals("hdp.global_temp.my_view table not found", exc.getMessage());
+
+    NoSuchObjectException pathExc = SparkPlaceholderNamespace.newNoSuchTableException(
+        "catalog1", "csv", "hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/");
+    Assert.assertNotNull(pathExc);
+    Assert.assertEquals(
+        "catalog1.csv.hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/ table not found",
+        pathExc.getMessage());
 
     NoSuchObjectException nullCatExc = SparkPlaceholderNamespace.newNoSuchTableException(null, null, null);
     Assert.assertEquals("hive.global_temp.table table not found", nullCatExc.getMessage());

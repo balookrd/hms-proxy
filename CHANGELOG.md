@@ -10,10 +10,12 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
-- **Поддержка системной базы данных Spark SQL `global_temp` и ранняя обработка плейсхолдеров**:
-  - Добавлена встроенная поддержка системной зарезервированной in-memory базы данных Apache Spark SQL `global_temp` (`SparkPlaceholderNamespace`).
+- **Поддержка системной базы данных Spark SQL `global_temp`, файловых датасорсов (path-based tables) и ранняя обработка плейсхолдеров**:
+  - Добавлена встроенная поддержка системной зарезервированной in-memory базы данных Apache Spark SQL `global_temp` и прямых запросов к файловым источникам данных Spark SQL (path-based tables вида `SELECT ... FROM csv.hdfs://...` или `parquet.`/path/to/data``) в `SparkPlaceholderNamespace`.
+  - При выполнении прямых файловых запросов Spark SQL и клиенты форматов таблиц (в частности Apache Iceberg `HiveTableOperations`) проверяют наличие таблицы в метасторе через Thrift RPC `get_table(format, path)` или `get_table_req` перед чтением файлов через файловый Data Source.
+  - Прокси распознает пути и URI-схемы (`hdfs://`, `s3a://`, `file://`, слэши `/`), а также стандартные форматы файлов (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) и немедленно возвращает `NoSuchObjectException` до вызова проверок в Apache Ranger. Это устраняет ложные отказы в доступе `MetaException: Access denied` при `mask-unauthorized-as-not-found=false`, предотвращая фатальные падения Iceberg `RuntimeException: Failed to get table info from metastore ...` и сбои процессов загрузки данных Spark.
   - При запуске Spark-приложений (включая YARN ApplicationMaster) проверка существования базы данных `externalCatalog.databaseExists("global_temp")` (RPC `get_database`) теперь немедленно возвращает `NoSuchObjectException: Database global_temp not found` без обращения в бэкенд HMS и без проверок в Apache Ranger.
-  - Исправлен порядок валидации плейсхолдеров в `RoutingHandler`: проверки плейсхолдеров (`HivePlaceholderNamespace` для `_dummy_database`/`_dummy_table` и `SparkPlaceholderNamespace` для `global_temp`) перенесены в самое начало маршрутизации до вызова `validateReadExposure`. Это предотвращает ложные отказы в доступе `MetaException: Access denied: Database 'global_temp' is not accessible in proxy catalog ...` при включенной авторизации Ranger с `mask-unauthorized-as-not-found=false`, устраняя сбой `AnalysisException` при старте Spark.
+  - Исправлен порядок валидации плейсхолдеров в `RoutingHandler`: проверки плейсхолдеров (`HivePlaceholderNamespace` для `_dummy_database`/`_dummy_table` и `SparkPlaceholderNamespace` для `global_temp` и path-based таблиц) перенесены в самое начало маршрутизации до вызова `validateReadExposure`. Это предотвращает ложные отказы в доступе `MetaException: Access denied` при включенной авторизации Ranger с `mask-unauthorized-as-not-found=false`, устраняя сбой `AnalysisException` при старте Spark.
   - Поддержана ранняя обработка в специализированных обработчиках (`GetTableReqHandler`, `GetTablesReqHandler`, `GetTableMetaHandler`, `TableConstraintsHandler`) и эшелонированная защита в `RoutingSupport`.
 
 

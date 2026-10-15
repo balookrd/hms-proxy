@@ -3310,6 +3310,31 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertNotNull(tables);
     Assert.assertTrue(tables.isEmpty());
 
+    // 5. get_table on csv.hdfs://... (Spark path-based table)
+    String hdfsPath = "hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/";
+    try {
+      Method getTableMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+      handler.invoke(null, getTableMethod, new Object[] {"csv", hdfsPath});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("csv"));
+      Assert.assertTrue(e.getMessage().contains(hdfsPath));
+    }
+
+    // 6. get_table_req on csv.hdfs://...
+    try {
+      GetTableRequest req = new GetTableRequest();
+      req.setCatName("catalog1");
+      req.setDbName("csv");
+      req.setTblName(hdfsPath);
+      Method getTableReqMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table_req", GetTableRequest.class);
+      handler.invoke(null, getTableReqMethod, new Object[] {req});
+      Assert.fail("Expected NoSuchObjectException");
+    } catch (NoSuchObjectException e) {
+      Assert.assertTrue(e.getMessage().contains("csv"));
+      Assert.assertTrue(e.getMessage().contains(hdfsPath));
+    }
+
     // Backend must not have been contacted
     Assert.assertEquals(0, backendCalls.get());
   }

@@ -50,12 +50,18 @@ final class TableConstraintsHandler implements SpecialCaseHandler {
     }
 
     String catName = extractCatName(request);
-    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)) {
+    String tblName = ThriftReflectionCache.readString(request, "getTbl_name", "getTblName", "getTableName");
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+        || HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)) {
       return emptyResponse(method.getName(), request);
     }
     CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     if (HivePlaceholderNamespace.isPlaceholderDbName(namespace.backendDbName())
-        || SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
+        || SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())
+        || HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tblName)) {
       return emptyResponse(method.getName(), request);
     }
     RequestContext.currentObservation().recordNamespace(namespace);

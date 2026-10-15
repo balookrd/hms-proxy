@@ -355,7 +355,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
         || HivePlaceholderNamespace.isPlaceholderDbName(backendDb)
         || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
-        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)
+        || (tblName != null && (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
+            || HivePlaceholderNamespace.isPlaceholderTable(backendDb, tblName)
+            || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+            || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)))) {
       if ("get_database".equals(method.getName())) {
         if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
           throw SparkPlaceholderNamespace.newNoSuchDatabaseException(dbName);
@@ -363,7 +367,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
       }
       if ("get_table".equals(method.getName())) {
-        if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        if (SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+            || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)
+            || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+            || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
           throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
         }
         throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);
@@ -371,7 +378,13 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       if (List.class.isAssignableFrom(method.getReturnType())) {
         return Collections.emptyList();
       }
-      if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+      if (SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+          || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)
+          || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+          || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        if (tblName != null) {
+          throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
+        }
         throw SparkPlaceholderNamespace.newNoSuchDatabaseException(dbName);
       }
       throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException(dbName);
@@ -427,11 +440,18 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
         || HivePlaceholderNamespace.isPlaceholderDbName(backendDb)
         || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
-        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+        || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)
+        || HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
+        || HivePlaceholderNamespace.isPlaceholderTable(backendDb, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)) {
       if (List.class.isAssignableFrom(method.getReturnType())) {
         return Collections.emptyList();
       }
-      if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
+      if (SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+          || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)
+          || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+          || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
         throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), dbName, tblName);
       }
       throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);

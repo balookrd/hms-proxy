@@ -404,6 +404,16 @@ final class RoutingSupport {
       CatalogRouter.ResolvedNamespace namespace,
       String tableName
   ) throws TException {
+    if (HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tableName)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throw new NoSuchObjectException(
+          "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+              + namespace.catalogName() + "'");
+    }
+    if (SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tableName)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), namespace.externalDbName(), tableName);
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
@@ -431,6 +441,15 @@ final class RoutingSupport {
       String tableName
   ) throws TException {
     String methodName = method != null ? method.getName() : "unknown";
+    if (HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tableName)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throwAppropriateException(method, namespace.externalDbName() + "." + tableName + " table not found");
+    }
+    if (SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tableName)) {
+      recordFilteredObject(methodName, namespace.catalogName(), "table");
+      throwAppropriateException(method,
+          namespace.catalogName() + "." + namespace.externalDbName() + "." + tableName + " table not found");
+    }
     ImpersonationContext impersonation = currentImpersonation();
     if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
