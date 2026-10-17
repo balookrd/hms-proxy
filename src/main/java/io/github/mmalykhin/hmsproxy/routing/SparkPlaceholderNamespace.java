@@ -40,33 +40,104 @@ final class SparkPlaceholderNamespace {
 
   private SparkPlaceholderNamespace() {}
 
+  static String unquote(String s) {
+    if (s == null) {
+      return null;
+    }
+    String trimmed = s.trim();
+    if (trimmed.length() >= 2) {
+      char first = trimmed.charAt(0);
+      char last = trimmed.charAt(trimmed.length() - 1);
+      if ((first == '"' && last == '"')
+          || (first == '\'' && last == '\'')
+          || (first == '`' && last == '`')) {
+        return trimmed.substring(1, trimmed.length() - 1).trim();
+      }
+    }
+    return trimmed;
+  }
+
   static boolean isSparkReservedDbName(String dbName) {
-    return dbName != null && GLOBAL_TEMP_DATABASE.equals(dbName.trim().toLowerCase(Locale.ROOT));
+    if (dbName == null || dbName.isBlank()) {
+      return false;
+    }
+    String normalized = unquote(dbName).toLowerCase(Locale.ROOT);
+    if (GLOBAL_TEMP_DATABASE.equals(normalized) || isSparkFileFormatDbName(normalized)) {
+      return true;
+    }
+    return isSparkPathBasedTable(dbName);
   }
 
   static boolean isSparkFileFormatDbName(String dbName) {
-    return dbName != null && SPARK_FILE_FORMAT_DATABASES.contains(dbName.trim().toLowerCase(Locale.ROOT));
+    if (dbName == null || dbName.isBlank()) {
+      return false;
+    }
+    String unquoted = unquote(dbName).toLowerCase(Locale.ROOT);
+    return SPARK_FILE_FORMAT_DATABASES.contains(unquoted);
+  }
+
+  static boolean startsWithSparkFileFormat(String name) {
+    if (name == null || name.isBlank()) {
+      return false;
+    }
+    String lower = unquote(name).toLowerCase(Locale.ROOT);
+    for (String format : SPARK_FILE_FORMAT_DATABASES) {
+      if (lower.startsWith(format + ".")
+          || lower.startsWith(format + ":")
+          || lower.startsWith(format + "/")) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static boolean isSparkPathBasedTable(String tblName) {
     if (tblName == null || tblName.isBlank()) {
       return false;
     }
-    String trimmed = tblName.trim();
+    String trimmed = unquote(tblName.trim());
     return trimmed.contains("://")
         || trimmed.startsWith("/")
         || trimmed.contains("/")
-        || trimmed.contains("\\");
+        || trimmed.contains("\\")
+        || startsWithSparkFileFormat(trimmed);
   }
 
   static boolean isSparkReservedTable(String dbName, String tblName) {
     if (isSparkReservedDbName(dbName)) {
       return true;
     }
+    if (isSparkFileFormatDbName(dbName)) {
+      return true;
+    }
     if (isSparkPathBasedTable(tblName)) {
       return true;
     }
+    if (isSparkPathBasedTable(dbName)) {
+      return true;
+    }
     return false;
+  }
+
+  static boolean isSparkPlaceholderNoSuchObject(Throwable throwable) {
+    if (!(throwable instanceof NoSuchObjectException)) {
+      return false;
+    }
+    String message = throwable.getMessage();
+    if (message == null) {
+      return false;
+    }
+    if (message.contains(GLOBAL_TEMP_DATABASE)) {
+      return true;
+    }
+    for (String format : SPARK_FILE_FORMAT_DATABASES) {
+      if (message.contains("Database " + format + " not found")
+          || message.contains("." + format + ".")
+          || message.contains("." + format + " ")) {
+        return true;
+      }
+    }
+    return message.contains("://") || message.contains("/");
   }
 
   static NoSuchObjectException newNoSuchDatabaseException(String dbName) {

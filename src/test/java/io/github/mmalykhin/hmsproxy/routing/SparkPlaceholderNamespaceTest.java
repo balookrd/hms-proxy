@@ -12,6 +12,8 @@ public class SparkPlaceholderNamespaceTest {
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("GLOBAL_TEMP"));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("  global_temp  "));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("Global_Temp"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("\"global_temp\""));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("`global_temp`"));
 
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedDbName(null));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedDbName(""));
@@ -19,6 +21,37 @@ public class SparkPlaceholderNamespaceTest {
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedDbName("global_temp_2"));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedDbName("default"));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedDbName("_dummy_database"));
+  }
+
+  @Test
+  public void isSparkReservedDbNameRecognizesFileFormatsAndPathBasedNames() {
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("csv"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("CSV"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("\"csv\""));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("parquet"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("orc"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("json"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("avro"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("delta"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("iceberg"));
+
+    // Path-based db names
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("csv.\"hdfs://titanium/data/\""));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("csv.`hdfs://titanium/data/`"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("hdfs://titanium/data/"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedDbName("/warehouse/tablespace/external/"));
+  }
+
+  @Test
+  public void unquoteHandlesVariousQuotes() {
+    Assert.assertNull(SparkPlaceholderNamespace.unquote(null));
+    Assert.assertEquals("", SparkPlaceholderNamespace.unquote(""));
+    Assert.assertEquals("csv", SparkPlaceholderNamespace.unquote("csv"));
+    Assert.assertEquals("csv", SparkPlaceholderNamespace.unquote("\"csv\""));
+    Assert.assertEquals("csv", SparkPlaceholderNamespace.unquote("'csv'"));
+    Assert.assertEquals("csv", SparkPlaceholderNamespace.unquote("`csv`"));
+    Assert.assertEquals("hdfs://path/to/data", SparkPlaceholderNamespace.unquote("\"hdfs://path/to/data\""));
+    Assert.assertEquals("csv.\"hdfs://path\"", SparkPlaceholderNamespace.unquote("`csv.\"hdfs://path\"`"));
   }
 
   @Test
@@ -51,10 +84,17 @@ public class SparkPlaceholderNamespaceTest {
   @Test
   public void isSparkPathBasedTableRecognizesUriSchemesAndPaths() {
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("\"hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/\""));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("file:///tmp/data"));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("s3a://bucket/path/to/table"));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("/warehouse/tablespace/external/hive/db/table"));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("sub/dir/path"));
+
+    // Format-prefixed path tables
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("csv.\"hdfs://titanium/warehouse/data/\""));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("csv.`hdfs://titanium/warehouse/data/`"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("csv.hdfs://titanium/warehouse/data/"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPathBasedTable("parquet.\"hdfs://titanium/warehouse/data/\""));
 
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable("tasks"));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkPathBasedTable("my_table_123"));
@@ -67,12 +107,39 @@ public class SparkPlaceholderNamespaceTest {
   public void isSparkReservedTableRecognizesPathBasedTablesForAnyDatabase() {
     String hdfsPath = "hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/";
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("csv", hdfsPath));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("csv", "\"" + hdfsPath + "\""));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("parquet", "/tmp/parquet_data"));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("default", "s3a://bucket/data"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("default", "csv.\"hdfs://path\""));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("amdocs_arena_lz", hdfsPath));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("csv.\"hdfs://path\"", ""));
 
-    Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedTable("csv", "regular_table"));
+    // Any table under format db is reserved
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("csv", "regular_table"));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkReservedTable("parquet", "some_table"));
+
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedTable("default", "users"));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkReservedTable("sales", "orders"));
+  }
+
+  @Test
+  public void isSparkPlaceholderNoSuchObjectRecognizesSparkExceptions() {
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        SparkPlaceholderNamespace.newNoSuchDatabaseException("global_temp")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        SparkPlaceholderNamespace.newNoSuchDatabaseException("csv")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        SparkPlaceholderNamespace.newNoSuchDatabaseException("parquet")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        SparkPlaceholderNamespace.newNoSuchTableException("cat", "csv", "hdfs://path")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        new NoSuchObjectException("Table hdfs://cluster/path not found")));
+
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        new NoSuchObjectException("Database real_db not found")));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        new NoSuchObjectException("cat.db.my_table table not found")));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(null));
   }
 
   @Test

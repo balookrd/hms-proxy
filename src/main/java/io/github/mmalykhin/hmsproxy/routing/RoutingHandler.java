@@ -352,14 +352,20 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
     String backendDb = namespace.backendDbName();
     String tblName = (args.length >= 2 && args[1] instanceof String t) ? t : null;
+    boolean hasPlaceholderTableArg = tblName != null && (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
+        || HivePlaceholderNamespace.isPlaceholderTable(backendDb, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName));
+    boolean hasPlaceholderTableListArg = args.length >= 2 && args[1] instanceof List<?> list && !list.isEmpty()
+        && list.stream().allMatch(item -> item instanceof String s
+            && (HivePlaceholderNamespace.isPlaceholderTableName(s) || SparkPlaceholderNamespace.isSparkPathBasedTable(s)));
+
     if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
         || HivePlaceholderNamespace.isPlaceholderDbName(backendDb)
         || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
         || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)
-        || (tblName != null && (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
-            || HivePlaceholderNamespace.isPlaceholderTable(backendDb, tblName)
-            || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)
-            || SparkPlaceholderNamespace.isSparkReservedTable(backendDb, tblName)))) {
+        || hasPlaceholderTableArg
+        || hasPlaceholderTableListArg) {
       if ("get_database".equals(method.getName())) {
         if (SparkPlaceholderNamespace.isSparkReservedDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(backendDb)) {
           throw SparkPlaceholderNamespace.newNoSuchDatabaseException(dbName);

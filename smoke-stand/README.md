@@ -629,6 +629,21 @@ cd smoke-stand && ./prepare.sh
 - **Lenient Startup**: штатно запускает и инициализирует прокси при полностью выключенном удалённом вторичном бэкенде.
 - **Восстановление (Recovery)**: возвращает удалённый бэкенд в строй и проверяет восстановление штатной маршрутизации.
 
+## Плейсхолдеры Spark SQL и path-based таблицы (`run-spark-path-based-smoke.sh`)
+
+Проверяет корректность обработки служебных плейсхолдеров движков (`global_temp`, форматы данных Spark SQL и прямые запросы к путям HDFS вида `csv."hdfs://..."`):
+
+```bash
+cd smoke-stand
+./run-spark-path-based-smoke.sh
+```
+
+Сценарий тестирует:
+- Немедленный возврат `NoSuchObjectException` при проверках баз данных форматов (`get_database("csv")`, `get_database("parquet")`) и системной базы `global_temp`.
+- Перехват запросов таблиц по составным путям со схемами и кавычками (`get_table` на `csv."hdfs://namenode:8020/tmp/data.csv"` и `default."hdfs://namenode:8020/tmp/data"`).
+- Перехват батч-запросов метаданных таблиц `get_table_objects_by_name`.
+- Отсутствие ложных отказов авторизации Apache Ranger (`Access denied`) и отсутствие обращений к бэкендам метастора для псевдо-объектов Spark SQL.
+
 ## MapReduce под Kerberos
 
 Чтобы керберизованный `INSERT` заработал, нужны две вещи, и `LocalJobRunner` прячет обе за

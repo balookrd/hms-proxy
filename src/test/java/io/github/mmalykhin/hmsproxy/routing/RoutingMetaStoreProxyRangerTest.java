@@ -325,6 +325,34 @@ public class RoutingMetaStoreProxyRangerTest {
       Assert.assertTrue(expected.getMessage().contains(hdfsPath));
     }
 
+    try {
+      invokeAs(bobUgi, routingHandler, getDbMethod, "csv");
+      Assert.fail("Expected NoSuchObjectException for get_database(csv)");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("csv"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getDbMethod, "csv.\"" + hdfsPath + "\"");
+      Assert.fail("Expected NoSuchObjectException for get_database(csv.\"hdfs://...\")");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("csv"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "default", "csv.\"" + hdfsPath + "\"");
+      Assert.fail("Expected NoSuchObjectException for get_table(default, csv.\"hdfs://...\")");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("csv"));
+    }
+
+    try {
+      invokeAs(bobUgi, routingHandler, getTableMethod, "csv", "\"" + hdfsPath + "\"");
+      Assert.fail("Expected NoSuchObjectException for get_table(csv, \"hdfs://...\")");
+    } catch (NoSuchObjectException expected) {
+      Assert.assertTrue(expected.getMessage().contains("csv"));
+    }
+
     customAuthorizer.close();
   }
 
