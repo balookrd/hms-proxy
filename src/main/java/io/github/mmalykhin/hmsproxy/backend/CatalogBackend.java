@@ -17,6 +17,8 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -34,6 +36,7 @@ public final class CatalogBackend implements AutoCloseable {
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
   private static final long SOCKET_TIMEOUT_MIN_HYSTERESIS_MS = 2_000L;
   private static final double SOCKET_TIMEOUT_HYSTERESIS_FRACTION = 0.25d;
+  private static final long MIN_IDLE_SWEEP_PERIOD_MS = 100L;
 
   public enum AdaptiveTimeoutResult {
     APPLIED,
@@ -60,6 +63,9 @@ public final class CatalogBackend implements AutoCloseable {
   private volatile long lastReconnectAtNanos;
   private volatile boolean closed;
   private final Semaphore concurrentCallsSemaphore;
+  // Without it idle TTLs act only when the same user comes back, so the sessions of a user who
+  // never returns - each a backend connection and worker thread - stay open for the process lifetime.
+  private final ScheduledExecutorService idleSweeper;
 
   CatalogBackend(
       ProxyConfig proxyConfig,
@@ -81,6 +87,85 @@ public final class CatalogBackend implements AutoCloseable {
     this.concurrentCallsSemaphore = config.maxConcurrentCalls() > 0
         ? new Semaphore(config.maxConcurrentCalls(), true)
         : null;
+    this.idleSweeper = startIdleSweeper(config);
+    publishImpersonationGauges();
+    scheduleIdleSweep();
+  }
+
+  private static ScheduledExecutorService startIdleSweeper(CatalogConfig config) {
+    long periodMs = idleSweepPeriodMs(config);
+    if (periodMs <= 0L) {
+      return null;
+    }
+    return Executors.newSingleThreadScheduledExecutor(runnable -> {
+      Thread thread = new Thread(runnable, "hms-proxy-impersonation-sweep-" + config.name());
+      thread.setDaemon(true);
+      return thread;
+    });
+  }
+
+  /** Half of the shortest positive idle TTL, or 0 when impersonation or both TTLs are off. */
+  static long idleSweepPeriodMs(CatalogConfig config) {
+    if (!config.impersonationEnabled()) {
+      return 0L;
+    }
+    long shortest = Long.MAX_VALUE;
+    for (long ttlMs : new long[] {config.impersonationClientIdleTtlMs(), config.impersonationSessionIdleTtlMs()}) {
+      if (ttlMs > 0L) {
+        shortest = Math.min(shortest, ttlMs);
+      }
+    }
+    return shortest == Long.MAX_VALUE ? 0L : Math.max(MIN_IDLE_SWEEP_PERIOD_MS, shortest / 2L);
+  }
+
+  private void scheduleIdleSweep() {
+    if (idleSweeper == null) {
+      return;
+    }
+    long periodMs = idleSweepPeriodMs(config);
+    idleSweeper.scheduleWithFixedDelay(() -> {
+      try {
+        sweepIdleImpersonation();
+      } catch (RuntimeException e) {
+        LOG.warn("Idle impersonation sweep failed for catalog '{}'", config.name(), e);
+      }
+    }, periodMs, periodMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Evicts users idle past {@code impersonation-client-idle-ttl-ms} and closes pooled sessions idle
+   * past {@code impersonation-session-idle-ttl-ms}. Bookkeeping runs under the catalog monitor;
+   * every socket is closed outside it.
+   */
+  void sweepIdleImpersonation() {
+    long clientTtlMs = config.impersonationClientIdleTtlMs();
+    long now = System.currentTimeMillis();
+    List<ImpersonationClient> idleClients = new ArrayList<>();
+    List<ImpersonationClient> liveClients;
+    synchronized (this) {
+      if (closed) {
+        return;
+      }
+      if (clientTtlMs > 0L) {
+        Iterator<ImpersonationClient> it = impersonationClients.values().iterator();
+        while (it.hasNext()) {
+          ImpersonationClient client = it.next();
+          if (now - client.lastUsedMs > clientTtlMs) {
+            it.remove();
+            idleClients.add(client);
+          }
+        }
+        impersonationUserCount = impersonationClients.size();
+      }
+      liveClients = new ArrayList<>(impersonationClients.values());
+    }
+    for (ImpersonationClient client : idleClients) {
+      LOG.info("Evicting idle impersonation client for user '{}' in catalog '{}'", client.userName, config.name());
+      client.evict();
+    }
+    for (ImpersonationClient client : liveClients) {
+      client.closeExpiredIdleSessions();
+    }
     publishImpersonationGauges();
   }
 
@@ -348,6 +433,16 @@ public final class CatalogBackend implements AutoCloseable {
   @Override
   public void close() {
     closed = true;
+    if (idleSweeper != null) {
+      idleSweeper.shutdownNow();
+      try {
+        if (!idleSweeper.awaitTermination(5L, TimeUnit.SECONDS)) {
+          LOG.warn("Idle impersonation sweeper of catalog '{}' did not stop within 5s", config.name());
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
     // Impersonation sessions first: closing them may still need classes from the runtime classloader.
     // Draining detaches them under the monitor so the sockets close outside of it.
     for (ImpersonationClient impersonationClient : drainImpersonationClients()) {
@@ -599,24 +694,15 @@ public final class CatalogBackend implements AutoCloseable {
             "Timed out waiting for impersonation session for user '" + userName
                 + "' in catalog '" + config.name() + "' after " + timeoutMs + " ms");
       }
-      List<BackendInvocationSession> expired = null;
+      List<BackendInvocationSession> expired = new ArrayList<>();
       PooledSession reuse;
       synchronized (lock) {
-        reuse = pollFreshLocked();
+        reuse = pollFreshLocked(expired);
         if (reuse == null && sessionIdleTtlMs > 0) {
-          expired = drainExpiredLocked();
+          expired.addAll(drainExpiredLocked());
         }
       }
-      if (expired != null) {
-        for (BackendInvocationSession s : expired) {
-          CatalogBackend.closeQuietly(s, "idle impersonation session for user '" + userName + "'");
-          impersonationIdleSessions.decrementAndGet();
-          if (metrics != null) {
-            metrics.recordImpersonationSessionEviction(config.name(), "idle");
-          }
-        }
-        publishImpersonationGauges();
-      }
+      closeExpired(expired);
       if (reuse != null) {
         impersonationIdleSessions.decrementAndGet();
         impersonationActiveSessions.incrementAndGet();
@@ -670,22 +756,45 @@ public final class CatalogBackend implements AutoCloseable {
       publishImpersonationGauges();
     }
 
-    private PooledSession pollFreshLocked() {
+    // Expired sessions are handed back instead of closed here: closing one queues a backend call
+    // (token revocation), and nothing of that kind may run under the per-user lock.
+    private PooledSession pollFreshLocked(List<BackendInvocationSession> expired) {
       while (!idle.isEmpty()) {
         PooledSession candidate = idle.pollFirst();
         if (sessionIdleTtlMs > 0
             && System.currentTimeMillis() - candidate.releasedAtMs > sessionIdleTtlMs) {
-          CatalogBackend.closeQuietly(
-              candidate.session, "expired idle impersonation session for user '" + userName + "'");
-          impersonationIdleSessions.decrementAndGet();
-          if (metrics != null) {
-            metrics.recordImpersonationSessionEviction(config.name(), "idle");
-          }
+          expired.add(candidate.session);
           continue;
         }
         return candidate;
       }
       return null;
+    }
+
+    /** Background sweep: closes idle sessions past their TTL even when this user never returns. */
+    private void closeExpiredIdleSessions() {
+      if (sessionIdleTtlMs <= 0) {
+        return;
+      }
+      List<BackendInvocationSession> expired;
+      synchronized (lock) {
+        expired = drainExpiredLocked();
+      }
+      closeExpired(expired);
+    }
+
+    private void closeExpired(List<BackendInvocationSession> expired) {
+      if (expired.isEmpty()) {
+        return;
+      }
+      for (BackendInvocationSession s : expired) {
+        CatalogBackend.closeQuietly(s, "idle impersonation session for user '" + userName + "'");
+        impersonationIdleSessions.decrementAndGet();
+        if (metrics != null) {
+          metrics.recordImpersonationSessionEviction(config.name(), "idle");
+        }
+      }
+      publishImpersonationGauges();
     }
 
     private List<BackendInvocationSession> drainExpiredLocked() {

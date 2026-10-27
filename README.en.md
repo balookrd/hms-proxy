@@ -246,8 +246,18 @@ When impersonation is enabled on the catalog, real authenticated client traffic 
 pool — each caller is served from the per-user impersonation client cache governed by
 `catalog.<name>.impersonation-max-clients` and `catalog.<name>.impersonation-client-idle-ttl-ms`.
 Each cached user owns an internal pool of backend Thrift sessions sized by
-`catalog.<name>.impersonation-pool-max-size` (default `4`); idle sessions inside that pool can be
-closed via `catalog.<name>.impersonation-session-idle-ttl-ms` (default `0` = never). Concurrent
+`catalog.<name>.impersonation-pool-max-size` (default `4`). A session idle in that pool for longer than
+`catalog.<name>.impersonation-session-idle-ttl-ms` (default `600000`, 10 minutes) is closed; a user who
+makes no call for longer than `catalog.<name>.impersonation-client-idle-ttl-ms` (default `1800000`,
+30 minutes) is evicted from the cache together with all of its sessions. Both TTLs are applied by the
+background thread `hms-proxy-impersonation-sweep-<catalog>` (period: half the shorter TTL, no more often
+than every 100 ms), so the connections of a user who never comes back are closed too. `0` disables the
+respective TTL. Under Kerberos each impersonation session authenticates with a delegation token the
+proxy obtains from the backend; when the session closes, the token is revoked (`cancel_delegation_token`
+as the proxy principal, its renewer) on a background thread instead of piling up in the backend's token
+store until it expires. Revocation outcomes are counted in
+`hms_proxy_backend_delegation_token_cancels_total{outcome=cancelled|failed|dropped|skipped_runtime_closed}`.
+Concurrent
 calls from the same user (or the HiveServer2 driving them) borrow distinct sessions in parallel
 instead of serializing on a single Thrift transport. Grafana surfaces this as
 `hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,

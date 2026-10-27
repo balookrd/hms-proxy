@@ -12,6 +12,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.PrivilegedExceptionAction;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -28,6 +29,9 @@ public final class BackendInvocationSession implements AutoCloseable {
   private final HiveMetaStoreClient client;
   private final ThriftHiveMetastore.Iface thriftClient;
   private final IsolatedMetastoreClient isolatedClient;
+  // Runs once the connection is closed: a delegation token must outlive the session that
+  // authenticates with it, so it is revoked only after nothing uses it any more.
+  private final AtomicReference<Runnable> afterClose = new AtomicReference<>();
 
   private BackendInvocationSession(
       HiveMetaStoreClient client,
@@ -209,10 +213,18 @@ public final class BackendInvocationSession implements AutoCloseable {
     return converted;
   }
 
+  void runAfterClose(Runnable action) {
+    afterClose.set(action);
+  }
+
   @Override
   public void close() {
     CatalogBackend.closeQuietly(client, "backend metastore client session");
     CatalogBackend.closeQuietly(isolatedClient, "isolated backend metastore client session");
+    Runnable action = afterClose.getAndSet(null);
+    if (action != null) {
+      action.run();
+    }
   }
 
   private static BackendInvocationSession openApache(

@@ -46,10 +46,10 @@ public record CatalogConfig(
   public static final boolean DEFAULT_MERGE_WITH_DEFAULT = false;
   public static final long DEFAULT_LATENCY_BUDGET_MS = 0L;
   public static final int DEFAULT_MAX_IMPERSONATION_CLIENTS = 128;
-  public static final long DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS = 0L;
+  public static final long DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS = 1_800_000L;
   public static final int DEFAULT_SHARED_SESSION_POOL_SIZE = 1;
   public static final int DEFAULT_IMPERSONATION_POOL_MAX_SIZE = 4;
-  public static final long DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS = 0L;
+  public static final long DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS = 600_000L;
 
   // The property loader validates sizing keys strictly and fails startup on a non-positive value;
   // these substitutions only cover the in-process builder path, where an unset field reads as 0.
@@ -62,14 +62,13 @@ public record CatalogConfig(
     latencyBudgetMs = Math.max(latencyBudgetMs, DEFAULT_LATENCY_BUDGET_MS);
     maxImpersonationClients =
         maxImpersonationClients <= 0 ? DEFAULT_MAX_IMPERSONATION_CLIENTS : maxImpersonationClients;
-    impersonationClientIdleTtlMs =
-        Math.max(impersonationClientIdleTtlMs, DEFAULT_IMPERSONATION_CLIENT_IDLE_TTL_MS);
+    // 0 disables an idle TTL, so it is clamped at zero rather than raised to the default.
+    impersonationClientIdleTtlMs = Math.max(impersonationClientIdleTtlMs, 0L);
     sharedSessionPoolSize =
         sharedSessionPoolSize <= 0 ? DEFAULT_SHARED_SESSION_POOL_SIZE : sharedSessionPoolSize;
     impersonationPoolMaxSize =
         impersonationPoolMaxSize <= 0 ? DEFAULT_IMPERSONATION_POOL_MAX_SIZE : impersonationPoolMaxSize;
-    impersonationSessionIdleTtlMs =
-        Math.max(impersonationSessionIdleTtlMs, DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
+    impersonationSessionIdleTtlMs = Math.max(impersonationSessionIdleTtlMs, 0L);
     ranger = ranger == null ? io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled() : ranger;
     startupMode = startupMode == null ? DEFAULT_STARTUP_MODE : startupMode;
     maxConcurrentCalls = Math.max(0, maxConcurrentCalls);

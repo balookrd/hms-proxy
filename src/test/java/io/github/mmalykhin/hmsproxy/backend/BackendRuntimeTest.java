@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
@@ -839,6 +840,161 @@ public class BackendRuntimeTest {
         ClassLoader isolatedClassLoader
     ) throws org.apache.hadoop.hive.metastore.api.MetaException {
       return open(proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
+    }
+  }
+
+  @Test
+  public void closingATokenSessionRevokesItsTokenOnlyAfterTheSessionIsClosed() throws Exception {
+    List<String> cancelled = new java.util.concurrent.CopyOnWriteArrayList<>();
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    BackendRuntime runtime = tokenRuntime(cancelled, false, metrics);
+    try {
+      BackendInvocationSession acquired = runtime.openImpersonationSession(
+          MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user", List.of("users"));
+      Thread.sleep(100L);
+      Assert.assertTrue("a token in use must not be revoked", cancelled.isEmpty());
+
+      acquired.close();
+      awaitUntil(() -> cancelled.contains("token-xyz"));
+      Assert.assertEquals(List.of("token-xyz"), cancelled);
+      Assert.assertTrue(metrics.render(),
+          metrics.render().contains("hms_proxy_backend_delegation_token_cancels_total{catalog=\"catalog1\",outcome=\"cancelled\"} 1"));
+    } finally {
+      runtime.close();
+    }
+  }
+
+  @Test
+  public void aTokenWhoseSessionNeverOpenedIsRevokedAtOnce() throws Exception {
+    List<String> cancelled = new java.util.concurrent.CopyOnWriteArrayList<>();
+    BackendRuntime runtime = tokenRuntime(cancelled, true, null);
+    try {
+      BackendInvocationSession fallback = runtime.openImpersonationSession(
+          MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user", List.of("users"));
+      Assert.assertNotNull("falls back to a direct Kerberos session", fallback);
+      awaitUntil(() -> cancelled.contains("token-xyz"));
+      Assert.assertEquals(List.of("token-xyz"), cancelled);
+    } finally {
+      runtime.close();
+    }
+  }
+
+  @Test
+  public void runtimeCloseWaitsForQueuedRevocations() throws Exception {
+    List<String> cancelled = new java.util.concurrent.CopyOnWriteArrayList<>();
+    BackendRuntime runtime = tokenRuntime(cancelled, false, null);
+    BackendInvocationSession acquired = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user", List.of("users"));
+    acquired.close();
+    runtime.close();
+    Assert.assertEquals("the revocation queued by the last session still ran", List.of("token-xyz"), cancelled);
+  }
+
+  /**
+   * A Kerberos runtime whose shared session issues {@code token-xyz} and records every
+   * {@code cancel_delegation_token}; the token-authenticated open fails when asked to.
+   */
+  private static BackendRuntime tokenRuntime(
+      List<String> cancelled,
+      boolean tokenOpenFails,
+      PrometheusMetrics metrics
+  ) throws Exception {
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        try {
+          return tokenIssuingSession("token-xyz", cancelled);
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return openImpersonating(
+            proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames, null, null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames,
+          ClassLoader isolatedClassLoader,
+          String delegationToken
+      ) throws MetaException {
+        if (delegationToken != null && tokenOpenFails) {
+          throw new MetaException("DIGEST handshake failed");
+        }
+        try {
+          return newSession();
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+    };
+    ProxyConfig proxyConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.KERBEROS, "hive/proxy@EXAMPLE.COM", null, "/tmp/k.keytab", null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    return BackendRuntime.open(
+        proxyConfig,
+        catalogConfig(MetastoreRuntimeProfile.APACHE_3_1_3, null),
+        new HiveConf(),
+        true,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        metrics);
+  }
+
+  private static BackendInvocationSession tokenIssuingSession(String token, List<String> cancelled) throws Exception {
+    ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[] {ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> {
+          if ("get_delegation_token".equals(method.getName())) {
+            return token;
+          }
+          if ("cancel_delegation_token".equals(method.getName())) {
+            cancelled.add((String) args[0]);
+            return null;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+        org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+        ThriftHiveMetastore.Iface.class,
+        IsolatedMetastoreClient.class);
+    ctor.setAccessible(true);
+    return ctor.newInstance(null, thriftClient, null);
+  }
+
+  private static void awaitUntil(java.util.function.BooleanSupplier condition) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+      Thread.sleep(10L);
     }
   }
 }

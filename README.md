@@ -222,8 +222,17 @@ catalog.catalog1.shared-session-pool-size=8
 пул не идёт — каждый caller обслуживается из per-user кэша impersonation client'ов, управляемого
 `catalog.<name>.impersonation-max-clients` и `catalog.<name>.impersonation-client-idle-ttl-ms`.
 Внутри кэша на каждого пользователя живёт собственный пул backend Thrift-сессий размером
-`catalog.<name>.impersonation-pool-max-size` (дефолт `4`); idle-сессии внутри пула можно закрывать
-по `catalog.<name>.impersonation-session-idle-ttl-ms` (дефолт `0` — никогда). Параллельные вызовы
+`catalog.<name>.impersonation-pool-max-size` (дефолт `4`). Сессия, простоявшая в пуле дольше
+`catalog.<name>.impersonation-session-idle-ttl-ms` (дефолт `600000`, 10 минут), закрывается; пользователь,
+не делавший вызовов дольше `catalog.<name>.impersonation-client-idle-ttl-ms` (дефолт `1800000`,
+30 минут), вытесняется из кэша вместе со всеми своими сессиями. Оба TTL применяет фоновый поток
+`hms-proxy-impersonation-sweep-<catalog>` (период — половина меньшего из них, не чаще 100 мс), поэтому
+соединения пользователя, который больше не вернётся, тоже закрываются. `0` отключает соответствующий TTL.
+Под Kerberos каждая impersonation-сессия аутентифицируется delegation token'ом, который прокси получает
+у бэкенда; при закрытии сессии токен отзывается (`cancel_delegation_token` от имени принципала прокси,
+его renewer'а) в фоновом потоке, а не копится в token store бэкенда до истечения срока жизни. Итог
+отзыва виден в `hms_proxy_backend_delegation_token_cancels_total{outcome=cancelled|failed|dropped|skipped_runtime_closed}`.
+Параллельные вызовы
 одного пользователя (или гонящего их HiveServer2) занимают разные сессии и реально идут в параллель,
 а не сериализуются на одном Thrift transport. В Grafana это видно по метрикам
 `hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,

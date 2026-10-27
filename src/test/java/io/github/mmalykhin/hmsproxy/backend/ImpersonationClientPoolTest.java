@@ -697,4 +697,151 @@ public class ImpersonationClientPoolTest {
       throw me;
     }
   }
+
+  @Test
+  public void theSweepClosesIdleSessionsOfAUserWhoNeverComesBack() throws Exception {
+    IdleRun run = idleRun(0L, 50L);
+    try {
+      run.call("alice");
+      Thread.sleep(150L);
+      run.backend.sweepIdleImpersonation();
+
+      Assert.assertEquals("the idle session is closed without another call from alice", 1, run.closes.get());
+      Assert.assertTrue(
+          "expected an idle eviction:\n" + run.metrics.render(),
+          run.metrics.render().contains("reason=\"idle\""));
+    } finally {
+      run.backend.close();
+    }
+  }
+
+  @Test
+  public void theSweepEvictsAUserIdlePastTheClientTtl() throws Exception {
+    IdleRun run = idleRun(50L, 0L);
+    try {
+      run.call("alice");
+      int opened = run.sessionsOpened.get();
+      Thread.sleep(150L);
+      run.backend.sweepIdleImpersonation();
+
+      Assert.assertEquals("the evicted user's pooled session is closed", 1, run.closes.get());
+      run.call("alice");
+      Assert.assertEquals("a returning user gets a fresh client", opened + 1, run.sessionsOpened.get());
+    } finally {
+      run.backend.close();
+    }
+  }
+
+  @Test
+  public void anActiveUserKeepsItsPooledSession() throws Exception {
+    IdleRun run = idleRun(60_000L, 60_000L);
+    try {
+      run.call("alice");
+      run.backend.sweepIdleImpersonation();
+      Assert.assertEquals(0, run.closes.get());
+      run.call("alice");
+      Assert.assertEquals("the pooled session is reused", 1, run.sessionsOpened.get());
+    } finally {
+      run.backend.close();
+    }
+  }
+
+  @Test
+  public void theBackgroundSweeperRunsWithoutAnyTraffic() throws Exception {
+    IdleRun run = idleRun(0L, 150L);
+    try {
+      run.call("alice");
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (run.closes.get() == 0 && System.nanoTime() < deadline) {
+        Thread.sleep(25L);
+      }
+      Assert.assertEquals("the scheduled sweep must close the idle session on its own", 1, run.closes.get());
+    } finally {
+      run.backend.close();
+    }
+  }
+
+  @Test
+  public void theSweepPeriodIsHalfTheShortestTtlAndOffWithoutOne() {
+    Assert.assertEquals(300_000L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(1_800_000L, 600_000L)));
+    Assert.assertEquals(10_000L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(20_000L, 0L)));
+    Assert.assertEquals("never tighter than the floor", 100L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(0L, 10L)));
+    Assert.assertEquals("both TTLs off: no sweeper", 0L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(0L, 0L)));
+  }
+
+  private record IdleRun(
+      CatalogBackend backend,
+      PrometheusMetrics metrics,
+      AtomicInteger sessionsOpened,
+      AtomicInteger closes
+  ) {
+    void call(String user) throws Exception {
+      try {
+        backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], new ImpersonationContext(user, List.of("g1")));
+      } catch (Throwable t) {
+        throw new AssertionError(t);
+      }
+    }
+  }
+
+  /** A backend whose impersonation sessions report their close through {@code closes}. */
+  private static IdleRun idleRun(long clientIdleTtlMs, long sessionIdleTtlMs) throws Exception {
+    AtomicInteger sessionsOpened = new AtomicInteger();
+    AtomicInteger closes = new AtomicInteger();
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        sessionsOpened.incrementAndGet();
+        BackendInvocationSession session = makeSession(null);
+        session.runAfterClose(closes::incrementAndGet);
+        return session;
+      }
+    };
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    CatalogConfig catalogConfig = ttlCatalogConfig(clientIdleTtlMs, sessionIdleTtlMs);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig), catalogConfig, new HiveConf(), false, MetastoreRuntimeProfile.APACHE_3_1_3, factory, metrics);
+    return new IdleRun(newBackend(catalogConfig, runtime, metrics), metrics, sessionsOpened, closes);
+  }
+
+  private static CatalogConfig ttlCatalogConfig(long clientIdleTtlMs, long sessionIdleTtlMs) {
+    return new CatalogConfig(
+        "catalog1",
+        "c1",
+        "file:///c1",
+        true,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://one"),
+        0L,
+        128,
+        clientIdleTtlMs,
+        1,
+        4,
+        sessionIdleTtlMs);
+  }
 }

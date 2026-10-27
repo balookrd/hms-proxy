@@ -131,6 +131,10 @@ public final class PrometheusMetrics {
       "hms_proxy_impersonation_session_evictions_total",
       "Per-user impersonation backend sessions discarded grouped by catalog and reason",
       List.of("catalog", "reason"));
+  private final Counter backendDelegationTokenCancelsTotal = new Counter(
+      "hms_proxy_backend_delegation_token_cancels_total",
+      "Backend delegation tokens revoked when their impersonation session closed, grouped by catalog and outcome",
+      List.of("catalog", "outcome"));
   private final Gauge syntheticReadLocksActive = new Gauge(
       "hms_proxy_synthetic_read_locks_active",
       "Current number of active synthetic read locks visible to this proxy instance",
@@ -318,6 +322,10 @@ public final class PrometheusMetrics {
 
   public void recordImpersonationSessionEviction(String catalog, String reason) {
     impersonationSessionEvictionsTotal.inc(labels("catalog", catalog, "reason", reason));
+  }
+
+  public void recordBackendDelegationTokenCancel(String catalog, String outcome) {
+    backendDelegationTokenCancelsTotal.inc(labels("catalog", catalog, "outcome", outcome));
   }
 
   public void recordAdaptiveTimeoutReconnect(String catalog) {
@@ -545,6 +553,7 @@ public final class PrometheusMetrics {
       impersonationPoolSessions,
       impersonationSessionAcquireTimeoutsTotal,
       impersonationSessionEvictionsTotal,
+      backendDelegationTokenCancelsTotal,
       adaptiveTimeoutReconnectTotal,
       adaptiveTimeoutReconnectSkippedTotal,
       filteredObjectsTotal,

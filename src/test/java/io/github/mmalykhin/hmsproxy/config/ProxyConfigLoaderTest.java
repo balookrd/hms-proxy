@@ -2299,5 +2299,36 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
-}
 
+  @Test
+  public void impersonationIdleTtlsDefaultToTenAndThirtyMinutesAndZeroStillDisablesThem() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1,catalog2,catalog3
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.catalog2.impersonation-session-idle-ttl-ms=0
+          catalog.catalog2.impersonation-client-idle-ttl-ms=0
+          catalog.catalog3.conf.hive.metastore.uris=thrift://hms3:9083
+          catalog.catalog3.impersonation-session-idle-ttl-ms=5000
+          catalog.catalog3.impersonation-client-idle-ttl-ms=20000
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(600_000L, config.catalogs().get("catalog1").impersonationSessionIdleTtlMs());
+      Assert.assertEquals(1_800_000L, config.catalogs().get("catalog1").impersonationClientIdleTtlMs());
+      Assert.assertEquals("0 keeps idle sessions and users forever",
+          0L, config.catalogs().get("catalog2").impersonationSessionIdleTtlMs());
+      Assert.assertEquals(0L, config.catalogs().get("catalog2").impersonationClientIdleTtlMs());
+      Assert.assertEquals("a value below the default is kept, not raised to it",
+          5_000L, config.catalogs().get("catalog3").impersonationSessionIdleTtlMs());
+      Assert.assertEquals(20_000L, config.catalogs().get("catalog3").impersonationClientIdleTtlMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+}

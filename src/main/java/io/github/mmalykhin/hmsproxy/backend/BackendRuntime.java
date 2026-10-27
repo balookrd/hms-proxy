@@ -10,8 +10,11 @@ import java.net.MalformedURLException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -24,6 +27,8 @@ public final class BackendRuntime implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendRuntime.class);
   private static final SessionFactory DEFAULT_SESSION_FACTORY = new DefaultSessionFactory();
   private static final long DEFAULT_BORROW_TIMEOUT_MS = 30_000L;
+  private static final int TOKEN_CANCEL_QUEUE_CAPACITY = 1024;
+  private static final long TOKEN_CANCEL_DRAIN_MS = 5_000L;
 
   private final ProxyConfig proxyConfig;
   private final CatalogConfig catalogConfig;
@@ -35,6 +40,10 @@ public final class BackendRuntime implements AutoCloseable {
   private final Semaphore permits;
   private final LinkedBlockingQueue<BackendInvocationSession> pool;
   private final PrometheusMetrics metrics;
+  // Token revocation talks to the backend, so it never runs on the thread that closes the session:
+  // that is often a client request whose session just died, and a down backend would add a second
+  // socket timeout to its failure. Created only when the runtime issues tokens at all.
+  private final ThreadPoolExecutor tokenCancelExecutor;
   private final Object lifecycleLock = new Object();
   private volatile MetastoreRuntimeProfile activeProfile;
   private volatile boolean closed;
@@ -85,6 +94,7 @@ public final class BackendRuntime implements AutoCloseable {
     this.pool = new LinkedBlockingQueue<>(poolSize);
     this.metrics = metrics;
     this.activeProfile = activeProfile;
+    this.tokenCancelExecutor = backendKerberosEnabled ? newTokenCancelExecutor(catalogConfig.name()) : null;
     if (initialSession != null) {
       this.pool.offer(initialSession);
     }
@@ -248,18 +258,65 @@ public final class BackendRuntime implements AutoCloseable {
       }
     }
     if (delegationToken != null) {
+      String token = delegationToken;
       try {
-        return sessionFactory.openImpersonating(
+        BackendInvocationSession session = sessionFactory.openImpersonating(
             proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-            isolatedClassLoader, delegationToken);
+            isolatedClassLoader, token);
+        session.runAfterClose(() -> cancelDelegationTokenQuietly(userName, token));
+        return session;
       } catch (Throwable t) {
         LOG.warn("Failed to open backend metastore session with delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
             userName, catalogConfig.name(), t);
+        cancelDelegationTokenQuietly(userName, token);
       }
     }
     return sessionFactory.openImpersonating(
         proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
         isolatedClassLoader, null);
+  }
+
+  /**
+   * Revokes a delegation token this runtime issued for an impersonation session. Without it every
+   * session open - including each reopen after a transport failure or an eviction - leaves one more
+   * live token in the backend's token store until its max lifetime. The proxy principal is the
+   * token's renewer, so the shared session is allowed to cancel it. Best effort: a failure only
+   * leaves the token to expire on its own.
+   */
+  private void cancelDelegationTokenQuietly(String userName, String token) {
+    if (tokenCancelExecutor == null) {
+      cancelDelegationTokenNow(userName, token);
+      return;
+    }
+    try {
+      tokenCancelExecutor.execute(() -> cancelDelegationTokenNow(userName, token));
+    } catch (RejectedExecutionException e) {
+      recordDelegationTokenCancel("dropped");
+      LOG.warn("Backend delegation token for user '{}' in catalog '{}' was not cancelled: the cancellation queue is"
+          + " full or shut down; it stays valid until it expires", userName, catalogConfig.name());
+    }
+  }
+
+  private void cancelDelegationTokenNow(String userName, String token) {
+    if (closed) {
+      recordDelegationTokenCancel("skipped_runtime_closed");
+      return;
+    }
+    try {
+      invokeSharedByName("cancel_delegation_token", new Class<?>[] {String.class}, new Object[] {token});
+      recordDelegationTokenCancel("cancelled");
+      LOG.debug("Cancelled backend delegation token for user '{}' in catalog '{}'", userName, catalogConfig.name());
+    } catch (Throwable t) {
+      recordDelegationTokenCancel("failed");
+      LOG.warn("Failed to cancel backend delegation token for user '{}' in catalog '{}'; it stays valid until it"
+          + " expires: {}", userName, catalogConfig.name(), t.toString());
+    }
+  }
+
+  private void recordDelegationTokenCancel(String outcome) {
+    if (metrics != null) {
+      metrics.recordBackendDelegationTokenCancel(catalogConfig.name(), outcome);
+    }
   }
 
   public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
@@ -271,6 +328,9 @@ public final class BackendRuntime implements AutoCloseable {
 
   @Override
   public void close() {
+    // Before the runtime is marked closed: impersonation sessions are closed ahead of this runtime,
+    // and the cancellations they queued still need the shared pool.
+    drainTokenCancellations();
     synchronized (lifecycleLock) {
       if (closed) {
         return;
@@ -305,6 +365,38 @@ public final class BackendRuntime implements AutoCloseable {
         permits.release(poolSize);
       }
     }
+  }
+
+  private void drainTokenCancellations() {
+    if (tokenCancelExecutor == null) {
+      return;
+    }
+    tokenCancelExecutor.shutdown();
+    try {
+      if (!tokenCancelExecutor.awaitTermination(TOKEN_CANCEL_DRAIN_MS, TimeUnit.MILLISECONDS)) {
+        int abandoned = tokenCancelExecutor.shutdownNow().size();
+        LOG.warn("Backend catalog '{}' abandoned {} pending delegation token cancellation(s) on close",
+            catalogConfig.name(), abandoned);
+      }
+    } catch (InterruptedException e) {
+      tokenCancelExecutor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private static ThreadPoolExecutor newTokenCancelExecutor(String catalogName) {
+    return new ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(TOKEN_CANCEL_QUEUE_CAPACITY),
+        runnable -> {
+          Thread thread = new Thread(runnable, "hms-proxy-token-cancel-" + catalogName);
+          thread.setDaemon(true);
+          return thread;
+        },
+        new ThreadPoolExecutor.AbortPolicy());
   }
 
   private Object invokeOnPool(SessionCall call, String label) throws Throwable {
