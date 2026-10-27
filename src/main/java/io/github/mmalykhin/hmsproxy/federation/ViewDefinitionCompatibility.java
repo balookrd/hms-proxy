@@ -9,6 +9,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
@@ -54,6 +55,12 @@ final class ViewDefinitionCompatibility {
     if (value instanceof Table table) {
       if (visited.put(value, Boolean.TRUE) == null) {
         rewriteViewText(table, namespace, direction);
+      }
+      return;
+    }
+    if (ThriftViewTextFields.carriesViewText(value.getClass())) {
+      if (visited.put(value, Boolean.TRUE) == null) {
+        rewriteForeignViewText(value, namespace, direction);
       }
       return;
     }
@@ -103,6 +110,41 @@ final class ViewDefinitionCompatibility {
       table.setViewOriginalText(rewriteSql(table.getViewOriginalText(), namespace, direction));
     }
     rewriteViewParameters(table, namespace, direction);
+  }
+
+  /**
+   * Rewrites a {@code Table} of an isolated front-door class loader in place. The Hortonworks and
+   * Hive 4 bridges hand {@code alter_table_req} over with the client's own classes, so the view of
+   * a {@code CREATE OR REPLACE VIEW} used to reach the backend unrewritten. Only the view fields are
+   * touched: converting the whole struct to the parent class would drop fields the parent IDL lacks.
+   */
+  @SuppressWarnings("unchecked")
+  private void rewriteForeignViewText(
+      Object foreignTable,
+      CatalogRouter.ResolvedNamespace namespace,
+      Direction direction
+  ) {
+    try {
+      Class<?> type = foreignTable.getClass();
+      Table view = new Table();
+      view.setTableType((String) type.getMethod("getTableType").invoke(foreignTable));
+      view.setViewOriginalText((String) type.getMethod("getViewOriginalText").invoke(foreignTable));
+      view.setViewExpandedText((String) type.getMethod("getViewExpandedText").invoke(foreignTable));
+      // Shared, not copied: the parameter rewrite lands in the foreign table directly.
+      view.setParameters((Map<String, String>) type.getMethod("getParameters").invoke(foreignTable));
+      String originalBefore = view.getViewOriginalText();
+      String expandedBefore = view.getViewExpandedText();
+      rewriteViewText(view, namespace, direction);
+      if (!Objects.equals(originalBefore, view.getViewOriginalText())) {
+        type.getMethod("setViewOriginalText", String.class).invoke(foreignTable, view.getViewOriginalText());
+      }
+      if (!Objects.equals(expandedBefore, view.getViewExpandedText())) {
+        type.getMethod("setViewExpandedText", String.class).invoke(foreignTable, view.getViewExpandedText());
+      }
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(
+          "Failed to rewrite view text of " + foreignTable.getClass().getName(), e);
+    }
   }
 
   private void rewriteViewParameters(Table table, CatalogRouter.ResolvedNamespace namespace, Direction direction) {

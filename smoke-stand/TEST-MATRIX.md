@@ -1160,6 +1160,24 @@ SQL-секции **не берут лок вообще** ни в одной ко
   выключены (`HMS_SMOKE_SQL_RUN_{EXCHANGE,EXTERNAL}_PARTITION=false`): в их SQL переменные
   экранированы (`\${...}`) и не раскрываются, это отдельный дефект раннера. Не прогонялось:
   профиль plain, разделы A, D, E, G, H, I.
+- **2026-10-27 (вторая запись)**, B7. Падение межкаталожного view через Hortonworks front door
+  чередовалось на повторных прогонах, и причина не в рестарте прокси, а в том, существует ли view до
+  `CREATE OR REPLACE`. Измерено пробой с фиксированным именем view: новый view (`create_table`) хранил
+  `` `hdp__default`.`smoke_read_ap` `` и не читался, а замена существующего (`alter_table_req`) давала
+  `` `apache__default`.`smoke_read_ap` ``. Упавший прогон не доходил до `drop view`, поэтому следующий
+  шёл по пути замены. Замена проходила потому, что мост Hortonworks отдаёт `alter_table_req` с `Table`
+  клиентского загрузчика, а rewrite текста view такой объект молча пропускал: в бэкенд уходили внешние
+  имена. Исправлено, и в сценарий добавлена повторная `create or replace view` обоих view в
+  `hdp__default` с маркерами `view_local_replaced_rows_match` и `view_cross_replaced_rows_match`.
+  Unit-тест `alterTableReqRewritesViewTextOfHortonworksClientTable` без фикса падает
+  (`` `catalog2__sales` `` вместо `` `sales` ``). Стенд, Kerberos, проверочный jar = фикс B7 + этот фикс +
+  фикс NPE `rename_partition_req` (`6142bb8`): `sql-kerberos.env` на `.env.kerberos` и
+  `sql-apache-kerberos.env` на `.env.apache-kerberos`, каждый дважды подряд, все четыре прогона
+  закончились `scenario 'sql' completed successfully` с кодом 0, все пять маркеров view присутствуют
+  как результат. Ограничение: через прокси видна только читаемость, а что именно лежит в бэкенде после
+  замены, сценарий не проверяет — это закреплено только unit-тестом. Блоки `EXCHANGE PARTITION` и
+  external partition выключены (отдельный дефект раннера). Не прогонялось: профиль plain, разделы A, D,
+  E, G, H, I.
 
 ## Две оговорки честности
 

@@ -260,6 +260,12 @@ select count(*) from some_table;
 Проверка по тексту `show create table` здесь ничего не доказывает: `beeline -f` эхоит сам
 `create view`, и имя таблицы есть в выводе при любом исходе.
 
+Затем оба view в `hdp__default` пересоздаются тем же `create or replace view` и сверяются ещё раз
+(`view_local_replaced_rows_match`, `view_cross_replaced_rows_match`). Замена существующего view —
+другой RPC (`alter_table`, а на Hortonworks front door — `alter_table_req` с классами клиента), и
+текст view проходит другой путь. Ограничение: через прокси видно только то, что view читается.
+Что именно лежит в бэкенде, этот блок не проверяет.
+
 В automated runner view-блок включён по умолчанию через `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`.
 Проверка permanent UDF тоже включена по умолчанию через `HMS_SMOKE_SQL_RUN_UDF=true` и использует
 `HMS_SMOKE_SQL_UDF_CLASS` (по умолчанию `org.apache.hadoop.hive.ql.udf.UDFReverse`).

@@ -111,7 +111,7 @@ scripts/run-real-installation-smoke-simple.sh --env-file smoke-stand/env/simple.
 - `frontend` связывает различия Apache/Hortonworks front-door processors.
 - `routing` - центральный слой request resolution. Он отвечает за namespace translation, special-case HMS RPCs, compatibility fallbacks, fanout/degraded reads, synthetic locks, rate limiting, write guards и external table/location rewriting.
 - `federation` отвечает за client-visible/internal namespace exposure и view compatibility behavior.
-  Rewrite текста view (`ViewDefinitionCompatibility`) интернализует только ссылки каталога самого view: view хранится в бэкенде своего каталога, и ссылка в чужой каталог, лишённая префикса, читается обратно как база этого каталога. Межкаталожная ссылка хранится во внешнем виде.
+  Rewrite текста view (`ViewDefinitionCompatibility`) интернализует только ссылки каталога самого view: view хранится в бэкенде своего каталога, и ссылка в чужой каталог, лишённая префикса, читается обратно как база этого каталога. Межкаталожная ссылка хранится во внешнем виде. `Table` из изолированного загрузчика front door (`alter_table_req` мостов Hortonworks и Hive 4 приходит с классами клиента) переписывается по имени класса и только в полях view — не конвертируй его в parent-класс целиком: у Hive 4 `Table` есть поля, которых нет в IDL 3.1.
 - `security` отвечает за Thrift server auth, Kerberos/front-door request context и local delegation tokens.
 - `observability` отвечает за metrics, audit logging, runtime state и health probes.
 - `tools` содержит entry points для direct HMS smoke CLI.

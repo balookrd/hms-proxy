@@ -1153,6 +1153,24 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   (`HMS_SMOKE_SQL_RUN_{EXCHANGE,EXTERNAL}_PARTITION=false`): their SQL escapes the variables
   (`\${...}`), so they are not expanded - a separate runner defect. Not run: the plain profile,
   sections A, D, E, G, H, I.
+- **2026-10-27 (second entry)**, B7. The cross-catalog view failure through the Hortonworks front
+  door alternated between repeated runs, and the cause was not a proxy restart but whether the view
+  existed before `CREATE OR REPLACE`. Measured with a probe using a fixed view name: a new view
+  (`create_table`) stored `` `hdp__default`.`smoke_read_ap` `` and could not be read, replacing an
+  existing one (`alter_table_req`) gave `` `apache__default`.`smoke_read_ap` ``. A failed run never
+  reached `drop view`, so the next one took the replace path. Replacing worked because the Hortonworks
+  bridge hands `alter_table_req` over with a `Table` of the client's class loader, and the view text
+  rewrite silently skipped that object: the backend received external names. Fixed, and the scenario
+  now replaces both views in `hdp__default` with a second `create or replace view`, checked by the
+  `view_local_replaced_rows_match` and `view_cross_replaced_rows_match` markers. The unit test
+  `alterTableReqRewritesViewTextOfHortonworksClientTable` fails without the fix
+  (`` `catalog2__sales` `` instead of `` `sales` ``). Stand, Kerberos, verification jar = the B7 fix + this
+  fix + the `rename_partition_req` NPE fix (`6142bb8`): `sql-kerberos.env` on `.env.kerberos` and
+  `sql-apache-kerberos.env` on `.env.apache-kerberos`, each twice in a row; all four runs ended with
+  `scenario 'sql' completed successfully` and exit code 0, all five view markers present as results.
+  Caveat: through the proxy only readability is visible; what the backend stores after a replace is not
+  checked by the scenario, only by the unit test. The `EXCHANGE PARTITION` and external-partition
+  blocks were off (a separate runner defect). Not run: the plain profile, sections A, D, E, G, H, I.
 
 ## Two caveats on faithfulness
 

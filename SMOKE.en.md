@@ -252,6 +252,12 @@ the table's own and expects a result marker (`view_local_rows_match`, `view_cros
 stored in its own catalog's backend. Matching the `show create table` text proves nothing here:
 `beeline -f` echoes the `create view` itself, so the table name is in the output whatever happens.
 
+Both views in `hdp__default` are then recreated with the same `create or replace view` and checked
+again (`view_local_replaced_rows_match`, `view_cross_replaced_rows_match`). Replacing an existing
+view is a different RPC (`alter_table`, and `alter_table_req` with the client's own classes on the
+Hortonworks front door), so the view text goes through a different path. Limitation: through the
+proxy only readability is visible; what the backend actually stores is not checked by this block.
+
 The automated runner keeps the view block enabled by default with
 `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
 `HMS_SMOKE_SQL_RUN_UDF=true` and uses `HMS_SMOKE_SQL_UDF_CLASS`

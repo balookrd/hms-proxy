@@ -1359,6 +1359,99 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void alterTableReqRewritesViewTextOfHortonworksClientTable() throws Throwable {
+    // CREATE OR REPLACE VIEW on an existing view arrives as alter_table_req carrying a Table of the
+    // Hortonworks class loader; its view text must be rewritten like a created view's.
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+    AtomicReference<String> capturedExpanded = new AtomicReference<>();
+    AtomicReference<String> capturedOriginal = new AtomicReference<>();
+    AtomicReference<String> capturedDefaultDb = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog2")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .federation(new FederationConfig(false, ViewTextRewriteMode.REWRITE, false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("alter_table_req".equals(method.getName())) {
+            Object req = args[0];
+            Object sent = req.getClass().getMethod("getTable").invoke(req);
+            capturedExpanded.set((String) sent.getClass().getMethod("getViewExpandedText").invoke(sent));
+            capturedOriginal.set((String) sent.getClass().getMethod("getViewOriginalText").invoke(sent));
+            @SuppressWarnings("unchecked")
+            Map<String, String> params = (Map<String, String>) sent.getClass().getMethod("getParameters").invoke(sent);
+            capturedDefaultDb.set(params.get("view.default.database"));
+            return req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.AlterTableResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          if ("get_table".equals(method.getName()) || "get_table_req".equals(method.getName())) {
+            Object table = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table").getConstructor().newInstance();
+            table.getClass().getMethod("setDbName", String.class).invoke(table, args[0]);
+            table.getClass().getMethod("setTableName", String.class).invoke(table, args[1]);
+            table.getClass().getMethod("setParameters", Map.class).invoke(table, Map.of());
+            return table;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.AlterTableRequest", true, classLoader);
+    Class<?> tableClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, classLoader);
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "catalog2__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "v");
+    tableClass.getMethod("setTableType", String.class).invoke(table, "VIRTUAL_VIEW");
+    tableClass.getMethod("setViewOriginalText", String.class)
+        .invoke(table, "select * from catalog2__sales.orders join catalog1__dim.customers");
+    tableClass.getMethod("setViewExpandedText", String.class)
+        .invoke(table, "select * from `catalog2__sales`.`orders` join `catalog1__dim`.`customers`");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.default.database", "catalog2__sales");
+    tableClass.getMethod("setParameters", Map.class).invoke(table, params);
+
+    Object request = requestClass
+        .getConstructor(String.class, String.class, tableClass)
+        .newInstance("catalog2__sales", "v", table);
+
+    handler.alter_table_req(request);
+
+    // The view's own catalog loses its prefix; the reference into catalog1 stays external.
+    Assert.assertEquals(
+        "select * from `sales`.`orders` join `catalog1__dim`.`customers`", capturedExpanded.get());
+    Assert.assertEquals(
+        "select * from sales.orders join catalog1__dim.customers", capturedOriginal.get());
+    Assert.assertEquals("sales", capturedDefaultDb.get());
+  }
+
+  @Test
   public void alterTableReqRenamesTableAcrossSchemasInDefaultCatalog() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<String> capturedSourceDb = new AtomicReference<>();

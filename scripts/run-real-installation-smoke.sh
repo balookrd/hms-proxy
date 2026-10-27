@@ -2019,6 +2019,20 @@ select case when v.c = t.c then 'view_cross_hdp_rows_match' else 'view_cross_hdp
 from (select count(*) as c from ${view_cross}) v
 cross join (select count(*) as c from ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}) t;
 
+-- Replacing an existing view is a different RPC than creating it (alter_table instead of
+-- create_table; alter_table_req with the client's own classes on the Hortonworks front door), so
+-- the stored text goes through a different path and is checked again.
+create or replace view ${view_local} as
+select * from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE};
+create or replace view ${view_cross} as
+select * from ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE};
+select case when v.c = t.c then 'view_local_replaced_rows_match' else 'view_local_replaced_rows_differ' end
+from (select count(*) as c from ${view_local}) v
+cross join (select count(*) as c from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}) t;
+select case when v.c = t.c then 'view_cross_replaced_rows_match' else 'view_cross_replaced_rows_differ' end
+from (select count(*) as c from ${view_cross}) v
+cross join (select count(*) as c from ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}) t;
+
 use ${apache_catalog}__default;
 create or replace view ${view_cross_back} as
 select * from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE};
@@ -2205,6 +2219,8 @@ EOF
     assert_file_contains_result "${output_file}" "view_local_rows_match"
     assert_file_contains_result "${output_file}" "view_cross_hdp_rows_match"
     assert_file_contains_result "${output_file}" "view_cross_apache_rows_match"
+    assert_file_contains_result "${output_file}" "view_local_replaced_rows_match"
+    assert_file_contains_result "${output_file}" "view_cross_replaced_rows_match"
   fi
   if [[ "${run_udf}" == "true" ]]; then
     assert_file_contains "${output_file}" "${udf_apache}"
