@@ -50,6 +50,9 @@ public record CatalogConfig(
   public static final int DEFAULT_SHARED_SESSION_POOL_SIZE = 1;
   public static final int DEFAULT_IMPERSONATION_POOL_MAX_SIZE = 4;
   public static final long DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS = 600_000L;
+  public static final String DEFAULT_BACKEND_CATALOG_NAME = "hive";
+  private static final List<String> BACKEND_CATALOG_CONF_KEYS =
+      List.of("metastore.catalog.default", "hive.metastore.catalog.default");
 
   // The property loader validates sizing keys strictly and fails startup on a non-positive value;
   // these substitutions only cover the in-process builder path, where an unset field reads as 0.
@@ -401,5 +404,18 @@ public record CatalogConfig(
         fallbackCatalog,
         fallbackOnOutage,
         DEFAULT_MERGE_WITH_DEFAULT);
+  }
+
+  /** The catalog the backend metastore treats as its own default, as its clients resolve it. */
+  public String backendDefaultCatalogName() {
+    if (hiveConf != null) {
+      for (String key : BACKEND_CATALOG_CONF_KEYS) {
+        String configured = hiveConf.get(key);
+        if (configured != null && !configured.isBlank()) {
+          return configured.trim();
+        }
+      }
+    }
+    return DEFAULT_BACKEND_CATALOG_NAME;
   }
 }

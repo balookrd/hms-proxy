@@ -17,9 +17,6 @@ import org.slf4j.LoggerFactory;
 
 final class ViewDefinitionCompatibility {
   private static final Logger LOG = LoggerFactory.getLogger(ViewDefinitionCompatibility.class);
-  private static final String DEFAULT_BACKEND_CATALOG = "hive";
-  private static final List<String> BACKEND_CATALOG_CONF_KEYS =
-      List.of("metastore.catalog.default", "hive.metastore.catalog.default");
 
   private final ProxyConfig config;
   private final CatalogRouter router;
@@ -285,15 +282,7 @@ final class ViewDefinitionCompatibility {
 
   private String backendCatalogName(CatalogRouter.ResolvedNamespace namespace) {
     CatalogConfig catalogConfig = config.catalogs().get(namespace.catalogName());
-    if (catalogConfig != null) {
-      for (String key : BACKEND_CATALOG_CONF_KEYS) {
-        String configured = catalogConfig.hiveConf().get(key);
-        if (configured != null && !configured.isBlank()) {
-          return configured.trim();
-        }
-      }
-    }
-    return DEFAULT_BACKEND_CATALOG;
+    return catalogConfig == null ? CatalogConfig.DEFAULT_BACKEND_CATALOG_NAME : catalogConfig.backendDefaultCatalogName();
   }
 
   private static String joinParts(List<Part> parts) {

@@ -255,6 +255,86 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
   }
 
   @Test
+  public void renamePartitionReqSendsBackendDefaultCatalogWhenProxyCatalogNameIsDropped() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+
+    Assert.assertEquals("hive", renamePartitionReqBackendCatName("catalog2", Map.of()));
+    Assert.assertEquals("hive", renamePartitionReqBackendCatName("hive", Map.of()));
+    Assert.assertEquals("hive", renamePartitionReqBackendCatName(null, Map.of()));
+    Assert.assertEquals("spark", renamePartitionReqBackendCatName(
+        "catalog2", Map.of("metastore.catalog.default", "spark")));
+  }
+
+  // HDP's HMSHandler.rename_partition_req passes the request catName through without
+  // defaulting it, so a request that reaches the backend without one fails with an NPE.
+  private static String renamePartitionReqBackendCatName(String clientCatName, Map<String, String> backendConf)
+      throws Throwable {
+    AtomicReference<String> capturedCatName = new AtomicReference<>("<not called>");
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    Map<String, String> catalog2Conf = new java.util.HashMap<>(backendConf);
+    catalog2Conf.put("hive.metastore.uris", "thrift://two");
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog2")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig(
+                "catalog2", "c2", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(),
+                catalog2Conf)))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_JAR.toString(), HDP_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        HDP_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        (proxy, method, args) -> {
+          if ("rename_partition_req".equals(method.getName())) {
+            Object request = args[0];
+            capturedCatName.set((String) request.getClass().getMethod("getCatName").invoke(request));
+            capturedDb.set((String) request.getClass().getMethod("getDbName").invoke(request));
+            return request.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.RenamePartitionResponse")
+                .getConstructor()
+                .newInstance();
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", null);
+    backends.put("catalog2", hdpBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> partitionClass = Class.forName("org.apache.hadoop.hive.metastore.api.Partition", true, classLoader);
+    Object newPart = partitionClass.getConstructor().newInstance();
+    partitionClass.getMethod("setDbName", String.class).invoke(newPart, "catalog2__sales");
+    partitionClass.getMethod("setTableName", String.class).invoke(newPart, "events");
+    partitionClass.getMethod("setValues", List.class).invoke(newPart, List.of("2026-04-01"));
+    Class<?> requestClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.RenamePartitionRequest", true, classLoader);
+    Object request = requestClass
+        .getConstructor(String.class, String.class, List.class, partitionClass)
+        .newInstance("catalog2__sales", "events", List.of("2026-03-31"), newPart);
+    if (clientCatName != null) {
+      requestClass.getMethod("setCatName", String.class).invoke(request, clientCatName);
+    }
+
+    handler.rename_partition_req(request);
+
+    Assert.assertEquals("sales", capturedDb.get());
+    return capturedCatName.get();
+  }
+
+  @Test
   public void addWriteNotificationLogRejectsNonHortonworksBackendRuntime() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
 

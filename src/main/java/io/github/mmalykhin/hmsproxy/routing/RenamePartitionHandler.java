@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
@@ -90,11 +91,17 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
       Object routedRequest = ThriftReflectionCache.deepCopy(request);
       ThriftReflectionCache.invokeStringSetter(routedRequest, "setDbName", namespace.backendDbName());
       String catName = ThriftReflectionCache.readString(request, "getCatName");
-      if (catName != null) {
-        ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName",
-            NamespaceTranslator.internalCatalogName(catName, dbName, namespace,
-                support.federationLayer.preserveBackendCatalogName()));
+      String backendCatName = catName == null ? null
+          : NamespaceTranslator.internalCatalogName(catName, dbName, namespace,
+              support.federationLayer.preserveBackendCatalogName());
+      // HDP's rename_partition_req hands catName to the store without defaulting it (unlike
+      // alter_table_req/alter_partitions_req), so an absent catName fails there with an NPE.
+      if (backendCatName == null || backendCatName.isBlank()) {
+        CatalogConfig catalogConfig = support.config.catalogs().get(namespace.catalogName());
+        backendCatName = catalogConfig == null
+            ? CatalogConfig.DEFAULT_BACKEND_CATALOG_NAME : catalogConfig.backendDefaultCatalogName();
       }
+      ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName", backendCatName);
       String validWriteIdList = ThriftReflectionCache.readString(request, "getValidWriteIdList");
       if (validWriteIdList != null) {
         ThriftReflectionCache.invokeStringSetter(routedRequest, "setValidWriteIdList",
