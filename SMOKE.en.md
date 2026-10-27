@@ -497,6 +497,8 @@ scripts/run-real-installation-smoke-simple.sh --scenario ranger
 scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 ```
 
+`--scenario all` includes the block when `HMS_SMOKE_RANGER_ENABLED=true`, or, with the flag unset, when the env sets `HMS_SMOKE_RANGER_SALES_DB` or `HMS_SMOKE_RANGER_SALES_USER`. An explicit `HMS_SMOKE_RANGER_ENABLED=false` keeps it out of `all` even when the Ranger users and databases are set, so one env file can serve both `--scenario ranger` and an `all` run against a proxy without Ranger.
+
 **17. Table/Partition Rename, Partition Exchange, and Partition Locations Verification**
 
 Verifies recent mutation routing, federation, and location normalization fixes:

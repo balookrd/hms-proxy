@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.io.IOException;
@@ -324,10 +325,15 @@ public final class BackendRuntime implements AutoCloseable {
         session = null;
         throw cause;
       }
-      LOG.warn("Backend catalog '{}' transport failed in method {}, discarding session and retrying once",
-          catalogConfig.name(), label, cause);
       discard(session);
       session = null;
+      if (!ThriftFailureClassifier.isSafeToReplay(cause, HmsOperationPolicy.replayableAfterLostReply(label))) {
+        LOG.warn("Backend catalog '{}' transport failed in method {}; the backend may already have applied it,"
+                + " discarding session without replaying the call", catalogConfig.name(), label, cause);
+        throw cause;
+      }
+      LOG.warn("Backend catalog '{}' transport failed in method {}, discarding session and retrying once",
+          catalogConfig.name(), label, cause);
       BackendInvocationSession retry = borrow();
       try {
         Object result = call.apply(retry);

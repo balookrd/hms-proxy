@@ -9,9 +9,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.thrift.TApplicationException;
-import org.apache.thrift.transport.TTransportException;
 import io.github.mmalykhin.hmsproxy.config.routing.AdaptiveTimeoutConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
@@ -196,10 +195,13 @@ public final class ProxyRuntimeState {
     return isConnectivityFailure(error) || isTimeoutFailure(error);
   }
 
+  // A TApplicationException is a reply on a live connection: a missing method or an application
+  // error wrapped as INTERNAL_ERROR says nothing about the backend being reachable. Only a broken
+  // transport or a reply stream out of step with its calls counts against the backend.
   private static boolean isConnectivityFailure(Throwable error) {
     Throwable current = error;
     while (current != null) {
-      if (current instanceof TTransportException || current instanceof TApplicationException) {
+      if (ThriftFailureClassifier.isTransportFailure(current) || ThriftFailureClassifier.isProtocolDesync(current)) {
         return true;
       }
       current = current.getCause();

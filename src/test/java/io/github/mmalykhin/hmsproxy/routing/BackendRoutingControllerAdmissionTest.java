@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Test;
@@ -63,6 +64,41 @@ public class BackendRoutingControllerAdmissionTest {
       Assert.assertTrue(next.allowed());
       Assert.assertNull(next.rejectionReason());
     }
+  }
+
+  @Test
+  public void applicationErrorsOnALiveConnectionDoNotOpenTheCircuit() {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(false, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(true, 2, 60_000L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyConfig config = latencyAwareConfig(
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        latencyRouting);
+    ProxyRuntimeState state = new ProxyObservability(config).runtimeState();
+
+    for (int i = 0; i < 5; i++) {
+      state.recordBackendFailure(
+          "catalog1", new TApplicationException(TApplicationException.UNKNOWN_METHOD, "get_table_req"), 5L,
+          latencyRouting);
+      // How libthrift 0.9.3 reports any server exception of a method whose IDL declares none.
+      state.recordBackendFailure(
+          "catalog1", new TApplicationException(TApplicationException.INTERNAL_ERROR,
+              "Internal error processing open_txns"), 5L, latencyRouting);
+    }
+    ProxyRuntimeState.BackendRuntimeStatus status = state.backendStatus("catalog1");
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.CLOSED, status.circuitState());
+    Assert.assertTrue("a backend that answers is connected", status.connected());
+    Assert.assertFalse(status.degraded());
+
+    state.recordBackendFailure("catalog1", new TTransportException("connection reset"), 5L, latencyRouting);
+    state.recordBackendFailure("catalog1", new TTransportException("connection reset"), 5L, latencyRouting);
+    Assert.assertEquals(
+        "transport failures must still open the circuit",
+        ProxyRuntimeState.CircuitState.OPEN,
+        state.backendStatus("catalog1").circuitState());
   }
 
   private static BackendRuntime failingReconnectRuntime(

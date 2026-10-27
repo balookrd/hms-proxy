@@ -70,4 +70,23 @@ public class ThriftFailureClassifierTest {
     wrapped.initCause(new TTransportException("closed"));
     Assert.assertFalse(ThriftFailureClassifier.isTransportFailure(wrapped));
   }
+
+  @Test
+  public void aLostReplyIsReplayedOnlyForCallsThatChangeNoState() {
+    TTransportException readTimeout = new TTransportException(TTransportException.UNKNOWN, "Read timed out");
+    TTransportException reset = new TTransportException(TTransportException.END_OF_FILE, "reset");
+    Assert.assertFalse(ThriftFailureClassifier.isSafeToReplay(readTimeout, false));
+    Assert.assertFalse(ThriftFailureClassifier.isSafeToReplay(reset, false));
+    Assert.assertTrue(ThriftFailureClassifier.isSafeToReplay(readTimeout, true));
+
+    // NOT_OPEN is raised before anything is written, so even a write is safe to send again.
+    Assert.assertTrue(ThriftFailureClassifier.isSafeToReplay(
+        new TTransportException(TTransportException.NOT_OPEN, "connection refused"), false));
+    Assert.assertTrue(ThriftFailureClassifier.isSafeToReplay(new InvocationTargetException(
+        new TTransportException(TTransportException.NOT_OPEN, "connection refused")), false));
+
+    Assert.assertFalse(ThriftFailureClassifier.isSafeToReplay(
+        new TApplicationException(TApplicationException.INTERNAL_ERROR, "boom"), true));
+    Assert.assertFalse(ThriftFailureClassifier.isSafeToReplay(new MetaException("boom"), true));
+  }
 }

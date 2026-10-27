@@ -43,6 +43,19 @@ public final class ThriftFailureClassifier {
   }
 
   /**
+   * Whether a transport failure allows sending the call again on a fresh session. Only
+   * {@code NOT_OPEN} is raised before the request is written; every other transport failure - a
+   * read timeout, a reset or EOF while waiting for the reply - may arrive after the backend applied
+   * the call, so replaying it is safe only for a call that changes no state.
+   */
+  public static boolean isSafeToReplay(Throwable cause, boolean callChangesNoState) {
+    if (!(unwrap(cause) instanceof TTransportException transport)) {
+      return false;
+    }
+    return callChangesNoState || transport.getType() == TTransportException.NOT_OPEN;
+  }
+
+  /**
    * Application-level protocol desync: the reply does not belong to the call that is waiting for
    * it. The connection must be dropped, but the call must not be replayed, because the backend may
    * already have applied it.

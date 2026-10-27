@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
@@ -535,10 +536,15 @@ public final class CatalogBackend implements AutoCloseable {
           }
           throw cause;
         }
-        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, retrying once",
-            config.name(), userName, label, cause);
         discard(session, "transport_failure");
         session = null;
+        if (!ThriftFailureClassifier.isSafeToReplay(cause, HmsOperationPolicy.replayableAfterLostReply(label))) {
+          LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}; the backend may"
+                  + " already have applied it, not replaying the call", config.name(), userName, label, cause);
+          throw cause;
+        }
+        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, retrying once",
+            config.name(), userName, label, cause);
         BackendInvocationSession retry = borrow();
         try {
           Object result = call.apply(retry);

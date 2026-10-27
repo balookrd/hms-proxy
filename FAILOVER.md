@@ -29,12 +29,12 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
   * Общим пулом shared-сессий ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) размером `catalog.<name>.shared-session-pool-size`.
   * Пулом impersonation-сессий пользователя ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) размером `catalog.<name>.impersonation-pool-max-size`.
 * При транспортной ошибке (`TTransportException`, разрыв TCP-соединения, сброс сокета) повреждённая сессия признаётся невалидной и уничтожается (`discard`).
-* Прокси берёт или создаёт из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`).
+* Прокси берёт или создаёт из пула свежую сессию и выполняет **ровно один автоматический повтор** (`retrying once`), но только если повтор безопасен: вызов не меняет состояние метастора (чтение) либо `TTransportException` имеет тип `NOT_OPEN`, то есть запрос не был отправлен. Пишущий вызов (`create_table`, `add_partition`, `open_txns`, `commit_txn`, `lock` и т. п.), у которого потерялся ответ (таймаут чтения, сброс соединения, EOF), не повторяется: бэкенд мог его уже применить. Ошибка уходит клиенту, а решение о повторе принимает сам клиент (`RetryingMetaStoreClient`). Решение принимает `ThriftFailureClassifier.isSafeToReplay` по `HmsOperationPolicy.replayableAfterLostReply`; неизвестный прокси метод считается пишущим.
 * Если повторный вызов также завершается ошибкой, сбой регистрирует подсистема контроля допуска запросов (admission control).
 
 ### 2.2. Circuit Breaker (Предохранитель)
 Если включён механизм защиты `routing.circuit-breaker.enabled=true`:
-1. **Регистрация сбоев**: ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и сбои протокола учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
+1. **Регистрация сбоев**: ошибки соединения (`TTransportException`), таймауты сокета (`SocketTimeoutException`) и рассинхронизация протокола (`TApplicationException` типов `WRONG_METHOD_NAME`, `BAD_SEQUENCE_ID`, `INVALID_MESSAGE_TYPE`) учитываются в состоянии бэкенда ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)). Остальные `TApplicationException` — это ответ живого бэкенда (`UNKNOWN_METHOD` при согласовании возможностей, `INTERNAL_ERROR`, которым libthrift заворачивает любую ошибку метода без объявленных исключений), поэтому они не открывают контур и не помечают бэкенд недоступным.
 2. **Переход в `OPEN`**: При накоплении серии ошибок подряд (`routing.circuit-breaker.failure-threshold`, по умолчанию `3`), состояние контура переходит в `OPEN`.
 3. **Мгновенный отказ клиентам (fast-fail)**: Все последующие запросы к данному каталогу отклоняются мгновенно без блокировки потоков и ожидания сетевого таймаута:
    ```text

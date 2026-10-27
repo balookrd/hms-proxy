@@ -29,12 +29,12 @@ If a backend metastore becomes unavailable while the proxy is running, the follo
   * A shared session pool ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) sized by `catalog.<name>.shared-session-pool-size`.
   * A per-user impersonation session pool ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) sized by `catalog.<name>.impersonation-pool-max-size`.
 * When a transport failure occurs (`TTransportException`, TCP connection reset, broken pipe), the corrupted session is marked invalid and discarded (`discard`).
-* The proxy borrows or establishes a fresh session and executes **exactly one automatic retry** (`retrying once`).
+* The proxy borrows or establishes a fresh session and executes **exactly one automatic retry** (`retrying once`), but only when a replay is safe: the call changes no metastore state (a read), or the `TTransportException` is of type `NOT_OPEN`, meaning the request was never sent. A writing call (`create_table`, `add_partition`, `open_txns`, `commit_txn`, `lock`, ...) whose reply was lost (read timeout, connection reset, EOF) is not replayed, because the backend may already have applied it. The failure goes back to the client, which decides on its own retry (`RetryingMetaStoreClient`). The decision is made by `ThriftFailureClassifier.isSafeToReplay` from `HmsOperationPolicy.replayableAfterLostReply`; a method the proxy does not know is treated as a write.
 * If the retry also fails, the failure is recorded by the admission control subsystem.
 
 ### 2.2. Circuit Breaker
 When enabled via `routing.circuit-breaker.enabled=true`:
-1. **Failure Tracking**: Connectivity errors (`TTransportException`), socket timeouts (`SocketTimeoutException`), and protocol desyncs are tracked in the backend runtime status ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)).
+1. **Failure Tracking**: Connectivity errors (`TTransportException`), socket timeouts (`SocketTimeoutException`), and protocol desyncs (`TApplicationException` of type `WRONG_METHOD_NAME`, `BAD_SEQUENCE_ID`, `INVALID_MESSAGE_TYPE`) are tracked in the backend runtime status ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)). Any other `TApplicationException` is a reply from a live backend (`UNKNOWN_METHOD` during capability negotiation, `INTERNAL_ERROR`, which libthrift uses to wrap any failure of a method that declares no exceptions), so it neither opens the circuit nor marks the backend unreachable.
 2. **Tripping to `OPEN`**: When consecutive failures exceed the configured threshold (`routing.circuit-breaker.failure-threshold`, default: `3`), the circuit trips to `OPEN`.
 3. **Client Fast-Fail**: All subsequent requests to this catalog are rejected immediately without blocking threads or waiting for socket timeouts:
    ```text

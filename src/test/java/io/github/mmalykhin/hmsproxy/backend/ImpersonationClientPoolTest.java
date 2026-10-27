@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Catalog;
+import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TApplicationException;
@@ -195,6 +196,47 @@ public class ImpersonationClientPoolTest {
     Assert.assertTrue("expected the transport failure to propagate", run.error() instanceof TTransportException);
     Assert.assertEquals("transport failure retries once", 2, run.calls());
     Assert.assertEquals("discarded session is replaced by a fresh one", 2, run.impersonationSessionsOpened());
+  }
+
+  @Test
+  public void aWriteWhoseReplyWasLostIsNotReplayed() throws Exception {
+    // A read timeout or reset after the request went out: the backend may already have created it.
+    FailureRun run = runFailingCall(
+        () -> new TTransportException(TTransportException.UNKNOWN, "java.net.SocketTimeoutException: Read timed out"),
+        FailingCall.WRITE,
+        new ImpersonationContext("alice", List.of("g1")));
+
+    Assert.assertTrue("expected the transport failure to propagate", run.error() instanceof TTransportException);
+    Assert.assertEquals("a write must reach the backend once", 1, run.calls());
+    Assert.assertEquals("the dead session is still dropped", 1, run.impersonationSessionsOpened());
+    Assert.assertTrue(
+        "expected a transport_failure eviction:\n" + run.metrics(),
+        run.metrics().contains("reason=\"transport_failure\""));
+  }
+
+  @Test
+  public void aWriteThatNeverLeftIsRetriedOnce() throws Exception {
+    FailureRun run = runFailingCall(
+        () -> new TTransportException(TTransportException.NOT_OPEN, "Cannot write to null outputStream"),
+        FailingCall.WRITE,
+        new ImpersonationContext("alice", List.of("g1")));
+
+    Assert.assertEquals("NOT_OPEN is raised before sending, so the write is retried", 2, run.calls());
+    Assert.assertEquals(2, run.impersonationSessionsOpened());
+  }
+
+  @Test
+  public void theSharedPoolReplaysReadsButNotWritesAfterALostReply() throws Exception {
+    FailureRun read = runFailingCall(
+        () -> new TTransportException(TTransportException.END_OF_FILE, "reset"), FailingCall.READ, null);
+    Assert.assertEquals("a read is retried once on the shared pool", 2, read.calls());
+    Assert.assertEquals("the shared pool opens one replacement session", 1, read.impersonationSessionsOpened());
+
+    FailureRun write = runFailingCall(
+        () -> new TTransportException(TTransportException.END_OF_FILE, "reset"), FailingCall.WRITE, null);
+    Assert.assertTrue(write.error() instanceof TTransportException);
+    Assert.assertEquals("a write is sent to the backend once on the shared pool", 1, write.calls());
+    Assert.assertEquals("no replacement session is opened for a replay", 0, write.impersonationSessionsOpened());
   }
 
   @Test
@@ -429,6 +471,30 @@ public class ImpersonationClientPoolTest {
   }
 
   private static FailureRun runFailingCall(Supplier<TException> failure) throws Exception {
+    return runFailingCall(failure, FailingCall.READ, new ImpersonationContext("alice", List.of("g1")));
+  }
+
+  /** A read and a write the fake backend fails, so the replay decision can be told apart. */
+  private enum FailingCall {
+    READ("getStatus", new Class<?>[0], new Object[0]),
+    WRITE("create_database", new Class<?>[] {Database.class}, new Object[] {new Database()});
+
+    private final String method;
+    private final Class<?>[] parameterTypes;
+    private final Object[] args;
+
+    FailingCall(String method, Class<?>[] parameterTypes, Object[] args) {
+      this.method = method;
+      this.parameterTypes = parameterTypes;
+      this.args = args;
+    }
+  }
+
+  private static FailureRun runFailingCall(
+      Supplier<TException> failure,
+      FailingCall call,
+      ImpersonationContext impersonation
+  ) throws Exception {
     AtomicInteger sessionsOpened = new AtomicInteger();
     AtomicInteger calls = new AtomicInteger();
     BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
@@ -473,8 +539,7 @@ public class ImpersonationClientPoolTest {
 
     Throwable error = null;
     try {
-      backend.invokeRawByName(
-          "getStatus", new Class<?>[0], new Object[0], new ImpersonationContext("alice", List.of("g1")));
+      backend.invokeRawByName(call.method, call.parameterTypes, call.args, impersonation);
       Assert.fail("Expected the backend failure to propagate");
     } catch (Throwable t) {
       error = t;
@@ -490,7 +555,7 @@ public class ImpersonationClientPoolTest {
         ThriftHiveMetastore.Iface.class.getClassLoader(),
         new Class<?>[] {ThriftHiveMetastore.Iface.class},
         (proxy, method, args) -> {
-          if ("getStatus".equals(method.getName())) {
+          if ("getStatus".equals(method.getName()) || "create_database".equals(method.getName())) {
             calls.incrementAndGet();
             throw failure.get();
           }

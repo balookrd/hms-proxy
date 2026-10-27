@@ -175,7 +175,7 @@ EOF
   cat <<'EOF'
 
 Optional Apache Ranger authorization policy env vars:
-  HMS_SMOKE_RANGER_ENABLED               enable Ranger policy verification in 'all' scenario; default: false (auto-enabled if HMS_SMOKE_RANGER_SALES_DB is set)
+  HMS_SMOKE_RANGER_ENABLED               run Ranger policy verification in 'all' scenario: true/false; when unset, auto-enabled if HMS_SMOKE_RANGER_SALES_DB or HMS_SMOKE_RANGER_SALES_USER is set ('ranger' scenario ignores an explicit false)
   HMS_SMOKE_RANGER_ADMIN_USER            administrative user with full permissions; default: admin
   HMS_SMOKE_RANGER_SALES_USER            user permitted to access sales DB and allowed tables; default: alice
   HMS_SMOKE_RANGER_SALES_GROUP           group permitted to access sales DB and allowed tables; default: sales
@@ -774,6 +774,17 @@ ranger_is_configured() {
   [[ "${HMS_SMOKE_RANGER_ENABLED:-false}" == "true" \
     || -n "${HMS_SMOKE_RANGER_SALES_DB:-}" \
     || -n "${HMS_SMOKE_RANGER_SALES_USER:-}" ]]
+}
+
+# The 'all' scenario runs the Ranger block only against a proxy that has the authorizer. An env file
+# can carry the Ranger users and databases for --scenario ranger while the proxy it usually targets
+# runs without Ranger, so an explicit HMS_SMOKE_RANGER_ENABLED wins over auto-detection.
+ranger_enabled_for_all() {
+  if [[ -n "${HMS_SMOKE_RANGER_ENABLED:-}" ]]; then
+    [[ "${HMS_SMOKE_RANGER_ENABLED}" == "true" ]]
+    return
+  fi
+  ranger_is_configured
 }
 
 run_ranger_smoke() {
@@ -2878,8 +2889,10 @@ main() {
       run_notification_smoke
       run_rest_smoke
       run_schema_pattern_smoke
-      if ranger_is_configured; then
+      if ranger_enabled_for_all; then
         run_ranger_smoke
+      else
+        log "skipping Ranger authorization policy smoke in 'all' (HMS_SMOKE_RANGER_ENABLED=${HMS_SMOKE_RANGER_ENABLED:-unset})"
       fi
       if unprefixed_is_configured; then
         run_unprefixed_smoke

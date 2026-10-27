@@ -504,6 +504,8 @@ scripts/run-real-installation-smoke-simple.sh --scenario ranger
 scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 ```
 
+В `--scenario all` блок входит, если `HMS_SMOKE_RANGER_ENABLED=true`, либо если флаг не задан, а в env указаны `HMS_SMOKE_RANGER_SALES_DB` или `HMS_SMOKE_RANGER_SALES_USER`. Явное `HMS_SMOKE_RANGER_ENABLED=false` исключает его из `all`, даже когда пользователи и базы Ranger заданы: так env-файл может обслуживать и `--scenario ranger`, и прогон `all` против прокси без Ranger.
+
 **17. Проверка переименования таблиц и партиций, обмена партициями и локаций партиций**
 
 Проверяет маршрутизацию мутаций, федерацию и нормализацию локаций:
