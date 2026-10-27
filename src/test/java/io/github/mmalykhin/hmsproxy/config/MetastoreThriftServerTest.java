@@ -7,7 +7,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.transport.TSocket;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -97,6 +102,102 @@ public class MetastoreThriftServerTest {
       Assert.assertFalse("listener thread must terminate on attempt " + attempt, listener.isAlive());
       Assert.assertTrue("port must be released on attempt " + attempt, awaitClosed(port));
     }
+  }
+
+  /**
+   * libthrift 0.9.3 serve() waits up to 60s for its worker pool after the accept loop ends, and a
+   * worker parked on an idle keep-alive connection (HiveServer2 holds one per session) never
+   * finishes on its own, so stop() used to hold the whole shutdown until the hook gave up.
+   */
+  @Test
+  public void stopDoesNotWaitForIdleClientConnections() throws Exception {
+    int port = freePort();
+    MetastoreThriftServer server = new MetastoreThriftServer(
+        configForPort(port), metaConfHandler(null), null);
+    Thread listener = startServing(server, "stop-with-idle-client");
+    Assert.assertTrue(awaitAccepting(port));
+
+    TSocket transport = new TSocket("127.0.0.1", port, 30_000);
+    transport.open();
+    try {
+      ThriftHiveMetastore.Client client =
+          new ThriftHiveMetastore.Client(new TBinaryProtocol(transport));
+      Assert.assertEquals("value", client.getMetaConf("key"));
+
+      long startNanos = System.nanoTime();
+      server.stop();
+      listener.join(3_000L);
+      Assert.assertFalse("listener must not wait for an idle client connection", listener.isAlive());
+      Assert.assertTrue("stop() must return promptly",
+          System.nanoTime() - startNanos < TimeUnit.SECONDS.toNanos(3));
+    } finally {
+      transport.close();
+    }
+  }
+
+  @Test
+  public void stopLetsAnInFlightRequestFinishAndReply() throws Exception {
+    int port = freePort();
+    CountDownLatch requestStarted = new CountDownLatch(1);
+    CountDownLatch releaseRequest = new CountDownLatch(1);
+    MetastoreThriftServer server = new MetastoreThriftServer(
+        configForPort(port), metaConfHandler(() -> {
+          requestStarted.countDown();
+          releaseRequest.await();
+        }), null);
+    Thread listener = startServing(server, "stop-with-in-flight-request");
+    Assert.assertTrue(awaitAccepting(port));
+
+    TSocket transport = new TSocket("127.0.0.1", port, 30_000);
+    transport.open();
+    try {
+      ThriftHiveMetastore.Client client =
+          new ThriftHiveMetastore.Client(new TBinaryProtocol(transport));
+      CompletableFuture<String> reply = CompletableFuture.supplyAsync(() -> {
+        try {
+          return client.getMetaConf("key");
+        } catch (Exception e) {
+          throw new IllegalStateException(e);
+        }
+      });
+      Assert.assertTrue(requestStarted.await(10, TimeUnit.SECONDS));
+
+      Thread stopper = new Thread(server::stop, "metastore-thrift-server-test-stopper");
+      stopper.setDaemon(true);
+      stopper.start();
+      Thread.sleep(300L);
+      Assert.assertTrue("listener must wait for the in-flight request", listener.isAlive());
+
+      releaseRequest.countDown();
+      Assert.assertEquals("value", reply.get(10, TimeUnit.SECONDS));
+      listener.join(3_000L);
+      Assert.assertFalse("listener must stop once the in-flight request replied", listener.isAlive());
+    } finally {
+      releaseRequest.countDown();
+      transport.close();
+    }
+  }
+
+  private interface Blocker {
+    void block() throws Exception;
+  }
+
+  private static ThriftHiveMetastore.Iface metaConfHandler(Blocker blocker) {
+    return (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[]{ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> {
+          if (method.getDeclaringClass() == Object.class) {
+            return method.invoke(proxy, args);
+          }
+          if (method.getName().equals("getMetaConf")) {
+            if (blocker != null) {
+              blocker.block();
+            }
+            return "value";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
   }
 
   private static MetastoreThriftServer newServer(int port) throws Exception {

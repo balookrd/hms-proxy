@@ -11,7 +11,6 @@ import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
-import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 import org.apache.thrift.transport.TTransportFactory;
@@ -25,7 +24,7 @@ public final class MetastoreThriftServer {
   private static final long STOP_TIMEOUT_MILLIS = 10_000L;
 
   private final String listenerName;
-  private final TServerSocket serverSocket;
+  private final FrontDoorServerSocket serverSocket;
   private final TServer server;
 
   private final Object lifecycle = new Object();
@@ -185,9 +184,14 @@ public final class MetastoreThriftServer {
     // accept loop. A stop() landing in that window is erased, and the accept loop then spins on
     // an already-closed socket logging a warning per iteration. Re-requesting the stop until the
     // serve loop has actually left bounds that window to a single poll interval.
+    //
+    // Leaving the accept loop is not enough: serve() then waits for its whole worker pool, and a
+    // worker parked on an idle keep-alive connection only finishes when the client hangs up.
+    // Draining the client sockets every poll also catches a connection accepted mid-stop.
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STOP_TIMEOUT_MILLIS);
     while (true) {
       server.stop();
+      serverSocket.drainClients();
       if (!insideServe) {
         return;
       }

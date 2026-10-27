@@ -355,6 +355,14 @@ wait is what keeps in-flight requests on the additional frontends from being cut
 resources from being left open. It is bounded by `server.shutdown-timeout-seconds`; when the
 teardown does not finish in time the proxy logs a warning and lets the JVM halt anyway.
 
+A stopped Thrift listener shuts down the read side of every accepted client connection: a worker
+waiting for the next request on an idle keep-alive connection (HiveServer2 holds one per session)
+reads EOF and is released at once, while a request in flight still completes and replies. The
+client sees the connection closed and reconnects to another instance. Under Kerberos Hive logs
+`InterruptedException received for ExpiredTokenRemover thread` at ERROR on shutdown; it is the
+expected interrupt of the token cleanup thread. The shipped `log4j.properties` drops that message,
+and with a custom logging configuration it can be ignored.
+
 ## Configuration validation
 
 The proxy validates its properties file at startup and refuses to start on a value it cannot

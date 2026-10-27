@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import org.apache.thrift.transport.TSocket;
@@ -43,6 +44,53 @@ public class FrontDoorServerSocketTest {
         Assert.assertFalse(accepted.getSocket().getKeepAlive());
       } finally {
         accepted.close();
+      }
+    } finally {
+      serverSocket.close();
+    }
+  }
+
+  @Test
+  public void drainEndsTheReadOfAnOpenConnectionAndClosingUntracksIt() throws Exception {
+    FrontDoorServerSocket serverSocket = newServerSocket(new ClientSocketConfig(5_000, true, 30, 10, 3));
+    try {
+      serverSocket.listen();
+      int port = serverSocket.getServerSocket().getLocalPort();
+      try (Socket client = new Socket()) {
+        client.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
+        TSocket accepted = (TSocket) serverSocket.accept();
+        Assert.assertEquals(1, serverSocket.trackedClientCount());
+        // Opened before the drain, as the worker's transport already holds it.
+        InputStream in = accepted.getSocket().getInputStream();
+
+        serverSocket.drainClients();
+        // The client is still connected: only the drain can produce EOF before the 5s timeout.
+        Assert.assertEquals(-1, in.read());
+
+        accepted.close();
+        Assert.assertEquals("a closed connection must not stay tracked",
+            0, serverSocket.trackedClientCount());
+      }
+    } finally {
+      serverSocket.close();
+    }
+  }
+
+  @Test
+  public void connectionAcceptedAfterDrainIsDrainedOnAccept() throws Exception {
+    FrontDoorServerSocket serverSocket = newServerSocket(new ClientSocketConfig(5_000, true, 30, 10, 3));
+    try {
+      serverSocket.listen();
+      int port = serverSocket.getServerSocket().getLocalPort();
+      serverSocket.drainClients();
+      try (Socket client = new Socket()) {
+        client.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
+        TSocket accepted = (TSocket) serverSocket.accept();
+        try {
+          Assert.assertTrue(accepted.getSocket().isInputShutdown());
+        } finally {
+          accepted.close();
+        }
       }
     } finally {
       serverSocket.close();

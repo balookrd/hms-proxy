@@ -71,6 +71,45 @@ public class DefaultLoggingConfigTest {
     }
   }
 
+  /**
+   * Hive's token secret manager logs the interrupt sent by its own stopThreads() at ERROR on every
+   * shutdown. Only that message is dropped; the same logger's genuine errors must still surface.
+   */
+  @Test
+  public void expiredTokenRemoverShutdownInterruptIsDroppedButItsRealErrorsAreKept() throws Exception {
+    Path directory = Files.createTempDirectory("hms-proxy-logging");
+    try {
+      Hierarchy hierarchy = configure(directory);
+      Logger tokenManager = hierarchy.getLogger(
+          "org.apache.hadoop.hive.metastore.security.TokenStoreDelegationTokenSecretManager");
+
+      tokenManager.error("InterruptedException received for ExpiredTokenRemover thread "
+          + "java.lang.InterruptedException: sleep interrupted");
+      tokenManager.error("Master key updating failed. boom");
+      hierarchy.shutdown();
+
+      String general = Files.readString(directory.resolve("hms-proxy.log"));
+      Assert.assertFalse(general.contains("ExpiredTokenRemover"));
+      Assert.assertTrue(general.contains("Master key updating failed"));
+    } finally {
+      deleteRecursively(directory);
+    }
+  }
+
+  @Test
+  public void everyRootAppenderDropsTheExpiredTokenRemoverShutdownInterrupt() throws Exception {
+    Properties properties = loadDefaults();
+    for (String name : properties.getProperty("log4j.rootLogger").split(",")) {
+      String appender = name.trim();
+      if (appender.equals("INFO")) {
+        continue;
+      }
+      Assert.assertEquals("appender " + appender + " must carry the filter",
+          "InterruptedException received for ExpiredTokenRemover thread",
+          properties.getProperty("log4j.appender." + appender + ".filter.1.StringToMatch"));
+    }
+  }
+
   @Test
   public void rootLoggerDoesNotWriteEveryLineToMultipleFiles() throws Exception {
     Properties properties = loadDefaults();
