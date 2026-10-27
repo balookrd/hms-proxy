@@ -43,7 +43,7 @@ Driven by `scripts/run-real-installation-smoke.sh`; both profiles ended with
 | B4 | Partitions: create → insert → `show partitions` → rename → count | ✅ | ✅ |
 | B5 | External table: create → alter → insert → describe → drop | ✅ | ✅ |
 | B6 | `INSERT` via local MapReduce | ✅ | ✅ |
-| B7 | Views + cross-catalog view rewrite | ✅ | ✅ |
+| B7 | Views + cross-catalog view rewrite: each catalog's view reads its own table, the cross-catalog view is created in both directions and reads back (row count checked against the table) | — | ✅ |
 | B8 | Cross-catalog JOIN in one statement | ✅ | ✅ |
 | B9 | JOIN across two databases of one catalog | ✅ | ✅ |
 | B10 | Permanent UDF (`UDFReverse` → `yxorp`) | ✅ | ✅ |
@@ -1134,6 +1134,25 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   artefact of the mutation rather than of the scenario.
   Not run: the plain profile in any form, sections A, D, E, G, H, I, the C6/C7 cross pairings, and
   the unit suite - no Java changed in this entry.
+- **2026-10-27**, B7. The previous ✅ had been wrong since 2026-09-17, when
+  `federation.view-text-rewrite.mode` started defaulting to `REWRITE` (`798f3a6`) and a cross-catalog
+  reference in a view lost its catalog on write. A view in `hdp__default` over
+  `apache__default.smoke_read_ap` came back as `` `hdp__default`.`smoke_read_ap` `` and could not be
+  read (`Table not found ... in definition of VIEW`). The scenario missed it: its assertion looked for
+  the table name anywhere in the output, and `beeline -f` echoes the `create view` itself, so the
+  name is there whatever happens. Each view now checks its row count against its table through a
+  result marker, and the cross-catalog view is created in both directions. The new scenario was seen
+  failing against the proxy without the fix (Hortonworks front door: the same `Table not found`).
+  With the fix it is green on Kerberos through both front doors, each in its own layout, with the
+  final line `scenario 'sql' completed successfully` and exit code 0: `sql-kerberos.env` on
+  `.env.kerberos` and `sql-apache-kerberos.env` on `.env.apache-kerberos`. `show create table` of the
+  cross-catalog view returns `` `apache__default`.`smoke_read_ap` `` on both. Caveats: the verification
+  jar also carried the not yet committed `rename_partition_req` NPE fix from a sibling branch
+  (without it the SQL layer on the Hortonworks front door never reaches the view block). The
+  `EXCHANGE PARTITION` and external-partition blocks were off
+  (`HMS_SMOKE_SQL_RUN_{EXCHANGE,EXTERNAL}_PARTITION=false`): their SQL escapes the variables
+  (`\${...}`), so they are not expanded - a separate runner defect. Not run: the plain profile,
+  sections A, D, E, G, H, I.
 
 ## Two caveats on faithfulness
 

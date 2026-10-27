@@ -34,7 +34,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.ViewTextRewriteMode;
 
 public class FederationLayerTest {
   @Test
-  public void internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs() throws Exception {
+  public void internalizeArgumentRewritesOnlyReferencesOfTheViewCatalog() throws Exception {
     FederationLayer layer = federationLayer(viewRewriteConfig(false));
     CatalogRouter.ResolvedNamespace namespace =
         new CatalogRouter.ResolvedNamespace(null, "catalog1", "catalog1__sales", "sales");
@@ -49,12 +49,69 @@ public class FederationLayerTest {
 
     Table routed = (Table) layer.internalizeArgument(table, namespace);
 
+    // The catalog2 reference stays external: the catalog1 backend stores it verbatim, and
+    // internalizing it to 'dim' would make it read back as catalog1__dim.
     Assert.assertEquals(
-        "select * from `sales`.`orders` o join dim.customers c on o.id = c.id",
+        "select * from `sales`.`orders` o join catalog2__dim.customers c on o.id = c.id",
         routed.getViewOriginalText());
     Assert.assertEquals(
-        "select * from sales.orders o join `dim`.customers c on o.id = c.id",
+        "select * from sales.orders o join `catalog2__dim`.customers c on o.id = c.id",
         routed.getViewExpandedText());
+  }
+
+  @Test
+  public void crossCatalogViewReadsBackTheReferenceItWasCreatedWith() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__default", "default");
+    String expanded = "select `smoke_read_ap`.`id` from `catalog2__default`.`smoke_read_ap`";
+    String original = "select * from catalog2__default.smoke_read_ap";
+    Table table = viewTable(original, expanded);
+    table.setDbName("hdp__default");
+
+    Table stored = (Table) layer.internalizeArgument(table, namespace);
+    Assert.assertEquals(expanded, stored.getViewExpandedText());
+    Assert.assertEquals(original, stored.getViewOriginalText());
+
+    stored.setDbName("default");
+    Table readBack = (Table) layer.externalizeResult(stored, namespace);
+    Assert.assertEquals(expanded, readBack.getViewExpandedText());
+    Assert.assertEquals(original, readBack.getViewOriginalText());
+  }
+
+  @Test
+  public void internalizeArgumentKeepsForeignCatalogOnBackendCatalogQualifiedReferences()
+      throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog1", "catalog1__sales", "sales");
+    Table table = viewTable(
+        "select * from hive.catalog2__dim.customers",
+        "select * from hive.catalog2__dim.customers");
+
+    Table routed = (Table) layer.internalizeArgument(table, namespace);
+
+    Assert.assertEquals("select * from hive.catalog2__dim.customers", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void internalizeArgumentKeepsForeignCatalogSparkViewParameters() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = viewTable(
+        "select * from catalog2__dim.customers", "select * from catalog2__dim.customers");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.default.database", "catalog2__dim");
+    params.put("view.catalogAndNamespace.numParts", "2");
+    params.put("view.catalogAndNamespace.part.1", "catalog2__dim");
+    table.setParameters(params);
+
+    Table routed = (Table) layer.internalizeArgument(table, namespace);
+
+    Assert.assertEquals("catalog2__dim", routed.getParameters().get("view.default.database"));
+    Assert.assertEquals(
+        "catalog2__dim", routed.getParameters().get("view.catalogAndNamespace.part.1"));
   }
 
   @Test

@@ -1286,16 +1286,6 @@ assert_file_contains_result() {
     || fail "expected result '${expected}' in ${file}"
 }
 
-# Identifier quoting is a dialect difference, not a behavioural one: `SHOW CREATE TABLE` on a
-# Hortonworks HiveServer2 prints `db`.`table` where the Apache one prints db.table. Both mean the
-# view was rewritten to the same external name, so the backticks are stripped before comparing.
-assert_file_contains_identifier() {
-  local file="$1"
-  local expected="$2"
-  tr -d '`' < "${file}" | grep -F "${expected}" >/dev/null \
-    || fail "expected identifier '${expected}' in ${file}"
-}
-
 # The proxy can expose more than one front door, and an Apache and a Hortonworks client do not
 # speak the same Thrift interface - Hive has no version negotiation, so each listener answers only
 # its own line. Running the SQL suite against every configured HiveServer2 is what proves both
@@ -1683,6 +1673,7 @@ run_sql_smoke() {
   local udf_apache="smoke_udf_apache_${run_id}"
   local view_local="smoke_view_local_${run_id}"
   local view_cross="smoke_view_cross_${run_id}"
+  local view_cross_back="smoke_view_cross_back_${run_id}"
   local mv_local="smoke_mv_local_${run_id}"
   local cross_db="${hdp_catalog}__smoke_cross_db_${run_id}"
   local cross_db_table="smoke_cross_db_tbl_${run_id}"
@@ -2016,6 +2007,28 @@ create or replace view ${view_cross} as
 select * from ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE};
 show create table ${view_cross};
 select count(*) as ${view_cross}_count from ${view_cross};
+
+-- A view must read the table it was created over. Reading it is what proves the stored reference
+-- still resolves: a reference into another catalog that loses its catalog prefix reads back as a
+-- database of the view's own catalog and fails, and the row counts catch a wrong table of the same
+-- name. Both directions run, because each catalog's view is stored in its own backend.
+select case when v.c = t.c then 'view_local_rows_match' else 'view_local_rows_differ' end
+from (select count(*) as c from ${view_local}) v
+cross join (select count(*) as c from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}) t;
+select case when v.c = t.c then 'view_cross_hdp_rows_match' else 'view_cross_hdp_rows_differ' end
+from (select count(*) as c from ${view_cross}) v
+cross join (select count(*) as c from ${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}) t;
+
+use ${apache_catalog}__default;
+create or replace view ${view_cross_back} as
+select * from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE};
+show create table ${view_cross_back};
+select case when v.c = t.c then 'view_cross_apache_rows_match' else 'view_cross_apache_rows_differ' end
+from (select count(*) as c from ${view_cross_back}) v
+cross join (select count(*) as c from ${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}) t;
+drop view if exists ${view_cross_back};
+
+use ${hdp_catalog}__default;
 drop view if exists ${view_cross};
 drop view if exists ${view_local};
 EOF
@@ -2189,8 +2202,9 @@ EOF
     assert_file_contains_result "${output_file}" "convert_purged_external_apache"
   fi
   if [[ "${run_view_rewrite}" == "true" ]]; then
-    assert_file_contains_identifier "${output_file}" "${hdp_catalog}__default.${HMS_SMOKE_HDP_READ_TABLE}"
-    assert_file_contains_identifier "${output_file}" "${apache_catalog}__default.${HMS_SMOKE_APACHE_READ_TABLE}"
+    assert_file_contains_result "${output_file}" "view_local_rows_match"
+    assert_file_contains_result "${output_file}" "view_cross_hdp_rows_match"
+    assert_file_contains_result "${output_file}" "view_cross_apache_rows_match"
   fi
   if [[ "${run_udf}" == "true" ]]; then
     assert_file_contains "${output_file}" "${udf_apache}"

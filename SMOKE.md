@@ -248,10 +248,17 @@ select count(*) from some_table;
 
 **8. Views, materialized views и UDF**
 
-Этот блок стоит прогонять с `federation.view-text-rewrite.mode=REWRITE`. Оригинальный клиентский
-SQL по умолчанию остаётся видимым в HMS без изменений
-(`federation.view-text-rewrite.preserve-original-text=true`); задайте `false`, если сохранённый
-`viewOriginalText` тоже нужно переписывать.
+Этот блок проверяет `federation.view-text-rewrite.mode=REWRITE` (дефолт). По умолчанию
+переписывается и клиентский `viewOriginalText`
+(`federation.view-text-rewrite.preserve-original-text=false`); задайте `true`, если он должен
+оставаться в HMS без изменений.
+
+Каждый view обязан читать таблицу, над которой создан: runner сверяет число строк view с числом строк
+самой таблицы и ждёт маркер результата (`view_local_rows_match`, `view_cross_hdp_rows_match`,
+`view_cross_apache_rows_match`). Межкаталожный view создаётся в обе стороны — в `hdp__default` над
+таблицей `apache__default` и наоборот, — потому что каждый view хранится в бэкенде своего каталога.
+Проверка по тексту `show create table` здесь ничего не доказывает: `beeline -f` эхоит сам
+`create view`, и имя таблицы есть в выводе при любом исходе.
 
 В automated runner view-блок включён по умолчанию через `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`.
 Проверка permanent UDF тоже включена по умолчанию через `HMS_SMOKE_SQL_RUN_UDF=true` и использует
@@ -282,6 +289,12 @@ select * from apache__default.some_table;
 
 show create table smoke_view_cross;
 select * from smoke_view_cross limit 5;
+
+-- view в каталоге apache над таблицей hdp
+use apache__default;
+create or replace view smoke_view_cross_back as
+select * from hdp__default.some_table;
+select * from smoke_view_cross_back limit 5;
 ```
 
 Для permanent UDF на non-default catalog дополнительно проверить:

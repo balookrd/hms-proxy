@@ -272,7 +272,22 @@ final class ViewDefinitionCompatibility {
       return namespace.backendDbName();
     }
     CatalogRouter.ResolvedNamespace explicit = router.resolvePattern(dbToken).orElse(null);
-    return explicit == null ? null : explicit.backendDbName();
+    if (explicit == null) {
+      return null;
+    }
+    // The view is stored in its own catalog's backend, so only that catalog's names may lose their
+    // prefix. A reference into another catalog stays external: stripped to its backend name it
+    // would read back as a database of the view's own catalog.
+    if (!explicit.catalogName().equals(namespace.catalogName())) {
+      LOG.debug(
+          "Leaving view SQL reference to database '{}' untouched: it belongs to catalog '{}', not to"
+              + " the view catalog '{}'",
+          dbToken,
+          explicit.catalogName(),
+          namespace.catalogName());
+      return null;
+    }
+    return explicit.backendDbName();
   }
 
   private static Replacement replacementFor(Part from, Part to, String replacement, boolean quoted) {

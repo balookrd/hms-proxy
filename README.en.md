@@ -988,8 +988,10 @@ View/materialized-view notes:
 - `catalog.db.table` references keep their catalog qualifier: outbound rewrite collapses
   `<backend catalog>.<db>.<table>` into the external database name, and any other catalog prefix is
   left untouched instead of being silently retargeted
-- cross-catalog references in inbound SQL like `catalog2__dim.table_x` are internalized for the
-  backend, but outbound rewrite is only guaranteed for the current table namespace
+- inbound rewrite internalizes only references of the view's own catalog; a cross-catalog reference
+  like `catalog2__dim.table_x` is stored in the backend in its external form and returned to the
+  client unchanged, so such a view reads through the proxy but not for a client that reads the
+  backend directly
 - whatever cannot be resolved unambiguously stays untouched and is logged at `DEBUG` by
   `ViewDefinitionCompatibility`; an unrewritten reference surfaces as an explicit backend error
   rather than as a silently corrupted view definition

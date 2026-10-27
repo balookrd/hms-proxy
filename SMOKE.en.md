@@ -240,10 +240,17 @@ Expected:
 
 **8. Views, Materialized Views, and UDFs**
 
-Run this block with `federation.view-text-rewrite.mode=REWRITE`. The original client SQL stays
-byte-for-byte visible through HMS by default
-(`federation.view-text-rewrite.preserve-original-text=true`); set it to `false` if the stored
-`viewOriginalText` must be rewritten too.
+This block exercises `federation.view-text-rewrite.mode=REWRITE` (the default). The client-facing
+`viewOriginalText` is rewritten too by default
+(`federation.view-text-rewrite.preserve-original-text=false`); set it to `true` to keep it
+unchanged in HMS.
+
+Every view must read the table it was created over: the runner compares the view's row count with
+the table's own and expects a result marker (`view_local_rows_match`, `view_cross_hdp_rows_match`,
+`view_cross_apache_rows_match`). The cross-catalog view is created in both directions — in
+`hdp__default` over an `apache__default` table and the other way round — because each view is
+stored in its own catalog's backend. Matching the `show create table` text proves nothing here:
+`beeline -f` echoes the `create view` itself, so the table name is in the output whatever happens.
 
 The automated runner keeps the view block enabled by default with
 `HMS_SMOKE_SQL_RUN_VIEW_REWRITE=true`. It also runs a permanent-UDF check by default with
@@ -275,6 +282,12 @@ select * from apache__default.some_table;
 
 show create table smoke_view_cross;
 select * from smoke_view_cross limit 5;
+
+-- a view in the apache catalog over an hdp table
+use apache__default;
+create or replace view smoke_view_cross_back as
+select * from hdp__default.some_table;
+select * from smoke_view_cross_back limit 5;
 ```
 
 For a permanent UDF on a non-default catalog, also run:

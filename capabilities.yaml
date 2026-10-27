@@ -347,7 +347,8 @@ capabilities:
         Поддерживается, пока маршрутизация может однозначно определить целевой каталог.
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
-      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesViewTextForLocalAndRemoteCatalogs
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#internalizeArgumentRewritesOnlyReferencesOfTheViewCatalog
+      - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#crossCatalogViewReadsBackTheReferenceItWasCreatedWith
       - io.github.mmalykhin.hmsproxy.federation.FederationLayerTest#externalizeResultKeepsForeignCatalogQualifiedReferences
   - id: txn_lock_without_namespace_degraded
     status: degraded

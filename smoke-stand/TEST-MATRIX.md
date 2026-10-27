@@ -43,7 +43,7 @@
 | B4 | Партиции: create → insert → `show partitions` → rename → count | ✅ | ✅ |
 | B5 | Внешняя таблица: create → alter → insert → describe → drop | ✅ | ✅ |
 | B6 | `INSERT` через локальный MapReduce | ✅ | ✅ |
-| B7 | View + cross-catalog view rewrite | ✅ | ✅ |
+| B7 | View + cross-catalog view rewrite: view каждого каталога читает свою таблицу, межкаталожный view создаётся в обе стороны и читается (число строк сверено с таблицей) | — | ✅ |
 | B8 | Кросс-каталожный JOIN в одном statement | ✅ | ✅ |
 | B9 | JOIN двух баз одного каталога | ✅ | ✅ |
 | B10 | Permanent UDF (`UDFReverse` → `yxorp`) | ✅ | ✅ |
@@ -1143,6 +1143,23 @@ SQL-секции **не берут лок вообще** ни в одной ко
   `StatsTask` раньше, чем дело доходит до ассертов, — это артефакт мутации, а не сценария.
   Не прогонялось: профиль plain в любом виде, разделы A, D, E, G, H, I, кросс-пары C6 и C7 и
   unit-набор — Java в этой записи не менялась.
+- **2026-10-27**, B7. Прежняя ✅ была неверной с 2026-09-17: тогда `federation.view-text-rewrite.mode`
+  стал по умолчанию `REWRITE` (`798f3a6`), и межкаталожная ссылка в view теряла каталог при записи.
+  View в `hdp__default` над `apache__default.smoke_read_ap` возвращался как
+  `` `hdp__default`.`smoke_read_ap` `` и не читался (`Table not found ... in definition of VIEW`).
+  Сценарий этого не видел: его ассерт искал имя таблицы во всём выводе, а `beeline -f` эхоит сам
+  `create view`, так что имя там есть при любом исходе. Теперь каждый view сверяет число строк
+  со своей таблицей через маркер результата, а межкаталожный view создаётся в обе стороны.
+  Новый сценарий увиден падающим на прокси без фикса (Hortonworks front door: та же `Table not found`).
+  С фиксом зелено на Kerberos через оба front door, каждый в своей раскладке, с финальной строкой
+  `scenario 'sql' completed successfully` и кодом возврата 0: `sql-kerberos.env` на `.env.kerberos`
+  и `sql-apache-kerberos.env` на `.env.apache-kerberos`. `show create table` межкаталожного view
+  на обоих возвращает `` `apache__default`.`smoke_read_ap` ``. Оговорки: проверочный jar включал
+  ещё незакоммиченный фикс NPE `rename_partition_req` из соседней ветки (без него SQL-слой на
+  Hortonworks front door не доходит до блока view). Блоки `EXCHANGE PARTITION` и external partition
+  выключены (`HMS_SMOKE_SQL_RUN_{EXCHANGE,EXTERNAL}_PARTITION=false`): в их SQL переменные
+  экранированы (`\${...}`) и не раскрываются, это отдельный дефект раннера. Не прогонялось:
+  профиль plain, разделы A, D, E, G, H, I.
 
 ## Две оговорки честности
 
