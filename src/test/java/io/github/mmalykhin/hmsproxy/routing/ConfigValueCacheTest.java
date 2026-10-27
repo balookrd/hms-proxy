@@ -209,4 +209,29 @@ public class ConfigValueCacheTest {
     cache.getOrFetch("k3", "d", (n, s) -> "v3");
     Assert.assertTrue(cache.size() <= 2);
   }
+
+  @Test
+  public void aFullCacheDropsTheOldestValueInsteadOfEverything() throws Throwable {
+    AtomicLong clock = new AtomicLong(1_000L);
+    ConfigValueCache cache = new ConfigValueCache(new ConfigValueCacheConfig(60_000L, 3), clock::get);
+    AtomicInteger fetches = new AtomicInteger();
+    for (String key : List.of("k1", "k2", "k3", "k4")) {
+      clock.addAndGet(10L);
+      cache.getOrFetch(key, "d", (name, sentinel) -> {
+        fetches.incrementAndGet();
+        return name + "_value";
+      });
+    }
+    Assert.assertEquals(3, cache.size());
+    int before = fetches.get();
+    Assert.assertEquals("k4_value", cache.getOrFetch("k4", "d", (name, sentinel) -> {
+      fetches.incrementAndGet();
+      return "refetched";
+    }));
+    Assert.assertEquals("k2_value", cache.getOrFetch("k2", "d", (name, sentinel) -> {
+      fetches.incrementAndGet();
+      return "refetched";
+    }));
+    Assert.assertEquals("recent values survive", before, fetches.get());
+  }
 }

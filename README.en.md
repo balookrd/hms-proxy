@@ -452,7 +452,14 @@ The proxy supports live configuration reloading without restarting the process:
 - **Automatic polling**: `config.reload.poll-interval-seconds` (defaults to `5` seconds) polls the configuration file's mtime and applies changes. Set to `0` to disable background polling.
 - **SIGHUP signal**: send SIGHUP to the proxy process (`kill -HUP <pid>`).
 
-Safe Reload: if the modified configuration file contains syntax errors, invalid properties, or conflicting namespace mappings, the failure is logged and the proxy **continues running uninterrupted on its previous valid configuration**. Upon a successful reload, `CatalogRouter`, `FederationLayer`, and internal metadata caches (`DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`) are updated atomically.
+Safe Reload: if the modified configuration file contains syntax errors, invalid properties, or conflicting namespace mappings, the failure is logged and the proxy **continues running uninterrupted on its previous valid configuration**. The broken file's modification time is remembered, so the background poller does not re-parse it every few seconds: the next attempt happens after the file changes again.
+
+**What applies without a restart.** A reload rebuilds the catalog router (`CatalogRouter`), the exposure policies (`FederationLayer`) and the routing layer, and invalidates the metadata caches (`DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`). The components are rebuilt one after another, so a request arriving mid-reload may see some new and some old settings. Applied are:
+
+- per catalog: `access-mode`, `write-db-whitelist`, `expose-mode`, `expose-db-patterns`, `expose-table-patterns.*`, `unprefixed-databases`, `merge-with-default`;
+- in `federation.*`: everything except `federation.external-table-drop-purge.mode`.
+
+Everything else - the set of catalogs, backend addresses, profiles and pools, impersonation, `security.*`, Ranger, rate limits, `routing.*`, listeners, REST, management - is wired once at startup. When such settings in the new file differ from the ones the process started with, the reload still applies the list above and logs a WARN naming the differing components (for example `catalog.hdp.hiveConf`, `latencyRouting`): they take effect only after a restart. Reverting such an edit clears the warning.
 
 `/healthz` is intended for simple liveness checks and only answers whether the proxy process is up.
 

@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.app;
 
+import io.github.mmalykhin.hmsproxy.config.ConfigReloadScope;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
 import java.io.IOException;
@@ -25,6 +26,8 @@ public final class ConfigReloadManager implements AutoCloseable {
   public record ReloadResult(boolean success, String message) {}
 
   private final Path configPath;
+  // The settings a reload cannot apply keep running with these values until a restart.
+  private final ProxyConfig startupConfig;
   private volatile ProxyConfig currentConfig;
   private volatile FileTime lastModifiedTime;
   private final List<Consumer<ProxyConfig>> listeners = new CopyOnWriteArrayList<>();
@@ -33,6 +36,7 @@ public final class ConfigReloadManager implements AutoCloseable {
 
   public ConfigReloadManager(Path configPath, ProxyConfig initialConfig) {
     this.configPath = configPath;
+    this.startupConfig = initialConfig;
     this.currentConfig = initialConfig;
     try {
       if (Files.exists(configPath)) {
@@ -83,11 +87,7 @@ public final class ConfigReloadManager implements AutoCloseable {
       }
       ProxyConfig newConfig = ProxyConfigLoader.load(configPath);
       this.currentConfig = newConfig;
-      try {
-        this.lastModifiedTime = Files.getLastModifiedTime(configPath);
-      } catch (IOException e) {
-        LOG.warn("Failed to update last modified time for {}: {}", configPath, e.getMessage());
-      }
+      rememberModificationTime();
 
       for (Consumer<ProxyConfig> listener : listeners) {
         try {
@@ -97,12 +97,32 @@ public final class ConfigReloadManager implements AutoCloseable {
         }
       }
 
-      LOG.info("Configuration reloaded successfully from {}", configPath);
-      return new ReloadResult(true, "Configuration reloaded successfully");
+      List<String> notApplied = startupConfig == null
+          ? List.of()
+          : ConfigReloadScope.changesRequiringRestart(startupConfig, newConfig);
+      if (notApplied.isEmpty()) {
+        LOG.info("Configuration reloaded successfully from {}", configPath);
+        return new ReloadResult(true, "Configuration reloaded successfully");
+      }
+      String msg = "Configuration reloaded from " + configPath + ", but these settings differ from the running"
+          + " ones and take effect only after a restart: " + String.join(", ", notApplied);
+      LOG.warn(msg);
+      return new ReloadResult(true, msg);
     } catch (Throwable e) {
+      // Remember the broken file's mtime: the poller only retries once the file changes again
+      // instead of re-parsing and logging the same error on every interval.
+      rememberModificationTime();
       String msg = "Failed to reload configuration: " + e.getMessage();
       LOG.error(msg, e);
       return new ReloadResult(false, msg);
+    }
+  }
+
+  private void rememberModificationTime() {
+    try {
+      this.lastModifiedTime = Files.getLastModifiedTime(configPath);
+    } catch (IOException e) {
+      LOG.warn("Failed to update last modified time for {}: {}", configPath, e.getMessage());
     }
   }
 

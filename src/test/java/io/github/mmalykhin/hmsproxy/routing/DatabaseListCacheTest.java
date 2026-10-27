@@ -10,6 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -171,5 +172,36 @@ public class DatabaseListCacheTest {
         "hms_proxy_cache_invalidations_total{cache=\"database_list\",catalog=\"cat1\",reason=\"write\"} 1"));
     Assert.assertTrue(rendered.contains(
         "hms_proxy_cache_entries{cache=\"database_list\",catalog=\"cat1\"} 0.0"));
+  }
+
+  @Test
+  public void aFullCacheEvictsTheLeastRecentlyUsedKeyInsteadOfEverything() throws Throwable {
+    AtomicLong clock = new AtomicLong(1_000L);
+    DatabaseListCache cache = new DatabaseListCache(new DatabaseListCacheConfig(60_000L, 3), null, clock::get);
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    AtomicInteger loads = new AtomicInteger();
+    for (String catalog : List.of("hot", "warm", "cold")) {
+      clock.addAndGet(10L);
+      cache.get("get_all_databases", catalog, null, user, () -> {
+        loads.incrementAndGet();
+        return List.of(catalog + "_db");
+      });
+    }
+    clock.addAndGet(10L);
+    cache.get("get_all_databases", "hot", null, user, () -> List.of("reloaded"));
+    clock.addAndGet(10L);
+    cache.get("get_all_databases", "new", null, user, () -> List.of("new_db"));
+
+    int before = loads.get();
+    Assert.assertEquals(List.of("hot_db"), cache.get("get_all_databases", "hot", null, user, () -> {
+      loads.incrementAndGet();
+      return List.of("reloaded");
+    }));
+    Assert.assertEquals("the hot key must survive one new key arriving", before, loads.get());
+    cache.get("get_all_databases", "warm", null, user, () -> {
+      loads.incrementAndGet();
+      return List.of("warm_db");
+    });
+    Assert.assertEquals("only the least recently used key was evicted", before + 1, loads.get());
   }
 }

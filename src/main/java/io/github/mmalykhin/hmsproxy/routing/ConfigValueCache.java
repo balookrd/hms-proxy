@@ -95,8 +95,19 @@ final class ConfigValueCache {
     }
     long nowMs = clock.getAsLong();
     entries.entrySet().removeIf(e -> e.getValue().expiresAtMs() <= nowMs);
-    if (entries.size() >= maxEntries) {
-      entries.clear();
+    // Still full: drop the entry closest to expiring (with one TTL, the oldest) rather than all of them.
+    while (entries.size() >= maxEntries) {
+      String soonest = null;
+      long soonestExpiry = Long.MAX_VALUE;
+      for (var entry : entries.entrySet()) {
+        if (entry.getValue().expiresAtMs() < soonestExpiry) {
+          soonestExpiry = entry.getValue().expiresAtMs();
+          soonest = entry.getKey();
+        }
+      }
+      if (soonest == null || entries.remove(soonest) == null) {
+        return;
+      }
     }
   }
 

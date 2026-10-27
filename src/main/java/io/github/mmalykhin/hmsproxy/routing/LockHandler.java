@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import java.util.function.Supplier;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -25,7 +26,8 @@ import org.slf4j.LoggerFactory;
 final class LockHandler implements InvocationHandler {
   private static final Logger LOG = LoggerFactory.getLogger(LockHandler.class);
 
-  private final ProxyConfig config;
+  // Read per call: a reload replaces it, and access-mode changes must reach lock requests too.
+  private final Supplier<ProxyConfig> config;
   private final SyntheticReadLockManager syntheticReadLockManager;
   private final AdmissionGate admissionGate;
   private final CatalogRouter router;
@@ -34,7 +36,7 @@ final class LockHandler implements InvocationHandler {
   private final InvocationHandler next;
 
   LockHandler(
-      ProxyConfig config,
+      Supplier<ProxyConfig> config,
       SyntheticReadLockManager syntheticReadLockManager,
       AdmissionGate admissionGate,
       CatalogRouter router,
@@ -209,7 +211,7 @@ final class LockHandler implements InvocationHandler {
       }
       if (SyntheticReadLockManager.isWriteOperation(component.component().getOperationType())) {
         CatalogAccessModeGuard.validate(
-            config.catalogs().get(component.namespace().catalogName()),
+            config.get().catalogs().get(component.namespace().catalogName()),
             methodName,
             component.namespace().backendDbName());
       }
@@ -231,7 +233,7 @@ final class LockHandler implements InvocationHandler {
       return namespace == null ? null : LockRequestSplit.ofResolvedNamespace(namespace);
     }
     try {
-      return LockRequestSplit.of(request, router, config.defaultCatalog());
+      return LockRequestSplit.of(request, router, config.get().defaultCatalog());
     } catch (MetaException e) {
       observability.metrics().recordRoutingAmbiguous();
       throw e;

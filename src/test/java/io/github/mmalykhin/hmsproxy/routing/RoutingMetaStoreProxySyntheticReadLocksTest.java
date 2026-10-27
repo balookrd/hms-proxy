@@ -1206,6 +1206,24 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
   }
 
   @Test
+  public void anAccessModeChangedByAReloadAppliesToSyntheticWriteLocks() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_WRITE, List.of(), backendCalls);
+    handler.reconfigure(writeLockShimConfig(CatalogAccessMode.READ_ONLY, List.of()));
+    Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {syntheticWriteLockRequest(
+                "catalog2__sales", "events", 67L, LockType.SHARED_WRITE, DataOperationType.INSERT)}));
+
+    Assert.assertTrue(error.getMessage(), error.getMessage().contains("READ_ONLY"));
+  }
+
+  @Test
   public void syntheticWriteLockIsRejectedForDatabaseOutsideWriteWhitelist() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler =
@@ -1348,12 +1366,8 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
    * Two catalogs where the non-default one carries the given access mode; the backends only count
    * calls, so any lock that escapes the shim shows up as a backend call.
    */
-  private static RoutingMetaStoreProxy writeLockShimHandler(
-      CatalogAccessMode accessMode,
-      List<String> writeDbWhitelist,
-      AtomicInteger backendCalls
-  ) throws Exception {
-    ProxyConfig config = ProxyConfig.builder()
+  private static ProxyConfig writeLockShimConfig(CatalogAccessMode accessMode, List<String> writeDbWhitelist) {
+    return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
@@ -1373,6 +1387,14 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
                 Map.of("hive.metastore.uris", "thrift://two"))))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
+  }
+
+  private static RoutingMetaStoreProxy writeLockShimHandler(
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      AtomicInteger backendCalls
+  ) throws Exception {
+    ProxyConfig config = writeLockShimConfig(accessMode, writeDbWhitelist);
 
     CatalogBackend defaultBackend = newBackend(
         config,

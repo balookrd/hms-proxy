@@ -115,7 +115,7 @@ final class RoutingPipelineFactory {
         config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
         routingHandler);
     LockHandler lockHandler = new LockHandler(
-        config, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
+        routingHandler::currentConfig, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
     InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
     return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, userGroupResolver, chain);
   }

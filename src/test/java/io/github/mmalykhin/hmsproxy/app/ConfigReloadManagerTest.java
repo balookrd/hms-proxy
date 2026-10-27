@@ -135,4 +135,64 @@ public class ConfigReloadManagerTest {
       Files.deleteIfExists(file);
     }
   }
+
+  private static final String BASE_CONFIG = """
+      server.port=9083
+      catalogs=c1,c2
+      routing.default-catalog=c1
+      catalog.c1.conf.hive.metastore.uris=thrift://hms1:9083
+      catalog.c2.conf.hive.metastore.uris=thrift://hms2:9083
+      synthetic-read-lock.store.mode=IN_MEMORY
+      config.reload.poll-interval-seconds=0
+      """;
+
+  @Test
+  public void aReloadNamesTheSettingsItCannotApply() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-test", ".properties");
+    try {
+      Files.writeString(file, BASE_CONFIG);
+      try (ConfigReloadManager reloadManager = new ConfigReloadManager(file, ProxyConfigLoader.load(file))) {
+        Files.writeString(file, BASE_CONFIG
+            .replace("thrift://hms1:9083", "thrift://hms1-new:9083")
+            + "catalog.c2.unprefixed-databases=beemetrics\n"
+            + "routing.circuit-breaker.enabled=true\n");
+
+        ConfigReloadManager.ReloadResult result = reloadManager.reload();
+
+        Assert.assertTrue("the reloadable part is still applied", result.success());
+        Assert.assertEquals(List.of("beemetrics"),
+            reloadManager.currentConfig().catalogs().get("c2").unprefixedDatabases());
+        Assert.assertTrue(result.message(), result.message().contains("catalog.c1.hiveConf"));
+        Assert.assertTrue(result.message(), result.message().contains("latencyRouting"));
+        Assert.assertFalse("unprefixed-databases is applied by a reload",
+            result.message().contains("unprefixedDatabases"));
+
+        // Reverting the restart-only settings clears the warning: the comparison is against what runs.
+        Files.writeString(file, BASE_CONFIG + "catalog.c2.unprefixed-databases=beemetrics\n");
+        Assert.assertEquals("Configuration reloaded successfully", reloadManager.reload().message());
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void aBrokenFileIsNotReparsedOnEveryPollUntilItChangesAgain() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-test", ".properties");
+    try {
+      Files.writeString(file, BASE_CONFIG);
+      try (ConfigReloadManager reloadManager = new ConfigReloadManager(file, ProxyConfigLoader.load(file))) {
+        Files.writeString(file, BASE_CONFIG + "catalog.c1.unprefixed-databases=forbidden_on_default\n");
+        FileTime broken = FileTime.fromMillis(System.currentTimeMillis() + 60_000L);
+        Files.setLastModifiedTime(file, broken);
+
+        reloadManager.checkFileModified();
+
+        Assert.assertEquals("the failed file's mtime is remembered, so the next poll does not retry it",
+            broken, reloadManager.lastModifiedTime());
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

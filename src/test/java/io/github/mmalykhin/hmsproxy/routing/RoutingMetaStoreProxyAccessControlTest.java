@@ -422,4 +422,39 @@ public class RoutingMetaStoreProxyAccessControlTest {
     Assert.assertEquals("Orders", result.get(0).getTableName());
   }
 
+  @Test
+  public void aFailingAuditWriteDoesNotLeaveTheRequestContextOnThePooledThread() throws Throwable {
+    RoutingMetaStoreProxy handler = accessModeHandler(
+        CatalogAccessMode.READ_WRITE, List.of(), new AtomicInteger(), new AtomicReference<>());
+    org.apache.log4j.Logger audit = org.apache.log4j.Logger.getLogger("io.github.mmalykhin.hmsproxy.audit");
+    org.apache.log4j.Level previousLevel = audit.getLevel();
+    org.apache.log4j.AppenderSkeleton failing = new org.apache.log4j.AppenderSkeleton() {
+      @Override
+      protected void append(org.apache.log4j.spi.LoggingEvent event) {
+        throw new IllegalStateException("audit sink is down");
+      }
+
+      @Override
+      public void close() {
+      }
+
+      @Override
+      public boolean requiresLayout() {
+        return false;
+      }
+    };
+    audit.setLevel(org.apache.log4j.Level.INFO);
+    audit.addAppender(failing);
+    try {
+      Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+      Assert.assertThrows(IllegalStateException.class, () -> handler.invoke(null, method, new Object[0]));
+      Assert.assertNull("request id leaked to the next request on this thread", RequestContext.REQUEST_ID.get());
+      Assert.assertNull(RequestContext.REQUEST_OBSERVATION.get());
+    } finally {
+      audit.removeAppender(failing);
+      audit.setLevel(previousLevel);
+      RequestContext.REQUEST_ID.remove();
+      RequestContext.REQUEST_OBSERVATION.remove();
+    }
+  }
 }

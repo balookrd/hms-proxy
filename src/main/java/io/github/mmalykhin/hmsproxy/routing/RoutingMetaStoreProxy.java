@@ -194,15 +194,20 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       metaException.initCause(throwable);
       throw metaException;
     } finally {
-      observability.metrics().recordRequest(
-          observation.method(),
-          observation.catalog(),
-          observation.backend(),
-          observation.status(),
-          elapsedSeconds(startedAt));
-      emitAuditLog(requestId, observation, elapsedMillis(startedAt));
-      RequestContext.REQUEST_ID.remove();
-      RequestContext.REQUEST_OBSERVATION.remove();
+      // The thread goes back to a server pool: a throwing metric or audit write must not leave this
+      // request's id and observation behind for the next request served on it.
+      try {
+        observability.metrics().recordRequest(
+            observation.method(),
+            observation.catalog(),
+            observation.backend(),
+            observation.status(),
+            elapsedSeconds(startedAt));
+        emitAuditLog(requestId, observation, elapsedMillis(startedAt));
+      } finally {
+        RequestContext.REQUEST_ID.remove();
+        RequestContext.REQUEST_OBSERVATION.remove();
+      }
     }
   }
 

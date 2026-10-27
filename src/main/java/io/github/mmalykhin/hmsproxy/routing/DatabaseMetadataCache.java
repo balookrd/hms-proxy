@@ -283,13 +283,29 @@ final class DatabaseMetadataCache {
     int before = entries.size();
     entries.entrySet().removeIf(entry -> entry.getValue().expiresAtMs() <= nowMs);
     int pruned = before - entries.size();
-    if (entries.size() >= maxEntries) {
-      pruned += entries.size();
-      entries.clear();
-    }
     if (metrics != null && pruned > 0) {
       metrics.recordCacheInvalidation("database_metadata", "all", "prune", pruned);
     }
+    // Still full of live entries: drop the least recently used ones instead of the whole cache, so
+    // one burst of new keys does not send every hot key back to the backend at once.
+    while (entries.size() >= maxEntries && evictLeastRecentlyUsed()) {
+      if (metrics != null) {
+        metrics.recordCacheInvalidation("database_metadata", "all", "lru");
+      }
+    }
+  }
+
+  private boolean evictLeastRecentlyUsed() {
+    Key oldestKey = null;
+    long oldestAccess = Long.MAX_VALUE;
+    for (var entry : entries.entrySet()) {
+      long lastAccess = entry.getValue().lastAccessedAtMs();
+      if (lastAccess < oldestAccess) {
+        oldestAccess = lastAccess;
+        oldestKey = entry.getKey();
+      }
+    }
+    return oldestKey != null && entries.remove(oldestKey) != null;
   }
 
   private long countEntries(String catalogName) {

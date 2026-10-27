@@ -11,6 +11,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.junit.Assert;
 import org.junit.Test;
@@ -304,5 +305,27 @@ public class DatabaseMetadataCacheTest {
         "hms_proxy_cache_invalidations_total{cache=\"database_metadata\",catalog=\"cat1\",reason=\"write\"} 1"));
     Assert.assertTrue(rendered.contains(
         "hms_proxy_cache_entries{cache=\"database_metadata\",catalog=\"cat1\"} 0.0"));
+  }
+
+  @Test
+  public void aFullCacheEvictsTheLeastRecentlyUsedDatabaseInsteadOfEverything() throws Throwable {
+    AtomicLong clock = new AtomicLong(1_000L);
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(60_000L, 3), null, null, clock::get);
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    AtomicInteger loads = new AtomicInteger();
+    for (String db : List.of("hot", "warm", "cold", "hot", "new")) {
+      clock.addAndGet(10L);
+      cache.get("cat1", db, user, () -> {
+        loads.incrementAndGet();
+        return new Database(db, "", "file:///" + db, new HashMap<>());
+      });
+    }
+    int before = loads.get();
+    Assert.assertEquals("hot", cache.get("cat1", "hot", user, () -> {
+      loads.incrementAndGet();
+      return new Database("reloaded", "", "file:///x", new HashMap<>());
+    }).getName());
+    Assert.assertEquals("the hot database survives one new key arriving", before, loads.get());
   }
 }

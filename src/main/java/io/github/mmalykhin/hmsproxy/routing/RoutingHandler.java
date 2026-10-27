@@ -702,6 +702,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     }
   }
 
+  ProxyConfig currentConfig() {
+    return support.config;
+  }
+
   public synchronized void reconfigure(ProxyConfig newConfig) {
     this.config = newConfig;
     this.externalTableLocationRewriter = new ExternalTableLocationRewriter(newConfig.federation());
