@@ -8,6 +8,7 @@ import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.InvocationHandler;
+import io.github.mmalykhin.hmsproxy.util.ShutdownSequence;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -195,14 +196,14 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
   /** Stops the background external-table purge workers; pending purges are awaited. */
   void close() {
-    dropTableHandler.close();
-    support.metadataAuthorizer.close();
+    ShutdownSequence shutdown = new ShutdownSequence(LOG)
+        .close("external table purge executor", dropTableHandler::close)
+        .close("metadata authorizer", support.metadataAuthorizer::close);
     if (support.cacheInvalidator != null) {
-      try {
-        support.cacheInvalidator.close();
-      } catch (Exception e) {
-        LOG.warn("Failed to close cache invalidator", e);
-      }
+      shutdown.close("cache invalidator", support.cacheInvalidator::close);
+    }
+    if (shutdown.failure() instanceof RuntimeException runtimeException) {
+      throw runtimeException;
     }
   }
 

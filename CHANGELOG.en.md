@@ -10,6 +10,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Iceberg REST request body limit (`rest-catalog.max-request-body-bytes`, default 16 MiB)**: a larger body is refused with `413` before any JSON parsing, from its `Content-Length` or, for a chunked upload, as soon as more than the limit has been read. Previously a body of any size was parsed into memory whole.
+
 - **Spark SQL `global_temp` system database, file data sources (path-based tables), and quoted path queries (`csv."hdfs://..."`)**:
   - Added native handling for Apache Spark SQL's reserved in-memory database `global_temp` and direct path-based queries (e.g. `SELECT ... FROM csv.hdfs://...`, `csv."hdfs://..."`, or `parquet.`/path/to/data``) in `SparkPlaceholderNamespace`.
   - When executing direct file relation queries, Spark SQL and table format catalogs (such as Apache Iceberg `HiveTableOperations`) probe the metastore for database or table existence via Thrift RPC `get_database("csv")`, `get_table(format, path)` or `get_table_req` before falling back to direct file reading.
@@ -142,6 +144,7 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Fixed
 
+- **Proxy shutdown closes every component even when one fails**: `RoutingMetaStoreProxy.close()` and `RoutingHandler.close()` closed components back to back without protection, so an exception (for example from the Ranger plugin cleanup) left the synthetic lock manager, the backend routing controller, the database cache refresher and `UserGroupResolver` open, and with it the on-disk group cache flush on shutdown (`persist-on-shutdown`) was lost. Every step now runs, failures are logged and the first one is rethrown at the end (`util/ShutdownSequence`).
 - **Safe Reload reports what it did not apply**: a configuration reload only rebuilt the catalog router, the federation layer and the routing layer, while edits to every other setting (backends and their pools, `security.*`, Ranger, rate limits, `routing.*`, listeners, new catalogs) were silently accepted and had no effect until a restart. Such differences from the running configuration are now listed in a WARN and in the reload result (`ConfigReloadScope`), and the applicable part is still applied. The README no longer calls the reload atomic and lists what applies without a restart.
 - **A broken configuration file is no longer re-parsed every 5 seconds**: a failed reload did not update the remembered modification time, so the background poller re-parsed the file and logged an ERROR on every interval until the file was fixed.
 - **`access-mode` changed by a reload now also applies to synthetic write locks**: `LockHandler` kept the startup configuration, so a catalog switched to `READ_ONLY` or `READ_WRITE_DB_WHITELIST` by a reload rejected `create_table` and other writes but still granted write locks. `LockHandler` now reads the live configuration.

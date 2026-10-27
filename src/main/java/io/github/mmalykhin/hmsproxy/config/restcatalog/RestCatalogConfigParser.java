@@ -58,8 +58,10 @@ public final class RestCatalogConfigParser {
               + " but the mode is " + purgeMode);
     }
     boolean hiveEngineDescriptor = reader.getBoolean("rest-catalog.hive-engine-descriptor", true);
+    long maxRequestBodyBytes = reader.getPositiveLong(
+        "rest-catalog.max-request-body-bytes", RestCatalogConfig.DEFAULT_MAX_REQUEST_BODY_BYTES);
     return new RestCatalogConfig(
         enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab,
-        purgeMode, purgeAllowedPrefixes, hiveEngineDescriptor);
+        purgeMode, purgeAllowedPrefixes, hiveEngineDescriptor, maxRequestBodyBytes);
   }
 }

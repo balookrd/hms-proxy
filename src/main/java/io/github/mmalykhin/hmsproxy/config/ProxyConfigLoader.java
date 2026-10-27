@@ -294,6 +294,7 @@ public final class ProxyConfigLoader {
       "rest-catalog.purge.mode",
       "rest-catalog.purge.allowed-prefixes",
       "rest-catalog.hive-engine-descriptor",
+      "rest-catalog.max-request-body-bytes",
       "synthetic-read-lock.store.mode",
       "synthetic-read-lock.store.zookeeper.connect-string",
       "synthetic-read-lock.store.zookeeper.znode",

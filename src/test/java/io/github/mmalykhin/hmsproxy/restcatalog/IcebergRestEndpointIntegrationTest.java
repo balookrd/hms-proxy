@@ -259,6 +259,37 @@ public class IcebergRestEndpointIntegrationTest {
   }
 
   @Test
+  public void aBodyOverTheConfiguredLimitIsRefusedWith413BeforeParsing() throws Exception {
+    ProxyConfig limited = buildConfig(new RestCatalogConfig(
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true, 1024L));
+    try (RestCatalogServer small = RestCatalogServer.open(limited, services, new PrometheusMetrics())) {
+      String path = "/v1/catalog1/namespaces/default/tables/t1/metrics";
+      String oversized = "{\"padding\":\"" + "x".repeat(4096) + "\"}";
+      HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
+      URI uri = URI.create("http://127.0.0.1:" + small.boundPort() + path);
+
+      HttpResponse<String> declared = client.send(HttpRequest.newBuilder(uri).timeout(HTTP_TIMEOUT)
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(oversized)).build(), HttpResponse.BodyHandlers.ofString());
+      Assert.assertEquals("body: " + declared.body(), 413, declared.statusCode());
+      Assert.assertTrue(declared.body(), declared.body().contains("max-request-body-bytes"));
+
+      // No Content-Length: the size is only known while reading, so the counting stream must cap it.
+      HttpResponse<String> chunked = client.send(HttpRequest.newBuilder(uri).timeout(HTTP_TIMEOUT)
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofInputStream(
+              () -> new java.io.ByteArrayInputStream(oversized.getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+          .build(), HttpResponse.BodyHandlers.ofString());
+      Assert.assertEquals("body: " + chunked.body(), 413, chunked.statusCode());
+
+      HttpResponse<String> small400 = client.send(HttpRequest.newBuilder(uri).timeout(HTTP_TIMEOUT)
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString("not json at all")).build(), HttpResponse.BodyHandlers.ofString());
+      Assert.assertEquals("a body under the limit is parsed as before", 400, small400.statusCode());
+    }
+  }
+
+  @Test
   public void unparseableRequestBodyReturns400() throws Exception {
     HttpResponse<String> response = post(
         "/v1/catalog1/namespaces/default/tables/t1/metrics", "not json at all");

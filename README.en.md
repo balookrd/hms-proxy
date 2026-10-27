@@ -1209,6 +1209,11 @@ rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
 with the other two modes; both contradictions fail the proxy at startup rather
 than being ignored.
 
+A request body is parsed into memory whole, one per worker thread, so its size is capped by
+`rest-catalog.max-request-body-bytes` (default `16777216`, 16 MiB). A larger body is refused with
+`413` before any JSON parsing: from its `Content-Length` header, or, for a chunked upload, as soon
+as more than the limit has been read.
+
 ### Keeping an Iceberg table readable by Hive
 
 Iceberg writes one of two storage descriptors on every commit. With the Hive

@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpPrincipal;
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.util.HttpResponseWriter;
@@ -49,10 +50,23 @@ final class IcebergHttpHandler implements HttpHandler {
 
   private final IcebergRestServices services;
   private final PrometheusMetrics metrics;
+  private final long maxRequestBodyBytes;
 
   IcebergHttpHandler(IcebergRestServices services, PrometheusMetrics metrics) {
+    this(services, metrics, RestCatalogConfig.DEFAULT_MAX_REQUEST_BODY_BYTES);
+  }
+
+  IcebergHttpHandler(IcebergRestServices services, PrometheusMetrics metrics, long maxRequestBodyBytes) {
     this.services = services;
     this.metrics = Objects.requireNonNull(metrics, "metrics");
+    this.maxRequestBodyBytes = maxRequestBodyBytes;
+  }
+
+  /** The body is larger than {@code rest-catalog.max-request-body-bytes}; answered with 413. */
+  static final class RequestBodyTooLargeException extends IOException {
+    RequestBodyTooLargeException(long limit) {
+      super("Request body exceeds rest-catalog.max-request-body-bytes (" + limit + " bytes)");
+    }
   }
 
   /**
@@ -154,6 +168,9 @@ final class IcebergHttpHandler implements HttpHandler {
       Object body;
       try {
         body = readBody(exchange, route);
+      } catch (RequestBodyTooLargeException e) {
+        writeError(exchange, outcome, 413, "BadRequestException", e.getMessage());
+        return;
       } catch (IOException | RuntimeException e) {
         writeError(exchange, outcome, 400, "BadRequestException",
             "Malformed request body: " + e.getMessage());
@@ -233,8 +250,60 @@ final class IcebergHttpHandler implements HttpHandler {
       drain(exchange.getRequestBody());
       return null;
     }
-    try (InputStream input = exchange.getRequestBody()) {
+    String declaredLength = exchange.getRequestHeaders().getFirst("Content-Length");
+    if (declaredLength != null) {
+      try {
+        if (Long.parseLong(declaredLength.trim()) > maxRequestBodyBytes) {
+          throw new RequestBodyTooLargeException(maxRequestBodyBytes);
+        }
+      } catch (NumberFormatException ignored) {
+        // A malformed length is the HTTP server's problem; the counting stream below still caps it.
+      }
+    }
+    try (InputStream input = new BoundedInputStream(exchange.getRequestBody(), maxRequestBodyBytes)) {
       return IcebergRestMapper.mapper().readValue(input, requestClass);
+    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+      // Jackson wraps an exception thrown by the stream; surface the size refusal, not a parse error.
+      if (e.getCause() instanceof RequestBodyTooLargeException tooLarge) {
+        throw tooLarge;
+      }
+      throw e;
+    }
+  }
+
+  /** Fails as soon as more than {@code limit} bytes are read, so a chunked body is capped too. */
+  private static final class BoundedInputStream extends java.io.FilterInputStream {
+    private final long limit;
+    private long read;
+
+    BoundedInputStream(InputStream in, long limit) {
+      super(in);
+      this.limit = limit;
+    }
+
+    @Override
+    public int read() throws IOException {
+      int b = super.read();
+      if (b >= 0) {
+        count(1);
+      }
+      return b;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int length) throws IOException {
+      int n = super.read(buffer, offset, length);
+      if (n > 0) {
+        count(n);
+      }
+      return n;
+    }
+
+    private void count(long n) throws RequestBodyTooLargeException {
+      read += n;
+      if (read > limit) {
+        throw new RequestBodyTooLargeException(limit);
+      }
     }
   }
 

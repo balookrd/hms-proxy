@@ -69,7 +69,7 @@ public final class RestCatalogServer implements AutoCloseable {
 
     HttpContext v1Context;
     if (services != null) {
-      v1Context = server.createContext("/v1/", new IcebergHttpHandler(services, metrics));
+      v1Context = server.createContext("/v1/", new IcebergHttpHandler(services, metrics, restConfig.maxRequestBodyBytes()));
     } else {
       v1Context = server.createContext("/v1/config", new ConfigHandler());
     }

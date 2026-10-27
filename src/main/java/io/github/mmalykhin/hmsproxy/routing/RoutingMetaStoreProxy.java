@@ -11,6 +11,7 @@ import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.InvocationHandler;
+import io.github.mmalykhin.hmsproxy.util.ShutdownSequence;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.LinkedHashMap;
@@ -213,14 +214,29 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
 
   @Override
   public void close() throws MetaException {
-    routingHandler.close();
-    syntheticReadLockManager.close();
-    backendRoutingController.close();
+    // The group resolver flushes the on-disk group cache: it must close even when an earlier
+    // component (Ranger cleanup, the purge executor) fails.
+    ShutdownSequence shutdown = new ShutdownSequence(LOG)
+        .close("routing handler", routingHandler::close)
+        .close("synthetic read-lock manager", syntheticReadLockManager::close)
+        .close("backend routing controller", backendRoutingController::close);
     if (databaseCacheRefresher != null) {
-      databaseCacheRefresher.close();
+      shutdown.close("database cache refresher", databaseCacheRefresher::close);
     }
     if (userGroupResolver != null) {
-      userGroupResolver.close();
+      shutdown.close("user group resolver", userGroupResolver::close);
+    }
+    Exception failure = shutdown.failure();
+    if (failure instanceof MetaException metaException) {
+      throw metaException;
+    }
+    if (failure instanceof RuntimeException runtimeException) {
+      throw runtimeException;
+    }
+    if (failure != null) {
+      MetaException wrapped = new MetaException("Failed to close the routing proxy: " + failure);
+      wrapped.initCause(failure);
+      throw wrapped;
     }
   }
 
