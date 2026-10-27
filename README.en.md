@@ -181,6 +181,7 @@ catalog.remote.merge-with-default=true
 - **Unprefixed unique schemas**: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work).
 - **Database creation (`create_database`)**: creating a new database without an explicit prefix when this feature is enabled **always routes to the default catalog**. To create a database in the remote catalog, an explicit prefix must be supplied (`create_database("remote__new_db")`).
 - **Constraints**: cannot be set on `routing.default-catalog`, and cannot be combined with `unprefixed-databases` on the same catalog.
+- **Looking up an unknown name**: an unprefixed name the proxy has not seen yet is checked with `get_database` on the default catalog first, then on the merged catalogs. Concurrent requests for one name share a single such check. A miss is remembered for `routing.merge-with-default.negative-cache-ttl-ms` (default `5000`; `0` disables it), but only when **every** backend answered "no such database" (`NoSuchObjectException`): a backend error or outage is not a miss, otherwise the name would be routed away from the catalog that really holds it for the whole TTL. The names come from clients, so the miss cache is capped by `routing.merge-with-default.negative-cache-max-entries` (default `10000`): expired entries are dropped first, and a cache full of live misses simply stops remembering new ones until old ones expire.
 
 ## Latency-aware backend routing
 
@@ -1949,7 +1950,10 @@ catalog.catalog2.ranger.service-name=c2_hive_service
      security.group-disk-cache.entry-ttl-seconds=86400
      security.group-disk-cache.persist-interval-seconds=60
      security.group-disk-cache.persist-on-shutdown=true
+     security.group-disk-cache.max-entries=50000
      ```
+
+     Entries past `entry-ttl-seconds` are not deleted, since the serve-stale fallback runs on them, so the user count is what bounds the cache: `max-entries` (default `50000`). A full cache evicts the user whose groups were refreshed longest ago, and startup loads the newest entries from disk. Under `SIMPLE` authentication a client names itself through `set_ugi`, so without the cap the cache (and its file) would grow with any stream of made-up names.
 
 5. **Ranger Policy Engine ConcurrentModificationException Protection**:
    - Background policy refreshing in Ranger SDK 2.5.0 (`PolicyRefresher` thread) can contend with client worker threads evaluating access permissions. In `hms-proxy`, access checks are protected via `evaluateAccessWithRetry`: on `ConcurrentModificationException`, it yields thread execution and retries once, with a safe fail-open fallback for reads if contention persists.

@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.MergedDatabaseResolutionConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -12,8 +13,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 
 public final class CatalogRouter implements AutoCloseable {
@@ -25,6 +28,8 @@ public final class CatalogRouter implements AutoCloseable {
   private final java.util.concurrent.ConcurrentHashMap<String, String> dynamicMergedDatabases = new java.util.concurrent.ConcurrentHashMap<>();
   private final Set<String> defaultCatalogDatabases = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private final java.util.concurrent.ConcurrentHashMap<String, Long> negativeResolutionCache = new java.util.concurrent.ConcurrentHashMap<>();
+  private final java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<Optional<String>>>
+      onDemandLookups = new java.util.concurrent.ConcurrentHashMap<>();
 
   CatalogRouter(ProxyConfig config, Map<String, CatalogBackend> backends) {
     this.config = config;
@@ -614,43 +619,110 @@ public final class CatalogRouter implements AutoCloseable {
     }
     String lower = dbName.toLowerCase(java.util.Locale.ROOT);
     Long negativeExpiry = negativeResolutionCache.get(lower);
-    long now = System.currentTimeMillis();
-    if (negativeExpiry != null && now < negativeExpiry) {
-      return null;
+    if (negativeExpiry != null) {
+      if (System.currentTimeMillis() < negativeExpiry) {
+        return null;
+      }
+      negativeResolutionCache.remove(lower, negativeExpiry);
     }
 
-    if (backendDatabaseExists(defaultBackend(), dbName)) {
+    // Single flight: concurrent misses on one name share one round of get_database probes instead
+    // of each sending its own to every backend.
+    CompletableFuture<Optional<String>> mine =
+        new CompletableFuture<>();
+    CompletableFuture<Optional<String>> running =
+        onDemandLookups.putIfAbsent(lower, mine);
+    if (running != null) {
+      return running.join().orElse(null);
+    }
+    try {
+      String resolved = probeDatabaseCatalog(dbName, lower);
+      mine.complete(Optional.ofNullable(resolved));
+      return resolved;
+    } catch (RuntimeException | Error e) {
+      mine.completeExceptionally(e);
+      throw e;
+    } finally {
+      onDemandLookups.remove(lower, mine);
+    }
+  }
+
+  private String probeDatabaseCatalog(String dbName, String lower) {
+    DatabaseExistence onDefault = backendDatabaseExistence(defaultBackend(), dbName);
+    if (onDefault == DatabaseExistence.PRESENT) {
       defaultCatalogDatabases.add(lower);
       dynamicMergedDatabases.remove(lower);
       negativeResolutionCache.remove(lower);
       return config.defaultCatalog();
     }
 
+    boolean absentEverywhere = onDefault == DatabaseExistence.ABSENT;
     for (String remoteCatName : mergeWithDefaultCatalogs) {
       CatalogBackend remoteBackend = backends.get(remoteCatName);
-      if (remoteBackend != null && backendDatabaseExists(remoteBackend, dbName)) {
+      DatabaseExistence onRemote = backendDatabaseExistence(remoteBackend, dbName);
+      if (onRemote == DatabaseExistence.PRESENT) {
         dynamicMergedDatabases.put(lower, remoteCatName);
         negativeResolutionCache.remove(lower);
         return remoteCatName;
       }
+      absentEverywhere &= onRemote == DatabaseExistence.ABSENT;
     }
 
-    negativeResolutionCache.put(lower, now + 5000L);
+    // Only a definite "no such database" from every backend is remembered: a backend that failed
+    // to answer may well hold the database, and caching that as absent would route the name away
+    // from it for the whole TTL.
+    if (absentEverywhere) {
+      rememberAbsentDatabase(lower);
+    }
     return null;
   }
 
-  private boolean backendDatabaseExists(CatalogBackend backend, String dbName) {
+  private void rememberAbsentDatabase(String lower) {
+    MergedDatabaseResolutionConfig resolution = config.latencyRouting().mergedDatabaseResolution();
+    if (resolution.negativeTtlMs() <= 0L) {
+      return;
+    }
+    long now = System.currentTimeMillis();
+    // The names come from clients, so the map is capped: expired misses are dropped first, and a
+    // cache still full of live misses simply stops remembering new ones until they expire.
+    if (negativeResolutionCache.size() >= resolution.negativeMaxEntries()) {
+      negativeResolutionCache.values().removeIf(expiresAt -> expiresAt <= now);
+      if (negativeResolutionCache.size() >= resolution.negativeMaxEntries()) {
+        return;
+      }
+    }
+    negativeResolutionCache.put(lower, now + resolution.negativeTtlMs());
+  }
+
+  int negativeResolutionCacheSize() {
+    return negativeResolutionCache.size();
+  }
+
+  private enum DatabaseExistence { PRESENT, ABSENT, UNKNOWN }
+
+  private DatabaseExistence backendDatabaseExistence(CatalogBackend backend, String dbName) {
     if (backend == null) {
-      return false;
+      return DatabaseExistence.ABSENT;
     }
     try {
       Method getDbMethod = org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class
           .getMethod("get_database", String.class);
       Object result = backend.invoke(getDbMethod, new Object[]{dbName}, null);
-      return result != null;
+      return result != null ? DatabaseExistence.PRESENT : DatabaseExistence.ABSENT;
     } catch (Throwable t) {
-      return false;
+      return isNoSuchObject(t) ? DatabaseExistence.ABSENT : DatabaseExistence.UNKNOWN;
     }
+  }
+
+  private static boolean isNoSuchObject(Throwable error) {
+    Throwable current = error;
+    for (int depth = 0; depth < 5 && current != null; depth++) {
+      if (current instanceof NoSuchObjectException) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static Set<String> buildMergeWithDefaultCatalogs(ProxyConfig config) {

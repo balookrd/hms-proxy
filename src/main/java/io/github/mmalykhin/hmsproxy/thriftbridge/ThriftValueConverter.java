@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.WeakHashMap;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TDeserializer;
@@ -25,16 +24,27 @@ public final class ThriftValueConverter {
   private static final String TBASE_NAME = "org.apache.thrift.TBase";
 
   /**
-   * Serializer/deserializer pair for thrift types living in a FOREIGN classloader - the Hive 4
+   * Serializer/deserializer factory for thrift types living in a FOREIGN classloader - the Hive 4
    * backend runtime carries its own libthrift 0.16 child-first, so its structs do not implement
    * the parent's {@link TBase} and the shared (de)serializers above cannot touch them. The wire
    * format (binary protocol) is stable across libthrift versions, which is exactly what makes a
-   * serialize-here/deserialize-there conversion between the two lines possible. Weak keys so a
-   * retired catalog's classloader (and metaspace) is not pinned; ThreadLocal because thrift
-   * (de)serializers are not thread-safe.
+   * serialize-here/deserialize-there conversion between the two lines possible.
+   *
+   * <p>Keyed by the struct class through a ClassValue, so the cached reflection handles live in that
+   * class and leave with its classloader. A map keyed by the loader - even a weak one - never lets
+   * it go: every cached value is an instance of that loader's classes and keeps the key reachable.
+   * Thrift (de)serializers are not thread-safe, so one is built per call from the cached handles.
    */
-  private static final ThreadLocal<Map<ClassLoader, ForeignThriftCodec>> FOREIGN_CODECS =
-      ThreadLocal.withInitial(WeakHashMap::new);
+  private static final ClassValue<Object> FOREIGN_CODECS = new ClassValue<>() {
+    @Override
+    protected Object computeValue(Class<?> structType) {
+      try {
+        return ForeignThriftCodec.create(structType.getClassLoader());
+      } catch (Exception e) {
+        return e;
+      }
+    }
+  };
 
   // ClassValue, not a map keyed by Class: the cached constructors belong to the isolated metastore
   // runtime, and a strong-referenced map would pin every retired catalog class loader (and its
@@ -190,7 +200,7 @@ public final class ThriftValueConverter {
     if (value instanceof TBase<?, ?> parentStruct) {
       return SERIALIZER.get().serialize(parentStruct);
     }
-    return foreignCodec(value.getClass().getClassLoader()).serialize(value);
+    return foreignCodec(value.getClass()).serialize(value);
   }
 
   private static void deserializeInto(Object target, byte[] bytes) throws Exception {
@@ -198,7 +208,7 @@ public final class ThriftValueConverter {
       DESERIALIZER.get().deserialize(parentStruct, bytes);
       return;
     }
-    foreignCodec(target.getClass().getClassLoader()).deserialize(target, bytes);
+    foreignCodec(target.getClass()).deserialize(target, bytes);
   }
 
   /**
@@ -246,14 +256,12 @@ public final class ThriftValueConverter {
     }
   }
 
-  private static ForeignThriftCodec foreignCodec(ClassLoader loader) throws Exception {
-    Map<ClassLoader, ForeignThriftCodec> codecs = FOREIGN_CODECS.get();
-    ForeignThriftCodec codec = codecs.get(loader);
-    if (codec == null) {
-      codec = ForeignThriftCodec.create(loader);
-      codecs.put(loader, codec);
+  private static ForeignThriftCodec foreignCodec(Class<?> structType) throws Exception {
+    Object cached = FOREIGN_CODECS.get(structType);
+    if (cached instanceof Exception failure) {
+      throw failure;
     }
-    return codec;
+    return (ForeignThriftCodec) cached;
   }
 
   private static Object newTargetInstance(Class<?> targetType) throws Exception {
@@ -265,9 +273,10 @@ public final class ThriftValueConverter {
   }
 
   private record ForeignThriftCodec(
-      Object serializer,
+      Object protocolFactory,
+      Constructor<?> serializerConstructor,
       Method serializeMethod,
-      Object deserializer,
+      Constructor<?> deserializerConstructor,
       Method deserializeMethod
   ) {
     static ForeignThriftCodec create(ClassLoader loader) throws Exception {
@@ -278,18 +287,19 @@ public final class ThriftValueConverter {
       Class<?> serializerClass = Class.forName("org.apache.thrift.TSerializer", true, loader);
       Class<?> deserializerClass = Class.forName("org.apache.thrift.TDeserializer", true, loader);
       return new ForeignThriftCodec(
-          serializerClass.getConstructor(protocolFactoryClass).newInstance(binaryFactory),
+          binaryFactory,
+          serializerClass.getConstructor(protocolFactoryClass),
           serializerClass.getMethod("serialize", tbaseClass),
-          deserializerClass.getConstructor(protocolFactoryClass).newInstance(binaryFactory),
+          deserializerClass.getConstructor(protocolFactoryClass),
           deserializerClass.getMethod("deserialize", tbaseClass, byte[].class));
     }
 
     byte[] serialize(Object struct) throws Exception {
-      return (byte[]) serializeMethod.invoke(serializer, struct);
+      return (byte[]) serializeMethod.invoke(serializerConstructor.newInstance(protocolFactory), struct);
     }
 
     void deserialize(Object struct, byte[] bytes) throws Exception {
-      deserializeMethod.invoke(deserializer, struct, bytes);
+      deserializeMethod.invoke(deserializerConstructor.newInstance(protocolFactory), struct, bytes);
     }
   }
 }

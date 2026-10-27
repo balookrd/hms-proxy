@@ -59,12 +59,16 @@ public final class SecurityConfigParser {
     boolean groupDiskCachePersistOnShutdown = reader.getBoolean(
         "security.group-disk-cache.persist-on-shutdown", GroupDiskCacheConfig.DEFAULT_PERSIST_ON_SHUTDOWN);
 
+    int groupDiskCacheMaxEntries = reader.getPositiveInt(
+        "security.group-disk-cache.max-entries", GroupDiskCacheConfig.DEFAULT_MAX_ENTRIES);
+
     GroupDiskCacheConfig groupDiskCache = new GroupDiskCacheConfig(
         groupDiskCacheEnabled,
         groupDiskCachePath,
         groupDiskCacheEntryTtlSeconds,
         groupDiskCachePersistIntervalSeconds,
-        groupDiskCachePersistOnShutdown);
+        groupDiskCachePersistOnShutdown,
+        groupDiskCacheMaxEntries);
 
     return new SecurityConfig(
         securityMode,

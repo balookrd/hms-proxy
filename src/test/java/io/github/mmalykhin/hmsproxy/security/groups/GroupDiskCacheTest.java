@@ -183,4 +183,46 @@ public class GroupDiskCacheTest {
       Assert.assertEquals(Optional.of(List.of("dev")), cache.get("alice"));
     }
   }
+
+  @Test
+  public void aFullCacheDropsTheUserRefreshedLongestAgo() throws Exception {
+    File cacheFile = temp.newFile("group-cache-capped.json");
+    AtomicLong clock = new AtomicLong(1_000L);
+    GroupDiskCacheConfig config = new GroupDiskCacheConfig(
+        true, cacheFile.getAbsolutePath(), 3600L, 0L, false, 3);
+    try (GroupDiskCache cache = new GroupDiskCache(config, new PrometheusMetrics(), clock::get)) {
+      for (String user : List.of("alice", "bob", "carol")) {
+        clock.addAndGet(10L);
+        cache.put(user, List.of("g"));
+      }
+      clock.addAndGet(10L);
+      cache.put("alice", List.of("g", "h"));
+
+      for (int i = 0; i < 1_000; i++) {
+        clock.addAndGet(1L);
+        cache.put("set_ugi_user_" + i, List.of());
+      }
+      Assert.assertEquals("a flood of new names never grows the cache past its cap", 3, cache.size());
+      Assert.assertTrue("the most recent entries survive", cache.get("set_ugi_user_999").isPresent());
+      Assert.assertFalse(cache.get("bob").isPresent());
+    }
+  }
+
+  @Test
+  public void startupLoadsOnlyTheNewestEntriesUpToTheCap() throws Exception {
+    File cacheFile = temp.newFile("group-cache-oversized.json");
+    long now = 1_000_000L;
+    MAPPER.writeValue(cacheFile, new DiskCachePayload(1, now, Map.of(
+        "oldest", new CachedUserGroups(List.of("a"), now - 300L),
+        "middle", new CachedUserGroups(List.of("b"), now - 200L),
+        "newest", new CachedUserGroups(List.of("c"), now - 100L))));
+    GroupDiskCacheConfig config = new GroupDiskCacheConfig(
+        true, cacheFile.getAbsolutePath(), 3600L, 0L, false, 2);
+    try (GroupDiskCache cache = new GroupDiskCache(config, new PrometheusMetrics(), () -> now)) {
+      Assert.assertEquals(2, cache.size());
+      Assert.assertTrue(cache.get("newest").isPresent());
+      Assert.assertTrue(cache.get("middle").isPresent());
+      Assert.assertFalse(cache.get("oldest").isPresent());
+    }
+  }
 }

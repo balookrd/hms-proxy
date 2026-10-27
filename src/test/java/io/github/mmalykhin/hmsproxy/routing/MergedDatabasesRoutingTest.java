@@ -6,6 +6,8 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.MergedDatabaseResolutionConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
@@ -13,12 +15,19 @@ import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreC
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
@@ -489,5 +498,135 @@ public class MergedDatabasesRoutingTest {
     Assert.assertEquals("cat2-remote_only", db.getDescription());
     Assert.assertEquals("remote_only", cat2GetDb.get());
     Assert.assertEquals("remote_only", cat1GetDb.get());
+  }
+
+  @Test
+  public void theNegativeCacheIsCappedAgainstAFloodOfUnknownNames() throws Throwable {
+    ProbeRouter probe = probeRouter(new MergedDatabaseResolutionConfig(60_000L, 50), (name, calls) -> {
+      throw new NoSuchObjectException(name);
+    });
+    for (int i = 0; i < 500; i++) {
+      probe.router.resolveDatabase("ghost_" + i);
+    }
+    Assert.assertTrue("cache size " + probe.router.negativeResolutionCacheSize(),
+        probe.router.negativeResolutionCacheSize() <= 50);
+  }
+
+  @Test
+  public void expiredMissesMakeRoomForNewOnes() throws Throwable {
+    ProbeRouter probe = probeRouter(new MergedDatabaseResolutionConfig(20L, 10), (name, calls) -> {
+      throw new NoSuchObjectException(name);
+    });
+    for (int i = 0; i < 10; i++) {
+      probe.router.resolveDatabase("old_" + i);
+    }
+    Thread.sleep(60L);
+    for (int i = 0; i < 10; i++) {
+      probe.router.resolveDatabase("new_" + i);
+    }
+    Assert.assertEquals(10, probe.router.negativeResolutionCacheSize());
+    int before = probe.remoteCalls.get();
+    probe.router.resolveDatabase("new_3");
+    Assert.assertEquals("a remembered miss is answered without a probe", before, probe.remoteCalls.get());
+  }
+
+  @Test
+  public void concurrentMissesOnOneNameShareOneProbe() throws Throwable {
+    CountDownLatch release = new CountDownLatch(1);
+    ProbeRouter probe = probeRouter(MergedDatabaseResolutionConfig.defaultConfig(), (name, calls) -> {
+      if (!release.await(5, TimeUnit.SECONDS)) {
+        throw new IllegalStateException("never released");
+      }
+      throw new NoSuchObjectException(name);
+    });
+    ExecutorService pool = Executors.newFixedThreadPool(8);
+    try {
+      List<Future<?>> lookups = new ArrayList<>();
+      for (int i = 0; i < 8; i++) {
+        lookups.add(pool.submit(() -> {
+          probe.router.resolveDatabase("ghost");
+          return null;
+        }));
+      }
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (probe.remoteCalls.get() == 0 && System.nanoTime() < deadline) {
+        Thread.sleep(5L);
+      }
+      Thread.sleep(200L);
+      release.countDown();
+      for (Future<?> lookup : lookups) {
+        lookup.get(10, TimeUnit.SECONDS);
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    Assert.assertEquals("eight concurrent misses must reach the remote backend once", 1, probe.remoteCalls.get());
+  }
+
+  @Test
+  public void aBackendThatFailedToAnswerIsNotRememberedAsMissingTheDatabase() throws Throwable {
+    ProbeRouter probe = probeRouter(MergedDatabaseResolutionConfig.defaultConfig(), (name, calls) -> {
+      if (calls == 1) {
+        throw new MetaException("Could not connect to meta store using any of the URIs provided");
+      }
+      Database db = new Database();
+      db.setName(name);
+      return db;
+    });
+    CatalogRouter.ResolvedNamespace first = probe.router.resolveDatabase("remote_only");
+    Assert.assertEquals("the failed lookup falls back to the default catalog", "catalog1", first.catalogName());
+    Assert.assertEquals(0, probe.router.negativeResolutionCacheSize());
+
+    CatalogRouter.ResolvedNamespace second = probe.router.resolveDatabase("remote_only");
+    Assert.assertEquals("the next lookup must probe again and find the remote database",
+        "catalog2", second.catalogName());
+  }
+
+  @FunctionalInterface
+  private interface RemoteGetDatabase {
+    Object answer(String dbName, int callNumber) throws Exception;
+  }
+
+  private record ProbeRouter(CatalogRouter router, AtomicInteger remoteCalls) {
+  }
+
+  /** Default catalog knows only "default"; catalog2 (merged) answers get_database through {@code remote}. */
+  private ProbeRouter probeRouter(MergedDatabaseResolutionConfig resolution, RemoteGetDatabase remote)
+      throws Exception {
+    ProxyConfig base = createConfig(true);
+    ProxyConfig config = ProxyConfig.builder()
+        .server(base.server())
+        .security(base.security())
+        .catalogDbSeparator(base.catalogDbSeparator())
+        .defaultCatalog(base.defaultCatalog())
+        .catalogs(base.catalogs())
+        .syntheticReadLockStore(base.syntheticReadLockStore())
+        .latencyRouting(new LatencyRoutingConfig(
+            null, null, null, null, null, null, null, null, false, null, null, false, 0L, null, resolution))
+        .build();
+    AtomicInteger remoteCalls = new AtomicInteger();
+    CatalogBackend backend1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((proxy, method, args) -> {
+          if ("get_database".equals(method.getName()) && "default".equals(args[0])) {
+            Database db = new Database();
+            db.setName("default");
+            return db;
+          }
+          if ("get_database".equals(method.getName())) {
+            throw new NoSuchObjectException("No such db in cat1: " + args[0]);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend backend2 = newBackend(config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((proxy, method, args) -> {
+          if ("get_database".equals(method.getName())) {
+            return remote.answer((String) args[0], remoteCalls.incrementAndGet());
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    return new ProbeRouter(new CatalogRouter(config, backends), remoteCalls);
   }
 }

@@ -96,7 +96,8 @@ public final class ProxyConfigLogger {
       sb.append("  Group Disk Cache: enabled, path=").append(security.groupDiskCache().path())
           .append(", entryTtl=").append(security.groupDiskCache().entryTtlSeconds()).append("s")
           .append(", persistInterval=").append(security.groupDiskCache().persistIntervalSeconds()).append("s")
-          .append(", persistOnShutdown=").append(security.groupDiskCache().persistOnShutdown()).append("\n");
+          .append(", persistOnShutdown=").append(security.groupDiskCache().persistOnShutdown())
+          .append(", maxEntries=").append(security.groupDiskCache().maxEntries()).append("\n");
     } else {
       sb.append("  Group Disk Cache: disabled\n");
     }
@@ -278,6 +279,8 @@ public final class ProxyConfigLogger {
         .append(", shared=").append(lr.partitionMetadataCache().sharedAcrossUsers()).append("\n");
     sb.append("  Config Value Cache: ttl=").append(lr.configValueCache().ttlMs()).append("ms")
         .append(", maxEntries=").append(lr.configValueCache().maxEntries()).append("\n");
+    sb.append("  Merged Database Negative Cache: ttl=").append(lr.mergedDatabaseResolution().negativeTtlMs())
+        .append("ms, maxEntries=").append(lr.mergedDatabaseResolution().negativeMaxEntries()).append("\n");
     sb.append("  Serve Stale On Error: enabled=").append(lr.cacheServeStaleOnError())
         .append(", gracePeriod=").append(lr.cacheStaleGracePeriodMs()).append("ms\n");
     DistributedCacheInvalidationConfig dci = lr.distributedCacheInvalidation();

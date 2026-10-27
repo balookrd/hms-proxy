@@ -2,9 +2,11 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.thrift.TApplicationException;
 import org.junit.Assert;
@@ -110,5 +112,36 @@ public class Hive4IsolatedRuntimeTest {
     Assert.assertEquals(TApplicationException.UNKNOWN_METHOD,
         ((TApplicationException) converted).getType());
     Assert.assertEquals("no such method", converted.getMessage());
+  }
+
+  @Test
+  public void convertingThroughAnIsolatedRuntimeDoesNotPinItsClassLoader() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    WeakReference<ClassLoader> loaderRef = convertOnceThroughAFreshLoader();
+
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (loaderRef.get() != null && System.nanoTime() < deadline) {
+      System.gc();
+      byte[] pressure = new byte[8 * 1024 * 1024];
+      Assert.assertNotNull(pressure);
+      Thread.sleep(20L);
+    }
+    Assert.assertNull("a retired isolated runtime classloader must be collectable after conversions",
+        loaderRef.get());
+  }
+
+  /** Converts a struct both ways through a loader nothing else references, then closes it. */
+  private WeakReference<ClassLoader> convertOnceThroughAFreshLoader() throws Exception {
+    MetastoreApiClassLoader loader = MetastoreApiClassLoader.forBackendRuntime(
+        HIVE_4_JAR, MetastoreRuntimeProfile.APACHE_4_1_0, getClass().getClassLoader());
+    Class<?> childTableClass = Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, loader);
+    Object childTable = childTableClass.getConstructor().newInstance();
+    childTableClass.getMethod("setTableName", String.class).invoke(childTable, "events");
+    Assert.assertTrue(ThriftValueConverter.convertDynamicValue(childTable, getClass().getClassLoader()) instanceof Table);
+    Table parentTable = new Table();
+    parentTable.setTableName("clicks");
+    Assert.assertSame(childTableClass, ThriftValueConverter.convertValue(parentTable, childTableClass, loader).getClass());
+    loader.close();
+    return new WeakReference<>(loader);
   }
 }

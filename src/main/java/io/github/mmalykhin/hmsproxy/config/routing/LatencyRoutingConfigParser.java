@@ -129,6 +129,14 @@ public final class LatencyRoutingConfigParser {
         configValueCacheTtlMs,
         configValueCacheMaxEntries);
 
+    MergedDatabaseResolutionConfig mergedDatabaseResolution = new MergedDatabaseResolutionConfig(
+        reader.getNonNegativeLong(
+            "routing.merge-with-default.negative-cache-ttl-ms",
+            MergedDatabaseResolutionConfig.DEFAULT_NEGATIVE_TTL_MS),
+        reader.getPositiveInt(
+            "routing.merge-with-default.negative-cache-max-entries",
+            MergedDatabaseResolutionConfig.DEFAULT_NEGATIVE_MAX_ENTRIES));
+
     DistributedCacheInvalidationMode invalidationMode =
         parseDistributedCacheInvalidationMode(reader.getOrNull("routing.cache.distributed-invalidation.mode"));
     DistributedCacheInvalidationConfig distributedCacheInvalidation;
@@ -207,7 +215,8 @@ public final class LatencyRoutingConfigParser {
         partitionMetadataCache,
         cacheServeStaleOnError,
         cacheStaleGracePeriodMs,
-        distributedCacheInvalidation);
+        distributedCacheInvalidation,
+        mergedDatabaseResolution);
   }
 
   private static DistributedCacheInvalidationMode parseDistributedCacheInvalidationMode(String value) {

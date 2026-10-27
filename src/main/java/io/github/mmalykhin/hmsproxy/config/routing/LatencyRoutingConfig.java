@@ -14,7 +14,8 @@ public record LatencyRoutingConfig(
     PartitionMetadataCacheConfig partitionMetadataCache,
     boolean cacheServeStaleOnError,
     long cacheStaleGracePeriodMs,
-    DistributedCacheInvalidationConfig distributedCacheInvalidation
+    DistributedCacheInvalidationConfig distributedCacheInvalidation,
+    MergedDatabaseResolutionConfig mergedDatabaseResolution
 ) {
   public static final boolean DEFAULT_CACHE_SERVE_STALE_ON_ERROR = false;
   public static final long DEFAULT_CACHE_STALE_GRACE_PERIOD_MS = 86_400_000L;
@@ -108,6 +109,28 @@ public record LatencyRoutingConfig(
         DistributedCacheInvalidationConfig.disabled());
   }
 
+  public LatencyRoutingConfig(
+      BackendStatePollingConfig backendStatePolling,
+      AdaptiveTimeoutConfig adaptiveTimeout,
+      CircuitBreakerConfig circuitBreaker,
+      HedgedReadConfig hedgedRead,
+      DegradedRoutingPolicy degradedRoutingPolicy,
+      DatabaseListCacheConfig databaseListCache,
+      DatabaseMetadataCacheConfig databaseMetadataCache,
+      ConfigValueCacheConfig configValueCache,
+      boolean refreshPrivilegesSyntheticSuccess,
+      TableMetadataCacheConfig tableMetadataCache,
+      PartitionMetadataCacheConfig partitionMetadataCache,
+      boolean cacheServeStaleOnError,
+      long cacheStaleGracePeriodMs,
+      DistributedCacheInvalidationConfig distributedCacheInvalidation
+  ) {
+    this(backendStatePolling, adaptiveTimeout, circuitBreaker, hedgedRead, degradedRoutingPolicy,
+        databaseListCache, databaseMetadataCache, configValueCache, refreshPrivilegesSyntheticSuccess,
+        tableMetadataCache, partitionMetadataCache, cacheServeStaleOnError, cacheStaleGracePeriodMs,
+        distributedCacheInvalidation, null);
+  }
+
   public LatencyRoutingConfig {
     backendStatePolling =
         backendStatePolling == null ? new BackendStatePollingConfig(false, 10_000, 5_000L, 1) : backendStatePolling;
@@ -131,6 +154,8 @@ public record LatencyRoutingConfig(
     cacheStaleGracePeriodMs = Math.max(0L, cacheStaleGracePeriodMs);
     distributedCacheInvalidation =
         distributedCacheInvalidation == null ? DistributedCacheInvalidationConfig.disabled() : distributedCacheInvalidation;
+    mergedDatabaseResolution =
+        mergedDatabaseResolution == null ? MergedDatabaseResolutionConfig.defaultConfig() : mergedDatabaseResolution;
   }
 
   public static LatencyRoutingConfig disabled() {

@@ -9,6 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -117,9 +119,34 @@ public final class GroupDiskCache implements AutoCloseable {
       return;
     }
 
+    if (existing == null) {
+      makeRoomForNewUser();
+    }
     cache.put(userName, new CachedUserGroups(normalizedGroups, clock.getAsLong()));
     dirty.set(true);
     updateEntriesMetric();
+  }
+
+  /**
+   * User names reach this cache from clients (under SIMPLE auth a client names itself through
+   * set_ugi), so it is capped: a full cache drops the entry refreshed longest ago. Racing writers
+   * may overshoot the cap by the number of concurrent new users, never more.
+   */
+  private void makeRoomForNewUser() {
+    while (cache.size() >= config.maxEntries()) {
+      String oldestUser = null;
+      long oldestUpdate = Long.MAX_VALUE;
+      for (Map.Entry<String, CachedUserGroups> entry : cache.entrySet()) {
+        if (entry.getValue().updatedAtEpochMs() < oldestUpdate) {
+          oldestUpdate = entry.getValue().updatedAtEpochMs();
+          oldestUser = entry.getKey();
+        }
+      }
+      if (oldestUser == null || cache.remove(oldestUser) == null) {
+        return;
+      }
+      recordMetric("evicted");
+    }
   }
 
   public synchronized boolean persistToDisk() {
@@ -196,15 +223,21 @@ public final class GroupDiskCache implements AutoCloseable {
       int loaded = 0;
       int expired = 0;
 
-      for (Map.Entry<String, CachedUserGroups> entry : payload.entries().entrySet()) {
+      // Newest first, so a file written under a larger cap (or by an older version without one)
+      // loads the most recently refreshed users.
+      List<Map.Entry<String, CachedUserGroups>> candidates = new ArrayList<>(payload.entries().entrySet());
+      candidates.sort(Comparator.comparingLong(
+          (Map.Entry<String, CachedUserGroups> e) -> e.getValue() == null ? Long.MIN_VALUE : e.getValue().updatedAtEpochMs())
+          .reversed());
+      for (Map.Entry<String, CachedUserGroups> entry : candidates) {
         String user = entry.getKey();
         CachedUserGroups value = entry.getValue();
         if (value != null && user != null && !user.isBlank()) {
-          if (now - value.updatedAtEpochMs() <= maxAgeMs) {
+          if (now - value.updatedAtEpochMs() > maxAgeMs) {
+            expired++;
+          } else if (cache.size() < config.maxEntries()) {
             cache.put(user, value);
             loaded++;
-          } else {
-            expired++;
           }
         }
       }
