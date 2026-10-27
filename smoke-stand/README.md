@@ -103,6 +103,33 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 `proxy/hms-proxy.properties`, перезапустите прокси и создайте транзакционную таблицу: прокси должен
 отклонить её по имени метода.
 
+### Прогон SQL-смоука (`env/sql*.env`)
+
+Сценарий `--scenario sql` запускается изнутри `stand-hs2-hdp`: там есть beeline, который достаёт
+до обоих HiveServer2. Раскладка выбирается env-файлом — `sql.env`/`sql-kerberos.env` для
+Hortonworks-метастора в роли default-каталога, `sql-apache.env`/`sql-apache-kerberos.env` для
+Apache. Порядок:
+
+```bash
+smoke-stand/init-stand.sh   # с хоста: в контейнере нет docker, и раннер сам его не вызовет
+docker exec stand-hs2-hdp kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL   # только Kerberos
+docker cp scripts/run-real-installation-smoke.sh stand-hs2-hdp:/opt/hs2-hdp/run-smoke.sh
+docker cp smoke-stand/env/sql-kerberos.env stand-hs2-hdp:/opt/hs2-hdp/sql-kerberos.env
+docker cp smoke-stand/proxy/hms-proxy-fat.jar stand-hs2-hdp:/opt/hs2-hdp/hms-proxy-fat.jar
+docker exec stand-hs2-hdp /opt/hs2-hdp/run-smoke.sh --env-file /opt/hs2-hdp/sql-kerberos.env --scenario sql
+```
+
+- `init-stand.sh` создаёт read-таблицы, которые сценарий читает сразу после `use`:
+  `hdp__default.smoke_read_hdp` и `apache__default.smoke_read_ap` (имена берутся из
+  `HMS_SMOKE_HDP_READ_TABLE`/`HMS_SMOKE_APACHE_READ_TABLE`). Создаёт через прокси, каждую через
+  front door своего метастора, поэтому шаг одинаков для обеих раскладок. Без них прогон падает
+  с `Table not found smoke_read_hdp`.
+- Fat jar нужен и для `--scenario sql`: раннер проверяет `HMS_SMOKE_FAT_JAR` на старте
+  (`error: fat jar not found`).
+- После перезапуска HDFS перезапустите оба HiveServer2 (`docker restart stand-hs2 stand-hs2-hdp`):
+  scratch-каталог HiveServer2 создаёт только на старте, и без перезапуска каждая новая сессия
+  падает с `FileNotFoundException: /opt/hs2/scratch`.
+
 ## Purge внешних таблиц
 
 Прокси удаляет данные внешних таблиц сам только для каталогов на runtime-профиле `APACHE_3_1_3` —

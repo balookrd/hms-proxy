@@ -102,6 +102,32 @@ To exercise the guard, uncomment `guard.transactional-ddl.mode=REJECT_TRANSACTIO
 `proxy/hms-proxy.properties`, restart the proxy, and create a transactional table: the proxy must
 reject it by name.
 
+### Running the SQL smoke (`env/sql*.env`)
+
+`--scenario sql` runs from inside `stand-hs2-hdp`, whose beeline reaches both HiveServer2. The env
+file picks the layout - `sql.env`/`sql-kerberos.env` with the Hortonworks metastore as the default
+catalog, `sql-apache.env`/`sql-apache-kerberos.env` with the Apache one. The order:
+
+```bash
+smoke-stand/init-stand.sh   # from the host: the container has no docker, so the runner cannot call it
+docker exec stand-hs2-hdp kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL   # Kerberos only
+docker cp scripts/run-real-installation-smoke.sh stand-hs2-hdp:/opt/hs2-hdp/run-smoke.sh
+docker cp smoke-stand/env/sql-kerberos.env stand-hs2-hdp:/opt/hs2-hdp/sql-kerberos.env
+docker cp smoke-stand/proxy/hms-proxy-fat.jar stand-hs2-hdp:/opt/hs2-hdp/hms-proxy-fat.jar
+docker exec stand-hs2-hdp /opt/hs2-hdp/run-smoke.sh --env-file /opt/hs2-hdp/sql-kerberos.env --scenario sql
+```
+
+- `init-stand.sh` creates the read tables the scenario reads right after `use`:
+  `hdp__default.smoke_read_hdp` and `apache__default.smoke_read_ap` (names from
+  `HMS_SMOKE_HDP_READ_TABLE`/`HMS_SMOKE_APACHE_READ_TABLE`). It creates them through the proxy,
+  each through the front door of its own metastore, so the step is the same for both layouts.
+  Without them the run fails with `Table not found smoke_read_hdp`.
+- The fat jar is needed for `--scenario sql` too: the runner checks `HMS_SMOKE_FAT_JAR` at startup
+  (`error: fat jar not found`).
+- After HDFS is restarted, restart both HiveServer2 (`docker restart stand-hs2 stand-hs2-hdp`):
+  HiveServer2 creates its scratch directory only at startup, and without the restart every new
+  session fails with `FileNotFoundException: /opt/hs2/scratch`.
+
 ## External-table purge
 
 The proxy deletes external-table data itself only for catalogs on the `APACHE_3_1_3` runtime

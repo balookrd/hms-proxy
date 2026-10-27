@@ -73,4 +73,47 @@ if is_running "stand-namenode-b" && is_running "stand-hs2"; then
             'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');\"" >/dev/null 2>&1 || true
 fi
 
+# 5. Read tables of the SQL smoke (HMS_SMOKE_HDP_READ_TABLE / HMS_SMOKE_APACHE_READ_TABLE in
+# env/sql*.env). Created through the proxy, each through the front door paired with its own
+# metastore - hs2-hdp for the hdp catalog, hs2 for the apache one - so the step does not depend on
+# which catalog is the default and never goes through the cross pairs (TEST-MATRIX rows C6/C7).
+# Both HiveServer2 are reached from stand-hs2-hdp, the same place the SQL smoke runs from.
+HDP_READ_TABLE="${HMS_SMOKE_HDP_READ_TABLE:-smoke_read_hdp}"
+APACHE_READ_TABLE="${HMS_SMOKE_APACHE_READ_TABLE:-smoke_read_ap}"
+
+ensure_read_table() {
+  local hs2_host="$1"
+  local database="$2"
+  local table="$3"
+  local url="jdbc:hive2://${hs2_host}:10000/default"
+  if [[ "$(docker exec stand-proxy printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]; then
+    url="${url};principal=hive/${hs2_host}@SMOKE.LOCAL"
+    docker exec stand-hs2-hdp kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
+  fi
+  # INSERT OVERWRITE keeps the table at exactly one row however often this runs. The Hortonworks
+  # HiveServer2 needs the engine set per session (no MapReduce in its build config, no YARN for Tez).
+  local sql="set hive.execution.engine=mr;
+set hive.vectorized.execution.enabled=false;
+create table if not exists ${database}.${table} (id int, src string) stored as parquet;
+insert overwrite table ${database}.${table} values (1, '${table}');
+select concat('read_table_ready_', src) from ${database}.${table};"
+  local output=""
+  # The marker is checked at the start of a line: beeline echoes the statement, so the literal
+  # is in the output whatever the query returned.
+  if output="$(docker exec stand-hs2-hdp beeline -u "${url}" -n hive \
+        --showHeader=false --outputformat=tsv2 -e "${sql}" 2>&1)" \
+      && grep -qE "^read_table_ready_${table}([[:space:]]|$)" <<<"${output}"; then
+    log "${database}.${table} is ready"
+  else
+    log "WARN: could not prepare ${database}.${table} via ${hs2_host}; the SQL smoke will fail on it:"
+    tail -n 20 <<<"${output}" >&2
+  fi
+}
+
+if is_running "stand-proxy" && is_running "stand-hs2-hdp" && is_running "stand-hs2"; then
+  log "Ensuring SQL smoke read tables ${HDP_READ_TABLE} and ${APACHE_READ_TABLE}..."
+  ensure_read_table hs2-hdp hdp__default "${HDP_READ_TABLE}"
+  ensure_read_table hs2 apache__default "${APACHE_READ_TABLE}"
+fi
+
 log "Stand prerequisites initialized successfully."

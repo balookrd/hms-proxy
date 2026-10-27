@@ -1537,6 +1537,59 @@ drop table ${purged}_probe;
 EOF
 }
 
+# EXCHANGE PARTITION for one catalog: moves a partition of the managed table into a fresh table of
+# the same shape. The pair of markers is what discriminates: the value read back through the target
+# says the partition and its data arrived, and the empty source says it was moved rather than
+# copied - either one alone also passes on an exchange that did only half of it.
+exchange_partition_sql() {
+  local source="$1"
+  local target="$2"
+  local label="$3"
+  cat <<EOF
+insert into ${source} partition (p='2026-06-01') values (3, '2026-06-01', 'exch_${label}');
+create table if not exists ${target} (
+  id int,
+  ds string,
+  extra string
+)
+partitioned by (p string)
+stored as parquet;
+alter table ${target} exchange partition (p='2026-06-01') with table ${source};
+select concat('exchange_moved_', extra) as ${label}_exchange_target from ${target} where p='2026-06-01';
+select case when count(*) = 0 then 'exchange_left_source_${label}' else 'exchange_stayed_in_source_${label}' end
+  as ${label}_exchange_source from ${source} where p='2026-06-01';
+drop table ${target};
+EOF
+}
+
+# An external table whose partition lives outside the table directory. The location itself is
+# asserted on the `describe formatted ... partition` output downstream; the markers here prove the
+# metastore record is what Hive actually uses - the row is written through the partition, read
+# back, and the file it is read from has to sit under the partition's own location rather than
+# under the table's.
+external_partition_sql() {
+  local table="$1"
+  local root="$2"
+  local label="$3"
+  cat <<EOF
+create external table if not exists ${table} (
+  id int,
+  ds string
+)
+partitioned by (p string)
+stored as parquet
+location '${root}/ext_part/${table}';
+alter table ${table} set tblproperties ('smoke'='true', 'table_kind'='external');
+alter table ${table} add partition (p='p_ext') location '${root}/ext_part_loc/${table}/p_ext';
+insert into ${table} partition (p='p_ext') values (8, 'ext_part_value_${label}');
+describe formatted ${table} partition (p='p_ext');
+select ds as ${label}_ext_part_value from ${table} where p='p_ext';
+select case when INPUT__FILE__NAME like '%/ext_part_loc/${table}/p_ext/%' then 'ext_part_data_at_location_${label}'
+  else 'ext_part_data_elsewhere_${label}' end as ${label}_ext_part_file from ${table} where p='p_ext';
+drop table ${table};
+EOF
+}
+
 # The scheme://authority of a location, i.e. the filesystem it names, or empty when the value is a
 # bare path. Used to assert which cluster a CTAS table landed on; a configuration that gives the
 # external roots as plain paths simply skips that assertion rather than asserting nothing.
@@ -1549,6 +1602,17 @@ filesystem_of_location() {
       ;;
     *) printf '' ;;
   esac
+}
+
+# Asserts that `describe formatted` reported exactly this location, which pins a partition placed
+# outside its table: assert_table_filesystem cannot, since it wants the path to end in the table name.
+assert_location_reported() {
+  local file="$1"
+  local location="$2"
+  local escaped=""
+  escaped="$(printf '%s' "${location}" | sed 's/[.[\*^$]/\\&/g')"
+  grep -E "Location:[[:space:]]+${escaped}([[:space:]]|$)" "${file}" >/dev/null \
+    || fail "expected location ${location} in ${file}"
 }
 
 # Asserts that `describe formatted` reported a location for this table on the expected filesystem.
@@ -1720,32 +1784,13 @@ select case when count(*) = 0 then 'truncate_emptied_managed_apache' else 'trunc
     log "skipping managed<->external conversion SQL smoke because HMS_SMOKE_SQL_RUN_TABLE_CONVERSION=${run_table_conversion}"
   fi
 
+  # Built as plain strings: they land in the SQL heredoc below as one expansion, so the names have
+  # to be expanded here. An escaped \${name} reaches beeline as a literal and fails to parse.
   local exchange_sql_hdp=""
   local exchange_sql_apache=""
   if [[ "${run_exchange_partition}" == "true" ]]; then
-    exchange_sql_hdp="insert into \${managed_hdp} partition (p='2026-06-01') values (3, '2026-06-01', 'exch_hdp');
-create table if not exists \${exchange_tgt_hdp} (
-  id int,
-  ds string,
-  extra string
-)
-partitioned by (p string)
-stored as parquet;
-alter table \${exchange_tgt_hdp} exchange partition (p='2026-06-01') with table \${managed_hdp};
-select case when count(*) = 1 then 'exchange_partition_ok_managed_hdp' else 'exchange_partition_fail_managed_hdp' end as exch_res_hdp from \${exchange_tgt_hdp} where p='2026-06-01';
-drop table \${exchange_tgt_hdp};"
-
-    exchange_sql_apache="insert into \${managed_apache} partition (p='2026-06-01') values (3, '2026-06-01', 'exch_apache');
-create table if not exists \${exchange_tgt_apache} (
-  id int,
-  ds string,
-  extra string
-)
-partitioned by (p string)
-stored as parquet;
-alter table \${exchange_tgt_apache} exchange partition (p='2026-06-01') with table \${managed_apache};
-select case when count(*) = 1 then 'exchange_partition_ok_managed_apache' else 'exchange_partition_fail_managed_apache' end as exch_res_apache from \${exchange_tgt_apache} where p='2026-06-01';
-drop table \${exchange_tgt_apache};"
+    exchange_sql_hdp="$(exchange_partition_sql "${managed_hdp}" "${exchange_tgt_hdp}" "managed_hdp")"
+    exchange_sql_apache="$(exchange_partition_sql "${managed_apache}" "${exchange_tgt_apache}" "managed_apache")"
   else
     log "skipping EXCHANGE PARTITION SQL smoke because HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=${run_exchange_partition}"
   fi
@@ -1753,31 +1798,8 @@ drop table \${exchange_tgt_apache};"
   local ext_part_sql_hdp=""
   local ext_part_sql_apache=""
   if [[ "${run_external_partition}" == "true" ]]; then
-    ext_part_sql_hdp="create external table if not exists \${ext_part_hdp} (
-  id int,
-  ds string
-)
-partitioned by (p string)
-stored as parquet
-location '\${hdp_external_root}/ext_part/\${ext_part_hdp}';
-alter table \${ext_part_hdp} set tblproperties ('smoke'='true', 'table_kind'='external');
-alter table \${ext_part_hdp} add partition (p='p_ext') location '\${hdp_external_root}/ext_part_loc/\${ext_part_hdp}/p_ext';
-describe formatted \${ext_part_hdp} partition (p='p_ext');
-select case when count(*) = 0 then 'ext_part_created_hdp' else 'ext_part_fail_hdp' end as ext_p_res_hdp from \${ext_part_hdp} where p='p_ext';
-drop table \${ext_part_hdp};"
-
-    ext_part_sql_apache="create external table if not exists \${ext_part_apache} (
-  id int,
-  ds string
-)
-partitioned by (p string)
-stored as parquet
-location '\${apache_external_root}/ext_part/\${ext_part_apache}';
-alter table \${ext_part_apache} set tblproperties ('smoke'='true', 'table_kind'='external');
-alter table \${ext_part_apache} add partition (p='p_ext') location '\${apache_external_root}/ext_part_loc/\${ext_part_apache}/p_ext';
-describe formatted \${ext_part_apache} partition (p='p_ext');
-select case when count(*) = 0 then 'ext_part_created_apache' else 'ext_part_fail_apache' end as ext_p_res_apache from \${ext_part_apache} where p='p_ext';
-drop table \${ext_part_apache};"
+    ext_part_sql_hdp="$(external_partition_sql "${ext_part_hdp}" "${hdp_external_root}" "hdp")"
+    ext_part_sql_apache="$(external_partition_sql "${ext_part_apache}" "${apache_external_root}" "apache")"
   else
     log "skipping external partition location SQL smoke because HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=${run_external_partition}"
   fi
@@ -2087,19 +2109,23 @@ EOF
   assert_file_contains_result "${output_file}" "${managed_hdp}_renamed"
   assert_file_contains_result "${output_file}" "${external_hdp}_renamed"
   if [[ "${run_exchange_partition}" == "true" ]]; then
-    assert_file_contains_result "${output_file}" "exchange_partition_ok_managed_hdp"
-    assert_file_contains_result "${output_file}" "exchange_partition_ok_managed_apache"
+    assert_file_contains_result "${output_file}" "exchange_moved_exch_managed_hdp"
+    assert_file_contains_result "${output_file}" "exchange_left_source_managed_hdp"
+    assert_file_contains_result "${output_file}" "exchange_moved_exch_managed_apache"
+    assert_file_contains_result "${output_file}" "exchange_left_source_managed_apache"
   fi
   if [[ "${run_external_partition}" == "true" ]]; then
-    assert_file_contains_result "${output_file}" "ext_part_created_hdp"
-    assert_file_contains_result "${output_file}" "ext_part_created_apache"
-    local hdp_filesystem=""
-    local apache_filesystem=""
-    hdp_filesystem="$(filesystem_of_location "${hdp_external_root}")"
-    apache_filesystem="$(filesystem_of_location "${apache_external_root}")"
-    if [[ -n "${hdp_filesystem}" && -n "${apache_filesystem}" ]]; then
-      assert_table_filesystem "${output_file}" "${ext_part_hdp}" "${hdp_filesystem}"
-      assert_table_filesystem "${output_file}" "${ext_part_apache}" "${apache_filesystem}"
+    assert_file_contains_result "${output_file}" "ext_part_value_hdp"
+    assert_file_contains_result "${output_file}" "ext_part_data_at_location_hdp"
+    assert_file_contains_result "${output_file}" "ext_part_value_apache"
+    assert_file_contains_result "${output_file}" "ext_part_data_at_location_apache"
+    # Only a qualified root names the exact location the metastore reports back; a bare path gets
+    # the default filesystem prepended, so the check is skipped rather than guessed.
+    if [[ -n "$(filesystem_of_location "${hdp_external_root}")" ]]; then
+      assert_location_reported "${output_file}" "${hdp_external_root}/ext_part_loc/${ext_part_hdp}/p_ext"
+    fi
+    if [[ -n "$(filesystem_of_location "${apache_external_root}")" ]]; then
+      assert_location_reported "${output_file}" "${apache_external_root}/ext_part_loc/${ext_part_apache}/p_ext"
     fi
   fi
   if [[ "${HMS_SMOKE_SQL_RUN_TRUNCATE:-true}" == "true" ]]; then
