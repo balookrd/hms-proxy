@@ -491,6 +491,12 @@ state, а `probeAgeMs` показывает, насколько устарели
 
 Текущие Prometheus метрики:
 
+- `hms_proxy_up`
+- `hms_proxy_start_time_seconds`
+- `hms_proxy_backend_up{backend}`
+- `hms_proxy_backend_last_success_timestamp_seconds{backend}`
+- `hms_proxy_backend_last_probe_timestamp_seconds{backend}`
+- `hms_proxy_backend_circuit_state{backend,state}`
 - `hms_proxy_requests_total{method,catalog,backend,status}`
 - `hms_proxy_request_duration_seconds{method,catalog,backend}`
 - `hms_proxy_backend_failures_total{backend,exception}`
@@ -579,6 +585,32 @@ scrape_configs:
 - `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes` и `hms_proxy_jvm_memory_max_bytes` отражают использование памяти JVM в байтах по области памяти `area` (`heap` или `nonheap`)
 - `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes` и `hms_proxy_jvm_memory_pool_max_bytes` отслеживают память по отдельным пулам памяти JVM (`pool`, `area`)
 - `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes` и `hms_proxy_jvm_buffer_pool_count` отображают использование пулов NIO-буферов (`pool`: `direct` или `mapped`)
+- `hms_proxy_up` всегда равна `1`, пока процесс отдаёт `/metrics`; мёртвый или зависший процесс виден как `up == 0` у самого Prometheus. `hms_proxy_start_time_seconds` — время старта процесса, по нему видны рестарты
+- `hms_proxy_backend_up` равна `1`, если бэкенд проходит ту же проверку, что и в `/readyz`: подключён, не `degraded` (флаг держится до следующего успешного вызова или probe) и circuit не `OPEN`. `hms_proxy_backend_last_success_timestamp_seconds` — время последнего успешного вызова или probe, `hms_proxy_backend_last_probe_timestamp_seconds` — время последнего фонового probe (`0`, пока ни одного не было), `hms_proxy_backend_circuit_state` — one-hot состояние circuit breaker (`closed`, `open`, `half_open`). Все четыре берутся из того же runtime state, что и `/readyz`, в момент опроса `/metrics`
+
+#### Метрики живости
+
+Живость бэкендов независимо от клиентского трафика даёт только фоновый опрос
+`routing.backend-state-polling.enabled=true`: каждые `interval-ms` прокси открывает к каждому бэкенду
+отдельную сессию и вызывает `getStatus`. Без него `hms_proxy_backend_up` меняется только по
+результатам клиентских запросов: на старте бэкенд считается подключённым, а без трафика значение не
+обновляется. Фоновое обновление кэшей баз (`routing.database-*-cache.background-refresh.*`) для этого
+не подходит: оно обновляет только записи, к которым недавно обращались клиенты.
+
+Пример алертов (при `interval-ms=10000`):
+
+```yaml
+- alert: HmsProxyDown
+  expr: up{job="hms-proxy"} == 0
+  for: 1m
+- alert: HmsProxyBackendDown
+  expr: hms_proxy_backend_up == 0
+  for: 1m
+# Фоновый probe перестал выполняться: зависший цикл опроса или выключенный polling.
+- alert: HmsProxyBackendProbeStale
+  expr: time() - hms_proxy_backend_last_probe_timestamp_seconds > 60
+  for: 1m
+```
 
 Несмотря на исторические имена метрик `synthetic_read_lock`, этот shim теперь также обслуживает
 допустимые non-transactional `NO_TXN` DDL lock и non-transactional write lock на non-default

@@ -9,6 +9,7 @@ public final class ProxyObservability {
   public ProxyObservability(ProxyConfig config) {
     this.metrics = new PrometheusMetrics();
     this.runtimeState = new ProxyRuntimeState(config);
+    this.metrics.bindRuntimeState(runtimeState);
   }
 
   public PrometheusMetrics metrics() {

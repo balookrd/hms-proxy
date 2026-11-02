@@ -516,6 +516,12 @@ every request.
 
 Current Prometheus metrics:
 
+- `hms_proxy_up`
+- `hms_proxy_start_time_seconds`
+- `hms_proxy_backend_up{backend}`
+- `hms_proxy_backend_last_success_timestamp_seconds{backend}`
+- `hms_proxy_backend_last_probe_timestamp_seconds{backend}`
+- `hms_proxy_backend_circuit_state{backend,state}`
 - `hms_proxy_requests_total{method,catalog,backend,status}`
 - `hms_proxy_request_duration_seconds{method,catalog,backend}`
 - `hms_proxy_backend_failures_total{backend,exception}`
@@ -604,6 +610,32 @@ Metric semantics:
 - `hms_proxy_jvm_memory_used_bytes`, `hms_proxy_jvm_memory_committed_bytes`, and `hms_proxy_jvm_memory_max_bytes` report JVM memory usage in bytes by memory `area` (`heap` or `nonheap`)
 - `hms_proxy_jvm_memory_pool_used_bytes`, `hms_proxy_jvm_memory_pool_committed_bytes`, and `hms_proxy_jvm_memory_pool_max_bytes` track memory across individual JVM memory pools (`pool`, `area`)
 - `hms_proxy_jvm_buffer_pool_used_bytes`, `hms_proxy_jvm_buffer_pool_total_capacity_bytes`, and `hms_proxy_jvm_buffer_pool_count` report NIO buffer pool usage by `pool` (`direct` or `mapped`)
+- `hms_proxy_up` is always `1` while the process serves `/metrics`; a dead or hung process shows up as `up == 0` in Prometheus itself. `hms_proxy_start_time_seconds` is the process start time and reveals restarts
+- `hms_proxy_backend_up` is `1` when the backend passes the same check as `/readyz`: connected, not `degraded` (the flag holds until the next successful call or probe), and its circuit is not `OPEN`. `hms_proxy_backend_last_success_timestamp_seconds` is the time of the last successful call or probe, `hms_proxy_backend_last_probe_timestamp_seconds` the time of the last background probe (`0` until one has run), and `hms_proxy_backend_circuit_state` the one-hot circuit breaker state (`closed`, `open`, `half_open`). All four are sampled at scrape time from the same runtime state that backs `/readyz`
+
+#### Liveness metrics
+
+Only the background poller `routing.backend-state-polling.enabled=true` reports backend liveness
+independently of client traffic: every `interval-ms` the proxy opens a dedicated session to each
+backend and calls `getStatus`. Without it `hms_proxy_backend_up` follows client requests only: a
+backend starts out as connected, and the value does not change while there is no traffic. The
+database cache background refresh (`routing.database-*-cache.background-refresh.*`) is not a
+substitute: it only refreshes entries that clients have read recently.
+
+Example alerts (with `interval-ms=10000`):
+
+```yaml
+- alert: HmsProxyDown
+  expr: up{job="hms-proxy"} == 0
+  for: 1m
+- alert: HmsProxyBackendDown
+  expr: hms_proxy_backend_up == 0
+  for: 1m
+# The background probe stopped running: a stuck poll cycle or polling turned off.
+- alert: HmsProxyBackendProbeStale
+  expr: time() - hms_proxy_backend_last_probe_timestamp_seconds > 60
+  for: 1m
+```
 
 Despite the historical `synthetic_read_lock` metric names, the shim now also serves eligible
 non-transactional `NO_TXN` DDL locks and non-transactional write locks on non-default catalogs.

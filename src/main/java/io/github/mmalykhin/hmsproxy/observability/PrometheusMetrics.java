@@ -11,6 +11,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -242,6 +243,32 @@ public final class PrometheusMetrics {
       "hms_proxy_jvm_buffer_pool_count",
       "Number of buffers in JVM buffer pools grouped by pool name",
       List.of("pool"));
+  private final Gauge up = new Gauge(
+      "hms_proxy_up",
+      "Always 1 while the proxy process serves /metrics; alert on Prometheus up == 0 for a dead process",
+      List.of());
+  private final Gauge startTimeSeconds = new Gauge(
+      "hms_proxy_start_time_seconds",
+      "Proxy process start time in seconds since the epoch",
+      List.of());
+  private final Gauge backendUp = new Gauge(
+      "hms_proxy_backend_up",
+      "1 when the backend passes the /readyz check (connected, not degraded, circuit not open), 0 otherwise",
+      List.of("backend"));
+  private final Gauge backendLastSuccessTimestampSeconds = new Gauge(
+      "hms_proxy_backend_last_success_timestamp_seconds",
+      "Time of the last successful backend call or probe in seconds since the epoch, 0 if none",
+      List.of("backend"));
+  private final Gauge backendLastProbeTimestampSeconds = new Gauge(
+      "hms_proxy_backend_last_probe_timestamp_seconds",
+      "Time of the last routing.backend-state-polling probe in seconds since the epoch, 0 if none ran",
+      List.of("backend"));
+  private final Gauge backendCircuitState = new Gauge(
+      "hms_proxy_backend_circuit_state",
+      "Backend circuit breaker state: 1 for the current state, 0 for the others",
+      List.of("backend", "state"));
+
+  private volatile ProxyRuntimeState runtimeState;
 
   public void recordRequest(String method, String catalog, String backend, String status, double durationSeconds) {
     requestsTotal.inc(labels("method", method, "catalog", catalog, "backend", backend, "status", status));
@@ -536,9 +563,44 @@ public final class PrometheusMetrics {
     }
   }
 
+  /** Binds the runtime state whose backend health is sampled on every {@link #render()}. */
+  public void bindRuntimeState(ProxyRuntimeState runtimeState) {
+    this.runtimeState = runtimeState;
+  }
+
+  void refreshRuntimeStateMetrics() {
+    up.set(labels(), 1.0);
+    ProxyRuntimeState state = runtimeState;
+    if (state == null) {
+      return;
+    }
+    startTimeSeconds.set(labels(), state.startedAtEpochSecond());
+    for (ProxyRuntimeState.BackendRuntimeStatus status : state.backendStatuses()) {
+      String backend = status.backend();
+      // Same predicate as the per-backend /readyz check: degraded stays set until the next success.
+      boolean backendIsUp = status.connected()
+          && !status.degraded()
+          && status.circuitState() != ProxyRuntimeState.CircuitState.OPEN;
+      backendUp.set(labels("backend", backend), backendIsUp ? 1.0 : 0.0);
+      backendLastSuccessTimestampSeconds.set(labels("backend", backend), status.lastSuccessEpochSecond());
+      backendLastProbeTimestampSeconds.set(labels("backend", backend), status.lastProbeEpochSecond());
+      for (ProxyRuntimeState.CircuitState circuitState : ProxyRuntimeState.CircuitState.values()) {
+        backendCircuitState.set(
+            labels("backend", backend, "state", circuitState.name().toLowerCase(Locale.ROOT)),
+            status.circuitState() == circuitState ? 1.0 : 0.0);
+      }
+    }
+  }
+
   // Declared last so every metric field above is already initialized; render order is the
   // exposition order of /metrics.
   private final List<Metric> exposedMetrics = List.of(
+      up,
+      startTimeSeconds,
+      backendUp,
+      backendLastSuccessTimestampSeconds,
+      backendLastProbeTimestampSeconds,
+      backendCircuitState,
       requestsTotal,
       requestDurationSeconds,
       backendFailuresTotal,
@@ -586,6 +648,7 @@ public final class PrometheusMetrics {
 
   public String render() {
     refreshJvmMemoryMetrics();
+    refreshRuntimeStateMetrics();
     int estimatedSize = 0;
     for (Metric metric : exposedMetrics) {
       estimatedSize += metric.estimatedRenderSize();

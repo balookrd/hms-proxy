@@ -10,6 +10,8 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ### Добавлено
 
+- **Метрики живости прокси и бэкендов**: `hms_proxy_up`, `hms_proxy_start_time_seconds`, `hms_proxy_backend_up{backend}`, `hms_proxy_backend_last_success_timestamp_seconds{backend}`, `hms_proxy_backend_last_probe_timestamp_seconds{backend}` и `hms_proxy_backend_circuit_state{backend,state}`. Значения берутся из runtime state бэкендов (того же, что у `/readyz`) в момент опроса `/metrics`. Живость бэкендов без клиентского трафика видна только при `routing.backend-state-polling.enabled=true`; примеры алертов — в README, панели — в Grafana dashboard.
+
 - **Лимит тела запроса Iceberg REST (`rest-catalog.max-request-body-bytes`, дефолт 16 MiB)**: тело больше лимита отклоняется с `413` до разбора JSON — по `Content-Length` или, при chunked-передаче, как только прочитано больше лимита. Раньше тело любого размера разбиралось в память целиком.
 
 - **Поддержка системной базы данных Spark SQL `global_temp`, файловых датасорсов (path-based tables) и запросов с кавычками (`csv."hdfs://..."`)**:

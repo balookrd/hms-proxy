@@ -1,12 +1,26 @@
 package io.github.mmalykhin.hmsproxy.observability;
 
+import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.AdaptiveTimeoutConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.BackendStatePollingConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.CircuitBreakerConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy;
+import io.github.mmalykhin.hmsproxy.config.routing.HedgedReadConfig;
+import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
+import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -62,6 +76,99 @@ public class PrometheusMetricsTest {
         "hms_proxy_rest_request_duration_seconds_count{prefix=\"hdp\",route=\"load_table\"} 1"));
     Assert.assertTrue(rendered.contains(
         "hms_proxy_rest_listener_info{bind_host=\"0.0.0.0\",port=\"9183\"} 1"));
+  }
+
+  @Test
+  public void reportsProcessLivenessWithoutBoundRuntimeState() {
+    String rendered = new PrometheusMetrics().render();
+
+    Assert.assertTrue(rendered, rendered.contains("hms_proxy_up 1.0"));
+    Assert.assertFalse(rendered, rendered.contains("hms_proxy_backend_up{"));
+  }
+
+  @Test
+  public void exportsBackendHealthFromRuntimeStateOnEveryRender() {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(true, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(true, 1, 60_000L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of())
+        .latencyRouting(latencyRouting)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    ProxyObservability observability = new ProxyObservability(config);
+    ProxyRuntimeState state = observability.runtimeState();
+
+    state.recordBackendProbeSuccess("catalog1", 3L, latencyRouting);
+    state.recordBackendProbeSuccess("catalog2", 3L, latencyRouting);
+    String healthy = observability.metrics().render();
+
+    Assert.assertTrue(healthy, healthy.contains("hms_proxy_up 1.0"));
+    Assert.assertTrue(healthy, healthy.contains(
+        "hms_proxy_start_time_seconds " + (double) state.startedAtEpochSecond()));
+    Assert.assertTrue(healthy, healthy.contains("hms_proxy_backend_up{backend=\"catalog1\"} 1.0"));
+    Assert.assertTrue(healthy, healthy.contains("hms_proxy_backend_up{backend=\"catalog2\"} 1.0"));
+    Assert.assertTrue(healthy, healthy.contains(
+        "hms_proxy_backend_last_probe_timestamp_seconds{backend=\"catalog2\"} "
+            + (double) state.backendStatus("catalog2").lastProbeEpochSecond()));
+    Assert.assertTrue(state.backendStatus("catalog2").lastProbeEpochSecond() > 0L);
+
+    // A transport failure opens the circuit (threshold 1); the next scrape must see it, not a
+    // value cached from the previous render.
+    state.recordBackendProbeFailure("catalog2", new TTransportException("connection refused"), latencyRouting);
+    String failed = observability.metrics().render();
+
+    Assert.assertTrue(failed, failed.contains("hms_proxy_backend_up{backend=\"catalog1\"} 1.0"));
+    Assert.assertTrue(failed, failed.contains("hms_proxy_backend_up{backend=\"catalog2\"} 0.0"));
+    Assert.assertTrue(failed, failed.contains(
+        "hms_proxy_backend_circuit_state{backend=\"catalog2\",state=\"open\"} 1.0"));
+    Assert.assertTrue(failed, failed.contains(
+        "hms_proxy_backend_circuit_state{backend=\"catalog2\",state=\"closed\"} 0.0"));
+    Assert.assertTrue(failed, failed.contains(
+        "hms_proxy_backend_circuit_state{backend=\"catalog1\",state=\"closed\"} 1.0"));
+  }
+
+  @Test
+  public void backendStaysDownWhileDegradedEvenAfterANonTransportFailure() {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(true, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(false, 1, 60_000L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyObservability observability = new ProxyObservability(ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of())
+        .latencyRouting(latencyRouting)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build());
+    ProxyRuntimeState state = observability.runtimeState();
+
+    state.recordBackendProbeSuccess("catalog1", 3L, latencyRouting);
+    state.recordBackendProbeFailure("catalog1", new TTransportException("connection refused"), latencyRouting);
+    // What a probe sees once the backend host is gone: the Hive client reports the transport
+    // failure as a MetaException without a cause, so connected flips back to true.
+    state.recordBackendProbeFailure("catalog1",
+        new MetaException("Could not connect to meta store"), latencyRouting);
+    Assert.assertTrue(state.backendStatus("catalog1").connected());
+    Assert.assertTrue(state.backendStatus("catalog1").degraded());
+
+    String rendered = observability.metrics().render();
+    Assert.assertTrue(rendered, rendered.contains("hms_proxy_backend_up{backend=\"catalog1\"} 0.0"));
+
+    state.recordBackendProbeSuccess("catalog1", 3L, latencyRouting);
+    rendered = observability.metrics().render();
+    Assert.assertTrue(rendered, rendered.contains("hms_proxy_backend_up{backend=\"catalog1\"} 1.0"));
   }
 
   @Test
