@@ -50,6 +50,18 @@ docker compose --env-file .env.kerberos --profile kerberos up -d --build
 cd smoke-stand && ./init-stand.sh
 ```
 
+На Kerberos-профиле (`KERBEROS_ENABLED=true` у `stand-proxy`) скрипт сам делает `kinit` и
+подключается к HiveServer2 с принципалом `hive/hs2@SMOKE.LOCAL`, а Iceberg REST writer — через
+SPNEGO. Таблицы `smoke_txn_tbl` и `smoke_iceberg_tbl` после создания проверяются, и если
+подготовить их не удалось, скрипт печатает вывод и завершается с ошибкой: раньше отказ уходил в
+`/dev/null`, и на свежем Kerberos-стенде notification-смоук падал с `Internal error processing
+add_write_notification_log`.
+
+Если `docker compose up` пересоздал namenode-контейнеры, перезапустите их HDFS-клиентов
+(`stand-hms-*`, `stand-proxy`, `stand-hs2*`): адрес namenode закэширован в их DFS-клиенте, а IP
+контейнеров при пересоздании могут поменяться местами, и тогда HiveServer2 отвечает
+`File does not exist: /opt/hs2/scratch`.
+
 Вручную эти шаги выглядят так:
 
 ```bash

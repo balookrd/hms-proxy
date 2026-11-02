@@ -50,6 +50,18 @@ A fresh HDFS needs its directories once (on both clusters), and smoke scenarios 
 cd smoke-stand && ./init-stand.sh
 ```
 
+On the Kerberos profile (`KERBEROS_ENABLED=true` on `stand-proxy`) the script runs `kinit` itself
+and connects to HiveServer2 with the `hive/hs2@SMOKE.LOCAL` principal, and the Iceberg REST writer
+through SPNEGO. The `smoke_txn_tbl` and `smoke_iceberg_tbl` tables are checked after creation, and
+if they cannot be prepared the script prints the output and exits with an error: the failure used to
+go to `/dev/null`, and on a fresh Kerberos stand the notification smoke then failed with `Internal
+error processing add_write_notification_log`.
+
+If `docker compose up` recreated the namenode containers, restart their HDFS clients
+(`stand-hms-*`, `stand-proxy`, `stand-hs2*`): the namenode address is cached in their DFS client,
+and recreated containers may swap IPs, after which HiveServer2 answers
+`File does not exist: /opt/hs2/scratch`.
+
 Manually, these steps look like:
 
 ```bash

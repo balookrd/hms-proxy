@@ -15,6 +15,38 @@ is_running() {
   docker ps --format '{{.Names}}' | grep -q "^${container}$"
 }
 
+kerberos_enabled() {
+  [[ "$(docker exec stand-proxy printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+
+# Runs SQL through the beeline of stand-hs2. On the Kerberos profile the JDBC URL needs the
+# HiveServer2 principal and the container a ticket; without them beeline fails in the SASL handshake.
+hs2_beeline() {
+  local sql="$1"
+  local url="jdbc:hive2://localhost:10000/default"
+  if kerberos_enabled; then
+    url="jdbc:hive2://hs2:10000/default;principal=hive/hs2@SMOKE.LOCAL"
+    docker exec stand-hs2 kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
+  fi
+  docker exec stand-hs2 java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
+    -u "${url}" -n hive --silent=true --showHeader=false --outputformat=tsv2 -e "${sql}" 2>&1
+}
+
+# Runs the Iceberg REST writer against default.smoke_iceberg_tbl. The Kerberos profile protects
+# the REST listener with SPNEGO, so the writer needs its keytab there.
+rest_writer() {
+  local -a auth_args=()
+  if kerberos_enabled; then
+    auth_args+=(--keytab /keytabs/smoke-user.keytab --principal smoke-user@SMOKE.LOCAL --rest-auth spnego)
+  fi
+  docker exec stand-proxy java \
+    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+    -jar /opt/hms-proxy/iceberg-rest-writer.jar "$@" \
+    --uri http://proxy:9183 --namespace default --table smoke_iceberg_tbl \
+    ${auth_args[@]+"${auth_args[@]}"}
+}
+
 # 1. HDFS safemode and directory initialization
 if is_running "stand-namenode"; then
   log "Waiting for stand-namenode safemode..."
@@ -37,20 +69,35 @@ fi
 # 2. Base ORC transaction table for notification and lock smokes
 if is_running "stand-hs2"; then
   log "Ensuring smoke_txn_tbl exists in default catalog..."
-  docker exec stand-hs2 bash -c \
-    "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
-      -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
-      -e 'create table if not exists smoke_txn_tbl (id int) stored as orc;'" >/dev/null 2>&1 || true
+  # The notification smoke needs this table: add_write_notification_log resolves it first, and its
+  # IDL declares no exceptions, so a missing table reaches the client only as "Internal error".
+  # The table name is checked as a whole line, not as a substring of the echoed statement.
+  output=""
+  if output="$(hs2_beeline "create table if not exists smoke_txn_tbl (id int) stored as orc;
+show tables in default like 'smoke_txn_tbl';")" \
+      && grep -qx 'smoke_txn_tbl' <<<"${output}"; then
+    log "default.smoke_txn_tbl is ready"
+  else
+    log "error: could not prepare default.smoke_txn_tbl via stand-hs2:"
+    tail -n 20 <<<"${output}" >&2
+    exit 1
+  fi
 fi
 
 # 3. Iceberg table in default catalog (hdp)
 if is_running "stand-proxy" && is_running "stand-namenode"; then
   log "Ensuring smoke_iceberg_tbl exists via Iceberg REST writer..."
-  docker exec stand-proxy java \
-    --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
-    --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
-    -jar /opt/hms-proxy/iceberg-rest-writer.jar create \
-    --uri http://proxy:9183 --namespace default --table smoke_iceberg_tbl >/dev/null 2>&1 || true
+  # "create" is not idempotent, so an existing table is detected by loading it ("count") first.
+  output=""
+  if rest_writer count >/dev/null 2>&1; then
+    log "default.smoke_iceberg_tbl is ready"
+  elif output="$(rest_writer create 2>&1)" && rest_writer count >/dev/null 2>&1; then
+    log "default.smoke_iceberg_tbl is ready"
+  else
+    log "error: could not prepare default.smoke_iceberg_tbl via the Iceberg REST listener:"
+    tail -n 20 <<<"${output}" >&2
+    exit 1
+  fi
 fi
 
 # 4. Iceberg table in second catalog (apache on stand-namenode-b)
@@ -62,15 +109,12 @@ if is_running "stand-namenode-b" && is_running "stand-hs2"; then
      hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/' >/dev/null 2>&1 || true
 
   log "Ensuring smoke_iceberg_tbl_ap table exists in apache catalog..."
-  docker exec stand-hs2 bash -c \
-    "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apache.hive.beeline.BeeLine \
-      -u 'jdbc:hive2://localhost:10000/default' -n hive --silent=true \
-      -e \"create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string) \
-          stored as parquet \
-          location 'hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap' \
-          tblproperties ( \
-            'table_type'='ICEBERG', \
-            'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');\"" >/dev/null 2>&1 || true
+  hs2_beeline "create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string)
+      stored as parquet
+      location 'hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap'
+      tblproperties (
+        'table_type'='ICEBERG',
+        'metadata_location'='hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap/metadata/00000-smoke.metadata.json');" >/dev/null 2>&1 || true
 fi
 
 # 5. Read tables of the SQL smoke (HMS_SMOKE_HDP_READ_TABLE / HMS_SMOKE_APACHE_READ_TABLE in
@@ -86,7 +130,7 @@ ensure_read_table() {
   local database="$2"
   local table="$3"
   local url="jdbc:hive2://${hs2_host}:10000/default"
-  if [[ "$(docker exec stand-proxy printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]; then
+  if kerberos_enabled; then
     url="${url};principal=hive/${hs2_host}@SMOKE.LOCAL"
     docker exec stand-hs2-hdp kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
   fi
