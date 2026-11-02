@@ -34,6 +34,29 @@ public class ThriftFailureClassifierTest {
   }
 
   @Test
+  public void connectFailureIsRecognizedThroughTheProxyAndReflectionWrappers() {
+    // What HiveMetaStoreClient.open() throws: the transport failure is only in the message.
+    MetaException clientFailure = new MetaException(
+        "Could not connect to meta store using any of the URIs provided. Most recent failure: "
+            + "org.apache.thrift.transport.TTransportException: java.net.UnknownHostException: hms-apache");
+    Assert.assertTrue(ThriftFailureClassifier.isConnectFailure(clientFailure));
+
+    // How BackendInvocationSession reports it: UGI.doAs wraps it, and the session wraps that.
+    MetaException sessionFailure = new MetaException("Unable to open backend metastore client for catalog apache");
+    sessionFailure.initCause(new java.lang.reflect.UndeclaredThrowableException(clientFailure));
+    Assert.assertTrue(ThriftFailureClassifier.isConnectFailure(sessionFailure));
+    Assert.assertFalse("the replay decision must not change",
+        ThriftFailureClassifier.isTransportFailure(sessionFailure));
+
+    Assert.assertFalse(ThriftFailureClassifier.isConnectFailure(new MetaException("Table not found")));
+    Assert.assertFalse(ThriftFailureClassifier.isConnectFailure(
+        new MetaException("Unable to open backend metastore client for catalog apache")));
+    Assert.assertFalse("only the metastore client's own exception counts", ThriftFailureClassifier.isConnectFailure(
+        new IllegalStateException("Could not connect to meta store using any of the URIs provided")));
+    Assert.assertFalse(ThriftFailureClassifier.isConnectFailure(null));
+  }
+
+  @Test
   public void transportFailuresStayASeparateCategory() {
     Assert.assertTrue(ThriftFailureClassifier.isTransportFailure(new TTransportException("closed")));
     Assert.assertFalse(ThriftFailureClassifier.isTransportFailure(

@@ -199,6 +199,9 @@ public final class ProxyRuntimeState {
   // error wrapped as INTERNAL_ERROR says nothing about the backend being reachable. Only a broken
   // transport or a reply stream out of step with its calls counts against the backend.
   private static boolean isConnectivityFailure(Throwable error) {
+    if (ThriftFailureClassifier.isConnectFailure(error)) {
+      return true;
+    }
     Throwable current = error;
     while (current != null) {
       if (ThriftFailureClassifier.isTransportFailure(current) || ThriftFailureClassifier.isProtocolDesync(current)) {

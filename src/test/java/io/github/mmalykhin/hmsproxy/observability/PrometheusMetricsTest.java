@@ -172,6 +172,40 @@ public class PrometheusMetricsTest {
   }
 
   @Test
+  public void probeThatCannotOpenAConnectionMarksTheBackendDisconnected() {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(true, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(true, 2, 60_000L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyObservability observability = new ProxyObservability(ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of())
+        .latencyRouting(latencyRouting)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build());
+    ProxyRuntimeState state = observability.runtimeState();
+    state.recordBackendProbeSuccess("catalog1", 3L, latencyRouting);
+
+    MetaException openFailure = new MetaException("Unable to open backend metastore client for catalog catalog1");
+    openFailure.initCause(new MetaException(
+        "Could not connect to meta store using any of the URIs provided. Most recent failure: "
+            + "org.apache.thrift.transport.TTransportException: java.net.UnknownHostException: hms"));
+    state.recordBackendProbeFailure("catalog1", openFailure, latencyRouting);
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
+    Assert.assertTrue(state.backendStatus("catalog1").degraded());
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.CLOSED, state.backendStatus("catalog1").circuitState());
+
+    state.recordBackendProbeFailure("catalog1", openFailure, latencyRouting);
+    Assert.assertEquals("connect failures count towards the circuit breaker",
+        ProxyRuntimeState.CircuitState.OPEN, state.backendStatus("catalog1").circuitState());
+  }
+
+  @Test
   public void unknownExceptionTypesCollapseIntoOtherLabel() {
     PrometheusMetrics metrics = new PrometheusMetrics();
 

@@ -6,7 +6,9 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 
 import java.util.concurrent.Callable;
@@ -19,6 +21,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
@@ -33,11 +36,24 @@ public final class BackendRoutingController implements AutoCloseable {
   private final CatalogRouter router;
   private final ProxyObservability observability;
   private final ScheduledExecutorService pollingExecutor;
+  private final BackendProbe backendProbe;
+  // Touched only by the single polling thread.
+  private final Map<String, RunningProbe> runningProbes = new HashMap<>();
   private final ExecutorService probeExecutor;
   private final ExecutorService fanoutExecutor;
 
   public BackendRoutingController(ProxyConfig config, CatalogRouter router, ProxyObservability observability) {
+    this(config, router, observability, CatalogBackend::probeConnectivity);
+  }
+
+  BackendRoutingController(
+      ProxyConfig config,
+      CatalogRouter router,
+      ProxyObservability observability,
+      BackendProbe backendProbe
+  ) {
     this.config = config;
+    this.backendProbe = backendProbe;
     this.router = router;
     this.observability = observability;
     boolean pollingEnabled = config.latencyRouting().backendStatePolling().enabled();
@@ -179,24 +195,41 @@ public final class BackendRoutingController implements AutoCloseable {
     var backends = router.backends();
     List<ProbeInFlight> inFlight = new ArrayList<>(backends.size());
     for (CatalogBackend backend : backends) {
+      // A cancelled probe keeps its thread while the metastore client retries (it does not stop on
+      // interrupt). Probing the same backend again would take a second thread, and once the pool is
+      // full the probes of healthy backends wait in the queue and miss the deadline. A backend whose
+      // previous probe has not returned within a whole interval is unresponsive anyway.
+      RunningProbe previous = runningProbes.get(backend.name());
+      if (previous != null && previous.occupiesThread()) {
+        recordPollFailure(backend, new TimeoutException("previous probe still running"));
+        continue;
+      }
       long startedAt = System.nanoTime();
+      AtomicBoolean started = new AtomicBoolean();
+      AtomicBoolean finished = new AtomicBoolean();
       Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
+        started.set(true);
         try {
-          backend.probeConnectivity(probeTimeoutMs);
+          backendProbe.probe(backend, probeTimeoutMs);
         } catch (Exception e) {
           throw e;
         } catch (Throwable t) {
           throw new RuntimeException(t);
+        } finally {
+          finished.set(true);
         }
         return null;
       });
+      runningProbes.put(backend.name(), new RunningProbe(probe, started, finished));
       inFlight.add(new ProbeInFlight(backend, startedAt, probe));
     }
     long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(probeTimeoutMs);
     for (ProbeInFlight entry : inFlight) {
       try {
-        long remainingNanos = deadlineNanos - System.nanoTime();
-        if (remainingNanos <= 0L) {
+        // Probes share one deadline but are awaited in turn, so a probe that already returned while
+        // an earlier one used up the deadline still counts by its own result.
+        long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+        if (remainingNanos == 0L && !entry.probe.isDone()) {
           entry.probe.cancel(true);
           throw new TimeoutException("probe deadline exceeded");
         }
@@ -224,6 +257,23 @@ public final class BackendRoutingController implements AutoCloseable {
   private void recordPollFailure(CatalogBackend backend, Throwable error) {
     LOG.warn("Backend catalog '{}' health poll failed", backend.name(), error);
     observability.runtimeState().recordBackendProbeFailure(backend.name(), error, config.latencyRouting());
+  }
+
+  // Future.isDone() turns true as soon as the probe is cancelled, while its thread may still be
+  // inside the metastore client; only the task itself knows when it has returned.
+  private record RunningProbe(Future<?> future, AtomicBoolean started, AtomicBoolean finished) {
+    boolean occupiesThread() {
+      if (finished.get()) {
+        return false;
+      }
+      // A probe cancelled while still queued never runs.
+      return started.get() || !future.isCancelled();
+    }
+  }
+
+  @FunctionalInterface
+  interface BackendProbe {
+    void probe(CatalogBackend backend, long timeoutMs) throws Throwable;
   }
 
   private record ProbeInFlight(CatalogBackend backend, long startedAt, Future<?> probe) {

@@ -622,6 +622,15 @@ backend starts out as connected, and the value does not change while there is no
 database cache background refresh (`routing.database-*-cache.background-refresh.*`) is not a
 substitute: it only refreshes entries that clients have read recently.
 
+A failure to connect to a backend (unknown host, refused connection) counts as a connectivity
+failure: the backend gets `connected=false`, the circuit breaker counts it, and `/readyz` reports
+`backendConnectivity: false`. A probe that has not returned within an interval is not started again
+until it does: the metastore client does not stop its connect retries on cancellation, and a second
+probe of the same backend would take another thread. Such a backend is marked unavailable (`previous
+probe still running`), and the probes of the other backends do not wait in the queue. With
+`routing.backend-state-polling.max-parallelism` below the number of catalogs the queue is still
+possible: the probe pool is never larger than that value.
+
 Example alerts (with `interval-ms=10000`):
 
 ```yaml

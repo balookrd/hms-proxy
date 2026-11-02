@@ -12,6 +12,10 @@ import org.apache.thrift.transport.TTransportException;
  */
 public final class ThriftFailureClassifier {
   private static final int MAX_UNWRAP_DEPTH = 4;
+  private static final int MAX_CAUSE_DEPTH = 8;
+  private static final String META_EXCEPTION_CLASS = "org.apache.hadoop.hive.metastore.api.MetaException";
+  private static final String CONNECT_FAILURE_MESSAGE =
+      "Could not connect to meta store using any of the URIs provided";
 
   private ThriftFailureClassifier() {
   }
@@ -53,6 +57,28 @@ public final class ThriftFailureClassifier {
       return false;
     }
     return callChangesNoState || transport.getType() == TTransportException.NOT_OPEN;
+  }
+
+  /**
+   * The metastore client could not open a connection to any configured URI. {@code
+   * HiveMetaStoreClient.open()} reports this as a {@code MetaException} that carries the transport
+   * failure only in its message, not as a cause, so {@link #isTransportFailure} never sees it. The
+   * message is the same in every bundled runtime (3.1 lines and Hive 4); the class is matched by
+   * name because the exception may come from an isolated runtime class loader. No request reached
+   * the backend, so this says nothing about replaying a call.
+   */
+  public static boolean isConnectFailure(Throwable cause) {
+    Throwable current = cause;
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      String message = current.getMessage();
+      if (META_EXCEPTION_CLASS.equals(current.getClass().getName())
+          && message != null
+          && message.startsWith(CONNECT_FAILURE_MESSAGE)) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   /**
