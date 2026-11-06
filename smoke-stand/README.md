@@ -16,14 +16,14 @@
 | `namenode-b` / `datanode-b` | Apache Hadoop `3.1.3` | второй HDFS-кластер — хранилище каталога `apache` | 19871 UI, 18021 |
 | `kdc` | MIT Kerberos, realm `SMOKE.LOCAL` | только с `--profile kerberos` | 18848/udp |
 
-Базы отдаются как `<catalog>__<db>`: `hdp__default`, `apache__default`. Каталоги живут на **разных
-HDFS-кластерах** (см. ниже), у каждого свой `/warehouse` и корень `/external`, разрешённый для
+Базы отдаются как `<catalog>__<db>`: `hdp__default`, `apache__default`. Каталоги живут на разных
+HDFS-кластерах (см. ниже), у каждого свой `/warehouse` и корень `/external`, разрешённый для
 purge внешних таблиц.
 
 Что здесь действительно прогонялось, а что нет, записано в
 [TEST-MATRIX.md](TEST-MATRIX.md).
 
-## Как запустить
+## Запуск стенда
 
 ```bash
 # один раз на сборку прокси: разложить jar-ы и classpath метастора
@@ -44,7 +44,7 @@ JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
 docker compose --env-file .env.kerberos --profile kerberos up -d --build
 ```
 
-Свежему HDFS один раз нужны каталоги (на обоих кластерах), а сценариям — базовые таблицы. Всё это автоматически настраивает скрипт `init-stand.sh` (раннеры также вызывают его автоматически):
+Свежему HDFS один раз нужны каталоги (на обоих кластерах), а сценариям — базовые таблицы. Их создаёт скрипт `init-stand.sh`; раннеры сценариев вызывают его сами:
 
 ```bash
 cd smoke-stand && ./init-stand.sh
@@ -80,7 +80,7 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   -e 'create table if not exists smoke_txn_tbl (id int) stored as orc;'"
 ```
 
-Kerberos-смоук обязан запускаться **внутри** compose-сети: KDC и сервисные принципалы резолвятся
+Kerberos-смоук обязан запускаться внутри compose-сети: KDC и сервисные принципалы резолвятся
 по именам контейнеров:
 
 ```bash
@@ -111,9 +111,12 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 Запросы выполняются как локальный MapReduce (`mapreduce.framework.name=local`), YARN и Tez не
 нужны.
 
-Чтобы проверить guard, раскомментируйте `guard.transactional-ddl.mode=REJECT_TRANSACTIONAL` в
-`proxy/hms-proxy.properties`, перезапустите прокси и создайте транзакционную таблицу: прокси должен
-отклонить её по имени метода.
+Проверка guard:
+
+1. Раскомментируйте `guard.transactional-ddl.mode=REJECT_TRANSACTIONAL` в
+   `proxy/hms-proxy.properties`.
+2. Перезапустите прокси.
+3. Создайте транзакционную таблицу. Прокси должен отклонить её по имени метода.
 
 ### Прогон SQL-смоука (`env/sql*.env`)
 
@@ -146,11 +149,17 @@ docker exec stand-hs2-hdp /opt/hs2-hdp/run-smoke.sh --env-file /opt/hs2-hdp/sql-
 
 Прокси удаляет данные внешних таблиц сам только для каталогов на runtime-профиле `APACHE_3_1_3` —
 Hortonworks-бэкенд делает это самостоятельно, поэтому `enabledFor` его пропускает. Проверять нужно
-на каталоге `apache`, под разрешённым корнем `/external`.
+на каталоге `apache`, под разрешённым корнем `/external`. Положите данные на его кластер:
+
+```bash
+docker exec stand-namenode-b bash -c \
+  'hdfs dfs -mkdir -p hdfs://namenode-b:8020/external/purge_me && echo "7,delta" | hdfs dfs -put -f - hdfs://namenode-b:8020/external/purge_me/data.csv'
+```
 
 Таблице при этом обязательно нужно свойство `'external.table.purge'='true'` — обычное правило Hive
 для внешних таблиц. Без него `DROP TABLE ... PURGE` данные не трогает, и прокси прав, что тоже их
-не трогает. Создайте внешнюю таблицу на такой location, удалите её — и в логе прокси появится:
+не трогает. Создайте в `apache__default` внешнюю таблицу на этой location, удалите её — и в логе
+прокси появится:
 
 ```
 FileSystemExternalTableDropPurger: purged external table data for catalog 'apache'
@@ -161,7 +170,7 @@ FileSystemExternalTableDropPurger: purged external table data for catalog 'apach
 
 ## Два HDFS-кластера
 
-Каталоги лежат на **разных файловых системах** — именно это делает межкластерное поведение прокси
+Каталоги лежат на разных файловых системах — именно это делает межкластерное поведение прокси
 проверяемым:
 
 | Каталог | Метастор | Файловая система | Порты хоста |
@@ -169,7 +178,7 @@ FileSystemExternalTableDropPurger: purged external table data for catalog 'apach
 | `hdp` (default) | `hms-hdp` | `hdfs://namenode:8020` | 19870 / 18020 |
 | `apache` | `hms-apache` | `hdfs://namenode-b:8020` | 19871 / 18021 |
 
-Оба кластера работают на **Apache** Hadoop 3.1.3, как бы ни назывался каталог поверх них: имена
+Оба кластера работают на Apache Hadoop 3.1.3, как бы ни назывался каталог поверх них: имена
 `hdp` и `apache` описывают runtime метастора, который федерирует прокси, а не хранилище. Вендорский
 дистрибутив HDP попадает в стенд только как *клиент* — сервис `hs2-hdp` — и никогда как файловая
 система.
@@ -195,13 +204,13 @@ Purge удаляет данные на кластере своего катал�
 
 ## Чем стенд не является
 
-- **Не настоящая инсталляция.** Метасторы поднимаются из jar-ов, лежащих в `hive-metastore/`, без
+- Не настоящая инсталляция. Метасторы поднимаются из jar-ов, лежащих в `hive-metastore/`, без
   остального дистрибутива HDP: ни Ranger, ни Atlas, ни HA. Стенд проверяет поведение протокола и
   маршрутизации, а не интеграцию стека.
-- **Нет Ranger/Atlas/HA**, как выше — при этом сам Kerberos-профиль полный: клиент, HiveServer2,
+- Нет Ranger/Atlas/HA, как выше. При этом сам Kerberos-профиль полный: клиент, HiveServer2,
   прокси, оба метастора и HDFS (keytab-ы namenode и datanode, SASL data transfer, SPNEGO)
   аутентифицируются, и ни один сервис не откатывается на simple auth.
-- **Нет YARN/Tez.** Запросы идут локальным MapReduce — этого хватает для DDL, чтения и небольших
+- Нет YARN/Tez. Запросы идут локальным MapReduce — этого хватает для DDL, чтения и небольших
   записей, но о распределённом исполнении не говорит ничего. HiveServer2 дистрибутива Hortonworks вообще
   стартует только потому, что `hive.in.test` проводит его мимо вендорской проверки
   «mr execution engine is not supported!» — см. раздел ниже.
@@ -313,7 +322,7 @@ docker exec stand-proxy curl -sS --negotiate -u : http://proxy:9183/v1/config
 
 ## Hortonworks HiveServer2 (`--profile hdp`)
 
-Настоящий HDP HiveServer2, подключённый к Hortonworks front door: этот listener наконец проверяется
+Настоящий HDP HiveServer2, подключённый к Hortonworks front door: этот listener проверяется
 тем клиентом, ради которого он существует, а не только smoke CLI. Ему нужен вендорский дистрибутив
 — Cloudera закрыла HDP-репозитории, так что ничего из этого не выкачивается из Maven:
 
@@ -332,19 +341,19 @@ docker exec stand-hs2-hdp beeline -u jdbc:hive2://localhost:10000/default -n hiv
 
 Что он добавляет по сравнению с соседним Apache HiveServer2:
 
-- `add_write_notification_log`, отправленный **самим Hive** после ACID-записи, а не синтезированный
+- `add_write_notification_log`, отправленный самим Hive после ACID-записи, а не синтезированный
   smoke CLI — с настоящими delta-путями и контрольными суммами.
 - Транзакционные таблицы. Standalone-метасторы не могли их создавать (`The table must be stored
   using an ACID compliant format`): `TransactionalValidationListener` нужен `OrcOutputFormat` из
   `hive-exec`, а тому, в свою очередь, — `org.apache.hadoop.mapred.InputFormat` из
   `hadoop-mapreduce-client-core`. Теперь `prepare.sh` раскладывает оба рядом с каждым метастором
-  (Apache-jar-ы для Apache, вендорские для Hortonworks), а entrypoint дописывает их **после**
+  (Apache-jar-ы для Apache, вендорские для Hortonworks), а entrypoint дописывает их после
   тестируемого jar, чтобы собственная копия metastore-классов внутри `hive-exec` никогда его не
   перекрыла.
 
 Две вещи этот профиль воспроизводит неточно:
 
-- **Движок исполнения.** Hortonworks собирает без MapReduce, и проверка срабатывает в двух местах с
+- Движок исполнения. Hortonworks собирает без MapReduce, и проверка срабатывает в двух местах с
   разными сообщениями. `HiveConf.initialize()` вызывает `validateExecutionEngine`, поэтому `mr`,
   записанный в `hive-site.xml`, вообще не даёт серверу стартовать (`mr execution engine is not
   supported!`); в конфиге остаётся вендорский Tez, а клиенты переключаются посессионно через
@@ -354,7 +363,7 @@ docker exec stand-hs2-hdp beeline -u jdbc:hive2://localhost:10000/default -n hiv
   ResourceManager и tez-tarball в HDFS, а в дистрибутиве нет ни того, ни другого. Путь *метаданных*
   — все RPC, которые прокси реально обслуживает, — от этого не страдает; отличается только
   исполнение запросов.
-- **Эмуляция.** Нативные библиотеки дистрибутива собраны только под x86_64, поэтому на Apple
+- Эмуляция. Нативные библиотеки дистрибутива собраны только под x86_64, поэтому на Apple
   Silicon сервис целиком идёт под `linux/amd64` и стартует заметно медленно (закладывайте пару
   минут).
 
@@ -368,7 +377,7 @@ conf-symlink-механизм молча не работает). Прокси д
 `libfb303-0.9.3`, `hive-storage-api-4.1.0`) из `hive-metastore/`, загружаемые child-first.
 Каталог `apache` остаётся non-default.
 
-Профиль добавляет и **третий front door**: `additional-frontends.hive4fe` на 9085 (хост 19088)
+Профиль добавляет и третий front door: `additional-frontends.hive4fe` на 9085 (хост 19088)
 объявляет диалект `APACHE_4_1_0`, и к нему подключается `hs2-hive4` — HiveServer2 Hive 4.1.0 из
 того же официального образа (Tez local mode, Iceberg встроен). У Thrift нет согласования версий,
 поэтому Hive 4-клиент не может пользоваться никаким другим listener; два HiveServer2 3.1-диалектов
@@ -438,10 +447,8 @@ metadata-файл: этот обход манифестов — единстве
 namenode, у которого под Kerberos нет своего тикета, поэтому сценарий сначала логинит его по
 keytab узла: без этого вызов падает с `Client cannot authenticate via:[TOKEN, KERBEROS]`, и
 нечитаемый HDFS выглядел бы пустым (так и было до 2026-08-04 — см. журнал ревалидаций).
-Если сразу после пересборки стенда
-HiveServer2 отвечает «File does not exist»
-на существующие файлы — перезапусти HS2-контейнеры: их JVM кэшируют устаревший DNS-резолв
-namenode. Что именно прогонялось — раздел H в `TEST-MATRIX.md`.
+Если сразу после пересборки стенда HiveServer2 отвечает «File does not exist» на существующие
+файлы, перезапустите HS2-контейнеры: их JVM кэшируют устаревший DNS-резолв namenode. Что именно прогонялось — раздел H в `TEST-MATRIX.md`.
 
 ## Row-level DML (`run-iceberg-rowlevel-smoke.sh`)
 
@@ -463,8 +470,8 @@ delete-файлов спланированного скана, и прогон �
 `select count(*)`: Hive умеет брать count из Iceberg-сводки, которую держит как статистику
 таблицы, и читатель, не умеющий применять delete-файлы, всё равно назвал бы правильное число.
 
-Здесь всё ровно наоборот по сравнению с асимметрией `inputFormat` выше: **оба 3.1-движка
-корректно читают merge-on-read** — `iceberg-hive-runtime` 1.6.1 применяет position-deletes — и
+Здесь всё ровно наоборот по сравнению с асимметрией `inputFormat` выше: оба 3.1-движка
+корректно читают merge-on-read — `iceberg-hive-runtime` 1.6.1 применяет position-deletes — и
 даже делают `INSERT` поверх построчно изменённой таблицы. Чего они не умеют — порождать
 построчные изменения: `DELETE` и `UPDATE` отклоняются на этапе компиляции с `SemanticException
 [Error 10297] ... that is not transactional`. Подробности — H13-H20 в `TEST-MATRIX.md`.
@@ -497,7 +504,7 @@ smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 6 --sql-wr
 ```
 
 Beeline-`INSERT` десятки секунд занят MapReduce до коммита, а REST-append коммитит сразу, поэтому
-одновременный запуск просто выстроил бы их в очередь и ничего не доказал. Вместо этого сценарий
+одновременный запуск выстроил бы их в очередь и ничего не доказал. Вместо этого сценарий
 шлёт REST-append'ы раундами, пока жив хоть один SQL-писатель, а потом проверяет, что окна
 коммитов действительно пересеклись: он вычитывает время `alter_table` из лога прокси, где пути
 различаются по имени потока. См. секцию I в `TEST-MATRIX.md`.
@@ -519,17 +526,17 @@ smoke-stand/run-iceberg-txn-contention-smoke.sh --prefix hive4 --kerberos
 branch main has changed`, изменение не остаётся ни на одной из таблиц, а строки конкурента целы.
 
 Затем прогон выполняет ту же транзакцию с актуальным snapshot id и требует, чтобы она была
-**принята** и применена к обеим таблицам. В этом позитивном контроле всё дело: без него отказ выше
+принята и применена к обеим таблицам. В этом позитивном контроле всё дело: без него отказ выше
 выглядел бы столь же убедительно и при некорректном теле, неверном prefix или таблице, вообще
 недоступной для записи.
 
-То, что состязание по требованиям — «всё или ничего», **не** делает маршрут атомарным в общем
+То, что состязание по требованиям — «всё или ничего», не делает маршрут атомарным в общем
 случае. Адаптер Iceberg проверяет все требования заранее, а затем коммитит таблицы по одной без
 откатов. Поэтому, когда падает не требование, а сам коммит, сбой на середине оставляет предыдущие
 таблицы закоммиченными, а прокси отвечает `500 CommitStateUnknownException`. Обе половины записаны
 как I5 и I6 в `TEST-MATRIX.md`.
 
-### Apache Ranger и общий кэш метаданных (`run-ranger-shared-cache-smoke.sh`)
+## Apache Ranger и общий кэш метаданных (`run-ranger-shared-cache-smoke.sh`)
 
 Проверяет встроенную авторизацию через Apache Ranger в связке с общим глобальным кэшем метаданных (`shared-across-users=true`) и Kerberos-аутентификацией пользователей:
 
@@ -541,14 +548,14 @@ cd smoke-stand && ./prepare.sh
 ./run-ranger-shared-cache-smoke.sh --no-kerberos
 ```
 
-Сценарий тестирует многопользовательскую авторизацию под Kerberos (с аутентичными keytab-файлами пользователей из KDC стенда) и разделяемый кэш на запущенном прокси:
+Сценарий тестирует многопользовательскую авторизацию под Kerberos (с keytab-файлами пользователей, выпущенными KDC стенда) и разделяемый кэш на запущенном прокси:
 - создаёт изолированные тестовые базы данных `sales` (разрешённые таблицы `orders`, `customers` и запрещённая таблица `secret_orders`) и `finance` (таблицы `reports`, `expenses`);
 - проверяет, что пользователь `alice` (по Kerberos SASL или `set_ugi`) видит только разрешённую базу данных `sales` и её разрешённые таблицы в `get_all_databases`, `get_all_tables`, `get_tables` с pattern и `get_table_meta`;
 - проверяет гранулярность на уровне таблиц: `alice` получает отказ `NoSuchObjectException` при попытке точечного `get_table` на таблицу `secret_orders` внутри разрешённой БД `sales`, а списки таблиц её скрывают;
 - проверяет, что пользователь `bob` получает `get_all_databases` из общего кэша (без повторных запросов в бэкенд HMS) и видит только `finance`;
 - проверяет, что `bob` получает отказ при обращении к `sales`, а `alice` — при обращении к `finance`;
 - проверяет групповые политики Ranger: пользователи `charlie` (с группой `sales`) и `david` (с группой `finance`) авторизуются согласно правилам для групп;
-- проверяет, что неавторизованный пользователь `eve` не имеет доступа к приватным базам, а `admin` видит все базы данных и производит корректную очистку;
+- проверяет, что неавторизованный пользователь `eve` не имеет доступа к приватным базам, а `admin` видит все базы данных и выполняет очистку;
 - проверяет метрики Prometheus (`hms_proxy_ranger_evaluations_total` с метками `result="allowed"` и `result="denied"`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
 
 ## Автообновление кэша баз данных (`run-database-cache-smoke.sh`)
@@ -569,7 +576,7 @@ cd smoke-stand && ./prepare.sh
 
 ## Схемы без префикса и динамическая перезагрузка (`run-unprefixed-db-and-reload-smoke.sh`)
 
-Проверяет прямое сопоставление схем с удалённым каталогом (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) одноимённых схем из каталога по умолчанию и динамическую безопасную перечитку конфигурации на лету (Safe Reload) по сигналу `SIGHUP`:
+Проверяет прямое сопоставление схем с удалённым каталогом (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) одноимённых схем из каталога по умолчанию и перечитывание конфигурации на лету (Safe Reload) по сигналу `SIGHUP`:
 
 ```bash
 cd smoke-stand && ./prepare.sh
@@ -582,7 +589,7 @@ cd smoke-stand && ./prepare.sh
 - `get_all_databases`: схема отображается без префикса (`smoke_unprefixed_db`), а префиксированное имя `apache__smoke_unprefixed_db` скрыто;
 - вытеснение (shadowing): запросы к `smoke_unprefixed_db` маршрутизируются в удалённый каталог `apache`, а таблицы локальной одноимённой базы скрыты;
 - создание и удаление таблицы через DDL в беспрефиксной схеме;
-- Safe Reload: инъекция некорректного параметра в конфигурацию и посылка `SIGHUP` не ломают сервис (прокси отвечает на `/readyz` и продолжает надёжно работать на предыдущей валидной конфигурации);
+- Safe Reload: инъекция некорректного параметра в конфигурацию и посылка `SIGHUP` не ломают сервис (прокси отвечает на `/readyz` и продолжает работать на предыдущей валидной конфигурации);
 - восстановление исходной конфигурации и снятие вытеснения после `SIGHUP`.
 
 ## Мягкое объединение каталогов и динамическая перезагрузка (`run-merged-databases-smoke.sh`)
@@ -600,7 +607,7 @@ cd smoke-stand && ./prepare.sh
 - `get_all_databases`: уникальная схема выставляется клиенту без префикса (`smoke_merged_unique_db`), и сохраняется канонический доступ с префиксом через `get_database`;
 - отсутствие вытеснения (no shadowing): коллизионная база дефолтного каталога сохраняется без префикса, а удаленная одноименная база сохраняет доступ по явному префиксу (`apache__smoke_collision_db`);
 - маршрутизацию табличных вызовов (`get_all_tables`) для уникальных и коллизионных схем;
-- создание схемы без явного префикса (`create_database`): новая база гарантированно создается в каталоге по умолчанию (`hdp`), а не в удалённом;
+- создание схемы без явного префикса (`create_database`): новая база создаётся в каталоге по умолчанию (`hdp`), а не в удалённом;
 - Safe Reload: попытка применить невалидную конфигурацию отклоняется, прокси продолжает работать на валидной конфигурации;
 - восстановление исходного конфига и возврат префикса для уникальной базы после повторного `SIGHUP`.
 
@@ -614,7 +621,7 @@ cd smoke-stand && ./prepare.sh
 ```
 
 Сценарий проверяет:
-- `get_databases` с шаблонами `hdp..*` и `apache..*`, проверяя корректное разрешение и экстернализацию (`hdp__default`, `apache__default`).
+- `get_databases` с шаблонами `hdp..*` и `apache..*`, проверяя разрешение и экстернализацию (`hdp__default`, `apache__default`).
 - `get_table_meta` с шаблонами `hdp..*` и `apache..default`, подтверждая получение метаданных таблиц из удалённого бэкенда.
 - Негативные запросы (несуществующие каталоги `nonexistent..*` не должны отдавать объектов).
 
@@ -651,7 +658,7 @@ cd smoke-stand
 
 ## Отказоустойчивость Cross-DC и WAN (`run-cross-dc-resilience-smoke.sh`)
 
-Проверяет комплекс механизмов отказоустойчивости при связывании удалённых датацентров и деградации WAN-каналов:
+Проверяет механизмы отказоустойчивости при связывании удалённых датацентров и деградации WAN-каналов:
 
 ```bash
 cd smoke-stand && ./prepare.sh
@@ -659,41 +666,48 @@ cd smoke-stand && ./prepare.sh
 ```
 
 Сценарий тестирует на запущенном прокси с конфигурацией `hms-proxy-cross-dc.properties`:
-- **Кэши таблиц и разделов (`TableMetadataCache`, `PartitionMetadataCache`)**: считает попадания (`hit`) и промахи (`miss`) в кэш при последовательных вызовах `get_table` и `get_partition` по счётчикам Prometheus `hms_proxy_cache_requests_total`.
-- **Автоматическая DDL-инвалидация**: сбрасывает кэшированные записи таблицы и разделов при выполнении мутаций `alter_table`.
-- **Режим Serve-Stale-on-Error**: выдаёт устаревшие метаданные из кэша (`stale_hit`) при искусственной остановке удалённого каталога (`docker stop stand-hms-apache`) с сохранением работоспособности клиентских запросов.
-- **Гранулярный `/readyz`**: подтверждает HTTP `200 OK` при падении вторичного каталога с флагом `required-for-readiness=false` (локальный балансировщик нагрузки не снимает прокси с локального трафика при отказе удалённого ЦОД).
-- **Catalog Shadow / Replica Fallback**: прозрачно перенаправляет read-only запросы (`get_table`) на локальную теневую реплику (`hdp`) при сбое удалённого каталога с инкрементом метрики `hms_proxy_catalog_fallback_total`.
-- **Защита от Split-Brain**: гарантированно отклоняет любые мутирующие операции (`create_table`, `alter_table`, `drop_table`) к отказавшему каталогу без изменения реплики.
-- **Lenient Startup**: штатно запускает и инициализирует прокси при полностью выключенном удалённом вторичном бэкенде.
-- **Восстановление (Recovery)**: возвращает удалённый бэкенд в строй и проверяет восстановление штатной маршрутизации.
+- Кэши таблиц и разделов (`TableMetadataCache`, `PartitionMetadataCache`): считает попадания (`hit`) и промахи (`miss`) в кэш при последовательных вызовах `get_table` и `get_partition` по счётчикам Prometheus `hms_proxy_cache_requests_total`.
+- Автоматическая DDL-инвалидация: сбрасывает кэшированные записи таблицы и разделов при выполнении мутаций `alter_table`.
+- Режим Serve-Stale-on-Error: выдаёт устаревшие метаданные из кэша (`stale_hit`) при искусственной остановке удалённого каталога (`docker stop stand-hms-apache`); клиентские запросы при этом не получают ошибок.
+- Гранулярный `/readyz`: подтверждает HTTP `200 OK` при падении вторичного каталога с флагом `required-for-readiness=false` (локальный балансировщик нагрузки не снимает прокси с локального трафика при отказе удалённого ЦОД).
+- Catalog Shadow / Replica Fallback: перенаправляет read-only запросы (`get_table`) на локальную теневую реплику (`hdp`) при сбое удалённого каталога с инкрементом метрики `hms_proxy_catalog_fallback_total`.
+- Защита от Split-Brain: отклоняет мутирующие операции (`create_table`, `alter_table`, `drop_table`) к отказавшему каталогу без изменения реплики.
+- Lenient Startup: запускает и инициализирует прокси при полностью выключенном удалённом вторичном бэкенде.
+- Восстановление (Recovery): возвращает удалённый бэкенд в строй и проверяет восстановление штатной маршрутизации.
 
 ## Плейсхолдеры Spark SQL и path-based таблицы (`run-spark-path-based-smoke.sh`)
 
-Проверяет корректность обработки служебных плейсхолдеров движков (`global_temp`, форматы данных Spark SQL и прямые запросы к путям HDFS вида `csv."hdfs://..."`):
+Проверяет ответы прокси на служебные имена Spark SQL: базы-форматы файловых датасорсов, path-based таблицы вида `csv."hdfs://..."` и системную базу `global_temp`. Вызовы идут через `HmsMetastoreSmokeCli metadata` от пользователя `admin`: внутри контейнера `stand-proxy` на `thrift://localhost:9083`, если он запущен, иначе с хоста на `${PROXY_HOST}:${PROXY_PORT}` (дефолт `127.0.0.1:19085`) из fat jar.
 
 ```bash
 cd smoke-stand
 ./run-spark-path-based-smoke.sh
 ```
 
-Сценарий тестирует:
-- Немедленный возврат `NoSuchObjectException` при проверках баз данных форматов (`get_database("csv")`, `get_database("parquet")`) и системной базы `global_temp`.
-- Перехват запросов таблиц по составным путям со схемами и кавычками (`get_table` на `csv."hdfs://namenode:8020/tmp/data.csv"` и `default."hdfs://namenode:8020/tmp/data"`).
-- Перехват батч-запросов метаданных таблиц `get_table_objects_by_name`.
-- Отсутствие ложных отказов авторизации Apache Ranger (`Access denied`) и отсутствие обращений к бэкендам метастора для псевдо-объектов Spark SQL.
+Проверки по порядку (путь в них — `hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/`, на HDFS стенда он не указывает):
+
+1. `get_database` для `csv`, `parquet`, `orc`, `json`, `delta`, `iceberg` возвращает `NoSuchObjectException`, а не `Access denied`.
+2. `get_database` для `csv."<путь>"` возвращает `NoSuchObjectException`.
+3. `get_table` с базой `csv` и путём в качестве имени таблицы возвращает `NoSuchObjectException`.
+4. То же с путём в двойных кавычках.
+5. `get_table` с базой `default` и таблицей `csv."<путь>"` возвращает `NoSuchObjectException`.
+6. `get_tables` для базы `csv` возвращает пустой список.
+7. `get_table_meta` с шаблоном `csv` возвращает пустой список.
+8. `get_database("global_temp")` возвращает `NoSuchObjectException`, `get_tables` для `global_temp` — пустой список.
+
+Отсутствие обращений к бэкенду метастора сценарий не проверяет: он смотрит только на ответ клиенту.
 
 ## MapReduce под Kerberos
 
 Чтобы керберизованный `INSERT` заработал, нужны две вещи, и `LocalJobRunner` прячет обе за
 `return code 2`:
 
-- **Renewer для delegation token.** MapReduce собирает HDFS-токены перед стартом задачи и называет
+- Renewer для delegation token. MapReduce собирает HDFS-токены перед стартом задачи и называет
   для них renewer; без настройки падает с `Can't get Master Kerberos principal for use as renewer`.
   ResourceManager-а здесь нет, поэтому `yarn.resourcemanager.principal` указывает на сам
   HiveServer2. Настройка обязана лежать в `core-site.xml` — `hive-site.xml` до `Configuration`
   задачи не доходит.
-- **Нативные библиотеки Hadoop.** Защищённый shuffle идёт через `SecureIOUtils`, который без них
+- Нативные библиотеки Hadoop. Защищённый shuffle идёт через `SecureIOUtils`, который без них
   отказывается работать (`Secure IO is not possible without native code extensions`). Classpath,
   собранный Maven, несёт только Java-классы, поэтому образ копирует `lib/native` из подходящего
   образа дистрибутива Hadoop.
@@ -703,7 +717,7 @@ cd smoke-stand
 медленнее и нужна только для Kerberos-профиля — в plain-профиле защищённого shuffle нет, и он
 работает нативно.
 
-## Заметки, на которые ушло время
+## Известные проблемы
 
 - Derby обязана сама создать каталог своей базы, поэтому том монтируется на уровень выше
   (`/opt/hms/db`), а не на сам `metastore_db`.
@@ -772,7 +786,7 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   -e 'show databases;'"
 ```
 
-## Что стенд уже поймал
+## Дефекты, найденные на стенде
 
 - `INSERT ... VALUES` ломался во всех каталогах: Hive отправляет `LockRequest`, первый компонент
   которого — плейсхолдер `_dummy_database`/`_dummy_table`, а проверка на несколько namespace
@@ -801,11 +815,11 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   читает сразу с обоих.
 - Межкластерному purge нужен принципал namenode *своего* каталога в конфиге прокси. Purger сам
   открывает эту файловую систему, поэтому при настроенном принципале только первого кластера
-  удаление падало с `Failed to specify server's Kerberos principal name` — **после** уже успешного
+  удаление падало с `Failed to specify server's Kerberos principal name` — после уже успешного
   drop, оставляя данные осиротевшими. Отсюда `catalog.<name>.conf.dfs.namenode.kerberos.principal`
   на каждый каталог в Kerberos-профиле.
 
-## Проверено сквозняком
+## Сквозная проверка Kerberos
 
 Kerberos, от клиентского тикета до бэкенда:
 

@@ -964,7 +964,7 @@ method_matrix:
         catalog, and the shim gives no writer isolation anywhere else
       ru: >-
         Средний; межкаталожная операция сохраняет реальную блокировку только в
-        default catalog, а synthetic shim нигде больше не обеспечивает изоляции писателей
+        default catalog, а synthetic shim нигде больше не изолирует писателей
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoCatalogsRoutesToTheDefaultCatalog
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxySyntheticReadLocksTest#lockRequestSpanningTwoDatabasesOfOneCatalogKeepsEveryComponent
@@ -1067,12 +1067,12 @@ method_matrix:
       ru: Нет semantic downgrade, кроме самого payload extraction.
     semantic_risk:
       en: >-
-        High; ACID and write-id semantics are not guaranteed safe across
-        catalogs, so treat these RPCs as production-unsafe until validated
+        High; ACID and write-id semantics across catalogs are not validated,
+        so treat these RPCs as production-unsafe until validated
       ru: >-
-        Высокий; ACID и write-id semantics не гарантированно безопасны между
-        каталогами, поэтому эти RPC стоит считать production-unsafe до
-        отдельной валидации
+        Высокий; ACID и write-id semantics между каталогами не проверены,
+        поэтому эти RPC стоит считать production-unsafe до отдельной
+        валидации
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyBackendLocksTest#lockRoutesByNamespaceAndRewritesNestedDbName
 
@@ -1328,11 +1328,13 @@ method_matrix:
       ru: Нет.
     semantic_risk:
       en: >-
-        Blocked by design to guarantee deterministic routing and prevent silent
-        split-brain writes or drifting global state.
+        Blocked by design: a mutation that does not resolve to one catalog would
+        reach a guessed backend, and global state would drift between catalogs
+        (silent split-brain writes).
       ru: >-
-        Заблокировано на уровне архитектуры (by design), чтобы гарантировать детерминированную маршрутизацию и
-        предотвратить скрытую рассинхронизацию записей (silent split-brain writes) или расхождение глобального состояния
+        Заблокировано by design: операция изменения, не разрешённая ровно в один
+        каталог, ушла бы в угаданный бэкенд, и глобальное состояние разошлось бы
+        между каталогами (silent split-brain writes).
     smoke_tests:
       - io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxyAuthorizationGuardsTest#createRoleWithoutCatalogContextIsRejectedInMultiCatalogMode
 

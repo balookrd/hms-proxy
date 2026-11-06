@@ -9,10 +9,10 @@ Apache Hive `3.1.3`, Hive `4.1.x`, and Hortonworks Data Platform `3.1.0.x` envir
 
 It gives you one (or several) production-facing HMS Thrift endpoint(s) that can federate
 catalogs across multiple backend metastores, bridge Apache 3.1.3 / HDP 3.1.0.x / Hive 4.1.x
-API differences in either direction, and establish a clear security boundary between clients
+API differences in either direction, and establish a security boundary between clients
 and backend HMS services.
 
-## Three pillars
+## Proxy functions
 
 ### 1. Federation
 
@@ -34,12 +34,12 @@ Hive 4 removed (`get_table`, `get_table_objects_by_name`) when fronting a Hive 4
 an Apache 3.1.3 client, and downgrades Hive 4-only read/standard-DDL `*_req` wrappers to their
 positional Apache 3.1.3 equivalents when serving Hive 4 clients against an Apache 3.1.3
 backend. Hortonworks-specific RPCs are exposed via the HDP `standalone-metastore` jar when a
-matching HDP backend is configured; truly Hive 4-only APIs (data connectors, scheduled
+matching HDP backend is configured; Hive 4-only APIs (data connectors, scheduled
 queries, stored procedures, packages, ACID v2 extensions) respond with
 `TApplicationException UNKNOWN_METHOD`.
 
-This makes the proxy a practical bridge for mixed Apache/HDP/Hive 4 estates and staged
-migrations in either direction, not just a request router.
+In practice, the proxy can serve mixed Apache/HDP/Hive 4 estates and staged migrations in
+either direction.
 
 ### 3. Security boundary
 
@@ -58,7 +58,7 @@ Two naming layers appear throughout this README:
 | --- | --- |
 | External name | The client-facing proxy namespace. Examples: `catName=catalog2`, `catalogName=catalog2`, legacy `dbName=catalog2__sales`. |
 | Internal name | The real names on the selected backend HMS. Example: backend `catName=hive`, `dbName=sales`. |
-| Default catalog | `routing.default-catalog`, used when a request does not carry a trustworthy catalog hint. |
+| Default catalog | `routing.default-catalog`, used when a request does not carry an authoritative catalog hint. |
 | Ambiguous request | The request carries conflicting catalog hints, or a multi-catalog write does not resolve to exactly one catalog. |
 
 Routing is then decided like this:
@@ -75,9 +75,9 @@ If a request carries a backend `catName` such as `hive` instead of a proxy catal
 treats that field as non-authoritative for compatibility and falls back to `dbName` or
 `routing.default-catalog`.
 
-For mutations, the proxy prefers policy-driven guarantees over best-effort guessing: deterministic
-routing, explicit namespace ownership, no silent split-brain writes, and safe failure when a
-mutation stays ambiguous.
+For mutations, the proxy does not guess a target catalog: routing is deterministic, namespace
+ownership is explicit, writes do not split across backends (no silent split-brain writes), and a
+mutation that stays ambiguous fails.
 
 These switches change client-visible names or SQL text, not backend selection:
 
@@ -140,7 +140,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | HiveServer2 / HMS clients with end-user impersonation or Kerberos identity querying metadata | any | any | `NONE` or `KERBEROS` | metadata reads (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), shared global metadata caching across users, per-catalog Ranger policy engine evaluation | Metadata is cached once across users when `shared-across-users=true`, and embedded Apache Ranger plugins filter database and table listings per user without redundant backend metastore RPCs. |
 <!-- END GENERATED: capability-matrix -->
 
-## Scope notes
+## Routing and ACID limitations
 
 - legacy database references without a catalog prefix are routed to `routing.default-catalog`
 - this keeps Spark/Hive compatibility while still preserving deterministic routing and avoiding silent split-brain metadata writes
@@ -152,7 +152,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
   depending on backend txn state alignment
 - that synthetic lock state is in-memory by default and can be moved to ZooKeeper for multi-instance
   proxy failover, but it still does not make ACID writes or write-id coordination multi-catalog safe
-- Hive ACID, locks, tokens, and other truly global metastore operations still need careful
+- Hive ACID, locks, tokens, and other global metastore operations still need careful
   validation in your environment before turning them on behind a multi-catalog proxy
 
 ### Hard database mapping to remote catalogs (`unprefixed-databases`)
@@ -164,9 +164,9 @@ Using `catalog.<name>.unprefixed-databases`, specific databases can be mapped to
 catalog.remote.unprefixed-databases=beemetrics,another_db
 ```
 
-- **Shadowing**: if a database with the same name exists in the default catalog (`routing.default-catalog`), the remote database shadows (replaces) the default catalog's database in `SHOW DATABASES`, `get_all_databases`, and `get_databases`.
-- **Direct routing**: all requests targeting this database (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate, and locks) route directly to the designated remote catalog.
-- **Constraints**: cannot be configured on `routing.default-catalog`, wildcards (`*`, `%`, `?`) are prohibited, and the same database name cannot be assigned to multiple remote catalogs.
+- Shadowing: if a database with the same name exists in the default catalog (`routing.default-catalog`), the remote database shadows (replaces) the default catalog's database in `SHOW DATABASES`, `get_all_databases`, and `get_databases`.
+- Direct routing: all requests targeting this database (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate, and locks) route directly to the designated remote catalog.
+- Constraints: cannot be configured on `routing.default-catalog`, wildcards (`*`, `%`, `?`) are prohibited, and the same database name cannot be assigned to multiple remote catalogs.
 
 ### Soft remote catalog merging (`merge-with-default`)
 
@@ -176,12 +176,12 @@ Unlike the static database list in `unprefixed-databases`, configuring `catalog.
 catalog.remote.merge-with-default=true
 ```
 
-- **No manual lists**: you do not need to enumerate database names manually — they are discovered dynamically.
-- **No shadowing**: if a database exists in the default catalog (`routing.default-catalog`), it remains in the default catalog and is served without a prefix. The identically named remote database **is not hidden and remains accessible via its explicit prefix** (e.g. `remote__finance`).
-- **Unprefixed unique schemas**: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work).
-- **Database creation (`create_database`)**: creating a new database without an explicit prefix when this feature is enabled **always routes to the default catalog**. To create a database in the remote catalog, an explicit prefix must be supplied (`create_database("remote__new_db")`).
-- **Constraints**: cannot be set on `routing.default-catalog`, and cannot be combined with `unprefixed-databases` on the same catalog.
-- **Looking up an unknown name**: an unprefixed name the proxy has not seen yet is checked with `get_database` on the default catalog first, then on the merged catalogs. Concurrent requests for one name share a single such check. A miss is remembered for `routing.merge-with-default.negative-cache-ttl-ms` (default `5000`; `0` disables it), but only when **every** backend answered "no such database" (`NoSuchObjectException`): a backend error or outage is not a miss, otherwise the name would be routed away from the catalog that really holds it for the whole TTL. The names come from clients, so the miss cache is capped by `routing.merge-with-default.negative-cache-max-entries` (default `10000`): expired entries are dropped first, and a cache full of live misses simply stops remembering new ones until old ones expire.
+- No manual lists: you do not need to enumerate database names manually — they are discovered dynamically.
+- No shadowing: if a database exists in the default catalog (`routing.default-catalog`), it remains in the default catalog and is served without a prefix. The identically named remote database is not hidden and remains accessible via its explicit prefix (e.g. `remote__finance`).
+- Unprefixed unique schemas: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work).
+- Database creation (`create_database`): creating a new database without an explicit prefix when this feature is enabled always routes to the default catalog. To create a database in the remote catalog, an explicit prefix must be supplied (`create_database("remote__new_db")`).
+- Constraints: cannot be set on `routing.default-catalog`, and cannot be combined with `unprefixed-databases` on the same catalog.
+- Looking up an unknown name: an unprefixed name the proxy has not seen yet is checked with `get_database` on the default catalog first, then on the merged catalogs. Concurrent requests for one name share a single such check. A miss is remembered for `routing.merge-with-default.negative-cache-ttl-ms` (default `5000`; `0` disables it), but only when every backend answered "no such database" (`NoSuchObjectException`): a backend error or outage is not a miss, otherwise the name would be routed away from the catalog that really holds it for the whole TTL. The names come from clients, so the miss cache is capped by `routing.merge-with-default.negative-cache-max-entries` (default `10000`): expired entries are dropped first, and a cache full of live misses stops remembering new ones until old ones expire.
 
 ## Latency-aware backend routing
 
@@ -200,18 +200,18 @@ When enabled, the proxy can:
 - optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms` (or `ttl-seconds`)
 - optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
 - proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
-- immediately answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
+- answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - cache metastore configuration values (`get_config_value`) in memory with `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour) with single-flight deduplication and negative caching for unknown keys
 - cache table metadata (`get_table`) via `routing.cache.table-metadata.*` and partition metadata (`get_partition*`, `get_part_specs*`) via `routing.cache.partition-metadata.*` with single-flight deduplication, LRU eviction, and automatic local & distributed ZooKeeper DDL invalidation (`routing.cache.distributed-invalidation.*`) on `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - serve stale table and partition metadata during remote backend outages via `routing.cache.serve-stale-on-error=true` for up to `routing.cache.stale-grace-period-ms` (default 5 minutes)
 - guard inter-datacenter WAN connections from saturation via WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` and `concurrency-timeout-ms`)
-- start proxy smoothly despite temporary remote/secondary catalog unavailability via `catalog.<name>.startup-mode=LENIENT`
+- start the proxy despite temporary remote/secondary catalog unavailability via `catalog.<name>.startup-mode=LENIENT`
 - avoid false-positive load-balancer evictions during remote DC outages via `catalog.<name>.required-for-readiness=false` and `management.readyz.require-all-catalogs=false`
-- transparently fail over read-only requests to a local shadow replica catalog during primary catalog outages via `catalog.<name>.fallback-catalog` and `fallback-on-outage=true` without risking split-brain for mutating operations
+- fail over read-only requests to a local shadow replica catalog during primary catalog outages via `catalog.<name>.fallback-catalog` and `fallback-on-outage=true` without risking split-brain for mutating operations
 - coalesce concurrent identical backend requests (single-flight) to prevent session pool exhaustion during cache stampedes
 - omit degraded backends from safe fanout reads when
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
-- for comprehensive failure scenarios and cross-DC architecture, see [FAILOVER.md](FAILOVER.md) (EN: [FAILOVER.en.md](FAILOVER.en.md))
+- for failure scenarios and cross-DC architecture, see [FAILOVER.md](FAILOVER.md) (EN: [FAILOVER.en.md](FAILOVER.en.md))
 
 This is intentionally narrow in scope: hedged reads and degraded omission apply only to safe
 read-only fanout methods, currently `get_all_databases`, `get_databases`, and `get_table_meta`.
@@ -221,7 +221,7 @@ The database-list cache and database-metadata cache are disabled by default (`tt
 repeated `SHOW DATABASES` or `get_database` calls avoid backend round trips until the TTL expires.
 Both caches use single-flight request coalescing, return defensive copies of Thrift structures, and
 feature sliding batch expiration (progressive database fetches during large HiveServer2 / Ranger scans
-extend earlier cache entries so no entries expire midway through the scan, ensuring the full set stays cached for TTL
+extend earlier cache entries so no entries expire midway through the scan, and the full set stays cached for TTL
 after the entire scan completes). Both caches are automatically invalidated when DDL mutations
 (`create_database`, `alter_database`, `drop_database`) execute through the proxy.
 
@@ -335,7 +335,7 @@ applies a bounded socket lifetime:
 | `server.tcp-keepalive-count` | `4` | Failed probes before the connection is dropped |
 | `server.shutdown-timeout-seconds` | `30` | Bound on the ordered teardown after SIGTERM |
 
-`client-socket-timeout-ms` is a **read** timeout: it bounds how long a worker waits for the next
+`client-socket-timeout-ms` is a read timeout: it bounds how long a worker waits for the next
 request on an established connection and does not abort long server-side calls such as
 `drop_table` with purge, because no read is in flight while a request is being processed. The
 default is the order of magnitude of Hive's own `hive.metastore.client.socket.timeout` (600s);
@@ -369,25 +369,25 @@ The proxy validates its properties file at startup and refuses to start on a val
 interpret. A misconfigured proxy that runs and quietly does the opposite of what the file says is
 worse than one that does not start.
 
-**Unknown properties and typos**: the proxy tracks all accessed properties and refuses to boot if unrecognized, deprecated, or misspelled keys are detected in the configuration file (e.g. `server.ports` instead of `server.port` or `catalog.main.access_mode`). Startup fails fast with typo suggestions based on Levenshtein distance (*"did you mean 'server.port'?"*). Strict validation can be softened to a `WARN` log via `config.strict-validation=false` (defaults to `true`). Dynamic open-ended Hadoop/Hive namespaces (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`) remain fully allowed.
+Unknown properties and typos: the proxy tracks all accessed properties and refuses to boot if unrecognized, deprecated, or misspelled keys are detected in the configuration file (e.g. `server.ports` instead of `server.port` or `catalog.main.access_mode`). Startup fails fast with typo suggestions based on Levenshtein distance (*"did you mean 'server.port'?"*). Strict validation can be softened to a `WARN` log via `config.strict-validation=false` (defaults to `true`). Dynamic open-ended Hadoop/Hive namespaces (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`) remain fully allowed.
 
-**Effective configuration logging**: immediately after loading, the proxy emits a structured tree summary of all effective settings at `INFO` level (primary and additional listeners, security, thread pools, socket timeouts, per-catalog options, resilience parameters, rate limiting, and guards). Sensitive parameters (passwords, S3 secret keys, tokens, and credentials in `HiveConf` or `front-door-conf`) are automatically masked as `******`.
+Effective configuration logging: immediately after loading, the proxy emits a structured tree summary of all effective settings at `INFO` level (primary and additional listeners, security, thread pools, socket timeouts, per-catalog options, resilience parameters, rate limiting, and guards). Sensitive parameters (passwords, S3 secret keys, tokens, and credentials in `HiveConf` or `front-door-conf`) are automatically masked as `******`.
 
-**Booleans** accept only `true` and `false`, in any case. `yes`, `on`, `1` and typos such as `ture`
+Booleans accept only `true` and `false`, in any case. `yes`, `on`, `1` and typos such as `ture`
 are startup errors naming the key and the value. Previously they were read as `false`, which
 silently disabled impersonation, the management listener, or hedged reads.
 
-**Enum values** — every mode, profile and policy key — are case-insensitive, so
+Enum values — every mode, profile and policy key — are case-insensitive, so
 `access-mode=read_only` and `frontend-profile=apache_3_1_3` are accepted everywhere. An unknown
 value reports the key and the accepted constants.
 
-**Durations** in HiveConf keys such as `hive.metastore.client.socket.timeout` follow Hive: an
+Durations in HiveConf keys such as `hive.metastore.client.socket.timeout` follow Hive: an
 integer with an optional unit suffix `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`, `d`/`day`
 (long spellings such as `600sec`, `5min` work too). A bare number means seconds. A value Hive
 itself would reject, such as `1.5s`, is logged as a `WARN` naming the value and the applied
 default.
 
-**Contradictory combinations** are startup errors rather than silent behavior swaps:
+Contradictory combinations are startup errors rather than silent behavior swaps:
 
 | Combination | Result |
 | --- | --- |
@@ -405,7 +405,7 @@ at bind time rather than at validation time.
 
 ### Management listener
 
-The proxy can expose a lightweight HTTP listener for health checks, readiness, and Prometheus
+The proxy can expose an HTTP listener for health checks, readiness, and Prometheus
 metrics. The listener is disabled by default and turns on automatically when `management.port`
 is configured:
 
@@ -439,7 +439,7 @@ curl -s http://127.0.0.1:19083/metrics
 The listener serves requests from a small dedicated thread pool (`management.threads`), so a slow
 `/readyz` never blocks `/healthz` or `/metrics`. Keep at least two threads.
 
-**The management endpoints have no authentication or authorization.** `/readyz` exposes Kerberos
+**Warning:** the management endpoints have no authentication or authorization. `/readyz` exposes Kerberos
 principals and per-backend `lastError` strings that usually contain internal hostnames. Bind
 `management.bind-host` to an interface reachable only from your monitoring and orchestration
 network, or otherwise restrict the port with firewall rules or a network policy. Do not publish it
@@ -457,12 +457,12 @@ Available endpoints:
 ### Dynamic configuration reload (Safe Reload)
 
 The proxy supports live configuration reloading without restarting the process:
-- **Automatic polling**: `config.reload.poll-interval-seconds` (defaults to `5` seconds) polls the configuration file's mtime and applies changes. Set to `0` to disable background polling.
-- **SIGHUP signal**: send SIGHUP to the proxy process (`kill -HUP <pid>`).
+- Automatic polling: `config.reload.poll-interval-seconds` (defaults to `5` seconds) polls the configuration file's mtime and applies changes. Set to `0` to disable background polling.
+- SIGHUP signal: send SIGHUP to the proxy process (`kill -HUP <pid>`).
 
-Safe Reload: if the modified configuration file contains syntax errors, invalid properties, or conflicting namespace mappings, the failure is logged and the proxy **continues running uninterrupted on its previous valid configuration**. The broken file's modification time is remembered, so the background poller does not re-parse it every few seconds: the next attempt happens after the file changes again.
+Safe Reload: if the modified configuration file contains syntax errors, invalid properties, or conflicting namespace mappings, the failure is logged and the proxy continues running on its previous valid configuration. The broken file's modification time is remembered, so the background poller does not re-parse it every few seconds: the next attempt happens after the file changes again.
 
-**What applies without a restart.** A reload rebuilds the catalog router (`CatalogRouter`), the exposure policies (`FederationLayer`) and the routing layer, and invalidates the metadata caches (`DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`). The components are rebuilt one after another, so a request arriving mid-reload may see some new and some old settings. Applied are:
+What applies without a restart. A reload rebuilds the catalog router (`CatalogRouter`), the exposure policies (`FederationLayer`) and the routing layer, and invalidates the metadata caches (`DatabaseListCache`, `DatabaseMetadataCache`, `TableMetadataCache`, `PartitionMetadataCache`). The components are rebuilt one after another, so a request arriving mid-reload may see some new and some old settings. Applied are:
 
 - per catalog: `access-mode`, `write-db-whitelist`, `expose-mode`, `expose-db-patterns`, `expose-table-patterns.*`, `unprefixed-databases`, `merge-with-default`;
 - in `federation.*`: everything except `federation.external-table-drop-purge.mode`.
@@ -690,8 +690,8 @@ max, and utilization percentage, non-heap memory, individual memory pools, and d
 ### Selective federation exposure
 
 You can publish only part of a backend namespace while keeping routing and write policy unchanged.
-This is useful for gradual migration, safer multi-tenant rollout, and avoiding accidental metadata
-exposure.
+This lets you migrate and roll out multi-tenant configuration in parts: clients do not see
+metadata of objects outside the allowlist.
 
 Per catalog:
 
@@ -830,7 +830,7 @@ Supported RPC classes:
 - `txn`
 - `lock`
 
-Important behavior:
+Limit behavior:
 
 - per-principal limits apply only when the front door exposes an authenticated user, for example Kerberos/SASL
 - `rate-limit.source-cidr.<name>` is an aggregate bucket for the whole configured CIDR rule, not a separate bucket per IP
@@ -905,7 +905,7 @@ That changes the value returned by `getVersion()` while keeping the same proxy r
 The Thrift protocol has no version-negotiation handshake, so the proxy cannot tell which Hive
 version a client speaks from the first request (much like HiveServer2's split between binary
 and HTTP protocols). When two different client populations need different `getVersion()`
-identities or different runtime jars, run **multiple Thrift listeners on different ports**:
+identities or different runtime jars, run multiple Thrift listeners on different ports:
 
 ```properties
 server.port=9083
@@ -1020,7 +1020,7 @@ explicitly rather than returning a misleading success response.
 
 View/materialized-view notes:
 - view SQL rewrite is enabled by default (`federation.view-text-rewrite.mode=REWRITE`)
-- rewrite is intentionally parser-less and conservative: a lexical scanner tracks table positions
+- rewrite is parser-less: a lexical scanner tracks table positions
   (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) and rewrites the database qualifier of a reference
   standing in one of them, or qualifies an unqualified table with the external database; it does not parse the full Hive SQL grammar
 - CTEs in `WITH ... AS (...)`, string literals, `--` and `/* */` comments, numbers and backquoted identifiers are skipped, so
@@ -1074,7 +1074,7 @@ working unchanged. The pieces reload4j dropped — `org.apache.log4j.jmx.*`, the
 
 ### Debug tracing
 
-Per-request debug tracing is **off by default**: it renders every request argument and every backend
+Per-request debug tracing is off by default: it renders every request argument and every backend
 response through `DebugLogUtil`, which costs real CPU and allocation on each RPC. Turn it on
 deliberately, per environment or per incident:
 
@@ -1103,7 +1103,7 @@ For multi-catalog deployments, prefer Hive versions and clients that preserve ca
 If your clients are older, use `catalog<separator>db.table` naming consistently, with
 `<separator>` taken from `routing.catalog-db-separator`.
 
-For Beeline/HS2 SQL workloads, a non-dot separator is usually easier to use than `.`.
+For Beeline/HS2 SQL workloads, a non-dot separator is usually used instead of `.`.
 Recommended example:
 
 ```properties
@@ -1112,16 +1112,16 @@ routing.catalog-db-separator=__
 
 This only changes the external legacy spelling from the canonical routing model above.
 
-### Working with GUI Clients (DBeaver, Hue, DataGrip)
+### Working with GUI clients (DBeaver, Hue, DataGrip)
 
 When using HiveServer2 JDBC drivers, graphical tools query schemas and tables via `DatabaseMetaData.getTables(catalog, schemaPattern, tableNamePattern, ...)`.
 
 Internally, HiveServer2's `MetadataOperation.convertSchemaPattern` translates SQL LIKE schema patterns into regular expressions by replacing unescaped underscores `_` with dots `.`. Consequently, when using the canonical `__` separator, a schema name like `remote__default` is queried as pattern `remote..default` (and catalogs containing underscores, such as `remote_hdp__sales`, become `remote.hdp..sales`).
 
-The proxy handles this transparently:
+The proxy handles this as follows:
 - `CatalogRouter` matches schema pattern prefixes both in their literal form (`catalog__`) and in HiveServer2's converted form (`catalog.replace('_', '.') + '..'`).
-- Metadata requests (`get_table_meta`, `get_databases`) with patterns like `catalog..*` or `catalog..db` are accurately routed to the target backend catalog with the stripped backend pattern (e.g. `db` or `*`).
-- Returned objects (`TableMeta`, database names) are dynamically externalized using the configured separator (`catalog__db`), ensuring tables and schemas across remote catalogs populate seamlessly in DBeaver and Hue navigator trees.
+- Metadata requests (`get_table_meta`, `get_databases`) with patterns like `catalog..*` or `catalog..db` are routed to the target backend catalog with the stripped backend pattern (e.g. `db` or `*`).
+- Returned objects (`TableMeta`, database names) are dynamically externalized using the configured separator (`catalog__db`), so DBeaver and Hue navigator trees show the tables and schemas of remote catalogs.
 
 If HiveServer2 metadata writes behave differently through the proxy than directly against the
 backend HMS, try enabling:
@@ -1164,10 +1164,10 @@ locations are deleted recursively through Hadoop `FileSystem`.
 The recursive delete runs on a small background worker pool (threads named
 `hms-proxy-drop-purge-*`), so `drop_table` returns as soon as the metadata delete succeeds and does
 not hold a Thrift worker for the whole delete. A successful `DROP TABLE` therefore does not
-guarantee that the data is already gone — watch the proxy log for the purge outcome. Pending purges
+mean that the data is already gone — watch the proxy log for the purge outcome. Pending purges
 are awaited during proxy shutdown; purges still queued after that are logged and skipped.
 
-### External Table and Partition Location Rewriting & Normalization
+### External table and partition location rewriting and normalization
 
 When clients operate across multiple Hadoop clusters (e.g., when upstream engines are configured with `hdfs://frontend-ns` or specify unqualified paths such as `/data/...`), the proxy can automatically normalize storage locations of external tables and partitions targeting the underlying catalog's HDFS:
 
@@ -1198,15 +1198,15 @@ SELECT * FROM `catalog2__sales`.orders LIMIT 10;
 If you keep the default separator `.`, older Hive SQL clients can treat `catalog.db.table`
 ambiguously, so `__` is usually the safer choice.
 
-## Iceberg REST Catalog frontend
+## Iceberg REST catalog frontend
 
 The proxy can also run a parallel HTTP listener that speaks the Iceberg REST
 Catalog spec, backed by the same routing/federation pipeline as the Thrift HMS
-front door. Status: **experimental**; the full write surface `RESTCatalogAdapter`
+front door. Status: experimental; the full write surface `RESTCatalogAdapter`
 exposes - table writes (create, commit, drop, rename, register), view writes
 (create, commit, drop, rename) and namespace DDL (create, update properties,
-drop), plus multi-table transaction commit - is supported, but **only when the
-target namespace resolves to `routing.default-catalog`**. Iceberg clients
+drop), plus multi-table transaction commit - is supported, but only when the
+target namespace resolves to `routing.default-catalog`. Iceberg clients
 (PyIceberg, Spark `iceberg-rest`, Trino `iceberg-rest`) can discover and load
 Iceberg tables stored in HMS via the standard `metadata_location` table
 parameter.
@@ -1215,20 +1215,20 @@ Table writes and the default-catalog-only gate landed first; view writes and
 multi-table transaction commit were already reachable at that point too - the
 REST dispatch path for them shares the same generic `RoutingHiveCatalog`/
 `RoutingMetaStoreClient` plumbing table writes use, and `WriteRouteGate`
-already classified all thirteen routes as writes - they were simply not yet
-advertised in `GET /v1/config` or covered by smoke. Namespace DDL is genuinely
+already classified all thirteen routes as writes - they were not yet
+advertised in `GET /v1/config` or covered by smoke. Namespace DDL is
 new: `RoutingMetaStoreClient` did not implement `createDatabase`,
 `alterDatabase` or `dropDatabase` until now, so `POST /v1/{prefix}/namespaces`
 and friends answered `UnsupportedOperationException` regardless of catalog.
 
-**Why writes are default-catalog only:** only the default catalog's tables
+Why writes are default-catalog only: only the default catalog's tables
 are backed by a real HMS lock (see [ZooKeeper storage for synthetic read
 locks](#zookeeper-storage-for-synthetic-read-locks)); every other
 catalog is served by the synthetic lock shim, which grants an `EXCLUSIVE`
 lock unconditionally with no conflict checking. A commit routed there would
 believe it owns the table while silently racing - and possibly losing to - a
 concurrent writer, corrupting `metadata.json` without ever reporting a
-conflict. `WriteRouteGate` enforces this on the **resolved** catalog, not on
+conflict. `WriteRouteGate` enforces this on the resolved catalog, not on
 the request's own URL prefix: the default catalog's own prefix also exposes
 every other catalog's databases as federated `<catalog><separator><db>`
 names (see [Supported endpoints](#supported-endpoints) below), so a create
@@ -1346,7 +1346,7 @@ A refused write answers `403` (`ForbiddenException`) with a message naming
 the resolved catalog, for example: `Writes are only supported in the
 default catalog 'hdp'; namespace 'apache__default' belongs to catalog
 'apache', which is served by the synthetic lock shim and provides no writer
-isolation.` This is enforced on the namespace the request **resolves** to,
+isolation.` This is enforced on the namespace the request resolves to,
 not on the URL prefix it arrived under - see [Why writes are default-catalog
 only](#iceberg-rest-catalog-frontend) above.
 
@@ -1367,7 +1367,7 @@ What it may delete inside that catalog is bounded by `rest-catalog.purge.mode`:
 | `ALLOWLIST` | Purges only under `rest-catalog.purge.allowed-prefixes`. |
 | `REFUSE` | Answers `403` to every purge; a `DELETE` without `purgeRequested` still drops the table and leaves its files. |
 
-A purge the policy does not permit is refused **before the table is dropped**,
+A purge the policy does not permit is refused before the table is dropped,
 so a refusal leaves both the table and its files intact and the client can retry
 without `purgeRequested`.
 
@@ -1388,7 +1388,7 @@ authentication. A request body that fails to parse answers 400
 every route that takes a body. A `HEAD` response never writes a body, per RFC
 9110 — including on an error status — so an exists-check against a missing
 namespace, table or view returns a plain 404 with no body, not a 404 with a
-JSON payload. The request dispatcher catches `Throwable`, not just
+JSON payload. The request dispatcher catches `Throwable`, not only
 `Exception`: any `Error` that escapes handling (for example a dependency-
 version `NoSuchMethodError` surfacing deep inside a write) is mapped to the
 usual error response instead of unwinding past the handler and leaving the
@@ -1405,7 +1405,7 @@ leak into a non-default prefix. An unknown prefix still returns 404
 ### SPNEGO setup
 
 SPNEGO is an HTTP RFC requirement: the principal must be `HTTP/<host>@REALM`.
-This is a **separate** principal from `security.server-principal` (which is
+This is a separate principal from `security.server-principal` (which is
 usually `hms/<host>@REALM` for the Thrift listener). Both can live in the same
 keytab file or in two separate keytabs. The REST listener calls
 `UserGroupInformation.loginUserFromKeytabAndReturnUGI` to acquire its own UGI
@@ -1447,7 +1447,7 @@ spark.sql.catalog.sales_catalog.warehouse=sales
 
 ### Caveats
 
-- Iceberg REST is **Iceberg-spec only** by design. Non-Iceberg Hive tables
+- Iceberg REST is Iceberg-spec only by design. Non-Iceberg Hive tables
   (parquet/orc/text without `metadata_location`) are filtered out by HiveCatalog
   and stay invisible through REST. Continue to use the Thrift listener for
   native Hive tables.
@@ -1501,7 +1501,7 @@ routing.default-catalog=warehouse
 Security is configured in two independent parts: the front door (clients → proxy) and the
 backend connections (proxy → HMS).
 
-**Front door** — proxy listens with SASL:
+Front door — proxy listens with SASL:
 
 ```properties
 security.mode=KERBEROS
@@ -1589,7 +1589,7 @@ connections instead.
 At startup the proxy also pre-configures Hive's `HiveZooKeeperClient` JAAS entry for the
 front-door token store from those same credentials before starting the local delegation-token
 manager. In the usual setup that means you do not need a separate `-Djava.security.auth.login.config`
-file just for ZooKeeper SASL.
+file for ZooKeeper SASL.
 
 If ZooKeeper must use different credentials from the proxy front door, override them explicitly:
 
@@ -1624,7 +1624,7 @@ request is left to the backend and fails there. ACID tables cannot exist in a no
 catalog anyway — the proxy rejects `create_table` with `transactional=true` outside the default
 catalog and refuses `allocate_table_write_ids` / `get_valid_write_ids` for non-default catalogs.
 
-**The shim grants locks without checking whether they conflict.** It answers `ACQUIRED`
+**Warning:** the shim grants locks without checking whether they conflict. It answers `ACQUIRED`
 immediately and never inspects other live locks, so concurrent `INSERT`, `INSERT OVERWRITE` and
 DDL statements against the same table of a non-default catalog are not serialized against each
 other, and neither are clients that reach that metastore without passing through the proxy. A
@@ -1634,7 +1634,7 @@ catalog access mode is still enforced: a write lock for a `READ_ONLY` catalog, o
 outside `catalog.<name>.write-db-whitelist`, is rejected with a `MetaException` instead of being
 synthesized.
 
-Eligibility is decided over every `LockComponent` of the request, not just the first one. A
+Eligibility is decided over every `LockComponent` of the request, not only the first one. A
 `lock` call is acquired, routed, and acknowledged as a single unit and yields one lock id, so it
 cannot be forwarded to more than one backend. A query that reads across catalogs - or merely
 across two databases of one catalog - nevertheless arrives as exactly that: one request whose
@@ -1749,12 +1749,12 @@ manages per-user backend session pools (`ImpersonationClient`). On secure backen
 enabled, the Hive Metastore uses `TUGIAssumingProcessor` (which ignores `set_ugi()`); in this mode,
 the proxy automatically requests a backend delegation token (`get_delegation_token`) on behalf of the
 caller and establishes impersonated sessions using SASL DIGEST-MD5. The metastore executes operations
-under `createProxyUser(caller, loginUser).doAs(...)`, ensuring HDFS file operations (such as `wh.mkdirs`
+under `createProxyUser(caller, loginUser).doAs(...)`, so HDFS file operations (such as `wh.mkdirs`
 during table creation) run under the end user instead of `hive:hadoop`. On unsecure backends or in fallback
 mode, `set_ugi(user, groups)` is sent upon session initialization (`TUGIBasedProcessor`).
 
-Additionally, when a front-door client (HiveServer2, Spark, etc.) calls `set_ugi(user, groups)` on the proxy listener,
-the proxy binds this user identity to the client connection (transport), ensuring that all subsequent operations
+When a front-door client (HiveServer2, Spark, etc.) calls `set_ugi(user, groups)` on the proxy listener,
+the proxy binds this user identity to the client connection (transport), and all subsequent operations
 within that connection run with the end user's identity.
 
 If internal HiveServer2 traffic works as user `hive`, but your personal Kerberos user fails even
@@ -1769,7 +1769,7 @@ In that case either allow proxy-user impersonation on the backend HMS for the pr
 principal, or disable impersonation for that specific backend with
 `catalog.<name>.impersonation-enabled=false`.
 
-**Backend connections** — you can set shared defaults for all backend thrift clients via
+Backend connections — you can set shared defaults for all backend thrift clients via
 `backend.conf.*`, then override per catalog via `catalog.<name>.conf.*`:
 
 ```properties
@@ -1829,7 +1829,7 @@ Exposure modes:
 This means you can add arbitrary HiveConf keys used by `HiveMetaStoreClient` startup, not only
 the metastore URI and Kerberos settings.
 
-**Latency-aware routing** — optional backend-state polling, adaptive timeouts, circuit breaking,
+Latency-aware routing — optional backend-state polling, adaptive timeouts, circuit breaking,
 safe hedged fanout reads, and degraded omission are configured with `routing.*` properties:
 
 ```properties
@@ -1893,22 +1893,26 @@ count toward the circuit breaker. Once a backend crosses `routing.circuit-breake
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
 decide whether to close or reopen the circuit.
 
-### Table & Partition Metadata Caching and Distributed DDL Invalidation (ZooKeeper)
+### Table and partition metadata caching and distributed DDL invalidation (ZooKeeper)
 
-To optimize query planning performance and reduce WAN latency, `hms-proxy` supports in-memory caching of table and partition metadata:
+To reduce cross-cluster (WAN) round trips to the backend, `hms-proxy` supports in-memory caching of table and partition metadata:
 
-- `routing.cache.table-metadata.ttl-ms` (or `ttl-seconds`, default `0` — disabled): Caches `Table` objects for `get_table`.
-- `routing.cache.table-metadata.max-entries` (default `10000`): Maximum entries in the LRU table cache.
-- `routing.cache.partition-metadata.ttl-ms` (or `ttl-seconds`, default `0` — disabled): Caches partition metadata and partition name lists (`get_partition*`, `get_part_specs*`).
-- `routing.cache.partition-metadata.max-entries` (default `10000`): Maximum entries in the LRU partition cache.
-- `routing.cache.serve-stale-on-error=true`: On transient backend outages or network timeouts, serves stale cached entries for up to `routing.cache.stale-grace-period-ms` (default 5 minutes).
-- SingleFlight: Concurrent lookups for the same table or partition query are coalesced into a single backend RPC.
+| Parameter | Default | What it does |
+| --- | --- | --- |
+| `routing.cache.table-metadata.ttl-ms` (or `ttl-seconds`) | `0` — disabled | Caches `Table` objects for `get_table` |
+| `routing.cache.table-metadata.max-entries` | `10000` | Maximum entries in the LRU table cache |
+| `routing.cache.partition-metadata.ttl-ms` (or `ttl-seconds`) | `0` — disabled | Caches partition metadata and partition name lists (`get_partition*`, `get_part_specs*`) |
+| `routing.cache.partition-metadata.max-entries` | `10000` | Maximum entries in the LRU partition cache |
+| `routing.cache.serve-stale-on-error` | `false` | When `true`, serves stale cached entries during transient backend outages or network timeouts for up to `routing.cache.stale-grace-period-ms` |
+| `routing.cache.stale-grace-period-ms` | 5 minutes | Grace period for `serve-stale-on-error` |
 
-#### Synchronous Multi-Replica DDL Invalidation via ZooKeeper
+Concurrent lookups for the same table or partition query are coalesced into a single backend RPC (SingleFlight).
+
+#### Multi-replica DDL invalidation via ZooKeeper
 
 When running multiple `hms-proxy` replicas behind a load balancer in an HA topology, in-memory caches on each node are isolated. When a mutating DDL operation (`ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DROP DATABASE`) is processed by one replica, other replicas might serve stale metadata until their TTL expires.
 
-To maintain cross-replica metadata consistency, `hms-proxy` provides **distributed DDL invalidation via ZooKeeper**:
+`hms-proxy` propagates DDL invalidation across replicas via ZooKeeper:
 
 ```properties
 routing.cache.distributed-invalidation.mode=ZOOKEEPER
@@ -1921,12 +1925,12 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 # routing.cache.distributed-invalidation.instance-id=proxy-node-1
 ```
 
-- **Publish/Subscribe Mechanism**: The replica executing a DDL mutation invalidates its local cache and publishes a compact binary invalidation event to `/hms-proxy-cache-invalidation`. All other replicas watching the znode via Apache Curator `PathChildrenCache` receive the notification and invalidate cached entries for the affected table, partition, or database.
-- **Echo Suppression**: Events include the publishing node's `instance-id`, ensuring the originating replica ignores its own echoed events.
-- **Fail-Safe Behavior on Split-Brain / ZooKeeper Outage**: If the ZooKeeper connection is interrupted (`LOST` or `SUSPENDED`), the proxy defensively flushes all local metadata caches to avoid serving divergent metadata while isolated.
-- **Event Retention Sweep**: A background cleaner periodically purges event znodes older than `event-retention-ms` (default 5 minutes).
-- **Fallback Connection String**: If `connect-string` is omitted in the invalidation config, it automatically falls back to `synthetic-read-lock.store.zookeeper.connect-string`.
-- **Prometheus Metrics**:
+- Publish/subscribe: The replica executing a DDL mutation invalidates its local cache and publishes a compact binary invalidation event to `/hms-proxy-cache-invalidation`. All other replicas watching the znode via Apache Curator `PathChildrenCache` receive the notification and invalidate cached entries for the affected table, partition, or database.
+- Echo suppression: Events include the publishing node's `instance-id`, so the originating replica ignores its own echoed events.
+- Behavior on split-brain / ZooKeeper outage: If the ZooKeeper connection is interrupted (`LOST` or `SUSPENDED`), the proxy defensively flushes all local metadata caches to avoid serving divergent metadata while isolated.
+- Event retention sweep: A background cleaner periodically purges event znodes older than `event-retention-ms` (default 5 minutes).
+- Fallback connection string: If `connect-string` is omitted in the invalidation config, it automatically falls back to `synthetic-read-lock.store.zookeeper.connect-string`.
+- Prometheus metrics:
   - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
@@ -1935,12 +1939,12 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 
 When multiple users query the metastore (for example via HiveServer2, Trino, or Spark), caching metadata separately per user leads to redundant metastore RPCs, increased latency, and high cache memory footprint.
 
-`hms-proxy` includes an embedded **Apache Ranger** authorization plugin (`ranger-plugins-common` 2.5.0) that can evaluate policies locally inside the proxy. This enables a **global shared metadata cache**:
+`hms-proxy` includes an embedded Apache Ranger authorization plugin (`ranger-plugins-common` 2.5.0) that can evaluate policies locally inside the proxy. The metadata cache can therefore be shared across all users:
 
 - `routing.database-list-cache.shared-across-users=true`
 - `routing.database-metadata-cache.shared-across-users=true`
 
-With `shared-across-users=true`, cache keys omit user/group identities, allowing `SHOW DATABASES`, `SHOW TABLES`, and `get_database`/`get_table*` calls across all users to hit a single cache populated once from backend metastores. Before returning metadata to the caller, the proxy's embedded Ranger authorizer filters databases, tables, and views according to each caller's Ranger permissions. If authorization is not configured (`NoOpMetadataAuthorizer`), all metadata is returned directly without overhead.
+With `shared-across-users=true`, cache keys omit user/group identities, allowing `SHOW DATABASES`, `SHOW TABLES`, and `get_database`/`get_table*` calls across all users to hit a single cache populated once from backend metastores. Before returning metadata to the caller, the proxy's embedded Ranger authorizer filters databases, tables, and views according to each caller's Ranger permissions. If authorization is not configured (`NoOpMetadataAuthorizer`), all metadata is returned without an authorization check.
 
 ```properties
 # Enable embedded Ranger policy evaluation
@@ -1981,9 +1985,9 @@ catalog.catalog2.ranger.enabled=true
 catalog.catalog2.ranger.service-name=c2_hive_service
 ```
 
-#### How Schemas and Tables Are Evaluated in Ranger
+#### How schemas and tables are evaluated in Ranger
 
-1. **Namespace Translation and Resource Matching**:
+1. Namespace translation and resource matching:
    The proxy translates federated namespaces to backend-native names before evaluating Ranger policies:
    - For a request to `apache__marketing.campaigns` (catalog `apache`, backend database `marketing`), the Ranger resource is evaluated as:
      - `database` = `marketing`
@@ -1993,19 +1997,19 @@ catalog.catalog2.ranger.service-name=c2_hive_service
      - `table` = `orders`
    Policies in Apache Ranger Admin should always be defined against native backend database names without proxy catalog prefixes.
 
-2. **Global vs. Per-Catalog Ranger Configuration**:
-   - **Global Ranger (`ranger.*`)**: All catalogs share a single Ranger service instance (e.g., `hive`). A policy defined on `database=sales` applies to database `sales` across any catalog governed by that global service.
-   - **Per-Catalog Ranger (`catalog.<name>.ranger.*`)**: Each catalog initializes an independent `RangerBasePlugin` pointing to its own Ranger service (e.g., `onprem_hive`, `cloud_hive`) or distinct Ranger Admin URL. Policies are strictly isolated per catalog: database `sales` in catalog `catalog1` and database `sales` in catalog `catalog2` are evaluated against their respective, independent Ranger policy sets.
+2. Global and per-catalog Ranger configuration:
+   - Global Ranger (`ranger.*`): All catalogs share a single Ranger service instance (e.g., `hive`). A policy defined on `database=sales` applies to database `sales` across any catalog governed by that global service.
+   - Per-catalog Ranger (`catalog.<name>.ranger.*`): Each catalog initializes an independent `RangerBasePlugin` pointing to its own Ranger service (e.g., `onprem_hive`, `cloud_hive`) or distinct Ranger Admin URL. Policies are strictly isolated per catalog: database `sales` in catalog `catalog1` and database `sales` in catalog `catalog2` are evaluated against their respective, independent Ranger policy sets.
 
-3. **Filtering Lifecycle**:
-   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
-   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`. If a database is inaccessible to the caller in Ranger or hidden by federation exposure rules, table listing methods return an empty list rather than an error, preventing fatal Apache Thrift `TApplicationException: Internal error processing get_all_tables` crashes (since Thrift IDL does not declare `NoSuchObjectException` for table listing RPCs) and matching canonical Hive Metastore behavior.
-   - **`get_database`, `get_table`, `get_table_req`**: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. Unauthorized access behavior is governed by `ranger.mask-unauthorized-as-not-found`: by default (`false`), an explicit `MetaException` prefixed with `Access denied: ...` is thrown; when set to `true`, `NoSuchObjectException` is thrown to mask unauthorized objects as non-existent.
+3. Filtering lifecycle:
+   - `SHOW DATABASES` (`get_all_databases`, `get_databases`): Lists of databases are retrieved from the shared cache and passed through `filterDatabases(catalogName, databases, caller)`. Ranger evaluates `select`, `read`, or `use` access. Authorized databases are formatted with client-visible catalog prefixes and returned.
+   - `SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`): Table lists are fetched from the shared cache and filtered per caller via `filterTables(catalogName, backendDbName, tables, caller)`. If a database is inaccessible to the caller in Ranger or hidden by federation exposure rules, table listing methods return an empty list rather than an error: Thrift IDL does not declare `NoSuchObjectException` for table listing RPCs, so the error would reach the client as `TApplicationException: Internal error processing get_all_tables`. Native Hive Metastore behaves the same way.
+   - `get_database`, `get_table`, `get_table_req`: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. Unauthorized access behavior is governed by `ranger.mask-unauthorized-as-not-found`: by default (`false`), an explicit `MetaException` prefixed with `Access denied: ...` is thrown; when set to `true`, `NoSuchObjectException` is thrown to mask unauthorized objects as non-existent.
 
-4. **Active Directory / LDAP Group Resolution and Policy Matching**:
-   - **Server-Side Group Resolution**: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
-   - **Case-Insensitive & Distinguished Name (DN) Normalization**: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, ensuring reliable matching against Ranger policies without manual duplication of rules across different cases.
-   - **Persistent On-Disk Group Cache for Fast Cold Start (`security.group-disk-cache.*`)**: To speed up startup and avoid synchronous network round-trips to Active Directory / LDAP domain controllers, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable:
+4. Active Directory / LDAP group resolution and policy matching:
+   - Server-side group resolution: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
+   - Case and Distinguished Name (DN) normalization: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, so Ranger rules do not need to be duplicated for different cases.
+   - On-disk group cache (`security.group-disk-cache.*`): to avoid waiting on synchronous round-trips to Active Directory / LDAP domain controllers at startup, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable:
 
      ```properties
      security.group-disk-cache.enabled=true
@@ -2018,23 +2022,23 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
      Entries past `entry-ttl-seconds` are not deleted, since the serve-stale fallback runs on them, so the user count is what bounds the cache: `max-entries` (default `50000`). A full cache evicts the user whose groups were refreshed longest ago, and startup loads the newest entries from disk. Under `SIMPLE` authentication a client names itself through `set_ugi`, so without the cap the cache (and its file) would grow with any stream of made-up names.
 
-5. **Ranger Policy Engine ConcurrentModificationException Protection**:
+5. ConcurrentModificationException protection in the Ranger policy engine:
    - Background policy refreshing in Ranger SDK 2.5.0 (`PolicyRefresher` thread) can contend with client worker threads evaluating access permissions. In `hms-proxy`, access checks are protected via `evaluateAccessWithRetry`: on `ConcurrentModificationException`, it yields thread execution and retries once, with a safe fail-open fallback for reads if contention persists.
 
-6. **Compatibility with Older Ranger 1.x / HDP 3.1.0 Deployments (`ranger.roles.enabled`)**:
-   - Older Ranger releases lack the `/service/roles/download/` REST endpoint, generating persistent HTTP 404 error logs. Setting `ranger.roles.enabled=false` (or per-catalog `catalog.<name>.ranger.roles.enabled=false`) disables roles polling via lightweight `NoOpRolesRangerAdminClient`.
+6. Compatibility with older Ranger 1.x / HDP 3.1.0 deployments (`ranger.roles.enabled`):
+   - Older Ranger releases lack the `/service/roles/download/` REST endpoint, generating persistent HTTP 404 error logs. Setting `ranger.roles.enabled=false` (or per-catalog `catalog.<name>.ranger.roles.enabled=false`) disables roles polling via `NoOpRolesRangerAdminClient`.
 
-7. **Configurable Masking for Unauthorized Objects (`ranger.mask-unauthorized-as-not-found`)**:
-   - By default (`ranger.mask-unauthorized-as-not-found=false`), unauthorized database or table access in Ranger causes the proxy to throw a `MetaException` with an explicit `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (or `Database '<db>' is not accessible...`). This ensures that HiveServer2 and Beeline present callers with a clear access denial rather than confusing them with `Table not found` / `Database not found` compiler errors for tables that exist in the corporate catalog.
+7. Masking of unauthorized objects (`ranger.mask-unauthorized-as-not-found`):
+   - By default (`ranger.mask-unauthorized-as-not-found=false`), unauthorized database or table access in Ranger causes the proxy to throw a `MetaException` with an explicit `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (or `Database '<db>' is not accessible...`). HiveServer2 and Beeline show callers this access denial instead of `Table not found` / `Database not found` compiler errors for tables that exist.
    - When set to `true` (or per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`), the proxy throws `NoSuchObjectException`, adhering to a zero-information-disclosure security model by hiding the existence of unauthorized metadata objects.
 
-8. **Engine System Placeholders and Spark SQL File Data Sources (`global_temp`, path-based tables, and Hive `_dummy_database`)**:
+8. Engine system placeholders and Spark SQL file data sources (`global_temp`, path-based tables, and Hive `_dummy_database`):
    - The Apache Spark SQL in-memory system database `global_temp` and the Hive `_dummy_database` placeholder do not belong to any physical metastore backend.
-   - **Spark SQL file data sources (path-based tables)**: When executing direct queries against file storage paths (e.g. `SELECT ... FROM csv.hdfs://...`, `SELECT ... FROM csv."hdfs://..."`, or `parquet.`/path/to/data``), Spark SQL and table format catalogs (such as Apache Iceberg `HiveTableOperations`) probe the metastore for database or table existence via `get_database("csv")`, `get_table(format, path)`, `get_table_req`, or `get_table_objects_by_name` before falling back to direct file reading. The proxy recognizes storage paths and URI schemes (`hdfs://`, `s3a://`, `file://`, slashes `/`), outer quotes (`"`, `'`, ``` ` ```), format dot-prefixes (`csv."hdfs://..."`), as well as standard file formats (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) and immediately returns `NoSuchObjectException` (or empty lists for batch lookups) without sending backend RPCs or querying Ranger authorizers. This eliminates false-positive `MetaException: Access denied` failures under `mask-unauthorized-as-not-found=false` and fatal Spark/Iceberg `RuntimeException: Failed to get table info from metastore` crashes, enabling clean fallback to file-based Data Sources.
-   - The proxy intercepts requests targeting them early in the routing pipeline before evaluating Ranger permissions: `get_database`, `get_table`, `get_table_req`, and `get_table_objects_by_name` RPCs immediately return `NoSuchObjectException` / empty lists without hitting backend metastores or querying authorization policies. This avoids false-positive `MetaException: Access denied` errors under `mask-unauthorized-as-not-found=false` and ensures seamless startup for Spark SQL applications on YARN (`ApplicationMaster`) and Hive `INSERT ... VALUES`.
+   - Spark SQL file data sources (path-based tables): When executing direct queries against file storage paths (e.g. `SELECT ... FROM csv.hdfs://...`, `SELECT ... FROM csv."hdfs://..."`, or `parquet.`/path/to/data``), Spark SQL and table format catalogs (such as Apache Iceberg `HiveTableOperations`) probe the metastore for database or table existence via `get_database("csv")`, `get_table(format, path)`, `get_table_req`, or `get_table_objects_by_name` before falling back to direct file reading. The proxy recognizes storage paths and URI schemes (`hdfs://`, `s3a://`, `file://`, slashes `/`), outer quotes (`"`, `'`, ``` ` ```), format dot-prefixes (`csv."hdfs://..."`), as well as standard file formats (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) and immediately returns `NoSuchObjectException` (or empty lists for batch lookups) without sending backend RPCs or querying Ranger authorizers. Without this, under `mask-unauthorized-as-not-found=false` the client would get a false-positive `MetaException: Access denied`, and Spark/Iceberg would fail with `RuntimeException: Failed to get table info from metastore` instead of falling back to file-based Data Sources.
+   - The proxy intercepts requests targeting them early in the routing pipeline before evaluating Ranger permissions: `get_database`, `get_table`, `get_table_req`, and `get_table_objects_by_name` RPCs immediately return `NoSuchObjectException` / empty lists without hitting backend metastores or querying authorization policies. Without this, under `mask-unauthorized-as-not-found=false` the client would get a false-positive `MetaException: Access denied`, including during Spark SQL application startup on YARN (`ApplicationMaster`) and in Hive `INSERT ... VALUES`.
 
 
-**Iceberg pointer guard** — a HiveServer2 `INSERT` into an Iceberg table opens with an
+Iceberg pointer guard — a HiveServer2 `INSERT` into an Iceberg table opens with an
 `alter_table_with_environment_context` carrying the `Table` the query snapshotted at compile time,
 and a metastore applies those parameters wholesale, so every Iceberg key the record holds and the
 request omits is erased - `metadata_location` first of all. The proxy is the only place the Hive
@@ -2055,7 +2059,7 @@ routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 Reading the record and writing the alter are two calls, so a repair holds the table lock Iceberg
 itself takes (EXCLUSIVE, table level - the request shape of
 `org.apache.iceberg.hive.MetastoreLock`) across the re-read, the merge and the backend's
-`alter_table`. The lock is requested **only when a repair is needed**: an honest Iceberg commit
+`alter_table`. The lock is requested only when a repair is needed: an honest Iceberg commit
 sends its `alter_table` from inside that very lock, so asking for it before deciding would wait on
 the caller of the call being served. A lock that is not granted within `lock-acquire-timeout-ms`
 never refuses the write - the alter goes through repaired but unprotected, counted as
@@ -2249,7 +2253,7 @@ Useful notes:
 - `notification` should succeed for a Hortonworks-routed catalog and fail with
   `requires a Hortonworks backend runtime` for an Apache-routed catalog
 
-### Automated Real-installation Smoke
+### Automated real-installation smoke
 
 For repeated checks on a real proxy installation, use separate runners for `simple` and `kerberos`
 front doors:

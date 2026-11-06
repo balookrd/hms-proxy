@@ -1,158 +1,170 @@
-# Fault Tolerance and Hive Metastore Backend Unavailability
+# Fault tolerance and Hive Metastore backend unavailability
 
 Russian version: [FAILOVER.md](FAILOVER.md)
 
-This document describes how **hms-proxy** handles unavailability, network failures, and degradation of remote Hive Metastore (HMS) backends across various lifecycle stages.
+This document describes how `hms-proxy` handles unavailability, network failures, and degradation of remote Hive Metastore (HMS) backends across various lifecycle stages.
 
 ---
 
-## 1. Startup Behavior
+## 1. Proxy startup with an unreachable backend
 
 During application startup ([`HmsProxyApplication`](src/main/java/io/github/mmalykhin/hmsproxy/app/HmsProxyApplication.java)):
 1. The proxy parses configuration and initializes the catalog router ([`CatalogRouter`](src/main/java/io/github/mmalykhin/hmsproxy/routing/CatalogRouter.java)).
 2. For each configured catalog (`catalog.<name>.*`), a [`CatalogBackend`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java) instance is instantiated, opening its underlying runtime layer ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)).
-3. Depending on the `catalog.<name>.startup-mode` configuration:
-   * **`STRICT` (default)**: The session factory immediately attempts to establish an initial connection (`initialSession`). If unreachable, the proxy exhausts retries, throws `MetaException`, and terminates immediately with a non-zero exit code (**Startup Fail-Fast**), without opening client listener ports. The default catalog (`routing.default-catalog`) is strictly enforced to `STRICT`.
-   * **`LENIENT` (soft startup)**: If a remote or secondary backend fails initial connection during startup, the proxy logs a warning `proceeding in degraded mode (startup-mode=LENIENT)` and proceeds cleanly to open client listener ports. Sessions for this catalog are established lazily on the first request or upon network recovery.
+3. What happens next depends on `catalog.<name>.startup-mode`:
+
+| Mode | Behavior when the backend is unreachable at startup |
+| --- | --- |
+| `STRICT` (default) | The session factory immediately attempts an initial connection (`initialSession`). If the backend is unreachable, the proxy exhausts retries, throws `MetaException`, and exits with a non-zero exit code (startup fail-fast), without opening client listener ports. The default catalog (`routing.default-catalog`) always runs in `STRICT`. |
+| `LENIENT` (soft startup) | If a remote or secondary backend fails the initial connection, the proxy logs a warning `proceeding in degraded mode (startup-mode=LENIENT)`, continues startup, and opens client listener ports. Sessions for this catalog are established lazily: on the first request or after network recovery. |
 
 > [!NOTE]
-> Setting `catalog.<name>.startup-mode=LENIENT` is recommended for secondary catalogs in remote datacenters or across WAN links to prevent transient inter-DC outages from blocking the local proxy instance from serving local traffic.
+> Setting `catalog.<name>.startup-mode=LENIENT` is recommended for secondary catalogs in remote datacenters or across WAN links: a transient inter-DC outage then does not block the local proxy instance from starting and serving local traffic.
 
 ---
 
-## 2. Runtime Behavior on Backend Outage
+## 2. Backend failure while the proxy is running
 
-If a backend metastore becomes unavailable while the proxy is running, the following protection mechanisms take effect:
+If a backend metastore becomes unavailable while the proxy is running, the following mechanisms apply:
 
-### 2.1. Session Pooling and Automatic Single-Shot Retry
+### 2.1. Session pools and single-shot retry
 * All remote calls to a backend are served by session pools:
   * A shared session pool ([`BackendRuntime`](src/main/java/io/github/mmalykhin/hmsproxy/backend/BackendRuntime.java)) sized by `catalog.<name>.shared-session-pool-size`.
   * A per-user impersonation session pool ([`CatalogBackend.ImpersonationClient`](src/main/java/io/github/mmalykhin/hmsproxy/backend/CatalogBackend.java)) sized by `catalog.<name>.impersonation-pool-max-size`.
 * When a transport failure occurs (`TTransportException`, TCP connection reset, broken pipe), the corrupted session is marked invalid and discarded (`discard`).
-* The proxy borrows or establishes a fresh session and executes **exactly one automatic retry** (`retrying once`), but only when a replay is safe: the call changes no metastore state (a read), or the `TTransportException` is of type `NOT_OPEN`, meaning the request was never sent. A writing call (`create_table`, `add_partition`, `open_txns`, `commit_txn`, `lock`, ...) whose reply was lost (read timeout, connection reset, EOF) is not replayed, because the backend may already have applied it. The failure goes back to the client, which decides on its own retry (`RetryingMetaStoreClient`). The decision is made by `ThriftFailureClassifier.isSafeToReplay` from `HmsOperationPolicy.replayableAfterLostReply`; a method the proxy does not know is treated as a write.
+* The proxy borrows or establishes a fresh session and executes exactly one automatic retry (`retrying once`), but only when a replay is safe: the call changes no metastore state (a read), or the `TTransportException` is of type `NOT_OPEN`, meaning the request was never sent. A writing call (`create_table`, `add_partition`, `open_txns`, `commit_txn`, `lock`, ...) whose reply was lost (read timeout, connection reset, EOF) is not replayed, because the backend may already have applied it. The failure goes back to the client, which decides on its own retry (`RetryingMetaStoreClient`). The decision is made by `ThriftFailureClassifier.isSafeToReplay` from `HmsOperationPolicy.replayableAfterLostReply`; a method the proxy does not know is treated as a write.
 * If the retry also fails, the failure is recorded by the admission control subsystem.
 
-### 2.2. Circuit Breaker
+### 2.2. Circuit breaker
 When enabled via `routing.circuit-breaker.enabled=true`:
-1. **Failure Tracking**: Connectivity errors (`TTransportException`), socket timeouts (`SocketTimeoutException`), and protocol desyncs (`TApplicationException` of type `WRONG_METHOD_NAME`, `BAD_SEQUENCE_ID`, `INVALID_MESSAGE_TYPE`) are tracked in the backend runtime status ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)). Any other `TApplicationException` is a reply from a live backend (`UNKNOWN_METHOD` during capability negotiation, `INTERNAL_ERROR`, which libthrift uses to wrap any failure of a method that declares no exceptions), so it neither opens the circuit nor marks the backend unreachable.
-2. **Tripping to `OPEN`**: When consecutive failures exceed the configured threshold (`routing.circuit-breaker.failure-threshold`, default: `3`), the circuit trips to `OPEN`.
-3. **Client Fast-Fail**: All subsequent requests to this catalog are rejected immediately without blocking threads or waiting for socket timeouts:
+1. Failure tracking. Connectivity errors (`TTransportException`), socket timeouts (`SocketTimeoutException`), and protocol desyncs (`TApplicationException` of type `WRONG_METHOD_NAME`, `BAD_SEQUENCE_ID`, `INVALID_MESSAGE_TYPE`) are tracked in the backend runtime status ([`ProxyRuntimeState`](src/main/java/io/github/mmalykhin/hmsproxy/observability/ProxyRuntimeState.java)). Any other `TApplicationException` is a reply from a live backend (`UNKNOWN_METHOD` during capability negotiation, `INTERNAL_ERROR`, which libthrift uses to wrap any failure of a method that declares no exceptions), so it neither opens the circuit nor marks the backend unreachable.
+2. Tripping to `OPEN`. When consecutive failures exceed the configured threshold (`routing.circuit-breaker.failure-threshold`, default: `3`), the circuit trips to `OPEN`.
+3. Client fast-fail. All subsequent requests to this catalog are rejected immediately without blocking threads or waiting for socket timeouts:
    ```text
    MetaException: Backend catalog '<name>' rejected method '<method>' because circuit_open; next retry window in <X>ms
    ```
-4. **Probing with `HALF_OPEN`**: Once the cooldown window elapses (`routing.circuit-breaker.open-state-ms`, default: `30000` ms), the circuit enters `HALF_OPEN`. Exactly one client call is admitted to probe backend availability:
+4. Probing with `HALF_OPEN`. Once the cooldown window elapses (`routing.circuit-breaker.open-state-ms`, default: `30000` ms), the circuit enters `HALF_OPEN`. Exactly one client call is admitted to probe backend availability:
    * If successful, the circuit resets to `CLOSED` and failure counters are cleared.
    * If it fails, the circuit re-enters `OPEN` for another cooldown interval.
 
-### 2.3. Adaptive Socket Timeout
+### 2.3. Adaptive socket timeout
 When enabled via `routing.adaptive-timeout.enabled=true`:
 * The proxy computes an Exponentially Weighted Moving Average (EWMA) of backend response latency.
-* On detecting elevated latency or transient timeouts, the proxy dynamically adjusts the client socket timeout within `[min-timeout-ms, max-timeout-ms]`, preventing spurious disconnects during temporary remote HMS load spikes.
+* On detecting elevated latency or transient timeouts, the proxy dynamically adjusts the client socket timeout within `[min-timeout-ms, max-timeout-ms]` so that connections are not dropped by timeout during temporary remote HMS load spikes.
 
-### 2.4. Error Normalization for Thrift Clients
+### 2.4. Normalizing network errors into `MetaException`
 * In the Hive Thrift IDL, infrastructure network exceptions (`TTransportException`, `TApplicationException`) are not declared in the `throws` clauses of most methods. Without special handling, the Thrift processor would intercept them and return a generic `TApplicationException("Internal error processing <method>")`, obscuring the root cause.
-* For transparent client-side diagnostics, [`BackendErrorNormalizer`](src/main/java/io/github/mmalykhin/hmsproxy/routing/BackendErrorNormalizer.java) catches infrastructure exceptions and normalizes them into Hive's standard `MetaException`:
+* [`BackendErrorNormalizer`](src/main/java/io/github/mmalykhin/hmsproxy/routing/BackendErrorNormalizer.java) catches infrastructure exceptions and converts them into `MetaException`, which Hive methods declare in `throws`:
    ```text
    MetaException: Backend catalog 'hdp' failed in method 'get_table' with TTransportException: java.net.SocketException: Connection reset
    ```
-  This preserves the full diagnostic cause for upstream engines (Spark, HiveServer2, Trino, Impala).
+  Upstream engines (Spark, HiveServer2, Trino, Impala) receive the original network failure cause in the exception text.
 
-### 2.5. Compatibility Fallbacks for Service Methods
+### 2.5. Empty responses for service methods on failure
 * For secondary and diagnostic metastore calls whose failure does not compromise metadata consistency (e.g., `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), the compatibility layer ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) intercepts failures and returns an empty valid payload instead of failing the user session.
-* For critical methods (schema reads, locks, transactions, privileges), failures are never masked — callers are guaranteed to receive an explicit exception.
+* For critical methods (schema reads, locks, transactions, privileges), failures are not masked: callers receive an explicit exception.
 
-### 2.6. Table & Partition Metadata Caching and Serve-Stale-on-Error
-* To mitigate high latency across inter-DC WAN links, thread-safe in-memory caches are available:
+### 2.6. Table and partition metadata caches, serve-stale-on-error mode
+* To reduce the number of requests over high-latency inter-DC WAN links, thread-safe in-memory caches are available:
   * [`TableMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/TableMetadataCache.java) (`routing.cache.table-metadata.*`) for `get_table`.
   * [`PartitionMetadataCache`](src/main/java/io/github/mmalykhin/hmsproxy/routing/PartitionMetadataCache.java) (`routing.cache.partition-metadata.*`) for `get_partition*`, `get_part_specs*`.
-* **SingleFlight Coalescing**: Concurrent lookups for the same table or partition query are deduplicated, avoiding cache stampedes across the WAN link.
-* **Automatic DDL Invalidation**: Mutations (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) immediately invalidate cached table, partition, and database entries.
-* **Distributed DDL Invalidation via ZooKeeper (Multi-Instance HA)** (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
+* SingleFlight coalescing: concurrent lookups for the same table or partition query are deduplicated into one backend call, so a cache miss does not cause a cache stampede across the WAN link.
+* DDL invalidation: mutations (`alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`) immediately invalidate cached table, partition, and database entries.
+* Distributed DDL invalidation via ZooKeeper for multiple proxy instances (`routing.cache.distributed-invalidation.mode=ZOOKEEPER`):
   * When scaling `hms-proxy` horizontally across multiple replicas behind an L4/L7 load balancer, a mutating DDL operation processed on any instance publishes an invalidation event to a shared ZooKeeper znode (`routing.cache.distributed-invalidation.base-path`, default: `/hms-proxy-cache-invalidation`).
-  * All connected `hms-proxy` replicas receive real-time notifications via Apache Curator `PathChildrenCache` and immediately invalidate their local cached table, partition, and database metadata.
-  * **Echo Suppression**: Each replica is uniquely identified by `instance-id` and filters out its own published events.
-  * **Fail-Safe Invalidation on ZooKeeper Loss**: If the ZooKeeper connection state changes to `LOST` or `SUSPENDED`, the proxy defensively invalidates all local metadata caches to prevent serving stale data during network partitions.
-  * **Automatic Event Retention Sweep**: A background cleaner periodically (`purge-interval-ms`) purges expired event znodes older than the retention window (`event-retention-ms`, default 5 minutes).
-* **Serve-Stale-on-Error** (`routing.cache.serve-stale-on-error=true`): When remote backends experience network outages, timeouts, or connection resets, expired entries are safely served for the duration of the stale grace period (`routing.cache.stale-grace-period-ms`, default 5 minutes). This ensures read queries continue seamlessly despite transient WAN drops.
+  * All connected `hms-proxy` replicas receive a notification via Apache Curator `PathChildrenCache` and invalidate their local cached table, partition, and database metadata.
+  * Echo suppression: each replica is identified by `instance-id` and filters out its own published events.
+  * Invalidation on ZooKeeper loss: if the ZooKeeper connection state changes to `LOST` or `SUSPENDED`, the proxy invalidates all local metadata caches to prevent serving stale data during network partitions.
+  * Event retention sweep: a background cleaner periodically (`purge-interval-ms`) purges expired event znodes older than the retention window (`event-retention-ms`, default 5 minutes).
+* Serve-stale-on-error (`routing.cache.serve-stale-on-error=true`): when remote backends experience network outages, timeouts, or connection resets, expired entries are served for the duration of the stale grace period (`routing.cache.stale-grace-period-ms`, default 5 minutes). During a transient WAN drop, read queries get metadata from the cache instead of an error.
 
-### 2.7. WAN Concurrency Governor
-* To prevent flooding low-bandwidth inter-DC links and starving connection pools, each catalog can enforce a concurrency limit:
-  * `catalog.<name>.max-concurrent-calls` (default: `0`, unlimited).
-  * `catalog.<name>.concurrency-timeout-ms` (default: `10000` ms).
-* RPCs exceeding the concurrency threshold wait on a fair semaphore up to `concurrency-timeout-ms`. If no slot becomes free, the request fails fast with an informative `MetaException`, protecting backend and network resources.
+### 2.7. Per-catalog concurrent call limit
+To avoid flooding low-bandwidth inter-DC links and starving connection pools, each catalog can enforce a limit on concurrent in-flight RPCs:
 
-### 2.8. Catalog Shadow / Replica Fallback
-* If a catalog has a local read replica available (e.g., replicated MySQL/PostgreSQL metastore DB), hms-proxy can automatically fall back to it during primary outages:
-  * `catalog.<name>.fallback-catalog=<shadow_catalog_name>`
-  * `catalog.<name>.fallback-on-outage=true`
-* **Automatic Read-Only Fallback**: When the primary catalog fails (circuit breaker `OPEN`, `TTransportException`, timeouts), read-only RPCs (`get_table`, `get_database`, `get_partitions`, etc.) are transparently rerouted to the shadow replica.
-* **Strict Write Guard (No Split-Brain)**: Mutating operations (`create_*`, `alter_*`, `drop_*`, `truncate_*`, Iceberg commits) are strictly forbidden from falling back to the replica and fail with an explicit exception, preventing replica divergence and split-brain states.
+| Parameter | Default | What it does |
+| --- | --- | --- |
+| `catalog.<name>.max-concurrent-calls` | `0` (unlimited) | Maximum number of concurrent calls to the catalog. |
+| `catalog.<name>.concurrency-timeout-ms` | `10000` ms | How long a call waits for a free slot. |
+
+RPCs exceeding the limit wait on a fair semaphore up to `concurrency-timeout-ms`. If no slot becomes free, the request fails with a `MetaException`, and the client thread does not hang longer than this timeout.
+
+### 2.8. Read fallback to a shadow catalog replica
+If a catalog has a local read replica available (e.g., replicated MySQL/PostgreSQL metastore DB), `hms-proxy` can fall back to it during primary outages:
+
+| Parameter | Value | What it does |
+| --- | --- | --- |
+| `catalog.<name>.fallback-catalog` | `<shadow_catalog_name>` | Replica catalog that receives reads. |
+| `catalog.<name>.fallback-on-outage` | `true` | Enables fallback on outage. |
+
+* Read fallback: when the primary catalog fails (circuit breaker `OPEN`, `TTransportException`, timeouts), read-only RPCs (`get_table`, `get_database`, `get_partitions`, etc.) are rerouted to the shadow replica.
+* Write guard (no split-brain): mutating operations (`create_*`, `alter_*`, `drop_*`, `truncate_*`, Iceberg commits) never fall back to the replica and fail with an explicit exception, so the replica does not diverge from the primary catalog.
 * Tracked via Prometheus metric `hms_proxy_catalog_fallback_total`.
 
 ---
 
-## 3. Federation and Fanout Requests (`SHOW DATABASES`, `get_table_meta`)
+## 3. Fanout requests across catalogs (`SHOW DATABASES`, `get_table_meta`)
 
-When servicing operations that query all configured backends concurrently or sequentially ([`FanoutExecutor`](src/main/java/io/github/mmalykhin/hmsproxy/routing/FanoutExecutor.java)):
+Operations that query all configured backends concurrently or sequentially ([`FanoutExecutor`](src/main/java/io/github/mmalykhin/hmsproxy/routing/FanoutExecutor.java)) behave according to `routing.degraded-routing-policy`:
 
-* **Default Policy — `STRICT` (`routing.degraded-routing-policy=STRICT`)**:
-  A failure in any catalog fails the entire fanout operation. Callers receive a `MetaException` indicating which backend failed.
-* **Degraded Policy — `SAFE_FANOUT_READS` (`routing.degraded-routing-policy=SAFE_FANOUT_READS`)**:
-  The proxy omits the failed backend from the result set and returns an aggregated view from all healthy catalogs.
-  * A warning is logged: `omitting degraded backend catalog=<name> from safe fanout method=<method>`.
-  * The request metric is tagged with `degraded=true`.
-  * This degradation applies strictly to safe read-only metadata methods (`get_all_databases`, `get_databases`, `get_table_meta`). Writes and targeted catalog requests remain strict.
+| `routing.degraded-routing-policy` value | Behavior when one catalog fails |
+| --- | --- |
+| `STRICT` (default) | A failure in any catalog fails the entire fanout operation. Callers receive a `MetaException` indicating which backend failed. |
+| `SAFE_FANOUT_READS` | The proxy omits the failed backend from the result set and returns an aggregated view from the remaining catalogs. A warning is logged (`omitting degraded backend catalog=<name> from safe fanout method=<method>`), and the request metric is tagged with `degraded=true`. |
+
+`SAFE_FANOUT_READS` applies only to the read-only metadata methods `get_all_databases`, `get_databases`, `get_table_meta`. Writes and targeted catalog requests remain strict.
 
 ---
 
-## 4. Role Separation: `default-catalog` vs Secondary Catalogs
+## 4. Impact of `default-catalog` and secondary catalog failures
 
-The operational impact of a backend failure depends directly on its configured role:
+The impact of a backend failure depends on its configured role.
 
-### Secondary Catalog Failure
+### Secondary catalog failure
 * Only queries referencing databases and tables in that catalog are impacted (e.g., `catalog2__analytics.events`).
 * Requests directed to `default-catalog` and other healthy catalogs continue operating normally.
-* Namespace isolation prevents an issue in an external/remote metastore from degrading the primary cluster.
 
-### `default-catalog` Failure
-* **Critical Control-Plane Outage**:
+### `default-catalog` failure
+* Control-plane outage:
   * Global Thrift RPCs without an explicit database name (`getMetaConf`, `get_all_functions`, `get_metastore_db_uuid`, `get_current_notificationEventId`, `get_open_txns`, `get_open_txns_info`) are pinned directly to `default-catalog` and will fail.
   * Hive transaction and lock coordination (`open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `heartbeat`) is backed by `default-catalog`. When down, transactional DDL/DML operations cannot proceed.
   * Schema mutations and writes via the Iceberg REST Catalog gateway (`WriteRouteGate`) are permitted exclusively for `default-catalog` tables. Consequently, Iceberg write operations are halted.
 
 ---
 
-## 5. Iceberg REST Catalog Gateway Behavior
+## 5. Iceberg REST Catalog responses when the backend is unreachable
 
 * When the backend backing an Iceberg catalog is unreachable, the HTTP handler ([`IcebergHttpHandler`](src/main/java/io/github/mmalykhin/hmsproxy/restcatalog/IcebergHttpHandler.java)) translates metastore exceptions into standard Iceberg REST responses:
-  * The client receives an **HTTP 500 (Internal Server Error)** or **HTTP 503 (Service Unavailable)**.
+  * The client receives HTTP 500 (Internal Server Error) or HTTP 503 (Service Unavailable).
   * The response body contains a structured `ErrorResponse` JSON with error details and messages expected by Iceberg REST clients (Spark, Trino, Flink, PyIceberg).
 
 ---
 
-## 6. Monitoring, Health Checks, and Observability
+## 6. Health checks and backend state metrics
 
 The management HTTP server ([`ManagementHttpServer`](src/main/java/io/github/mmalykhin/hmsproxy/app/ManagementHttpServer.java)) exposes endpoints and metrics for backend health tracking:
 
-### 6.1. Health Endpoints
-* **`/healthz` (Liveness probe)**:
-  * Always returns **HTTP 200 OK** (`{"status":"ok","alive":true,...}`) as long as the proxy JVM process is running and accepting HTTP connections. Used for container liveness probes.
-* **`/readyz` (Readiness probe)**:
-  * Verifies connectivity across configured backends with support for granular catalog readiness filtering:
+### 6.1. `/healthz` and `/readyz` endpoints
+* `/healthz` (liveness probe):
+  * Always returns HTTP 200 OK (`{"status":"ok","alive":true,...}`) as long as the proxy JVM process is running and accepting HTTP connections. Used for container liveness probes.
+* `/readyz` (readiness probe):
+  * Verifies connectivity across configured backends; the set of catalogs it counts is configurable:
     * By default, the probe evaluates all configured catalogs.
-    * For remote or secondary catalogs, administrators can configure `catalog.<name>.required-for-readiness=false`. In this case, an outage of the remote catalog does not mark the proxy as degraded: `/readyz` continues returning **HTTP 200 OK** (`{"status":"ready",...}`), while reporting `"requiredForReadiness":false,"connected":false` for that catalog. This prevents remote datacenter network issues from taking down the local proxy instance in the local load balancer.
-    * Additionally, the global flag `management.readyz.require-all-catalogs=false` allows tying proxy readiness exclusively to the `default-catalog`.
-  * If the `default-catalog` or any required backend (`requiredForReadiness=true`) is unreachable or has an `OPEN` circuit breaker, the endpoint returns **HTTP 503 Service Unavailable** (`{"status":"degraded","backendConnectivity":false,...}`).
-  * Load balancers (HAProxy, Envoy, Kubernetes Ingress/Service) use this response to automatically remove the proxy instance from the active routing pool.
+    * For remote or secondary catalogs, administrators can configure `catalog.<name>.required-for-readiness=false`. In this case, an outage of the remote catalog does not mark the proxy as degraded: `/readyz` continues returning HTTP 200 OK (`{"status":"ready",...}`), while reporting `"requiredForReadiness":false,"connected":false` for that catalog. A remote datacenter outage then does not take the local proxy instance out of the local load balancer.
+    * The global flag `management.readyz.require-all-catalogs=false` ties proxy readiness to the `default-catalog` only.
+  * The endpoint returns HTTP 503 Service Unavailable with `"status":"degraded"` when any required backend (`requiredForReadiness=true`) is not connected, is marked `degraded`, or has a circuit breaker outside `CLOSED` (`OPEN` or `HALF_OPEN`), and also when front-door or backend Kerberos is unhealthy. `"backendConnectivity":false` is set only in the first case, when a required backend is not connected.
+  * Load balancers (HAProxy, Envoy, Kubernetes Ingress/Service) use this response to remove the proxy instance from the active routing pool.
 
-### 6.2. Background Health Polling
-* When `routing.backend-state-polling.enabled=true` is set, a background scheduler periodically tests backend reachability using lightweight `getStatus` calls with a configurable `probe-timeout-ms`.
-* This detects backend failures and recoveries proactively without waiting for user traffic or blocking external `/readyz` scrapes.
+### 6.2. Background backend polling
+* When `routing.backend-state-polling.enabled=true` is set, a background scheduler periodically tests backend reachability using `getStatus` calls with the `probe-timeout-ms` timeout.
+* Backend failures and recoveries are detected without user traffic, and external `/readyz` scrapes do not wait for a backend network call.
 
-### 6.3. Prometheus Metrics (`/metrics`)
-Backend outages update several key observability counters:
-* `hms_proxy_backend_failures_total{backend="<name>", error="<class>"}` — total backend failure count by error type.
-* `hms_proxy_backend_status{backend="<name>", state="connected|degraded"}` — current backend connectivity status.
-* `hms_proxy_circuit_state{backend="<name>"}` — current Circuit Breaker state (`0 = CLOSED`, `1 = OPEN`, `2 = HALF_OPEN`).
-* `hms_proxy_backend_session_acquire_timeouts_total{backend="<name>", reason="borrow|reconnect"}` — session acquisition timeouts under overload or backend unresponsiveness.
-* `hms_proxy_impersonation_session_evictions_total{backend="<name>", reason="transport_failure"}` — impersonation sessions dropped due to transport errors.
+### 6.3. Prometheus metrics (`/metrics`)
+Backend outages update these metrics:
+
+| Metric | What it shows |
+| --- | --- |
+| `hms_proxy_backend_failures_total{backend="<name>", error="<class>"}` | Total backend failure count by error type. |
+| `hms_proxy_backend_status{backend="<name>", state="connected\|degraded"}` | Current backend connectivity status. |
+| `hms_proxy_circuit_state{backend="<name>"}` | Current circuit breaker state (`0 = CLOSED`, `1 = OPEN`, `2 = HALF_OPEN`). |
+| `hms_proxy_backend_session_acquire_timeouts_total{backend="<name>", reason="borrow\|reconnect"}` | Session acquisition timeouts under overload or backend unresponsiveness. |
+| `hms_proxy_impersonation_session_evictions_total{backend="<name>", reason="transport_failure"}` | Impersonation sessions dropped due to transport errors. |

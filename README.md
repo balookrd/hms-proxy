@@ -9,7 +9,7 @@ HMS Proxy — это catalog-aware Hive Metastore federation and compatibility p
 
 Прокси открывает рабочие точки входа (Thrift endpoints) HMS, которые маршрутизируют запросы к каталогам между бэкендами metastore, сглаживают различия в API Apache 3.1.3, HDP 3.1.0.x и Hive 4.1.x в обе стороны и задают границу безопасности (security boundary) между клиентами и бэкендами HMS.
 
-## Три ключевых принципа
+## Функции прокси
 
 ### 1. Federation
 
@@ -28,7 +28,7 @@ HiveServer2 и прямые клиенты HMS API подключаются к �
 
 Специфичные для Hortonworks RPC доступны через jar-файл HDP `standalone-metastore` при настроенном бэкенде HDP. Вызовы API, появившихся только в Hive 4 (data connectors, scheduled queries, stored procedures, packages, ACID v2 extensions), возвращают ошибку `TApplicationException UNKNOWN_METHOD`.
 
-На практике прокси становится мостом для смешанной инфраструктуры (estate) Apache, HDP и Hive 4 и поэтапных миграций в обе стороны, а не просто маршрутизатором запросов.
+На практике через прокси можно держать смешанную инфраструктуру (estate) Apache, HDP и Hive 4 и вести поэтапные миграции в обе стороны.
 
 ### 3. Security boundary
 
@@ -44,7 +44,7 @@ HiveServer2 и прямые клиенты HMS API подключаются к �
 | --- | --- |
 | Внешнее имя | Клиентский namespace на границе proxy. Примеры: `catName=catalog2`, `catalogName=catalog2`, legacy `dbName=catalog2__sales`. |
 | Внутреннее имя | Реальные имена на выбранном backend HMS. Пример: backend `catName=hive`, `dbName=sales`. |
-| Default catalog | `routing.default-catalog`, куда proxy идёт, если запрос не несёт надёжного catalog hint. |
+| Default catalog | `routing.default-catalog`, куда proxy идёт, если запрос не несёт авторитетного catalog hint. |
 | Ambiguous request | В запросе есть конфликтующие catalog hints, либо multi-catalog write не разрешается ровно в один catalog. |
 
 Дальше routing работает так:
@@ -61,7 +61,7 @@ HiveServer2 и прямые клиенты HMS API подключаются к �
 совместимости не считается авторитетным: proxy пытается маршрутизировать по `dbName`, а если
 этого мало, идёт в `routing.default-catalog`.
 
-При мутациях и записи прокси опирается на строгие гарантии, а не на эвристические догадки: детерминированная маршрутизация, явное владение пространством имён, защита от рассинхронизации (silent split-brain writes) и безопасный отказ при любой неоднозначности.
+При мутациях и записи прокси не угадывает целевой каталог: маршрутизация детерминирована, владение пространством имён задано явно, запись не расходится по разным бэкендам (silent split-brain writes), а неоднозначная мутация завершается ошибкой.
 
 Следующие настройки меняют клиентское представление имён или SQL, но не сам выбор backend:
 
@@ -124,16 +124,10 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные | любой | любой | `NONE` или `KERBEROS` | чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), общий глобальный кэш метаданных для всех пользователей, вычисление политик Ranger отдельно по каталогам | Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC. |
 <!-- END GENERATED: capability-matrix -->
 
-## Важные оговорки
+## Ограничения маршрутизации и ACID
 
-- legacy database references без префикса каталога идут в `routing.default-catalog`
-- это сохраняет совместимость со Spark/Hive и одновременно поддерживает deterministic routing без silent split-brain metadata write
-- на практике это означает, что ACID write lifecycle полноценно поддерживается только для
-  `default-catalog`, если из payload нельзя извлечь namespace
-- request-based ACID методы, где в payload есть `dbName` или `fullTableName`, продолжают
-  маршрутизироваться по этому payload
 - Обращения к базам данных без префикса каталога направляются в `routing.default-catalog`.
-- Это сохраняет совместимость со Spark и Hive и обеспечивает детерминированную маршрутизацию без риска незаметной рассинхронизации (silent split-brain).
+- Так сохраняется совместимость со Spark и Hive, а маршрутизация остаётся детерминированной: запись метаданных не расходится по разным бэкендам (silent split-brain).
 - На практике жизненный цикл ACID-записи полноценно поддерживается только для `default-catalog`, если из полезной нагрузки нельзя извлечь пространство имён.
 - Запросные ACID-методы, где в полезной нагрузке указаны `dbName` или `fullTableName`, продолжают маршрутизироваться по этим объектам.
 - Прокси синтетически обслуживает не-ACID блокировки `SHARED_READ` `SELECT`, допустимые блокировки `NO_TXN` DDL и блокировки не-транзакционной записи (`INSERT`, `UPDATE`, `DELETE`) для каталогов, отличных от default. Благодаря этому чтения в HiveServer2, DDL и не-ACID `INSERT` не зависят от рассинхронизации транзакций на бэкендах.
@@ -149,9 +143,9 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 catalog.remote.unprefixed-databases=beemetrics,another_db
 ```
 
-- **Вытеснение (shadowing)**: если одноименная база данных присутствует и в каталоге по умолчанию (`routing.default-catalog`), то в объединенном списке (`SHOW DATABASES`, `get_all_databases`, `get_databases`) удаленная схема вытесняет локальную (локальная база с тем же именем скрывается).
-- **Прямая маршрутизация**: все обращения к этой схеме (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate и блокировки) направляются напрямую в указанный удаленный каталог.
-- **Ограничения**: параметр нельзя указывать на `routing.default-catalog`, имена схем не могут содержать шаблоны/wildcards (`*`, `%`, `?`), а одна и та же схема не может быть назначена нескольким удаленным каталогам.
+- Вытеснение (shadowing): если одноименная база данных присутствует и в каталоге по умолчанию (`routing.default-catalog`), то в объединенном списке (`SHOW DATABASES`, `get_all_databases`, `get_databases`) удаленная схема вытесняет локальную (локальная база с тем же именем скрывается).
+- Прямая маршрутизация: все обращения к этой схеме (`get_database`, `get_table`, `get_partitions`, `create_table`, Iceberg REST write gate и блокировки) направляются напрямую в указанный удаленный каталог.
+- Ограничения: параметр нельзя указывать на `routing.default-catalog`, имена схем не могут содержать шаблоны/wildcards (`*`, `%`, `?`), а одна и та же схема не может быть назначена нескольким удаленным каталогам.
 
 ### Мягкое объединение удаленных каталогов с дефолтным (`merge-with-default`)
 
@@ -161,12 +155,12 @@ catalog.remote.unprefixed-databases=beemetrics,another_db
 catalog.remote.merge-with-default=true
 ```
 
-- **Без ручных списков**: не требуется перечислять схемы вручную — они обнаруживаются автоматически.
-- **Без вытеснения (shadowing)**: если база данных присутствует в каталоге по умолчанию (`routing.default-catalog`), она сохраняется в дефолтном каталоге и обслуживается им без префикса. Одноименная база удаленного каталога **не скрывается, а остается доступна по явному префиксу** (например, `remote__finance`).
-- **Непрефиксированные схемы**: схемы, существующие только в удаленном каталоге (которых нет в дефолтном), выставляются клиенту без префикса каталога и маршрутизируются в удаленный каталог (при этом канонический доступ с префиксом `remote__schema` также сохраняется).
-- **Создание схем (`create_database`)**: создание новых схем без явного префикса каталога при включенной фиче **всегда направляется в дефолтный каталог**. Для создания схемы в удаленном каталоге требуется явный префикс (`create_database("remote__new_db")`).
-- **Ограничения**: параметр нельзя указывать на `routing.default-catalog`, и его нельзя сочетать с `unprefixed-databases` на одном каталоге.
-- **Поиск неизвестного имени**: имя без префикса, которого прокси ещё не видел, проверяется через `get_database` сначала в дефолтном каталоге, затем в объединяемых. Параллельные запросы к одному имени делят одну такую проверку. Промах запоминается на `routing.merge-with-default.negative-cache-ttl-ms` (дефолт `5000`; `0` отключает запоминание), но только если **каждый** бэкенд ответил «базы нет» (`NoSuchObjectException`): ошибка или недоступность бэкенда промахом не считается, иначе имя на весь TTL уходило бы мимо каталога, где база на самом деле есть. Имена приходят от клиентов, поэтому кэш промахов ограничен `routing.merge-with-default.negative-cache-max-entries` (дефолт `10000`): сначала вытесняются истёкшие записи, а заполненный живыми промахами кэш просто перестаёт запоминать новые, пока старые не истекут.
+- Без ручных списков: не требуется перечислять схемы вручную — они обнаруживаются автоматически.
+- Без вытеснения (shadowing): если база данных присутствует в каталоге по умолчанию (`routing.default-catalog`), она сохраняется в дефолтном каталоге и обслуживается им без префикса. Одноименная база удаленного каталога не скрывается, а остается доступна по явному префиксу (например, `remote__finance`).
+- Непрефиксированные схемы: схемы, существующие только в удаленном каталоге (которых нет в дефолтном), выставляются клиенту без префикса каталога и маршрутизируются в удаленный каталог (при этом канонический доступ с префиксом `remote__schema` также сохраняется).
+- Создание схем (`create_database`): создание новых схем без явного префикса каталога при включенной фиче всегда направляется в дефолтный каталог. Для создания схемы в удаленном каталоге требуется явный префикс (`create_database("remote__new_db")`).
+- Ограничения: параметр нельзя указывать на `routing.default-catalog`, и его нельзя сочетать с `unprefixed-databases` на одном каталоге.
+- Поиск неизвестного имени: имя без префикса, которого прокси ещё не видел, проверяется через `get_database` сначала в дефолтном каталоге, затем в объединяемых. Параллельные запросы к одному имени делят одну такую проверку. Промах запоминается на `routing.merge-with-default.negative-cache-ttl-ms` (дефолт `5000`; `0` отключает запоминание), но только если каждый бэкенд ответил «базы нет» (`NoSuchObjectException`): ошибка или недоступность бэкенда промахом не считается, иначе имя на весь TTL уходило бы мимо каталога, где база на самом деле есть. Имена приходят от клиентов, поэтому кэш промахов ограничен `routing.merge-with-default.negative-cache-max-entries` (дефолт `10000`): сначала вытесняются истёкшие записи, а заполненный живыми промахами кэш перестаёт запоминать новые, пока старые не истекут.
 
 ## Latency-aware routing backend'ов
 
@@ -185,14 +179,14 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms` (или `ttl-seconds`)
 - опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
 - упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
-- мгновенно отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
+- отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - кэшировать конфигурационные параметры метастора (`get_config_value`) в памяти через `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час) с single-flight дедупликацией и negative caching для отсутствующих ключей
 - кэшировать метаданные таблиц (`get_table`) через `routing.cache.table-metadata.*` и разделов (`get_partition*`, `get_part_specs*`) через `routing.cache.partition-metadata.*` с single-flight дедупликацией, LRU-вытеснением, автоматической локальной и распределенной ZooKeeper DDL-инвалидацией (`routing.cache.distributed-invalidation.*`) при `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - отдавать устаревшие метаданные таблиц и разделов при авариях и разрывах связи с удаленным бэкендом через `routing.cache.serve-stale-on-error=true` в течение `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут)
 - защищать удаленные WAN-каналы от перегрузки через WAN Concurrency Governor (`catalog.<name>.max-concurrent-calls` и `concurrency-timeout-ms`)
 - запускать прокси без блокировки при временной недоступности вторичных/удаленных каталогов через `catalog.<name>.startup-mode=LENIENT`
 - предотвращать ложный вывод прокси из балансировщика при сбоях удаленного ЦОД через `catalog.<name>.required-for-readiness=false` и `management.readyz.require-all-catalogs=false`
-- прозрачно перенаправлять read-only запросы на локальную теневую реплику при аварии основного каталога через `catalog.<name>.fallback-catalog` и `fallback-on-outage=true` без риска split-brain для мутаций
+- перенаправлять read-only запросы на локальную теневую реплику при аварии основного каталога через `catalog.<name>.fallback-catalog` и `fallback-on-outage=true` без риска split-brain для мутаций
 - объединять одновременные одинаковые запросы к бэкенду (single-flight) для предотвращения исчерпания пула сессий
 - исключать degraded backend из таких safe fanout read при
   `routing.degraded-routing-policy=SAFE_FANOUT_READS`
@@ -310,7 +304,7 @@ listener ограничивает жизненный цикл сокета:
 | `server.tcp-keepalive-count` | `4` | Сколько проб должно провалиться, прежде чем соединение будет закрыто |
 | `server.shutdown-timeout-seconds` | `30` | Ограничение на упорядоченную остановку после SIGTERM |
 
-`client-socket-timeout-ms` — именно **read** timeout: он ограничивает, сколько worker ждёт
+`client-socket-timeout-ms` — именно read timeout: он ограничивает, сколько worker ждёт
 следующего запроса на уже установленном соединении, и не обрывает долгие серверные вызовы вроде
 `drop_table` с purge, потому что во время обработки запроса чтения нет. Дефолт согласован по
 порядку величины с хайвовым `hive.metastore.client.socket.timeout` (600s); клиенты, обёрнутые в
@@ -345,25 +339,25 @@ Proxy проверяет properties-файл на старте и отказыв
 интерпретировать. Proxy, который запустился и тихо делает противоположное написанному в файле,
 хуже, чем proxy, который не стартовал.
 
-**Неизвестные и ошибочные ключи (Unknown properties)**: proxy отслеживает все прочитанные ключи и отказывается запускаться, если в конфигурационном файле обнаружены неизвестные параметры либо опечатки (например, `server.ports` вместо `server.port` или `catalog.main.access_mode`). Сообщение об ошибке содержит подсказку наиболее близкого известного ключа (*«did you mean 'server.port'?»*). Строгую проверку можно переключить в режим предупреждений в логе через `config.strict-validation=false` (по умолчанию `true`). Открытые пространства параметров Hadoop/Hive (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`) принимаются без ограничений.
+Неизвестные и ошибочные ключи (Unknown properties): proxy отслеживает все прочитанные ключи и отказывается запускаться, если в конфигурационном файле обнаружены неизвестные параметры либо опечатки (например, `server.ports` вместо `server.port` или `catalog.main.access_mode`). Сообщение об ошибке содержит подсказку наиболее близкого известного ключа (*«did you mean 'server.port'?»*). Строгую проверку можно переключить в режим предупреждений в логе через `config.strict-validation=false` (по умолчанию `true`). Открытые пространства параметров Hadoop/Hive (`backend.conf.*`, `catalog.<name>.conf.*`, `security.front-door-conf.*`, `catalog.<name>.expose-table-patterns.*`, `rate-limit.source-cidr.*`) принимаются без ограничений.
 
-**Логирование эффективной конфигурации**: сразу после успешной загрузки proxy выводит в лог на уровне `INFO` полный структурированный дамп примененной конфигурации (все слушатели, пулы потоков, таймауты сокетов, TCP keepalive, параметры каждого каталога, resilience-кэши, rate limiting, Ranger и guard-фильтры). Все чувствительные данные (пароли к БД, секретные S3-ключи, токены и credentials в `HiveConf` и `front-door-conf`) автоматически маскируются (`******`).
+Логирование применённой конфигурации: сразу после успешной загрузки proxy выводит в лог на уровне `INFO` полный структурированный дамп примененной конфигурации (все слушатели, пулы потоков, таймауты сокетов, TCP keepalive, параметры каждого каталога, resilience-кэши, rate limiting, Ranger и guard-фильтры). Все чувствительные данные (пароли к БД, секретные S3-ключи, токены и credentials в `HiveConf` и `front-door-conf`) автоматически маскируются (`******`).
 
-**Boolean-значения** принимают только `true` и `false` в любом регистре. `yes`, `on`, `1` и
+Boolean-значения принимают только `true` и `false` в любом регистре. `yes`, `on`, `1` и
 опечатки вроде `ture` — ошибка старта с указанием ключа и значения. Раньше они читались как
 `false`, то есть молча выключали имперсонацию, management-листенер или hedged reads.
 
-**Enum-значения** — все ключи режимов, профилей и политик — регистронезависимы, поэтому
+Enum-значения — все ключи режимов, профилей и политик — регистронезависимы, поэтому
 `access-mode=read_only` и `frontend-profile=apache_3_1_3` принимаются везде. При неизвестном
 значении сообщение содержит ключ и список допустимых констант.
 
-**Длительности** в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` соответствуют
+Длительности в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` соответствуют
 Hive: целое число с необязательным суффиксом `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`,
 `d`/`day` (длинные написания вроде `600sec`, `5min` тоже работают). Число без суффикса означает
 секунды. Значение, которое отверг бы и сам Hive (например `1.5s`), логируется как `WARN` с
 указанием значения и применённого дефолта.
 
-**Противоречивые комбинации** дают ошибку старта, а не тихую подмену поведения:
+Противоречивые комбинации дают ошибку старта, а не тихую подмену поведения:
 
 | Комбинация | Результат |
 | --- | --- |
@@ -381,7 +375,7 @@ Hive: целое число с необязательным суффиксом `
 
 ### Management listener
 
-Proxy может поднимать легковесный HTTP listener для health checks, readiness и Prometheus
+Proxy может поднимать HTTP listener для health checks, readiness и Prometheus
 метрик. По умолчанию listener выключен и автоматически включается, если задан `management.port`:
 
 ```properties
@@ -415,7 +409,7 @@ curl -s http://127.0.0.1:19083/metrics
 Listener обслуживает запросы из небольшого выделенного пула потоков (`management.threads`), поэтому
 медленный `/readyz` не блокирует `/healthz` и `/metrics`. Держи как минимум два потока.
 
-**У management endpoints нет ни аутентификации, ни авторизации.** `/readyz` отдаёт
+**Внимание:** у management endpoints нет ни аутентификации, ни авторизации. `/readyz` отдаёт
 Kerberos-принципалы и per-backend `lastError`, в котором обычно видны внутренние hostname. Привязывай
 `management.bind-host` к интерфейсу, доступному только из сети мониторинга и оркестрации, либо
 ограничивай порт firewall-правилами или network policy. Не публикуй его рядом с клиентским
@@ -433,12 +427,12 @@ Thrift-портом.
 ### Динамическая перечитка конфигурации (Safe Reload)
 
 Proxy поддерживает обновление конфигурации без простоя сервиса:
-- **Автоматически по таймеру**: параметр `config.reload.poll-interval-seconds` (по умолчанию `5` секунд) отслеживает изменение mtime файла конфигурации. Установите `0`, чтобы отключить фоновый опрос.
-- **По сигналу SIGHUP**: отправьте сигнал процессу (`kill -HUP <pid>`).
+- Автоматически по таймеру: параметр `config.reload.poll-interval-seconds` (по умолчанию `5` секунд) отслеживает изменение mtime файла конфигурации. Установите `0`, чтобы отключить фоновый опрос.
+- По сигналу SIGHUP: отправьте сигнал процессу (`kill -HUP <pid>`).
 
-Безопасность перезагрузки (Safe Reload): если в обновленном файле обнаружена синтаксическая ошибка, неизвестные параметры или конфликт пространств имен, ошибка логируется в журнал, а сервис **продолжает бесперебойно работать на предыдущей конфигурации**. Запомненное время изменения битого файла обновляется, поэтому фоновый опрос не разбирает его заново каждые несколько секунд: следующая попытка будет после следующего изменения файла.
+Безопасность перезагрузки (Safe Reload): если в обновленном файле обнаружена синтаксическая ошибка, неизвестные параметры или конфликт пространств имен, ошибка логируется в журнал, а сервис продолжает работать на предыдущей конфигурации. Запомненное время изменения битого файла обновляется, поэтому фоновый опрос не разбирает его заново каждые несколько секунд: следующая попытка будет после следующего изменения файла.
 
-**Что применяется без рестарта.** Перезагрузка пересобирает маршрутизатор каталогов (`CatalogRouter`), политики экспозиции (`FederationLayer`) и routing-слой и инвалидирует кэши списков и метаданных баз, таблиц и разделов. Компоненты пересобираются по очереди, поэтому запрос, пришедший в момент перезагрузки, может увидеть часть новых и часть старых настроек. Применяются:
+Что применяется без рестарта. Перезагрузка пересобирает маршрутизатор каталогов (`CatalogRouter`), политики экспозиции (`FederationLayer`) и routing-слой и инвалидирует кэши списков и метаданных баз, таблиц и разделов. Компоненты пересобираются по очереди, поэтому запрос, пришедший в момент перезагрузки, может увидеть часть новых и часть старых настроек. Применяются:
 
 - у каталогов: `access-mode`, `write-db-whitelist`, `expose-mode`, `expose-db-patterns`, `expose-table-patterns.*`, `unprefixed-databases`, `merge-with-default`;
 - в `federation.*`: всё, кроме `federation.external-table-drop-purge.mode`.
@@ -627,12 +621,12 @@ catalog.
 
 В комплектный Grafana dashboard `monitoring/grafana/hms-proxy-dashboard.json` добавлены панели по
 synthetic lock activity, handoff, store failures и active lock counts, а также template variable
-`store_mode` для быстрого переключения между режимами `in_memory` и `zookeeper`.
+`store_mode` для переключения между режимами `in_memory` и `zookeeper`.
 
 ### Structured audit log
 
 Proxy также пишет один structured audit log на каждый запрос через logger
-`io.github.mmalykhin.hmsproxy.audit`. Каждая запись представляет собой single-line JSON с полями
+`io.github.mmalykhin.hmsproxy.audit`. Каждая запись — single-line JSON с полями
 `requestId`, `method`, `operationClass`, `catalog`, `backend`, `status`, `durationMs`,
 `remoteAddress`, `authenticatedUser`, `routed`, `fanout`, `fallback` и
 `defaultCatalogRouted`.
@@ -667,8 +661,8 @@ catalog prefix и route, и stat «listener up»), а также отдельн�
 ### Selective federation exposure
 
 Можно публиковать только часть namespace backend-каталога, не меняя routing и write-policy.
-Это удобно для постепенной миграции, безопасного multi-tenant rollout и снижения риска
-случайного раскрытия метаданных.
+Так можно мигрировать и выкатывать multi-tenant конфигурацию по частям: клиент не видит
+метаданные объектов, не попавших в allowlist.
 
 На каталог:
 
@@ -807,7 +801,7 @@ Proxy также умеет отсеивать bursts до того, как он
 - `txn`
 - `lock`
 
-Важное поведение:
+Поведение лимитов:
 
 - per-principal лимиты срабатывают только когда front door даёт authenticated user, например через Kerberos/SASL
 - `rate-limit.source-cidr.<name>` это aggregate bucket на всё правило CIDR, а не отдельный bucket на каждый IP
@@ -880,7 +874,7 @@ compatibility.frontend-profile=HORTONWORKS_3_1_0_3_1_5_6150_1
 В Thrift-протоколе нет version-negotiation handshake, поэтому proxy не может по первому
 запросу определить версию клиента (так же как HiveServer2 разделяет binary и HTTP по портам).
 Когда нужны два разных типа клиентов с разными `getVersion()` identity или разными runtime
-jars — поднимаем **несколько Thrift listener'ов на разных портах**:
+jars — поднимаем несколько Thrift listener'ов на разных портах:
 
 ```properties
 server.port=9083
@@ -989,7 +983,7 @@ HDP-only методы:
 
 Замечания по view / materialized view:
 - переписывание SQL включено по умолчанию (`federation.view-text-rewrite.mode=REWRITE`)
-- переписывание намеренно выполнено без использования тяжеловесного парсера (parser-less): лексический сканер
+- переписывание выполнено без парсера (parser-less): лексический сканер
   отслеживает позиции таблиц (`FROM`, `JOIN`, `INTO`, `TABLE`, `UPDATE`) и переписывает квалификатор базы
   данных ссылки, стоящей в такой позиции, либо квалифицирует неквалифицированную таблицу именем внешней БД;
   полная грамматика Hive SQL при этом не разбирается
@@ -1045,7 +1039,7 @@ Binding — `slf4j-reload4j`. reload4j это drop-in форк EOL-версии 
 
 ### Debug tracing
 
-Per-request debug tracing **по умолчанию выключен**: он рендерит через `DebugLogUtil` все аргументы
+Per-request debug tracing по умолчанию выключен: он рендерит через `DebugLogUtil` все аргументы
 запроса и все backend-ответы, а это реальные CPU и аллокации на каждый RPC. Включай его осознанно —
 для конкретного окружения или на время инцидента:
 
@@ -1073,7 +1067,7 @@ log4j.logger.io.github.mmalykhin.hmsproxy=DEBUG
 Укажи в HiveServer2 `hive.metastore.uris` на proxy вместо одного backend HMS.
 Для multi-catalog deployment лучше использовать Hive/клиентов, которые сохраняют catalog fields.
 
-Для Beeline/HS2 обычно удобнее separator `__`, чем `.`:
+Для Beeline/HS2 обычно используют separator `__` вместо `.`:
 
 ```properties
 routing.catalog-db-separator=__
@@ -1087,10 +1081,10 @@ routing.catalog-db-separator=__
 
 Внутренний механизм HiveServer2 (`MetadataOperation.convertSchemaPattern`) преобразует SQL LIKE шаблоны схемы в регулярные выражения, заменяя все неэкранированные подчёркивания `_` на точки `.`. Из-за этого при каноническом разделителе `__` имя схемы `remote__default` превращается в запрос по шаблону `remote..default` (а если каталог содержит подчёркивания, например `remote_hdp__sales` — в `remote.hdp..sales`).
 
-Прокси прозрачно обрабатывает эту особенность:
+Прокси обрабатывает эту особенность так:
 - `CatalogRouter` сопоставляет префиксы схемы как в литеральном виде (`catalog__`), так и в транслированном виде HiveServer2 (`catalog.replace('_', '.') + '..'`).
-- Запросы `get_table_meta` и `get_databases` с шаблонами вида `catalog..*` или `catalog..db` точно маршрутизируются на соответствующий backend-каталог с очищенным от префикса шаблоном (например, `db` или `*`).
-- Возвращаемые клиенту объекты (`TableMeta`, имена баз данных) динамически экстернализируются с каноническим разделителем (`catalog__db`), поэтому в дереве объектов DBeaver и Hue корректно отображаются все базы и таблицы удалённых каталогов.
+- Запросы `get_table_meta` и `get_databases` с шаблонами вида `catalog..*` или `catalog..db` маршрутизируются на соответствующий backend-каталог с очищенным от префикса шаблоном (например, `db` или `*`).
+- Возвращаемые клиенту объекты (`TableMeta`, имена баз данных) динамически экстернализируются с каноническим разделителем (`catalog__db`), поэтому в дереве объектов DBeaver и Hue отображаются базы и таблицы удалённых каталогов.
 
 Если metadata writes через proxy ведут себя не так, как напрямую против backend HMS, можно
 попробовать:
@@ -1132,7 +1126,7 @@ catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs:
 
 Рекурсивное удаление выполняется в небольшом фоновом пуле (потоки с именами
 `hms-proxy-drop-purge-*`), поэтому `drop_table` отвечает сразу после удаления метаданных и не
-держит Thrift worker всё время удаления. Значит, успешный `DROP TABLE` ещё не гарантирует, что
+держит Thrift worker всё время удаления. Значит, успешный `DROP TABLE` ещё не означает, что
 данные уже удалены — результат purge фиксируется в логе proxy. При остановке proxy запущенные purge
 дожидаются завершения; оставшиеся в очереди логируются и пропускаются.
 
@@ -1160,12 +1154,12 @@ federation.external-table-location-rewrite.mode=QUALIFY_UNQUALIFIED
 
 Proxy дополнительно умеет поднять параллельный HTTP listener со спецификацией
 Iceberg REST Catalog, использующий тот же routing/federation pipeline что и
-Thrift HMS front door. Статус: **экспериментально**; вся write-поверхность,
+Thrift HMS front door. Статус: экспериментально; вся write-поверхность,
 которую выставляет `RESTCatalogAdapter`, — write таблиц (create, commit, drop,
 rename, register), write view (create, commit, drop, rename) и namespace DDL
 (create, update properties, drop), а также multi-table transaction commit —
-поддержана, но **только когда целевой namespace резолвится в
-`routing.default-catalog`**. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
+поддержана, но только когда целевой namespace резолвится в
+`routing.default-catalog`. Iceberg-клиенты (PyIceberg, Spark `iceberg-rest`,
 Trino `iceberg-rest`) могут discover и load Iceberg-таблицы, хранящиеся в HMS
 через стандартный параметр `metadata_location`.
 
@@ -1173,13 +1167,13 @@ Write таблиц и gate «только default-каталог» появил�
 multi-table transaction commit к этому моменту уже были достижимы — их
 REST-путь идёт через тот же общий `RoutingHiveCatalog`/`RoutingMetaStoreClient`,
 которым пользуется write таблиц, и `WriteRouteGate` уже классифицировал все
-тринадцать роутов как write — их просто ещё не объявляли в `GET /v1/config` и
-не покрывали smoke. Namespace DDL — по-настоящему новое: `RoutingMetaStoreClient`
+тринадцать роутов как write — их ещё не объявляли в `GET /v1/config` и
+не покрывали smoke. Namespace DDL — новое: `RoutingMetaStoreClient`
 не реализовывал `createDatabase`, `alterDatabase` и `dropDatabase` до сих пор,
 поэтому `POST /v1/{prefix}/namespaces` и соседние роуты отвечали
 `UnsupportedOperationException` независимо от каталога.
 
-**Почему writes работают только в default-каталоге:** реальным HMS-локом
+Почему writes работают только в default-каталоге: реальным HMS-локом
 подкреплены только таблицы дефолтного каталога (см. [ZooKeeper storage для
 synthetic read locks](#zookeeper-storage-для-synthetic-read-locks));
 любой другой каталог обслуживается синтетическим lock shim, который выдаёт
@@ -1187,7 +1181,7 @@ synthetic read locks](#zookeeper-storage-для-synthetic-read-locks));
 туда, решил бы, что владеет таблицей, молча гоняясь наперегонки с — и,
 возможно, проигрывая — конкурентным writer'ом, что портит `metadata.json` без
 единого сообщения о конфликте. `WriteRouteGate` проверяет это на
-**резолвленном** каталоге, а не на prefix из URL запроса: prefix дефолтного
+резолвленном каталоге, а не на prefix из URL запроса: prefix дефолтного
 каталога тоже выставляет базы всех остальных каталогов под federated-именами
 `<catalog><separator><db>` (см. [Поддерживаемые endpoint'ы](#поддерживаемые-endpointы)
 ниже), так что create по
@@ -1245,7 +1239,7 @@ org.apache.hadoop.mapred.FileInputFormat`. Этому мешают две нас
 | `rest-catalog.hive-engine-descriptor` | Собственные REST-коммиты прокси: они пишут Hive-совместимый дескриптор. Таблица, задавшая `engine.hive.enabled` сама, всегда перевешивает эту настройку, а явный `catalog.<name>.conf.iceberg.engine.hive.enabled` уважается, а не перетирается. |
 | `routing.iceberg-pointer-guard.hive-engine-descriptor` | Коммиты, приходящие по Thrift от движка, который прокси настроить не может, — например `INSERT` от Hive 3.1. Pointer guard сохраняет дескриптор, уже лежащий в записи метастора, вместо того чтобы дать запросу его обнулить. |
 
-Guard дескриптор только **сохраняет** и никогда не навязывает: запись без
+Guard дескриптор только сохраняет и никогда не навязывает: запись без
 `storage_handler` — это таблица, которой нечего терять, и её alter'ы проходят
 нетронутыми. Таблица, испорченная до появления этих настроек, чинится сама на
 следующем же коммите.
@@ -1306,7 +1300,7 @@ write/read-асимметрию между каталогами через disco
 резолвленный каталог, например: `Writes are only supported in the default
 catalog 'hdp'; namespace 'apache__default' belongs to catalog 'apache',
 which is served by the synthetic lock shim and provides no writer
-isolation.` Это проверяется на namespace, в который запрос **резолвится**, а
+isolation.` Это проверяется на namespace, в который запрос резолвится, а
 не на prefix из URL — см. [Почему writes работают только в
 default-каталоге](#iceberg-rest-catalog-frontend) выше.
 
@@ -1328,7 +1322,7 @@ purge — так же, как его обслуживает собственны
 | `ALLOWLIST` | Purge разрешён только под префиксами `rest-catalog.purge.allowed-prefixes`. |
 | `REFUSE` | Отвечает `403` на любой purge; `DELETE` без `purgeRequested` по-прежнему дропает таблицу и оставляет её файлы. |
 
-Purge, который политика не разрешает, отклоняется **до дропа таблицы**, поэтому
+Purge, который политика не разрешает, отклоняется до дропа таблицы, поэтому
 после отказа целы и таблица, и её файлы, а клиент может повторить запрос без
 `purgeRequested`.
 
@@ -1365,7 +1359,7 @@ Prefix дефолтного каталога сохраняет federated-пре
 
 ### Настройка SPNEGO
 
-SPNEGO по RFC требует principal вида `HTTP/<host>@REALM`. Это **отдельный**
+SPNEGO по RFC требует principal вида `HTTP/<host>@REALM`. Это отдельный
 principal от `security.server-principal` (обычно `hms/<host>@REALM` для
 Thrift listener). Оба могут лежать в одном keytab или в двух разных. REST
 listener делает `UserGroupInformation.loginUserFromKeytabAndReturnUGI`, чтобы
@@ -1408,7 +1402,7 @@ spark.sql.catalog.sales_catalog.warehouse=sales
 
 ### Особенности и ограничения
 
-- Iceberg REST по дизайну работает **только с Iceberg-таблицами**. Native
+- Iceberg REST по дизайну работает только с Iceberg-таблицами. Native
   Hive-таблицы (parquet/orc/text без `metadata_location`) HiveCatalog
   отфильтровывает, и через REST их не видно. Для native Hive продолжайте
   использовать Thrift listener.
@@ -1460,7 +1454,7 @@ routing.default-catalog=warehouse
 Безопасность делится на две независимые части: front door (клиенты -> proxy) и backend
 connections (proxy -> HMS).
 
-**Front door**:
+Front door:
 
 ```properties
 security.mode=KERBEROS
@@ -1551,7 +1545,7 @@ strict locking, а `INSERT OVERWRITE` всегда `EXCLUSIVE`. Компонен
 `transactional=true` вне default-каталога и не пропускает `allocate_table_write_ids` /
 `get_valid_write_ids` для non-default каталогов.
 
-**Shim выдаёт локи, не проверяя их конфликты.** Он сразу отвечает `ACQUIRED` и не смотрит на
+**Внимание:** shim выдаёт локи, не проверяя их конфликты. Он сразу отвечает `ACQUIRED` и не смотрит на
 другие живые локи, поэтому параллельные `INSERT`, `INSERT OVERWRITE` и DDL по одной таблице
 non-default каталога не сериализуются друг относительно друга — как и клиенты, которые ходят в
 этот metastore мимо proxy. То есть non-default каталог не даёт ни ACID-гарантий, ни изоляции
@@ -1562,7 +1556,7 @@ non-default каталога не сериализуются друг относ
 
 Пригодность определяется по всем `LockComponent` запроса, а не только по первому. Вызов `lock`
 берётся, маршрутизируется и подтверждается целиком и возвращает один lock id, поэтому его нельзя
-переслать больше чем в один backend. Но запрос, читающий несколько каталогов — или всего лишь две
+переслать больше чем в один backend. Но запрос, читающий несколько каталогов — или даже две
 базы одного каталога, — приходит именно в таком виде: одним запросом, компоненты которого
 принадлежат разным namespace. Proxy расщепляет его: компоненты одного каталога уходят в его
 metastore, каждый переписанный в свою backend-базу, а компоненты остальных каталогов из запроса к
@@ -1797,18 +1791,22 @@ open-window, а потом пускает один half-open retry, которы
 
 ### Кэширование метаданных таблиц, разделов и распределенная DDL-инвалидация (ZooKeeper)
 
-Для ускорения работы в высоконагруженных окружениях и снижения сетевых задержек при межкластерных (WAN) обращениях `hms-proxy` поддерживает кэширование метаданных таблиц и разделов в памяти:
+Чтобы снизить число межкластерных (WAN) обращений к бэкенду, `hms-proxy` поддерживает кэширование метаданных таблиц и разделов в памяти:
 
-- `routing.cache.table-metadata.ttl-ms` (или `ttl-seconds`, по умолчанию `0` — выключено): кэширование объектов `Table` для вызовов `get_table`.
-- `routing.cache.table-metadata.max-entries` (по умолчанию `10000`): лимит записей LRU-кэша таблиц.
-- `routing.cache.partition-metadata.ttl-ms` (или `ttl-seconds`, по умолчанию `0` — выключено): кэширование метаданных и списков разделов (`get_partition*`, `get_part_specs*`).
-- `routing.cache.partition-metadata.max-entries` (по умолчанию `10000`): лимит записей LRU-кэша разделов.
-- `routing.cache.serve-stale-on-error=true`: при временной недоступности бэкенда или сетевых таймаутах отдавать устаревшие записи из кэша в течение льготного периода `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут).
-- SingleFlight: параллельные обращения к одной и той же таблице или разделу объединяются в один запрос к бэкенду.
+| Параметр | По умолчанию | Что делает |
+| --- | --- | --- |
+| `routing.cache.table-metadata.ttl-ms` (или `ttl-seconds`) | `0` — выключено | Кэширование объектов `Table` для вызовов `get_table` |
+| `routing.cache.table-metadata.max-entries` | `10000` | Лимит записей LRU-кэша таблиц |
+| `routing.cache.partition-metadata.ttl-ms` (или `ttl-seconds`) | `0` — выключено | Кэширование метаданных и списков разделов (`get_partition*`, `get_part_specs*`) |
+| `routing.cache.partition-metadata.max-entries` | `10000` | Лимит записей LRU-кэша разделов |
+| `routing.cache.serve-stale-on-error` | `false` | При `true` во время временной недоступности бэкенда или сетевых таймаутов отдаёт устаревшие записи из кэша в течение `routing.cache.stale-grace-period-ms` |
+| `routing.cache.stale-grace-period-ms` | 5 минут | Льготный период для `serve-stale-on-error` |
+
+Параллельные обращения к одной и той же таблице или разделу объединяются в один запрос к бэкенду (SingleFlight).
 
 #### Синхронизация DDL-инвалидации между репликами прокси через ZooKeeper
 
-При горизонтальном масштабировании `hms-proxy` на несколько экземпляров за балансировщиком нагрузки DDL-операция (`ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DROP DATABASE`), выполненная через один экземпляр прокси, локально сбрасывает закэшированные записи. Для того чтобы остальные экземпляры прокси не продолжали отдавать устаревшие метаданные из своих локальных кэшей, используется распределенная инвалидация через **ZooKeeper**:
+При горизонтальном масштабировании `hms-proxy` на несколько экземпляров за балансировщиком нагрузки DDL-операция (`ALTER TABLE`, `DROP TABLE`, `TRUNCATE TABLE`, `DROP DATABASE`), выполненная через один экземпляр прокси, локально сбрасывает закэшированные записи. Для того чтобы остальные экземпляры прокси не продолжали отдавать устаревшие метаданные из своих локальных кэшей, используется распределенная инвалидация через ZooKeeper:
 
 ```properties
 routing.cache.distributed-invalidation.mode=ZOOKEEPER
@@ -1821,12 +1819,12 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 # routing.cache.distributed-invalidation.instance-id=proxy-node-1
 ```
 
-- **Механизм публикации и подписки**: экземпляр, применивший DDL-изменение, публикует компактное бинарное событие в znode `/hms-proxy-cache-invalidation`. Все остальные ноды через Apache Curator `PathChildrenCache` немедленно получают нотификацию и сбрасывают кэш затронутой сущности (таблицы, раздела, базы данных).
-- **Подавление эха**: события содержат идентификатор `instance-id` ноды-источника, что исключает повторную обработку собственных событий.
-- **Fail-Safe защита при сетевом расщеплении (split-brain)**: при переходе соединения с ZooKeeper в состояние `LOST` или `SUSPENDED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
-- **Сборка мусора (Retention Sweep)**: фоновый поток периодически удаляет znode событий старше `event-retention-ms` (по умолчанию 5 минут).
-- **Фоллбэк на строку подключения блокировок**: при отсутствии `connect-string` в секции инвалидации используется адрес `synthetic-read-lock.store.zookeeper.connect-string`.
-- **Prometheus-метрики**:
+- Публикация и подписка: экземпляр, применивший DDL-изменение, публикует компактное бинарное событие в znode `/hms-proxy-cache-invalidation`. Все остальные ноды через Apache Curator `PathChildrenCache` немедленно получают нотификацию и сбрасывают кэш затронутой сущности (таблицы, раздела, базы данных).
+- Подавление эха: события содержат идентификатор `instance-id` ноды-источника, что исключает повторную обработку собственных событий.
+- Поведение при сетевом расщеплении (split-brain): при переходе соединения с ZooKeeper в состояние `LOST` или `SUSPENDED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
+- Сборка мусора (Retention Sweep): фоновый поток периодически удаляет znode событий старше `event-retention-ms` (по умолчанию 5 минут).
+- Фоллбэк на строку подключения блокировок: при отсутствии `connect-string` в секции инвалидации используется адрес `synthetic-read-lock.store.zookeeper.connect-string`.
+- Prometheus-метрики:
   - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
@@ -1835,12 +1833,12 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 
 Когда множество пользователей обращаются к метастору (например, через HiveServer2, Trino или Spark), кэширование метаданных раздельно для каждого пользователя приводит к дублированию RPC-запросов в бэкенд-метасторы, росту задержек и увеличению расхода памяти на кэш.
 
-В `hms-proxy` встроен плагин авторизации **Apache Ranger** (`ranger-plugins-common` 2.5.0), который вычисляет политики доступа локально в процессе прокси. Это открывает возможность использовать **общий глобальный кэш метаданных**:
+В `hms-proxy` встроен плагин авторизации Apache Ranger (`ranger-plugins-common` 2.5.0), который вычисляет политики доступа локально в процессе прокси. Поэтому кэш метаданных можно сделать общим для всех пользователей:
 
 - `routing.database-list-cache.shared-across-users=true`
 - `routing.database-metadata-cache.shared-across-users=true`
 
-При `shared-across-users=true` ключи кэша не привязываются к пользователю и группам, благодаря чему вызовы `SHOW DATABASES`, `SHOW TABLES` и `get_database`/`get_table*` от любых пользователей попадают в единый кэш, единожды заполненный из бэкенд-метасторов. Перед выдачей клиенту встроенный Ranger-авторизатор фильтрует базы данных, таблицы и представления в соответствии с правами конкретного вызывающего пользователя. При выключенном Ranger (`NoOpMetadataAuthorizer`) проверка прав пропускается с нулевым оверхедом.
+При `shared-across-users=true` ключи кэша не привязываются к пользователю и группам, благодаря чему вызовы `SHOW DATABASES`, `SHOW TABLES` и `get_database`/`get_table*` от любых пользователей попадают в единый кэш, единожды заполненный из бэкенд-метасторов. Перед выдачей клиенту встроенный Ranger-авторизатор фильтрует базы данных, таблицы и представления в соответствии с правами конкретного вызывающего пользователя. При выключенном Ranger (`NoOpMetadataAuthorizer`) проверка прав пропускается.
 
 ```properties
 # Включение встроенного Ranger-плагина
@@ -1883,7 +1881,7 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
 #### Обработка схем (баз данных) и таблиц в Ranger
 
-1. **Трансляция пространств имён и сопоставление ресурсов**:
+1. Трансляция пространств имён и сопоставление ресурсов:
    Перед проверкой прав в Ranger прокси транслирует федеративные имена во внутренние имена бэкенда:
    - При запросе к `apache__marketing.campaigns` (каталог `apache`, база `marketing`), в Ranger проверяется ресурс:
      - `database` = `marketing`
@@ -1893,19 +1891,19 @@ catalog.catalog2.ranger.service-name=c2_hive_service
      - `table` = `orders`
    Политики в Apache Ranger Admin всегда настраиваются на оригинальные имена баз и таблиц бэкенда (без федеративных префиксов прокси).
 
-2. **Общий (Global) vs. Раздельные (Per-Catalog) Ranger**:
-   - **Общий Ranger (`ranger.*`)**: Все каталоги используют один общий сервис Ranger (например, `hive`). Политика на `database=sales` применяется к базе `sales` во всех каталогах, использующих этот глобальный сервис.
-   - **Раздельные Ranger для каталогов (`catalog.<name>.ranger.*`)**: Для каждого каталога создаётся изолированный экземпляр `RangerBasePlugin`, подключенный к собственному сервису (например, `onprem_hive`, `cloud_hive`) или отдельному инстансу Ranger Admin. Политики полностью изолированы: база `sales` в `catalog1` и база `sales` в `catalog2` авторизуются по своим собственным независимым наборам правил.
+2. Общий (Global) и раздельные (Per-Catalog) Ranger:
+   - Общий Ranger (`ranger.*`): Все каталоги используют один общий сервис Ranger (например, `hive`). Политика на `database=sales` применяется к базе `sales` во всех каталогах, использующих этот глобальный сервис.
+   - Раздельные Ranger для каталогов (`catalog.<name>.ranger.*`): Для каждого каталога создаётся изолированный экземпляр `RangerBasePlugin`, подключенный к собственному сервису (например, `onprem_hive`, `cloud_hive`) или отдельному инстансу Ranger Admin. Политики полностью изолированы: база `sales` в `catalog1` и база `sales` в `catalog2` авторизуются по своим собственным независимым наборам правил.
 
-3. **Жизненный цикл фильтрации**:
-   - **`SHOW DATABASES` (`get_all_databases`, `get_databases`)**: Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
-   - **`SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`)**: Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`. Если база данных недоступна пользователю в Ranger или скрыта правилами федерации, методы листинга возвращают пустой список вместо ошибки, что предотвращает фатальный сбой Apache Thrift `TApplicationException: Internal error processing get_all_tables` (в Thrift IDL для листинга таблиц не объявлен `NoSuchObjectException`) и полностью соответствует поведению нативного HMS.
-   - **`get_database`, `get_table`, `get_table_req`**: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав поведение определяется параметром `ranger.mask-unauthorized-as-not-found`: по умолчанию (`false`) выбрасывается `MetaException` с префиксом `Access denied: ...`, а при `true` — `NoSuchObjectException` (маскировка под отсутствие объекта).
+3. Жизненный цикл фильтрации:
+   - `SHOW DATABASES` (`get_all_databases`, `get_databases`): Списки баз данных извлекаются из общего кэша и передаются в `filterDatabases(catalogName, databases, caller)`. Ranger проверяет доступ (`select`, `read`, `use`). Разрешенные базы снабжаются клиентскими префиксами и возвращаются вызывающему.
+   - `SHOW TABLES` (`get_all_tables`, `get_tables`, `get_tables_ext`, `get_tables_req`): Списки таблиц берутся из общего кэша и фильтруются под пользователя через `filterTables(catalogName, backendDbName, tables, caller)`. Если база данных недоступна пользователю в Ranger или скрыта правилами федерации, методы листинга возвращают пустой список вместо ошибки: в Thrift IDL для листинга таблиц не объявлен `NoSuchObjectException`, и ошибка дошла бы до клиента как `TApplicationException: Internal error processing get_all_tables`. Нативный HMS ведёт себя так же.
+   - `get_database`, `get_table`, `get_table_req`: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав поведение определяется параметром `ranger.mask-unauthorized-as-not-found`: по умолчанию (`false`) выбрасывается `MetaException` с префиксом `Access denied: ...`, а при `true` — `NoSuchObjectException` (маскировка под отсутствие объекта).
 
-4. **Разрешение групп Active Directory / LDAP и сопоставление с политиками**:
-   - **Серверный резолвинг групп**: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
-   - **Нормализация регистра и Distinguished Name (DN)**: Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и обогащает запрос нормализованными вариантами в нижнем регистре, гарантируя надежное сопоставление с политиками Ranger без ручного дублирования правил с разным регистром.
-   - **Встроенный дисковый кэш групп для быстрого холодного старта (`security.group-disk-cache.*`)**: Для ускорения старта и исключения сетевых задержек на синхронные обращения к Active Directory/LDAP прокси поддерживает энергонезависимый дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP прозрачно отдает сохраненные группы в режиме serve-stale fallback:
+4. Разрешение групп Active Directory / LDAP и сопоставление с политиками:
+   - Серверный резолвинг групп: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
+   - Нормализация регистра и Distinguished Name (DN): Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и добавляет в запрос нормализованные варианты в нижнем регистре, поэтому правила в Ranger не нужно дублировать для разных регистров.
+   - Дисковый кэш групп (`security.group-disk-cache.*`): чтобы на старте не ждать синхронных обращений к Active Directory/LDAP, прокси поддерживает дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP отдаёт сохранённые группы в режиме serve-stale fallback:
 
      ```properties
      security.group-disk-cache.enabled=true
@@ -1918,23 +1916,23 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
      Записи старше `entry-ttl-seconds` не удаляются: на них работает serve-stale fallback. Поэтому размер кэша ограничивает число пользователей — `max-entries` (дефолт `50000`). При переполнении вытесняется пользователь, чьи группы обновлялись раньше всех, а на старте с диска загружаются самые свежие записи. Под `SIMPLE`-аутентификацией клиент сам называет себя через `set_ugi`, так что без потолка кэш (и файл на диске) рос бы от любого потока выдуманных имён.
 
-5. **Защита от ConcurrentModificationException при обновлении политик Ranger**:
+5. Защита от ConcurrentModificationException при обновлении политик Ranger:
    - Фоновое обновление политик в потоке `PolicyRefresher` Ranger SDK 2.5.0 способно конкурировать с клиентскими потоками оценки прав доступа. В `hms-proxy` вызовы оценки прав защищены механизмом `evaluateAccessWithRetry`: при возникновении `ConcurrentModificationException` выполняется yield потока и однократный повтор проверки, а при сохранении ошибки — безопасный fail-open fallback для чтения с фиксацией в логе.
 
-6. **Совместимость со старыми версиями Ranger 1.x / HDP 3.1.0 (`ranger.roles.enabled`)**:
-   - В Ranger 1.x отсутствует REST-эндпоинт загрузки ролей (`/service/roles/download/`), что приводит к спаму сообщений об ошибках HTTP 404. Параметр `ranger.roles.enabled=false` (или per-catalog `catalog.<name>.ranger.roles.enabled=false`) полностью отключает опрос ролей через легковесный `NoOpRolesRangerAdminClient`.
+6. Совместимость со старыми версиями Ranger 1.x / HDP 3.1.0 (`ranger.roles.enabled`):
+   - В Ranger 1.x отсутствует REST-эндпоинт загрузки ролей (`/service/roles/download/`), что приводит к спаму сообщений об ошибках HTTP 404. Параметр `ranger.roles.enabled=false` (или per-catalog `catalog.<name>.ranger.roles.enabled=false`) полностью отключает опрос ролей через `NoOpRolesRangerAdminClient`.
 
-7. **Управление маскировкой недоступных объектов (`ranger.mask-unauthorized-as-not-found`)**:
-   - По умолчанию (`ranger.mask-unauthorized-as-not-found=false`) при запрете доступа в Ranger прокси выбрасывает `MetaException` с явным сообщением `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (или `Database '<db>' is not accessible...`). Это гарантирует, что HiveServer2 и клиенты Beeline показывают пользователю понятную ошибку отказа в доступе вместо маскировки под `Table not found` / `Database not found` (которая вводила пользователей в заблуждение).
+7. Управление маскировкой недоступных объектов (`ranger.mask-unauthorized-as-not-found`):
+   - По умолчанию (`ranger.mask-unauthorized-as-not-found=false`) при запрете доступа в Ranger прокси выбрасывает `MetaException` с явным сообщением `Access denied: Table '<db>.<table>' is not accessible in proxy catalog '<catalog>'` (или `Database '<db>' is not accessible...`). HiveServer2 и Beeline показывают пользователю эту ошибку отказа в доступе, а не `Table not found` / `Database not found`.
    - При `ranger.mask-unauthorized-as-not-found=true` (или per-catalog `catalog.<name>.ranger.mask-unauthorized-as-not-found=true`) прокси возвращает `NoSuchObjectException`, реализуя политику zero-information-disclosure (сокрытие самого факта существования защищенных объектов).
 
-8. **Системные плейсхолдеры движков и файловые источники Spark SQL (`global_temp`, path-based таблицы и Hive `_dummy_database`)**:
+8. Системные плейсхолдеры движков и файловые источники Spark SQL (`global_temp`, path-based таблицы и Hive `_dummy_database`):
    - Служебная in-memory база данных Apache Spark SQL `global_temp` и плейсхолдер Hive `_dummy_database` не принадлежат ни одному реальному метастору.
-   - **Файловые источники данных Spark SQL (path-based tables)**: При выполнении прямых запросов к путям файловых хранилищ (например, `SELECT ... FROM csv.hdfs://...`, `SELECT ... FROM csv."hdfs://..."` или `parquet.`/path/to/data``) Spark SQL и каталоги форматов таблиц (в частности Apache Iceberg `HiveTableOperations`) перед чтением файлов проверяют существование базы или таблицы в метасторе вызовами `get_database("csv")`, `get_table(format, path)`, `get_table_req` или `get_table_objects_by_name`. Прокси распознает пути и схемы URI (`hdfs://`, `s3a://`, `file://`, слэши `/`), внешние кавычки (`"`, `'`, `` ` ``), префиксы форматов с точкой (`csv."hdfs://..."`), а также стандартные форматы файлов (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) и немедленно возвращает `NoSuchObjectException` (или пустой список для перечислений) без сетевых вызовов в бэкенд и без проверки в Ranger. Это предотвращает ложные отказы в доступе `MetaException: Access denied` при `mask-unauthorized-as-not-found=false` и фатальные сбои Spark/Iceberg `RuntimeException: Failed to get table info from metastore`, обеспечивая штатный fallback на файловый Data Source.
-   - Прокси перехватывает запросы к ним на раннем этапе маршрутизации до обращения к Ranger: RPC-вызовы `get_database`, `get_table`, `get_table_req` и `get_table_objects_by_name` немедленно возвращают `NoSuchObjectException` / пустые списки без выполнения сетевых вызовов в бэкенд и без проверки авторизации. Это предотвращает ложные отказы в доступе `MetaException: Access denied` при `mask-unauthorized-as-not-found=false` и обеспечивает бесперебойный запуск приложений Spark SQL на YARN (`ApplicationMaster`) и Hive `INSERT ... VALUES`.
+   - Файловые источники данных Spark SQL (path-based tables): При выполнении прямых запросов к путям файловых хранилищ (например, `SELECT ... FROM csv.hdfs://...`, `SELECT ... FROM csv."hdfs://..."` или `parquet.`/path/to/data``) Spark SQL и каталоги форматов таблиц (в частности Apache Iceberg `HiveTableOperations`) перед чтением файлов проверяют существование базы или таблицы в метасторе вызовами `get_database("csv")`, `get_table(format, path)`, `get_table_req` или `get_table_objects_by_name`. Прокси распознает пути и схемы URI (`hdfs://`, `s3a://`, `file://`, слэши `/`), внешние кавычки (`"`, `'`, `` ` ``), префиксы форматов с точкой (`csv."hdfs://..."`), а также стандартные форматы файлов (`csv`, `parquet`, `orc`, `json`, `avro`, `text`, `binaryfile`, `delta`, `iceberg`) и немедленно возвращает `NoSuchObjectException` (или пустой список для перечислений) без сетевых вызовов в бэкенд и без проверки в Ranger. Без этого при `mask-unauthorized-as-not-found=false` клиент получал бы ложный отказ `MetaException: Access denied`, а Spark/Iceberg падали бы с `RuntimeException: Failed to get table info from metastore` вместо fallback на файловый Data Source.
+   - Прокси перехватывает запросы к ним на раннем этапе маршрутизации до обращения к Ranger: RPC-вызовы `get_database`, `get_table`, `get_table_req` и `get_table_objects_by_name` немедленно возвращают `NoSuchObjectException` / пустые списки без выполнения сетевых вызовов в бэкенд и без проверки авторизации. Без этого при `mask-unauthorized-as-not-found=false` клиент получал бы ложный отказ `MetaException: Access denied`, в том числе при запуске приложений Spark SQL на YARN (`ApplicationMaster`) и в Hive `INSERT ... VALUES`.
 
 
-**Iceberg pointer guard** — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
+Iceberg pointer guard — `INSERT` в Iceberg-таблицу из HiveServer2 открывается
 `alter_table_with_environment_context` с объектом `Table`, снятым на этапе компиляции запроса, а
 метастор применяет эти параметры целиком, поэтому стирается каждый Iceberg-ключ, который есть в
 записи и отсутствует в запросе, — в первую очередь `metadata_location`. Прокси — единственное
@@ -1956,7 +1954,7 @@ routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 Чтение записи и запись alter'а — два разных вызова, поэтому починка держит тот самый табличный
 лок, который берёт сам Iceberg (EXCLUSIVE, уровень таблицы — форма запроса из
 `org.apache.iceberg.hive.MetastoreLock`), на всё перечитывание, слияние и `alter_table` бэкенда.
-Лок запрашивается **только когда починка действительно нужна**: честный Iceberg-коммит шлёт свой
+Лок запрашивается только когда починка действительно нужна: честный Iceberg-коммит шлёт свой
 `alter_table` изнутри этого же лока, поэтому запрос лока до решения означал бы ожидание того, кто
 ждёт ответа на обслуживаемый вызов. Не полученный за `lock-acquire-timeout-ms` лок никогда не
 отменяет запись — alter уходит починенным, но без защиты, и это считается как
@@ -2136,7 +2134,7 @@ java \
   --hdp-standalone-metastore-jar /opt/hms-proxy/hive-metastore/hive-standalone-metastore-3.1.0.3.1.0.0-78.jar
 ```
 
-Что важно:
+Замечания:
 
 - `--server-principal` должен указывать на front-door principal самого proxy, а не backend HMS
 - `--client-principal` и `--keytab` это Kerberos credentials клиента, которым запускается smoke
@@ -2161,7 +2159,7 @@ java \
 - optional partition lock smoke
 - optional Hortonworks notification smoke
 
-Стартовать удобнее с соответствующего example-конфига:
+Начните с соответствующего example-конфига:
 
 ```bash
 cp scripts/hms-real-installation-smoke.simple.env.example scripts/hms-real-installation-smoke.simple.env
@@ -2183,7 +2181,7 @@ scripts/run-real-installation-smoke-simple.sh --scenario locks
 scripts/run-real-installation-smoke-kerberos.sh --scenario notification
 ```
 
-Что важно:
+Замечания:
 
 - по умолчанию runner берёт самый свежий `target/hms-proxy-*-fat.jar`
 - путь к jar можно переопределить через `HMS_SMOKE_FAT_JAR`

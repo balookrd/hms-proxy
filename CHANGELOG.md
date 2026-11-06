@@ -143,6 +143,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 ### Изменено
 
 - **Простаивающие impersonation-сессии и пользователи теперь закрываются по умолчанию**: дефолт `catalog.<name>.impersonation-session-idle-ttl-ms` изменён с `0` (никогда) на `600000` (10 минут), `catalog.<name>.impersonation-client-idle-ttl-ms` — с `0` на `1800000` (30 минут). Раньше при дефолтах каждый каталог мог держать до 128 пользователей × 4 сессии, то есть до 512 вечно открытых соединений с бэкенд-HMS, каждое — с рабочим потоком на стороне бэкенда. Прежнее поведение возвращается явным `0`. Значение меньше нового дефолта теперь сохраняется как задано (конструктор `CatalogConfig` больше не поднимает TTL до дефолта).
+- Документация (`README`, `SMOKE`, `FAILOVER`, `COMPATIBILITY`, `smoke-stand/README`, `smoke-stand/TEST-MATRIX`, RU и EN) приведена к единому стилю: убраны оценочные формулировки без механизма и жирный шрифт внутри абзацев, перечни параметров сведены в таблицы, статусы матрицы `smoke-stand/TEST-MATRIX` записываются словом `pass` вместо эмодзи; тексты `semantic_risk` в `capabilities.yaml` переписаны так же. Исправлены неточности: условия ответа `503` от `/readyz` в `FAILOVER` (также `HALF_OPEN`, `degraded` и нездоровый Kerberos), кластер в примере purge внешних таблиц в `smoke-stand/README.en.md` (`namenode-b`, а не `namenode`), описание `run-spark-path-based-smoke.sh` (теперь перечислены проверки, которые сценарий действительно делает), из EN удалён устаревший пункт об отсутствии `hive-exec` у метастора. Поведение и конфигурация не менялись.
 
 ### Исправлено
 
@@ -540,7 +541,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   таблицы, вообще не открывая delete file), и режим проверяется по форме файлов
   таблицы — 1 delete file при `merge-on-read`, 0 при `copy-on-write`, — а не
   принимается на веру как настройка. Записано как H13-H20 в
-  [smoke-stand/TEST-MATRIX.ru.md](smoke-stand/TEST-MATRIX.ru.md), зелёное на
+  [smoke-stand/TEST-MATRIX.md](smoke-stand/TEST-MATRIX.md), зелёное на
   обоих профилях — plain и Kerberos. У стендового `IcebergRestWriter` появились
   `--properties` (создать таблицу с нужной format version и режимом записи) и
   команда `files` (число data- и delete-файлов в запланированном скане).

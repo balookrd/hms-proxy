@@ -17,13 +17,13 @@ Two standalone metastores sit behind one proxy:
 | `kdc` | MIT Kerberos, realm `SMOKE.LOCAL` | only with `--profile kerberos` | 18848/udp |
 
 Databases are exposed as `<catalog>__<db>`: `hdp__default`, `apache__default`. The two catalogs
-live on **different HDFS clusters** (see below), each with its own `/warehouse` and an `/external`
+live on different HDFS clusters (see below), each with its own `/warehouse` and an `/external`
 root allowlisted for external-table purge.
 
 What has actually been run here — and what has not — is recorded in
 [TEST-MATRIX.en.md](TEST-MATRIX.en.md).
 
-## Run it
+## Starting the stand
 
 ```bash
 # once per proxy build: stage jars and the metastore classpath
@@ -44,7 +44,7 @@ JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
 docker compose --env-file .env.kerberos --profile kerberos up -d --build
 ```
 
-A fresh HDFS needs its directories once (on both clusters), and smoke scenarios need baseline tables. The `init-stand.sh` script sets all of this up automatically (scenario runners also invoke it automatically):
+A fresh HDFS needs its directories once (on both clusters), and smoke scenarios need baseline tables. The `init-stand.sh` script creates them; scenario runners call it themselves:
 
 ```bash
 cd smoke-stand && ./init-stand.sh
@@ -80,7 +80,7 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   -e 'create table if not exists smoke_txn_tbl (id int) stored as orc;'"
 ```
 
-The Kerberos smoke has to run **inside** the compose network, because the KDC and the service
+The Kerberos smoke has to run inside the compose network, because the KDC and the service
 principals resolve by container name:
 
 ```bash
@@ -110,9 +110,12 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
 
 Queries run as local MapReduce (`mapreduce.framework.name=local`), so no YARN or Tez is needed.
 
-To exercise the guard, uncomment `guard.transactional-ddl.mode=REJECT_TRANSACTIONAL` in
-`proxy/hms-proxy.properties`, restart the proxy, and create a transactional table: the proxy must
-reject it by name.
+To exercise the guard:
+
+1. Uncomment `guard.transactional-ddl.mode=REJECT_TRANSACTIONAL` in
+   `proxy/hms-proxy.properties`.
+2. Restart the proxy.
+3. Create a transactional table. The proxy must reject it by method name.
 
 ### Running the SQL smoke (`env/sql*.env`)
 
@@ -147,8 +150,8 @@ profile — a Hortonworks backend does that on its own, so `enabledFor` skips it
 the `apache` catalog, under the allowlisted `/external` root:
 
 ```bash
-docker exec stand-namenode bash -c \
-  'hdfs dfs -mkdir -p /external/purge_me && echo "7,delta" | hdfs dfs -put -f - /external/purge_me/data.csv'
+docker exec stand-namenode-b bash -c \
+  'hdfs dfs -mkdir -p hdfs://namenode-b:8020/external/purge_me && echo "7,delta" | hdfs dfs -put -f - hdfs://namenode-b:8020/external/purge_me/data.csv'
 ```
 
 Then create an external table on that location with `'external.table.purge'='true'` in
@@ -156,14 +159,14 @@ Then create an external table on that location with `'external.table.purge'='tru
 
 ```
 FileSystemExternalTableDropPurger: purged external table data for catalog 'apache'
-  at location 'hdfs://namenode:8020/external/purge_me'
+  at location 'hdfs://namenode-b:8020/external/purge_me'
 ```
 
 The deletion runs on the `hms-proxy-drop-purge-*` pool, off the request thread.
 
 ## Two HDFS clusters
 
-The catalogs sit on **different filesystems**, which is what makes the proxy's cross-filesystem
+The catalogs sit on different filesystems, which is what makes the proxy's cross-filesystem
 behaviour testable at all:
 
 | Catalog | Metastore | Filesystem | Host ports |
@@ -171,7 +174,7 @@ behaviour testable at all:
 | `hdp` (default) | `hms-hdp` | `hdfs://namenode:8020` | 19870 / 18020 |
 | `apache` | `hms-apache` | `hdfs://namenode-b:8020` | 19871 / 18021 |
 
-Both clusters run **Apache** Hadoop 3.1.3, whatever the catalog on top of them is called: the names
+Both clusters run Apache Hadoop 3.1.3, whatever the catalog on top of them is called: the names
 `hdp` and `apache` describe the metastore runtime the proxy federates, not the storage. The vendor
 HDP distribution enters the stand only as a *client* — the `hs2-hdp` service — and never as a
 filesystem.
@@ -180,7 +183,7 @@ Both clusters share one Kerberos realm on purpose: a client holding a single TGT
 either one, which is what allows a single query to read across them. Cross-realm trust would test
 the KDC rather than the proxy.
 
-Two settings carry the weight:
+Two settings do all the work:
 
 - `federation.external-table-location-rewrite.mode=REWRITE_IF_SOURCE_DEFAULT_FS` together with
   `catalog.<name>.conf.fs.defaultFS`. A `CREATE EXTERNAL TABLE ... LOCATION '/external/x'` in the
@@ -197,15 +200,15 @@ Purge deletes data on the catalog's own cluster, bounded by
 the table property `external.table.purge=true` — the ordinary Hive rule for external tables. Without
 it `DROP TABLE ... PURGE` leaves the data in place, and the proxy is right not to touch it.
 
-## What the stand is not
+## Stand limitations
 
-- **Not a real installation.** The metastores run from the jars vendored in `hive-metastore/`,
+- Not a real installation. The metastores run from the jars vendored in `hive-metastore/`,
   without the rest of an HDP distribution: no Ranger, no Atlas, no HA. It validates protocol and
   routing behaviour, not stack integration.
-- **No Ranger/Atlas/HA**, as above — the Kerberos profile itself is complete: the client,
+- No Ranger/Atlas/HA, as above. The Kerberos profile itself is complete: the client,
   HiveServer2, the proxy, both metastores and HDFS (namenode and datanode keytabs, SASL data
   transfer, SPNEGO) all authenticate, and no service falls back to simple auth.
-- **No YARN/Tez.** Queries run as local MapReduce, which is enough for DDL, reads and small
+- No YARN/Tez. Queries run as local MapReduce, which is enough for DDL, reads and small
   writes, but says nothing about distributed execution. The Hortonworks HiveServer2 only starts at
   all because `hive.in.test` lets it past the vendor's "mr execution engine is not supported!"
   check — see its section below.
@@ -333,18 +336,18 @@ Without `HDP_DIST_DIR` the stand still builds; only this service is skipped.
 
 What it adds over the Apache HiveServer2 next door:
 
-- `add_write_notification_log` sent by **Hive itself** after an ACID write, not synthesized by the
+- `add_write_notification_log` sent by Hive itself after an ACID write, not synthesized by the
   smoke CLI — with real delta paths and checksums.
 - Transactional tables. The standalone metastores could not create them (`The table must be stored
   using an ACID compliant format`), because `TransactionalValidationListener` needs `OrcOutputFormat`
   from `hive-exec` and that class in turn needs `org.apache.hadoop.mapred.InputFormat` from
   `hadoop-mapreduce-client-core`. `prepare.sh` now stages both next to each metastore — Apache jars
-  for the Apache one, vendor jars for the Hortonworks one — and the entrypoint appends them **after**
+  for the Apache one, vendor jars for the Hortonworks one — and the entrypoint appends them after
   the jar under test, so `hive-exec`'s own copy of the metastore classes can never shadow it.
 
 Two things this profile does not reproduce faithfully:
 
-- **The execution engine.** Hortonworks builds without MapReduce, and the check fires in two places
+- The execution engine. Hortonworks builds without MapReduce, and the check fires in two places
   with two different messages. `HiveConf.initialize()` runs `validateExecutionEngine`, so naming
   `mr` in `hive-site.xml` stops the server from starting (`mr execution engine is not supported!`);
   the config therefore keeps the vendor default of Tez, and clients switch per session with
@@ -354,7 +357,7 @@ Two things this profile does not reproduce faithfully:
   an option: it needs a ResourceManager and the Tez tarball in HDFS, and this distribution ships
   neither. The *metadata* path — every RPC the proxy actually serves — is unaffected; only query
   execution differs from a real HDP cluster.
-- **Emulation.** The distribution's native libraries are x86_64 only, so on Apple Silicon the whole
+- Emulation. The distribution's native libraries are x86_64 only, so on Apple Silicon the whole
   service runs under `linux/amd64` and is noticeably slow to start (allow a couple of minutes).
 
 ## Hive 4 backend and the Iceberg interop scenario (`--profile hive4`)
@@ -367,7 +370,7 @@ conf-symlink mechanism silently does nothing). The proxy reaches it through the 
 (`libthrift-0.16.0`, `libfb303-0.9.3`, `hive-storage-api-4.1.0`) from `hive-metastore/`, loaded
 child-first. The `apache` catalog stays as the non-default one.
 
-The profile also adds the **third front door**: `additional-frontends.hive4fe` on 9085 (host
+The profile also adds the third front door: `additional-frontends.hive4fe` on 9085 (host
 19088) advertises the `APACHE_4_1_0` dialect, and `hs2-hive4` — a Hive 4.1.0 HiveServer2 from
 the same official image, Tez local mode, Iceberg built in — connects to it. Thrift has no
 version negotiation, so a Hive 4 client can use no other listener; the two 3.1-dialect
@@ -460,8 +463,8 @@ copy-on-write leaves none. Every read assertion is a full `select id, src` row s
 `select count(*)`, because Hive can answer a count from the Iceberg summary it holds as table
 stats, which a reader unable to apply delete files would still get right.
 
-The result is the opposite of the `inputFormat` asymmetry above: **both 3.1 engines read
-merge-on-read correctly** — `iceberg-hive-runtime` 1.6.1 applies position deletes — and can even
+The result is the opposite of the `inputFormat` asymmetry above: both 3.1 engines read
+merge-on-read correctly — `iceberg-hive-runtime` 1.6.1 applies position deletes — and can even
 `INSERT` on top of a row-level-modified table. What they cannot do is produce row-level changes:
 `DELETE` and `UPDATE` are refused at compile time with `SemanticException [Error 10297] ... that
 is not transactional`. See `TEST-MATRIX.en.md` H13-H20.
@@ -482,7 +485,7 @@ the baseline. A writer that fails loudly (`CommitFailedException`) is correct be
 contention and does not fail the run — a writer that reports success while its rows are gone
 does. At eight writers the stand usually produces both outcomes at once — seven commits and one
 refusal, with every committed row present — but not always: whether any writer runs out of
-retries varies run to run, and a run where all eight commit is just as correct. What is invariant,
+retries varies run to run, and a run where all eight commit is equally correct. What is invariant,
 and what the scenario actually asserts, is that the row count equals the writers that reported
 success.
 
@@ -493,7 +496,7 @@ smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 6 --sql-wr
 ```
 
 A beeline `INSERT` spends tens of seconds in MapReduce before committing while a REST append
-commits immediately, so firing both at once would just run them in sequence and prove nothing.
+commits immediately, so firing both at once would run them in sequence and prove nothing.
 The scenario instead keeps issuing REST appends in rounds while any SQL writer is alive, and then
 asserts that the two sides' commit windows actually intersect — it reads the `alter_table`
 timestamps back out of the proxy log, where the thread name tells the paths apart. See
@@ -517,17 +520,17 @@ failed: branch main has changed`, neither table is left carrying the update, and
 writer's rows survive.
 
 The run then does the same transaction with the current snapshot id and requires it to be
-**accepted** and applied to both tables. That positive control is the point: without it the
-refusal above would look just as convincing if the body were malformed, the prefix wrong or the
+accepted and applied to both tables. That positive control is the point: without it the
+refusal above would look equally convincing if the body were malformed, the prefix wrong or the
 table not writable at all.
 
-Requirement contention being all-or-nothing does **not** make the route atomic in general. When a
+Requirement contention being all-or-nothing does not make the route atomic in general. When a
 commit fails rather than a requirement, Iceberg's own adapter validates every requirement up
 front and then commits the tables one by one with no rollback, so a failure partway leaves the
 earlier tables committed and the request answers `500 CommitStateUnknownException`. Both halves
 are recorded as I5 and I6 in `TEST-MATRIX.en.md`.
 
-## Apache Ranger & Shared Metadata Cache (`run-ranger-shared-cache-smoke.sh`)
+## Apache Ranger and shared metadata cache (`run-ranger-shared-cache-smoke.sh`)
 
 Validates embedded Apache Ranger policy evaluation combined with global shared metadata caching (`shared-across-users=true`) and Kerberos user authentication:
 
@@ -539,17 +542,17 @@ cd smoke-stand && ./prepare.sh
 ./run-ranger-shared-cache-smoke.sh --no-kerberos
 ```
 
-The scenario exercises multi-user authorization under Kerberos (using authentic user keytabs generated by the stand's KDC) and global caching against the running proxy:
+The scenario exercises multi-user authorization under Kerberos (with user keytabs issued by the stand's KDC) and global caching against the running proxy:
 - Creates isolated test namespaces `sales` (authorized tables `orders`, `customers`, and forbidden table `secret_orders`) and `finance` (tables `reports`, `expenses`).
 - Verifies that `alice` (via Kerberos SASL or `set_ugi`) sees only authorized `sales` database and its permitted tables in `get_all_databases`, `get_all_tables`, `get_tables` with pattern, and `get_table_meta`.
-- Verifies table-level granularity: `alice` receives a strict `NoSuchObjectException` refusal when directly requesting `get_table` on `secret_orders` within the permitted `sales` database, and table listings omit it.
-- Verifies that `bob` queries `get_all_databases` from the shared cache (without redundant backend HMS queries), receiving only `finance`.
+- Verifies table-level granularity: `alice` receives a `NoSuchObjectException` refusal when directly requesting `get_table` on `secret_orders` within the permitted `sales` database, and table listings omit it.
+- Verifies that `bob` queries `get_all_databases` from the shared cache (without repeated backend HMS queries), receiving only `finance`.
 - Asserts that `bob` is rejected when accessing `sales` and `alice` is rejected when accessing `finance`.
 - Verifies Ranger group policies: users `charlie` (with group `sales`) and `david` (with group `finance`) are authorized according to group rules.
 - Asserts that unauthorized user `eve` cannot access any private namespaces, while `admin` sees all namespaces and cleans up.
 - Validates Prometheus metrics (`hms_proxy_ranger_evaluations_total` with `result="allowed"` and `result="denied"`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
 
-## Database Cache Background Auto-Refresh (`run-database-cache-smoke.sh`)
+## Database cache background auto-refresh (`run-database-cache-smoke.sh`)
 
 Validates background periodic auto-refresh of database list (`DatabaseListCache`) and metadata (`DatabaseMetadataCache`) caches while active client traffic is observed:
 
@@ -565,9 +568,9 @@ The scenario exercises the refresher lifecycle (`DatabaseCacheRefresher`) agains
 - Pauses requests past the activity window (`activity-window-ms=10000`) and asserts idle sleep: refresh metrics cease incrementing.
 - Sends fresh client requests and verifies awakening: background refreshes resume.
 
-## Unprefixed Databases and Live Configuration Reload (`run-unprefixed-db-and-reload-smoke.sh`)
+## Unprefixed databases and live configuration reload (`run-unprefixed-db-and-reload-smoke.sh`)
 
-Validates hard mapping of remote databases into the root federated namespace (`catalog.<name>.unprefixed-databases`), shadowing of identically named databases in the default catalog, and dynamic safe configuration reloading via `SIGHUP`:
+Validates hard mapping of remote databases into the root federated namespace (`catalog.<name>.unprefixed-databases`), shadowing of identically named databases in the default catalog, and live configuration reload (Safe Reload) via `SIGHUP`:
 
 ```bash
 cd smoke-stand && ./prepare.sh
@@ -598,11 +601,11 @@ The scenario exercises:
 - `get_all_databases`: the unique remote database is exposed to clients without a prefix (`smoke_merged_unique_db`), while canonical prefixed access is retained via `get_database`.
 - No shadowing: the colliding default catalog database remains unprefixed, while the identically named remote database remains accessible via its explicit prefix (`apache__smoke_collision_db`).
 - Routing of table calls (`get_all_tables`) for both unique and colliding schemas.
-- Database creation without explicit prefix (`create_database`): the newly created database is routed strictly to the default catalog (`hdp`), not the remote one.
+- Database creation without explicit prefix (`create_database`): the newly created database is routed to the default catalog (`hdp`), not the remote one.
 - Safe Reload: an attempt to apply an invalid configuration is rejected while the proxy continues serving traffic on the last valid configuration.
 - Restoring initial configuration and returning the unique database to prefixed mode after a subsequent `SIGHUP`.
 
-## Converted Schema Patterns for DBeaver / Hue (`run-schema-pattern-smoke.sh`)
+## Converted schema patterns for DBeaver / Hue (`run-schema-pattern-smoke.sh`)
 
 Validates resolution of converted schema patterns passed by JDBC GUI clients (DBeaver, Hue, DataGrip) via HiveServer2:
 
@@ -612,11 +615,11 @@ cd smoke-stand && ./prepare.sh
 ```
 
 The scenario exercises:
-- `get_databases` with patterns `hdp..*` and `apache..*`, verifying accurate routing and externalization (`hdp__default`, `apache__default`).
+- `get_databases` with patterns `hdp..*` and `apache..*`, verifying routing and externalization (`hdp__default`, `apache__default`).
 - `get_table_meta` with patterns `hdp..*` and `apache..default`, asserting that table metadata is fetched from the targeted remote backend.
 - Negative checks (queries against non-existent catalogs like `nonexistent..*` return no matches).
 
-## Partitioned Transactional Table Insert (`run-news-txn-smoke.sh`)
+## Partitioned transactional table insert (`run-news-txn-smoke.sh`)
 
 Exercises end-to-end `INSERT INTO ... PARTITION (...) SELECT ... FROM ...` writes into partitioned ACID ORC tables from a staging table:
 
@@ -631,7 +634,7 @@ The scenario:
 - Executes `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` evaluating SQL expressions (`CAST`, `COALESCE`, `parse_url`, `NULL`).
 - Asserts that the inserted row is read back through the target partition and cleans up test metadata.
 
-## Table/Partition Rename and Partition Exchange (`run-partition-and-rename-smoke.sh`)
+## Table/partition rename and partition exchange (`run-partition-and-rename-smoke.sh`)
 
 Validates mutation routing, federation, and path normalization across catalogs:
 
@@ -641,15 +644,15 @@ cd smoke-stand
 ```
 
 The scenario validates:
-- Intra-catalog table renames and safe rejection of cross-catalog table renames (`MetaException: Cross-catalog table rename is not supported`).
+- Intra-catalog table renames and rejection of cross-catalog table renames (`MetaException: Cross-catalog table rename is not supported`).
 - Table renaming inside a federated (non-default) catalog (`apache__default`).
-- Intra-catalog partition exchange (`EXCHANGE PARTITION`) and safe rejection of cross-catalog partition exchange (`MetaException: Cross-catalog exchange partition is not supported`).
+- Intra-catalog partition exchange (`EXCHANGE PARTITION`) and rejection of cross-catalog partition exchange (`MetaException: Cross-catalog exchange partition is not supported`).
 - Partition renaming inside a federated catalog (`apache__default`) with correct namespace translation.
 - External partition location rewriting and normalization (`ExternalTableLocationRewriter`) during partition additions (`add_partition`) and modifications (`alter_partition`).
 
-## Cross-DC and WAN Resilience (`run-cross-dc-resilience-smoke.sh`)
+## Cross-DC and WAN resilience (`run-cross-dc-resilience-smoke.sh`)
 
-Exercises cross-datacenter resilience, WAN degradation survivability, and failover capabilities:
+Exercises the proxy's failover mechanisms for linked remote datacenters and degraded WAN links:
 
 ```bash
 cd smoke-stand && ./prepare.sh
@@ -657,26 +660,48 @@ cd smoke-stand && ./prepare.sh
 ```
 
 The scenario tests on a live proxy configured with `hms-proxy-cross-dc.properties`:
-- **Table and Partition Metadata Caches (`TableMetadataCache`, `PartitionMetadataCache`)**: validates cache misses and hits on consecutive `get_table` and `get_partition` calls via Prometheus `hms_proxy_cache_requests_total` metrics.
-- **Automatic DDL Invalidation**: confirms cache invalidation for tables and partitions upon `alter_table` mutations.
-- **Serve-Stale-on-Error**: verifies serving expired metadata (`stale_hit`) during simulated remote catalog outages (`docker stop stand-hms-apache`) without throwing client errors.
-- **Granular `/readyz`**: validates HTTP `200 OK` readiness when the secondary remote catalog is down with `required-for-readiness=false` (prevents local load balancers from taking proxy out of rotation).
-- **Catalog Shadow / Replica Fallback**: transparent fallback of read-only RPCs (`get_table`) to a local shadow replica (`hdp`) during outages with `hms_proxy_catalog_fallback_total` increment.
-- **Split-Brain Protection**: strictly rejects mutating RPCs (`create_table`, `alter_table`, `drop_table`) against the failed catalog, ensuring the replica is never corrupted.
-- **Lenient Startup**: verifies clean proxy boot and readiness when the secondary remote metastore is completely offline.
-- **Recovery**: validates seamless recovery and normal routing when the secondary metastore comes back online.
+- Table and partition metadata caches (`TableMetadataCache`, `PartitionMetadataCache`): validates cache misses and hits on consecutive `get_table` and `get_partition` calls via Prometheus `hms_proxy_cache_requests_total` metrics.
+- Automatic DDL invalidation: confirms cache invalidation for tables and partitions upon `alter_table` mutations.
+- Serve-Stale-on-Error: verifies serving expired metadata (`stale_hit`) during simulated remote catalog outages (`docker stop stand-hms-apache`) without throwing client errors.
+- Granular `/readyz`: validates HTTP `200 OK` readiness when the secondary remote catalog is down with `required-for-readiness=false` (prevents local load balancers from taking proxy out of rotation).
+- Catalog Shadow / Replica Fallback: fallback of read-only RPCs (`get_table`) to a local shadow replica (`hdp`) during outages with `hms_proxy_catalog_fallback_total` increment.
+- Split-Brain protection: rejects mutating RPCs (`create_table`, `alter_table`, `drop_table`) against the failed catalog; the replica is not modified.
+- Lenient Startup: verifies proxy startup and readiness when the secondary remote metastore is offline.
+- Recovery: brings the secondary metastore back online and verifies that normal routing resumes.
+
+## Spark SQL placeholders and path-based tables (`run-spark-path-based-smoke.sh`)
+
+Checks the proxy's answers to Spark SQL service names: file-datasource format pseudo-databases, path-based tables such as `csv."hdfs://..."`, and the `global_temp` system database. Calls go through `HmsMetastoreSmokeCli metadata` as user `admin`: inside the `stand-proxy` container against `thrift://localhost:9083` when it is running, otherwise from the host against `${PROXY_HOST}:${PROXY_PORT}` (default `127.0.0.1:19085`) using the fat jar.
+
+```bash
+cd smoke-stand
+./run-spark-path-based-smoke.sh
+```
+
+Checks in order (the path in them is `hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/`; it does not point at the stand's HDFS):
+
+1. `get_database` for `csv`, `parquet`, `orc`, `json`, `delta`, `iceberg` returns `NoSuchObjectException`, not `Access denied`.
+2. `get_database` for `csv."<path>"` returns `NoSuchObjectException`.
+3. `get_table` with database `csv` and the path as the table name returns `NoSuchObjectException`.
+4. The same with the path in double quotes.
+5. `get_table` with database `default` and table `csv."<path>"` returns `NoSuchObjectException`.
+6. `get_tables` for database `csv` returns an empty list.
+7. `get_table_meta` with pattern `csv` returns an empty list.
+8. `get_database("global_temp")` returns `NoSuchObjectException`; `get_tables` for `global_temp` returns an empty list.
+
+The scenario does not check that the backend metastore is never called: it looks only at the reply to the client.
 
 ## MapReduce under Kerberos
 
 Two things are needed before a kerberized `INSERT` can run, and `LocalJobRunner` hides both behind
 `return code 2`:
 
-- **A delegation-token renewer.** MapReduce collects HDFS tokens before starting a job and names a
+- A delegation-token renewer. MapReduce collects HDFS tokens before starting a job and names a
   renewer for them; with none configured it fails with `Can't get Master Kerberos principal for use
   as renewer`. There is no ResourceManager here, so `yarn.resourcemanager.principal` points at
   HiveServer2 itself. It must be in `core-site.xml` — `hive-site.xml` does not reach the job's
   `Configuration`.
-- **Hadoop's native libraries.** A secure shuffle goes through `SecureIOUtils`, which refuses to
+- Hadoop's native libraries. A secure shuffle goes through `SecureIOUtils`, which refuses to
   run without them (`Secure IO is not possible without native code extensions`). The Maven-resolved
   classpath carries Java classes only, so the image copies `lib/native` from the matching Hadoop
   distribution image.
@@ -686,7 +711,7 @@ the HiveServer2 service runs emulated: `HS2_PLATFORM=linux/amd64` in `.env.kerbe
 makes it noticeably slower, and it is only needed for the Kerberos profile — the plain profile has
 no secure shuffle and runs natively.
 
-## Notes that cost time to find
+## Known issues
 
 - Derby must create its own database directory, so the volume mounts one level above it
   (`/opt/hms/db`), never on `metastore_db` itself.
@@ -694,17 +719,15 @@ no secure shuffle and runs natively.
   `HiveMetaStoreClient` rejects a metastore URI whose hostname has one.
 - The vendored standalone jars carry no schema `.sql`, so ACID tables are created programmatically
   by `InitSchema` (`TxnDbUtil.prepDb`); DataNucleus auto-creates the rest on first use.
-- `CREATE TABLE ... TBLPROPERTIES('transactional'='true')` fails with "The table must be stored
-  using an ACID compliant format": the standalone metastore has no `hive-exec`, so its
-  transactional validation cannot load `OrcOutputFormat` and rejects the format it just got.
-  Tables for ACID-adjacent smoke steps are therefore plain ORC — `add_write_notification_log` only
-  needs the table to exist, not to be transactional.
 - `HiveMetaStoreClient` in the Hortonworks jars builds its `URI[]` through
   `Arrays.asList(...).toArray()`, which returns `Object[]` on JDK 9+ and throws a
   `ClassCastException` inside `resolveUris`. That branch runs only for the default
   `RANDOM` URI selection, so the smoke CLI pins `metastore.thrift.uri.selection=SEQUENTIAL`.
 - The metastore needs `metastore.expression.proxy` and `metastore.task.threads.always` overridden:
-  their defaults name classes that live in a full Hive distribution, not in the standalone jar.
+  their defaults name classes that live in a full Hive distribution, not in the standalone jar. The
+  `DefaultPartitionExpressionProxy` stub then throws `UnsupportedOperationException` on a plain
+  `WHERE p='...'` against a partitioned table, so the real `PartitionExpressionForMetastore` comes
+  back together with `hive-exec`.
 - Hadoop reads `hadoop.security.authentication` from `core-site.xml` on the classpath, not from
   `-D` system properties — without the file the server tries to use the OS user as a principal.
 - The metastore runs a `TUGIBasedProcessor`, which refuses a second `set_ugi` on one connection,
@@ -756,7 +779,7 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   -e 'show databases;'"
 ```
 
-## What the stand has already caught
+## Defects found on the stand
 
 - `INSERT ... VALUES` broke in every catalog: Hive sends a `LockRequest` whose first component is
   the `_dummy_database`/`_dummy_table` placeholder, and the multi-namespace check counted it as a
@@ -783,11 +806,11 @@ docker exec stand-hs2 bash -c "java -cp '/opt/hs2/conf:/opt/hs2/lib/*' org.apach
   the filesystem of the catalog that owns the table, and a single MapReduce job reads from both.
 - Purge across clusters needs the *catalog's own* namenode principal in the proxy config. The purger
   opens that filesystem itself, so with only the first cluster's principal configured the delete died
-  with `Failed to specify server's Kerberos principal name` — **after** the drop had already
+  with `Failed to specify server's Kerberos principal name` — after the drop had already
   succeeded, leaving the data orphaned. Hence `catalog.<name>.conf.dfs.namenode.kerberos.principal`
   per catalog in the Kerberos profile.
 
-## Verified end to end
+## End-to-end Kerberos check
 
 Kerberos, from a client ticket down to the backend:
 

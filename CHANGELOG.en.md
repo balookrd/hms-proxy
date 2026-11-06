@@ -143,6 +143,7 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 ### Changed
 
 - **Idle impersonation sessions and users are now closed by default**: the default of `catalog.<name>.impersonation-session-idle-ttl-ms` changes from `0` (never) to `600000` (10 minutes), and `catalog.<name>.impersonation-client-idle-ttl-ms` from `0` to `1800000` (30 minutes). With the old defaults every catalog could hold up to 128 users × 4 sessions, i.e. up to 512 never-closed connections to the backend HMS, each pinning a backend worker thread. An explicit `0` restores the old behavior. A value below the new default is now kept as configured (the `CatalogConfig` constructor no longer raises a TTL to the default).
+- Documentation (`README`, `SMOKE`, `FAILOVER`, `COMPATIBILITY`, `smoke-stand/README`, `smoke-stand/TEST-MATRIX`, RU and EN) follows one style: evaluative wording without a mechanism and inline bold are removed, parameter lists are tables, and `smoke-stand/TEST-MATRIX` statuses are the word `pass` instead of emoji; the `semantic_risk` texts in `capabilities.yaml` are rewritten the same way. Inaccuracies fixed: the conditions for a `503` from `/readyz` in `FAILOVER` (also `HALF_OPEN`, `degraded` and unhealthy Kerberos), the cluster in the external-table purge example in `smoke-stand/README.en.md` (`namenode-b`, not `namenode`), the description of `run-spark-path-based-smoke.sh` (it now lists the checks the scenario actually makes), and a stale EN item claiming the metastore has no `hive-exec` is removed. No behavior or configuration changed.
 
 ### Fixed
 

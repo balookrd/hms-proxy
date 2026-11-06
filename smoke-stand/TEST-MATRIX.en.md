@@ -1,9 +1,9 @@
 # Smoke test matrix
 
-What has actually been run on this stand, and what has not. Every ✅ below was observed on the
+What has actually been run on this stand, and what has not. Every `pass` below was observed on the
 configuration described here — not inferred from a similar case passing.
 
-**Configuration under test**
+Configuration under test:
 
 | Component | Version / role |
 | --- | --- |
@@ -14,10 +14,10 @@ configuration described here — not inferred from a similar case passing.
 | `hs2` | Apache HiveServer2 `3.1.3` → Apache front door |
 | `hs2-hdp` | vendor HDP HiveServer2 `3.1.0.3.1.0.0-78` → Hortonworks front door |
 | `hs2-hive4` | Apache HiveServer2 `4.1.0` (official image, Tez local mode) → Hive 4 front door, compose profile `hive4fe` |
-| Storage | **two** Apache Hadoop `3.1.3` clusters: `namenode` (catalogs `hdp` and `hive4`), `namenode-b` (catalog `apache`) |
+| Storage | two Apache Hadoop `3.1.3` clusters: `namenode` (catalogs `hdp` and `hive4`), `namenode-b` (catalog `apache`) |
 | Auth | profile `plain` (no SASL) and profile `kerberos` (realm `SMOKE.LOCAL`, one realm for both clusters) |
 
-Legend: ✅ passed · ❌ fails by design · — not run · n/a not applicable.
+Legend for the status columns: `pass` — passed on this stand (text after it says what exactly was observed, for example `pass` refused); — not run; n/a — not applicable to this profile.
 
 ## A. Direct HMS smoke CLI — `--scenario all`
 
@@ -26,67 +26,67 @@ Driven by `scripts/run-real-installation-smoke.sh`; both profiles ended with
 
 | # | Scenario | RPCs exercised through the proxy | plain | kerberos |
 | --- | --- | --- | --- | --- |
-| A1 | `txn` | `open_txns` → `allocate_table_write_ids` → `lock` → `check_lock` → `get_valid_write_ids` → `commit_txn` | ✅ | ✅ |
-| A2 | Non-default catalog lock | `lock` SHARED_READ + DB + NO_TXN → `check_lock` → `heartbeat` → `unlock` → `abort_txn` | ✅ | ✅ |
-| A3 | Partition lock | same, EXCLUSIVE + PARTITION + NO_TXN | ✅ | ✅ |
-| A4 | Cross-catalog lock | one `lock` whose components name two catalogs (`--second-db`) | ✅ | ✅ |
-| A5 | Notification, positive | `add_write_notification_log`, HDP front door → HDP backend | ✅ | ✅ |
-| A6 | Notification, negative | same call against an Apache backend — must be refused | ✅ refused | ✅ refused |
+| A1 | `txn` | `open_txns` → `allocate_table_write_ids` → `lock` → `check_lock` → `get_valid_write_ids` → `commit_txn` | `pass` | `pass` |
+| A2 | Non-default catalog lock | `lock` SHARED_READ + DB + NO_TXN → `check_lock` → `heartbeat` → `unlock` → `abort_txn` | `pass` | `pass` |
+| A3 | Partition lock | same, EXCLUSIVE + PARTITION + NO_TXN | `pass` | `pass` |
+| A4 | Cross-catalog lock | one `lock` whose components name two catalogs (`--second-db`) | `pass` | `pass` |
+| A5 | Notification, positive | `add_write_notification_log`, HDP front door → HDP backend | `pass` | `pass` |
+| A6 | Notification, negative | same call against an Apache backend — must be refused | `pass` refused | `pass` refused |
 
-## B. SQL through the **Apache** HiveServer2 (front door 9083)
+## B. SQL through the Apache HiveServer2 (front door 9083)
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| B1 | Name federation — `show databases` → `default`, `apache__default` | ✅ | ✅ |
-| B2 | Reads from both catalogs | ✅ | ✅ |
-| B3 | DDL + `describe formatted` (location on the catalog's own HDFS) | ✅ | ✅ |
-| B4 | Partitions: create → insert → `show partitions` → rename → count | ✅ | ✅ |
-| B5 | External table: create → alter → insert → describe → drop | ✅ | ✅ |
-| B6 | `INSERT` via local MapReduce | ✅ | ✅ |
-| B7 | Views + cross-catalog view rewrite: each catalog's view reads its own table, the cross-catalog view is created in both directions and reads back (row count checked against the table) | — | ✅ |
-| B8 | Cross-catalog JOIN in one statement | ✅ | ✅ |
-| B9 | JOIN across two databases of one catalog | ✅ | ✅ |
-| B10 | Permanent UDF (`UDFReverse` → `yxorp`) | ✅ | ✅ |
+| B1 | Name federation — `show databases` → `default`, `apache__default` | `pass` | `pass` |
+| B2 | Reads from both catalogs | `pass` | `pass` |
+| B3 | DDL + `describe formatted` (location on the catalog's own HDFS) | `pass` | `pass` |
+| B4 | Partitions: create → insert → `show partitions` → rename → count | `pass` | `pass` |
+| B5 | External table: create → alter → insert → describe → drop | `pass` | `pass` |
+| B6 | `INSERT` via local MapReduce | `pass` | `pass` |
+| B7 | Views + cross-catalog view rewrite: each catalog's view reads its own table, the cross-catalog view is created in both directions and reads back (row count checked against the table) | — | `pass` |
+| B8 | Cross-catalog JOIN in one statement | `pass` | `pass` |
+| B9 | JOIN across two databases of one catalog | `pass` | `pass` |
+| B10 | Permanent UDF (`UDFReverse` → `yxorp`) | `pass` | `pass` |
 
-## C. SQL through the vendor **HDP** HiveServer2 (front door 9084)
+## C. SQL through the vendor HDP HiveServer2 (front door 9084)
 
 An HDP client cannot use the Apache listener — Thrift has no version negotiation — so this is the
 only path that covers the Hortonworks front door with a real client.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| C1 | Everything in section B | ✅ | ✅ |
-| C2 | Transactional (ACID) tables: create → insert → count | ✅ | ✅ |
-| C3 | `add_write_notification_log` sent by **Hive itself** after an ACID write, with real delta paths and checksums | ✅ | ✅ |
-| C4 | `allocate_table_write_ids` / `get_valid_write_ids` through federation | ✅ | ✅ |
-| C5 | Materialized view with rewrite enabled (`show materialized views` → `Yes`) | ✅ | ✅ |
-| C8 | **The paired topology** - each front door with its own metastore as the default catalog, the other as a remote one: Hortonworks front door while `hms-hdp` is default, Apache front door while `hms-apache` is (`.env.apache`). Both pass the whole of sections B and C **including the ACID block**, with `allocate_table_write_ids` in the proxy log and the transactional table created. The Apache pairing sends no `add_write_notification_log` at all, which is why C7 does not arise there | ✅ both pairings | ✅ both pairings |
-| C9 | **Metadata-breaking operations** on managed and external tables in both catalogs: `ALTER TABLE ADD COLUMNS` (the value written through the new column comes back), `ALTER TABLE RENAME TO` (the table answers under the new name), `ALTER TABLE DROP PARTITION`, and `TRUNCATE TABLE`. A rename moves a managed table's directory but leaves an external table's location where it was, so the scenario names the renamed table with `show tables like` rather than reading it out of `describe formatted` | — | ✅ both pairings |
-| C10 | `TRUNCATE` against the **Hortonworks metastore**: historically a positional `truncate_table` called `HdfsAdmin.getEncryptionZoneForPath` and died with `NoSuchMethodError`, because the image ran hadoop-hdfs 2.2.0 — HDFS encryption zones did not exist before 2.6 — while the metastore jar itself is built against Hadoop 3.1.1. **Fixed by building that image on the vendor's own Hadoop** (`prepare.sh` stages HDP 3.1.1 common, common/lib and hdfs-client into `override-hdp`, ahead of the Maven-resolved lib). The subsequent no-op behavior seen when truncating through the Hortonworks front door was previously misattributed to the vendor client (thought to send `partNames=[]`). **The real root cause was identified and fixed in the proxy**: the vendor client sends `truncate_table_req` with `partNames=null` ("truncate whole table"), but proxy frontend bridges (`HortonworksFrontendBridge`, `Hive4FrontendBridge`) and `TruncateTableReqHandler` coerced `null` into an empty list `List.of()`. In Hive Metastore, `partNames=[]` matches 0 partitions and completes successfully without deleting files from the HDFS directory. With `null` preserved by the proxy, `TRUNCATE` properly empties the table from 1 row to 0 across both front doors (`truncate_emptied_*`). Smoke execution is controlled by `HMS_SMOKE_SQL_RUN_TRUNCATE` | ✅ | ✅ |
-| C11 | **`MSCK REPAIR TABLE`** on a partitioned managed table, in the default catalog and in the remote one, through both front doors. HiveServer2 walks the table location in HDFS itself and sends the partitions it finds back to the metastore, so one statement crosses database-name translation and the partition write path. Measured on the wire, not inferred: the repair arrives as a single `add_partitions_req` per table (the same method through either front door), the request names `dbName:<catalog>__default` and reaches the backend as `default`, the response comes back carrying the external name and `catName:<catalog>`, and nothing is refused - the only backend errors in the run are the `NoSuchObjectException`s of `create table if not exists`. **Location rewriting is not on this path**: the partitions arrive with `location:null`, so the backend metastore computes the directory itself, and a `get_table` of the repaired table returns the same location to the client that the backend holds. The scenario orphans a partition through Hive rather than staging files by hand - `insert`, then `dfs -mv` of the partition directory, then `drop partition` - and asserts a pair of markers: `msck_absent_before_*` proves the partition really was missing when the repair ran, `msck_repaired_*_7` carries a value read back through the partition the repair added. Gated by `HMS_SMOKE_SQL_RUN_MSCK` (on by default; the opt-out exists for a HiveServer2 that refuses `dfs` commands). Seen failing on purpose: with the `dfs -mv` removed the drop takes the data with it and the run dies on the missing `msck_repaired_managed_hdp_7` | — | ✅ both pairings |
-| C12 | **The data-path statements** on managed and external tables in both catalogs, through both front doors: `CREATE TABLE ... AS SELECT`, `INSERT OVERWRITE` (unpartitioned and per-partition), `LOAD DATA INPATH`, and managed↔external conversion through `ALTER TABLE ... SET TBLPROPERTIES('EXTERNAL'=...)`. **CTAS follows the catalog, not the client.** It names no `LOCATION`, so the directory is derived rather than sent: both HiveServer2 instances on this stand carry `hive.metastore.warehouse.dir=hdfs://namenode:8020/warehouse/hdp`, and a CTAS in `apache__default` still landed on `hdfs://namenode-b:8020/warehouse/apache/<table>` - the backend metastore computed it. The RPC is `create_table_with_environment_context`, one call per catalog on its own backend, measured from `hms_proxy_requests_total`; its **body is not in the trace** (the method is not in the traced set), so nothing is claimed here about what the request carried. `INSERT OVERWRITE` replaces rather than appends, and the partitioned form leaves the neighbouring partition alone - both markers carry the row count and the min/max of the value column, so an append prints a different marker. Its partition write path is `add_partition_with_environment_context` for a new partition and `alter_partitions_with_environment_context` for the overwritten one (again counters, not bodies). `LOAD DATA` **moves** files: the target holds the loaded value and the source directory is empty afterwards, which is what separates a move from a copy. Conversion is asserted by what `DROP` does next, not by the `ALTER` returning: a managed table turned external keeps its data, an external table turned managed loses it, and an external table carrying `external.table.purge=true` loses it as well. That last one is the proxy's own path on the `apache` catalog - `FileSystemExternalTableDropPurger` logged `purged external table data for catalog 'apache'` - while on `hdp` the vendor metastore deletes it, because the purger only engages for backends on the `APACHE_3_1_3` runtime; the client sees the same outcome either way. Gated by `HMS_SMOKE_SQL_RUN_CTAS`, `HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE`, `HMS_SMOKE_SQL_RUN_LOAD_DATA` and `HMS_SMOKE_SQL_RUN_TABLE_CONVERSION`, all on by default - every one of them worked on both pairings, so none needed an env file to turn it off. Each of the nine assertions was seen failing on purpose (see the 2026-08-05 revalidation entry) | — | ✅ both pairings |
-| C6 | **ACID support across both front doors.** Previously, transactional `insert` through the Apache front door failed during statistics update with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` (`StatsTask`). **The cause was in the proxy**: `set_aggr_stats_for` and `update_table_column_statistics_req` in frontend bridges coerced requests to Apache 3.1.3 `SetPartitionsStatsRequest`, which lacked `writeId` and `validWriteIdList` in Thrift IDL. Preserving vendor Thrift structures and transactional context in the proxy allows transactional inserts and stats collection to pass successfully across both front doors (Apache and Hortonworks). | ✅ supported across both front doors | ✅ |
-| C7 | **Cross pairing, outside the paired topology of C8.** With the **Apache 3.1.3 metastore as the default catalog** (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | ✅ | — |
+| C1 | Everything in section B | `pass` | `pass` |
+| C2 | Transactional (ACID) tables: create → insert → count | `pass` | `pass` |
+| C3 | `add_write_notification_log` sent by Hive itself after an ACID write, with real delta paths and checksums | `pass` | `pass` |
+| C4 | `allocate_table_write_ids` / `get_valid_write_ids` through federation | `pass` | `pass` |
+| C5 | Materialized view with rewrite enabled (`show materialized views` → `Yes`) | `pass` | `pass` |
+| C8 | The paired topology - each front door with its own metastore as the default catalog, the other as a remote one: Hortonworks front door while `hms-hdp` is default, Apache front door while `hms-apache` is (`.env.apache`). Both pass the whole of sections B and C including the ACID block, with `allocate_table_write_ids` in the proxy log and the transactional table created. The Apache pairing sends no `add_write_notification_log` at all, which is why C7 does not arise there | `pass` both pairings | `pass` both pairings |
+| C9 | Metadata-breaking operations on managed and external tables in both catalogs: `ALTER TABLE ADD COLUMNS` (the value written through the new column comes back), `ALTER TABLE RENAME TO` (the table answers under the new name), `ALTER TABLE DROP PARTITION`, and `TRUNCATE TABLE`. A rename moves a managed table's directory but leaves an external table's location where it was, so the scenario names the renamed table with `show tables like` rather than reading it out of `describe formatted` | — | `pass` both pairings |
+| C10 | `TRUNCATE` against the Hortonworks metastore: historically a positional `truncate_table` called `HdfsAdmin.getEncryptionZoneForPath` and died with `NoSuchMethodError`, because the image ran hadoop-hdfs 2.2.0 — HDFS encryption zones did not exist before 2.6 — while the metastore jar itself is built against Hadoop 3.1.1. Fixed by building that image on the vendor's own Hadoop (`prepare.sh` stages HDP 3.1.1 common, common/lib and hdfs-client into `override-hdp`, ahead of the Maven-resolved lib). The subsequent no-op behavior seen when truncating through the Hortonworks front door was previously misattributed to the vendor client (thought to send `partNames=[]`). The real root cause was identified and fixed in the proxy: the vendor client sends `truncate_table_req` with `partNames=null` ("truncate whole table"), but proxy frontend bridges (`HortonworksFrontendBridge`, `Hive4FrontendBridge`) and `TruncateTableReqHandler` coerced `null` into an empty list `List.of()`. In Hive Metastore, `partNames=[]` matches 0 partitions and completes successfully without deleting files from the HDFS directory. With `null` preserved by the proxy, `TRUNCATE` properly empties the table from 1 row to 0 across both front doors (`truncate_emptied_*`). Smoke execution is controlled by `HMS_SMOKE_SQL_RUN_TRUNCATE` | `pass` | `pass` |
+| C11 | `MSCK REPAIR TABLE` on a partitioned managed table, in the default catalog and in the remote one, through both front doors. HiveServer2 walks the table location in HDFS itself and sends the partitions it finds back to the metastore, so one statement crosses database-name translation and the partition write path. Measured on the wire, not inferred: the repair arrives as a single `add_partitions_req` per table (the same method through either front door), the request names `dbName:<catalog>__default` and reaches the backend as `default`, the response comes back carrying the external name and `catName:<catalog>`, and nothing is refused - the only backend errors in the run are the `NoSuchObjectException`s of `create table if not exists`. Location rewriting is not on this path: the partitions arrive with `location:null`, so the backend metastore computes the directory itself, and a `get_table` of the repaired table returns the same location to the client that the backend holds. The scenario orphans a partition through Hive rather than staging files by hand - `insert`, then `dfs -mv` of the partition directory, then `drop partition` - and asserts a pair of markers: `msck_absent_before_*` proves the partition really was missing when the repair ran, `msck_repaired_*_7` carries a value read back through the partition the repair added. Gated by `HMS_SMOKE_SQL_RUN_MSCK` (on by default; the opt-out exists for a HiveServer2 that refuses `dfs` commands). Seen failing on purpose: with the `dfs -mv` removed the drop takes the data with it and the run dies on the missing `msck_repaired_managed_hdp_7` | — | `pass` both pairings |
+| C12 | The data-path statements on managed and external tables in both catalogs, through both front doors: `CREATE TABLE ... AS SELECT`, `INSERT OVERWRITE` (unpartitioned and per-partition), `LOAD DATA INPATH`, and managed↔external conversion through `ALTER TABLE ... SET TBLPROPERTIES('EXTERNAL'=...)`. CTAS follows the catalog, not the client. It names no `LOCATION`, so the directory is derived rather than sent: both HiveServer2 instances on this stand carry `hive.metastore.warehouse.dir=hdfs://namenode:8020/warehouse/hdp`, and a CTAS in `apache__default` still landed on `hdfs://namenode-b:8020/warehouse/apache/<table>` - the backend metastore computed it. The RPC is `create_table_with_environment_context`, one call per catalog on its own backend, measured from `hms_proxy_requests_total`; its body is not in the trace (the method is not in the traced set), so nothing is claimed here about what the request carried. `INSERT OVERWRITE` replaces rather than appends, and the partitioned form leaves the neighbouring partition alone - both markers carry the row count and the min/max of the value column, so an append prints a different marker. Its partition write path is `add_partition_with_environment_context` for a new partition and `alter_partitions_with_environment_context` for the overwritten one (again counters, not bodies). `LOAD DATA` moves files: the target holds the loaded value and the source directory is empty afterwards, which is what separates a move from a copy. Conversion is asserted by what `DROP` does next, not by the `ALTER` returning: a managed table turned external keeps its data, an external table turned managed loses it, and an external table carrying `external.table.purge=true` loses it as well. That last one is the proxy's own path on the `apache` catalog - `FileSystemExternalTableDropPurger` logged `purged external table data for catalog 'apache'` - while on `hdp` the vendor metastore deletes it, because the purger only engages for backends on the `APACHE_3_1_3` runtime; the client sees the same outcome either way. Gated by `HMS_SMOKE_SQL_RUN_CTAS`, `HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE`, `HMS_SMOKE_SQL_RUN_LOAD_DATA` and `HMS_SMOKE_SQL_RUN_TABLE_CONVERSION`, all on by default - every one of them worked on both pairings, so none needed an env file to turn it off. Each of the nine assertions was seen failing on purpose (see the 2026-08-05 revalidation entry) | — | `pass` both pairings |
+| C6 | ACID support across both front doors. Previously, transactional `insert` through the Apache front door failed during statistics update with `Cannot change stats state for a transactional table without providing the transactional write state for verification (new write ID -1, valid write IDs null)` (`StatsTask`). The cause was in the proxy: `set_aggr_stats_for` and `update_table_column_statistics_req` in frontend bridges coerced requests to Apache 3.1.3 `SetPartitionsStatsRequest`, which lacked `writeId` and `validWriteIdList` in Thrift IDL. Preserving vendor Thrift structures and transactional context in the proxy allows transactional inserts and stats collection to pass successfully across both front doors (Apache and Hortonworks). | `pass` supported across both front doors | `pass` |
+| C7 | Cross pairing, outside the paired topology of C8. With the Apache 3.1.3 metastore as the default catalog (`.env.apache`) there is no ACID path at all: Hive issues `add_write_notification_log` itself after an ACID write, and the proxy refuses the Hortonworks-shaped call whenever the backend is not a Hortonworks runtime (row A6 records that refusal as correct). The statement dies in `MoveTask` with a bare `Internal error processing add_write_notification_log`. Everything non-ACID in sections B and C passes on that layout | `pass` | — |
 
 ## D. Two HDFS clusters
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| D1 | Tables of the two catalogs land on **different** namenodes | ✅ | ✅ |
-| D2 | Physical check: no cross-cluster files | ✅ | ✅ |
-| D3 | Writes into both clusters | ✅ | ✅ |
-| D4 | Cross-cluster JOIN — one MapReduce job reads from both filesystems | ✅ | ✅ |
-| D5 | Unqualified `LOCATION` rewritten onto the owning catalog's filesystem | ✅ | ✅ |
-| D6 | `LOCATION` naming the *other* cluster rewritten onto the owning one | ✅ | ✅ |
-| D7 | `DROP ... PURGE` deletes data on the catalog's own cluster | ✅ | ✅ |
+| D1 | Tables of the two catalogs land on different namenodes | `pass` | `pass` |
+| D2 | Physical check: no cross-cluster files | `pass` | `pass` |
+| D3 | Writes into both clusters | `pass` | `pass` |
+| D4 | Cross-cluster JOIN — one MapReduce job reads from both filesystems | `pass` | `pass` |
+| D5 | Unqualified `LOCATION` rewritten onto the owning catalog's filesystem | `pass` | `pass` |
+| D6 | `LOCATION` naming the *other* cluster rewritten onto the owning one | `pass` | `pass` |
+| D7 | `DROP ... PURGE` deletes data on the catalog's own cluster | `pass` | `pass` |
 
 ## E. Individual checks
 
 | # | Check | Result |
 | --- | --- | --- |
-| E1 | Transactional-DDL guard on `create_table_with_environment_context` | ✅ blocks a transactional table, lets a plain one through |
-| E2 | Readiness probe does not disturb SASL (15 × `/readyz`, then a Kerberos smoke run) | ✅ |
-| E3 | `hms_proxy_lock_request_split_total{catalog}` counts lock-request splits | ✅ |
+| E1 | Transactional-DDL guard on `create_table_with_environment_context` | `pass` blocks a transactional table, lets a plain one through |
+| E2 | Readiness probe does not disturb SASL (15 × `/readyz`, then a Kerberos smoke run) | `pass` |
+| E3 | `hms_proxy_lock_request_split_total{catalog}` counts lock-request splits | `pass` |
 
 ## G. Iceberg REST catalog front door (host port 19183)
 
@@ -103,50 +103,50 @@ of the script) stays hand-driven.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | ✅ | ✅ |
-| G2 | Namespace list and load (`default`) | ✅ | ✅ |
-| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | ✅ | ✅ |
-| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | ✅ | ✅ |
-| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | ✅ | ✅ |
-| G6 | Unknown table → clean 404 | ✅ | ✅ |
-| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | ✅ | ✅ |
-| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | ✅ | ✅ |
-| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | ✅ | ✅ |
-| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | ✅ | ✅ |
-| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | ✅ | ✅ |
-| G12 | Federated namespace `apache__default` stays visible under the default prefix | ✅ | ✅ |
-| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | ✅ | ✅ |
-| G14 | A default-catalog table under the `apache` prefix → clean 404 | ✅ | ✅ |
-| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | ✅ | ✅ |
-| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | ✅ | ✅ |
-| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | ✅ | ✅ |
-| G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | ✅ | n/a |
-| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | ✅ | ✅ |
-| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | ✅ | ✅ |
-| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | ✅ | ✅ |
-| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | ✅ | ✅ |
-| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | ✅ | ✅ |
-| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | ✅ | ✅ |
-| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | ✅ | ✅ |
-| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | ✅ | ✅ |
-| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | ✅ | ✅ |
-| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | ✅ | ✅ |
-| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not just the source | ✅ | ✅ |
-| G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | ✅ |
-| G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | ✅ | ✅ |
-| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `POST .../views/{view}` update (`assert-view-uuid` requirement + `set-properties`) answers `200` with a follow-up `GET` confirming the property is actually present, `POST /v1/{prefix}/views/rename` answers `204` and the view loads back `200` under the new name while the old name answers `404` - the pair that proves the rename moved it rather than copying it, `DELETE` answers `204` | ✅ | ✅ |
-| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | ✅ | ✅ |
-| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | ✅ | ✅ |
-| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G39 | REGISTER_TABLE round trip: create a table, `DELETE` it WITHOUT purge (the metadata file survives on HDFS, and a `GET` confirms `404`), `POST .../register` re-registers it from that metadata file (`200`, `metadata-location` present), `GET` loads it back (`200`), `DELETE` drops it - the last advertised write route without a positive proof | ✅ | ✅ |
-| G40 | `POST .../tables/{table}` (UPDATE_TABLE, per-table commit) under the federated `apache__default` namespace refused with `403` - the table named need not exist, proving the gate answers before the lookup | ✅ | ✅ |
-| G41 | `DELETE .../tables/{table}` (DROP_TABLE) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G42 | `POST .../register` (REGISTER_TABLE, deliberately bogus `metadata-location`) under the federated `apache__default` namespace refused with `403` before anything tries to read the metadata file | ✅ | ✅ |
-| G43 | `POST .../views/{view}` (UPDATE_VIEW) under the federated `apache__default` namespace refused with `403` | ✅ | ✅ |
-| G44 | `POST /v1/{prefix}/views/rename` (RENAME_VIEW) with a federated *destination* namespace refused with `403` - the view-side counterpart of G30 | ✅ | ✅ |
+| G1 | `GET /v1/config` advertises `prefix=hdp` (the default catalog) | `pass` | `pass` |
+| G2 | Namespace list and load (`default`) | `pass` | `pass` |
+| G3 | Table listing shows the Iceberg table and hides plain Hive tables of the same database | `pass` | `pass` |
+| G4 | Table load returns `metadata-location` and full metadata read from HDFS by the proxy itself | `pass` | `pass` |
+| G5 | Unknown prefix → clean 404 `NoSuchCatalogException` | `pass` | `pass` |
+| G6 | Unknown table → clean 404 | `pass` | `pass` |
+| G7 | `DELETE` of a non-existent table answers a clean 404, not a silent 2xx | `pass` | `pass` |
+| G8 | `GET /v1/config?warehouse=apache` advertises `prefix=apache` | `pass` | `pass` |
+| G9 | Unknown warehouse (`GET /v1/config?warehouse=no_such_warehouse_smoke`) → clean 400 | `pass` | `pass` |
+| G10 | Clean namespace view under the `apache` prefix lists `default` with no `apache__`-prefixed external names | `pass` | `pass` |
+| G11 | Table load under the `apache` prefix (`smoke_iceberg_tbl_ap`, second HDFS cluster) returns `metadata-location` | `pass` | `pass` |
+| G12 | Federated namespace `apache__default` stays visible under the default prefix | `pass` | `pass` |
+| G13 | Listing and load of `smoke_iceberg_tbl_ap` through the federated `apache__default` name under the default prefix | `pass` | `pass` |
+| G14 | A default-catalog table under the `apache` prefix → clean 404 | `pass` | `pass` |
+| G15 | The external name `apache__default` used as a namespace under the `apache` prefix → clean 404 | `pass` | `pass` |
+| G16 | The second catalog's plain Hive table (`smoke_read_ap`) stays invisible in the `apache` listing | `pass` | `pass` |
+| G17 | REST metrics (`requests_total`, `listener_info`) visible on the management `/metrics` endpoint | `pass` | `pass` |
+| G18 | `HEAD` on namespaces/tables answers `204` when present and `404` when absent, including under the non-default `apache` prefix and for a plain Hive table (`smoke_read_hdp`) | `pass` | n/a |
+| G19 | Error response for a missing namespace carries the mapped `404`, `type` and `message` but no `"stack":[...]` server trace | `pass` | `pass` |
+| G20 | An unparseable `POST .../metrics` body answers `400` (`BadRequestException`), not a `500` | `pass` | `pass` |
+| G21 | `GET /v1/config` and `GET /v1/{prefix}/config` (both resolving to the default catalog) advertise the table-create and table-drop write routes, on top of the namespaces read route | `pass` | `pass` |
+| G22 | `GET /v1/{second-prefix}/config` (non-default catalog) advertises the namespaces read route and carries no write route - proves discovery advertises the write/read asymmetry, not only the default side | `pass` | `pass` |
+| G23 | Table write round trip on the default catalog: `POST` create (`200`), `GET` load (`metadata-location` present), `DELETE` drop (`2xx`) | `pass` | `pass` |
+| G24 | Direct `POST` create under the non-default `apache` prefix refused with `403` (`ForbiddenException`) | `pass` | `pass` |
+| G25 | `POST` create under the federated `apache__default` namespace, reached through the default prefix, refused with `403` - proves the write gate is enforced on the *resolved* catalog, not the request's own prefix | `pass` | `pass` |
+| G26 | Real `POST` commit against the just-created table (`assert-table-uuid` requirement + `set-properties` update) answers `200` and the returned `metadata-location` differs from create's - proof a new metadata file was actually written through `HiveTableOperations.commit`, not a silent no-op | `pass` | `pass` |
+| G27 | `POST /v1/{prefix}/tables/rename` answers `204`, and `GET` on the new name answers `200` | `pass` | `pass` |
+| G28 | `POST /v1/{prefix}/transactions/commit` naming a table in the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G29 | `POST /v1/{prefix}/namespaces` with a federated name (`apache__zzz_smoke`) refused with `403` | `pass` | `pass` |
+| G30 | `POST /v1/{prefix}/tables/rename` with a federated *destination* namespace (source table still under its current name) refused with `403` - proves the destination side of the gate, not only the source | `pass` | `pass` |
+| G31 | A request without `--negotiate` is rejected `401` with a `WWW-Authenticate: Negotiate` challenge and an empty body | n/a | `pass` |
+| G32 | Namespace DDL round trip: `POST .../namespaces` create (`200`), `GET` load (`200`), `POST .../properties` update (`200`) with a follow-up `GET` confirming the property is actually present, `DELETE` (`204`), `GET` afterward (`404`) - genuinely new: `RoutingMetaStoreClient` did not implement `createDatabase`/`alterDatabase`/`dropDatabase` before this phase, so this is the first time namespace DDL reached a real metastore | `pass` | `pass` |
+| G33 | View write round trip: `POST .../views` create answers `200` with a real `metadata-location`, `GET .../views` lists the new view, `POST .../views/{view}` update (`assert-view-uuid` requirement + `set-properties`) answers `200` with a follow-up `GET` confirming the property is actually present, `POST /v1/{prefix}/views/rename` answers `204` and the view loads back `200` under the new name while the old name answers `404` - the pair that proves the rename moved it rather than copying it, `DELETE` answers `204` | `pass` | `pass` |
+| G34 | `POST /v1/{prefix}/transactions/commit` against a freshly created table: answers `204`, and the table's `metadata-location` afterward differs from create's - proof the multi-table commit path actually wrote a new metadata file, not a silent no-op | `pass` | `pass` |
+| G35 | `POST .../views` (CREATE_VIEW, full valid view body) into the federated `apache__default` namespace refused with `403` - a minimal body instead gets `400` because it fails to parse before the gate is even consulted, so `400` here would mean the request is malformed, not that the gate let it through | `pass` | `pass` |
+| G36 | `DELETE .../views/{view}` (DROP_VIEW) under the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G37 | `DELETE /v1/{prefix}/namespaces/{ns}` (DROP_NAMESPACE) of the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G38 | `POST .../properties` (UPDATE_NAMESPACE) of the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G39 | REGISTER_TABLE round trip: create a table, `DELETE` it WITHOUT purge (the metadata file survives on HDFS, and a `GET` confirms `404`), `POST .../register` re-registers it from that metadata file (`200`, `metadata-location` present), `GET` loads it back (`200`), `DELETE` drops it - the last advertised write route without a positive proof | `pass` | `pass` |
+| G40 | `POST .../tables/{table}` (UPDATE_TABLE, per-table commit) under the federated `apache__default` namespace refused with `403` - the table named need not exist, proving the gate answers before the lookup | `pass` | `pass` |
+| G41 | `DELETE .../tables/{table}` (DROP_TABLE) under the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G42 | `POST .../register` (REGISTER_TABLE, deliberately bogus `metadata-location`) under the federated `apache__default` namespace refused with `403` before anything tries to read the metadata file | `pass` | `pass` |
+| G43 | `POST .../views/{view}` (UPDATE_VIEW) under the federated `apache__default` namespace refused with `403` | `pass` | `pass` |
+| G44 | `POST /v1/{prefix}/views/rename` (RENAME_VIEW) with a federated *destination* namespace refused with `403` - the view-side counterpart of G30 | `pass` | `pass` |
 
 With G39-G44 every one of the thirteen `WriteRouteGate` write routes now has both a positive
 round trip (where the route is genuinely served) and a gate negative against a federated
@@ -155,8 +155,8 @@ namespace.
 ## H. Iceberg interop across every backend and front-door dialect
 
 Driven by `smoke-stand/run-iceberg-interop-smoke.sh` (stand-local: every step is a docker exec
-into the engine's own container). One Iceberg table crosses **all three front-door dialects plus
-REST**, and the whole scenario is repeated with each of the stand's three metastores as the
+into the engine's own container). One Iceberg table crosses all three front-door dialects plus
+REST, and the whole scenario is repeated with each of the stand's three metastores as the
 default catalog — writes are gated to it, so the default catalog *is* the backend under test:
 
 | Backend under test | Runtime profile | Storage | How |
@@ -174,14 +174,14 @@ Every cell below was observed on all three backends unless the row says otherwis
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| H1 | REST writes real data: the writer creates the table through the REST front door, writes Parquet files into HDFS and commits them as a snapshot through REST; its own scan reads the 2 rows back | ✅ | ✅ |
-| H2 | The vendor HDP HiveServer2 (Hortonworks front door, 9084) reads the REST-written rows (`count=2`), appends one with `INSERT`, reads back `count=3` | ✅ | ✅ |
-| H3 | The Apache HiveServer2 (Apache front door, 9083) appends one more and reads back `count=4` | ✅ | ✅ |
-| H4 | The Hive 4 HiveServer2 (**Hive 4 front door, 9085** - the `APACHE_4_1_0` dialect, the only listener a Hive 4 client can use) reads everything the two 3.1-era engines wrote (`count=4`), appends its own row and reads back `count=5` | ✅ | ✅ |
-| H5 | A REST-side full scan sees every SQL engine's commit (`rows=5`) - metadata and data round-trip through all four access paths | ✅ | ✅ |
-| H6 | REST `DELETE` drops the table: `GET` answers `404`, `show tables` through SQL no longer lists it | ✅ | ✅ |
-| H7 | Kerberos end to end: the writer authenticates REST with per-request SPNEGO tokens (custom Iceberg `AuthManager`) and writes HDFS as `smoke-user` from its keytab; all three HS2 passes run over SASL | n/a | ✅ |
-| H8 | The same table is written through a 3.1-line backend on the second HDFS cluster (`--prefix apache`), which is what puts `APACHE_3_1_3` on the REST write path - the runtime profile no other layout can reach, since writes only go to the default catalog | ✅ | ✅ |
+| H1 | REST writes real data: the writer creates the table through the REST front door, writes Parquet files into HDFS and commits them as a snapshot through REST; its own scan reads the 2 rows back | `pass` | `pass` |
+| H2 | The vendor HDP HiveServer2 (Hortonworks front door, 9084) reads the REST-written rows (`count=2`), appends one with `INSERT`, reads back `count=3` | `pass` | `pass` |
+| H3 | The Apache HiveServer2 (Apache front door, 9083) appends one more and reads back `count=4` | `pass` | `pass` |
+| H4 | The Hive 4 HiveServer2 (Hive 4 front door, 9085 - the `APACHE_4_1_0` dialect, the only listener a Hive 4 client can use) reads everything the two 3.1-era engines wrote (`count=4`), appends its own row and reads back `count=5` | `pass` | `pass` |
+| H5 | A REST-side full scan sees every SQL engine's commit (`rows=5`) - metadata and data round-trip through all four access paths | `pass` | `pass` |
+| H6 | REST `DELETE` drops the table: `GET` answers `404`, `show tables` through SQL no longer lists it | `pass` | `pass` |
+| H7 | Kerberos end to end: the writer authenticates REST with per-request SPNEGO tokens (custom Iceberg `AuthManager`) and writes HDFS as `smoke-user` from its keytab; all three HS2 passes run over SASL | n/a | `pass` |
+| H8 | The same table is written through a 3.1-line backend on the second HDFS cluster (`--prefix apache`), which is what puts `APACHE_3_1_3` on the REST write path - the runtime profile no other layout can reach, since writes only go to the default catalog | `pass` | `pass` |
 
 ### H9-H12. Which front door creates the table (`--origin`)
 
@@ -193,19 +193,19 @@ of 2026-08-04 lists which combinations were measured there:
 
 | # | Origin (creates + writes 2 rows) | Modified afterwards by | plain | kerberos |
 | --- | --- | --- | --- | --- |
-| H9 | REST front door (Iceberg catalog `createTable`) | HDP, Apache, Hive 4 → 5 rows | ✅ | ✅ |
-| H10 | HDP HiveServer2 (`STORED BY 'HiveIcebergStorageHandler'`) | REST, Apache, Hive 4 → 5 rows | ✅ | ✅ |
-| H11 | Apache HiveServer2 (same DDL) | REST, HDP, Hive 4 → 5 rows | ✅ | ✅ |
-| H12 | Hive 4 HiveServer2 (`STORED BY ICEBERG`) | REST, HDP, Apache → 5 rows; it takes two proxy-side fixes, see below | ✅ | ✅ |
+| H9 | REST front door (Iceberg catalog `createTable`) | HDP, Apache, Hive 4 → 5 rows | `pass` | `pass` |
+| H10 | HDP HiveServer2 (`STORED BY 'HiveIcebergStorageHandler'`) | REST, Apache, Hive 4 → 5 rows | `pass` | `pass` |
+| H11 | Apache HiveServer2 (same DDL) | REST, HDP, Hive 4 → 5 rows | `pass` | `pass` |
+| H12 | Hive 4 HiveServer2 (`STORED BY ICEBERG`) | REST, HDP, Apache → 5 rows; it takes two proxy-side fixes, see below | `pass` | `pass` |
 
 Every participant reads the running total *before* its own append, so each hand-off across the
 front-door boundary is proven rather than assumed, and a final round has all participants
 confirm the same count.
 
-**Why the 3.1 DDL says `EXTERNAL`.** `sql_create_ddl` creates the 3.1-line table as `create
+Why the 3.1 DDL says `EXTERNAL`. `sql_create_ddl` creates the 3.1-line table as `create
 external table ... stored by 'HiveIcebergStorageHandler'`, and that word is load-bearing. Without
 it the table is a `MANAGED_TABLE` on a 3.1 metastore, and writing into a managed non-ACID table
-under `DbTxnManager` makes Hive take an **EXCLUSIVE** lock on the table itself for the whole
+under `DbTxnManager` makes Hive take an EXCLUSIVE lock on the table itself for the whole
 statement - while the Iceberg commit that finishes that very same statement
 (`HiveIcebergOutputCommitter.commitJob` → `org.apache.iceberg.hive.MetastoreLock`) asks the
 metastore for its own EXCLUSIVE lock on it. The statement deadlocks against itself: four retries
@@ -226,11 +226,11 @@ Iceberg table on this stand is external anyway - the REST front door creates the
 The proxy's own pointer-guard lock was a bystander throughout: it queues behind whatever the
 statement holds, gives up after its 10 s budget, releases it and repairs without the lock.
 
-**H12 in detail: who is allowed to keep the Hive-engine descriptor.** This row used to read
+H12 in detail: who is allowed to keep the Hive-engine descriptor. This row used to read
 "a Hive 4-created table is unreadable by the 3.1 line", on the belief that `STORED BY ICEBERG`
 leaves the StorageDescriptor's `inputFormat` as the abstract
-`org.apache.hadoop.mapred.FileInputFormat`. **That explanation was wrong, and it was wrong in a
-way the scenario could not notice**, because `--origin hive4` carved the two 3.1 engines out of
+`org.apache.hadoop.mapred.FileInputFormat`. That explanation was wrong, and it was wrong in a
+way the scenario could not notice, because `--origin hive4` carved the two 3.1 engines out of
 the run and asserted the limitation instead of testing it. Measured again on 2026-07-31: Hive 4
 creates the table with the concrete `HiveIcebergInputFormat`, and both 3.1 engines read it. What
 is real is a *write*-side defect, and there are two of them, in two different processes.
@@ -245,12 +245,12 @@ in the Hadoop configuration of whatever process is committing. A table created b
 `STORED BY ICEBERG` sets no `engine.hive.enabled` at all - verified by reading its
 `metadata.json` - so every later committer decides this for itself:
 
-- **The proxy's own REST commits** used to fall on the disabled side, because the REST front
+- The proxy's own REST commits used to fall on the disabled side, because the REST front
   door built its Iceberg client without the flag. One REST append rewrote a Hive-created table
   into the plain-files shape and the 3.1 engines could no longer open it. Fixed by
   `rest-catalog.hive-engine-descriptor` (default `true`), applied to a copy of each catalog's
   Hadoop `Configuration` in `IcebergRestServices.open`.
-- **A 3.1 HiveServer2's own commits** fall on the disabled side too - `iceberg-hive-runtime`
+- A 3.1 HiveServer2's own commits fall on the disabled side too - `iceberg-hive-runtime`
   1.6.1 inside `hs2-hdp`/`hs2` reads the flag from *its* `hive-site.xml`, which does not set it,
   and no proxy setting can reach that JVM. So HDP's own `INSERT` onto a Hive 4-created table
   degraded the descriptor a step later, and the request carrying it is a perfectly legitimate
@@ -277,16 +277,16 @@ created, and the other three front doors then have to read what it left behind. 
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
-| H13 | Hive 4 `DELETE FROM ... WHERE` removes rows from a REST-created v2 table, and REST sees it: its own scan drops from 5 rows to 3 and no longer finds the deleted id | ✅ | ✅ |
-| H14 | Hive 4 `UPDATE ... SET` changes a value in place, and REST sees the new one: still 3 rows, `src=updated` matches exactly 1 and `src=rest` the other 2 | ✅ | ✅ |
-| H15 | `merge-on-read` really is merge-on-read: after the delete the planned scan is 1 data file **plus 1 delete file** - the original five-row data file is untouched and the rows come out at read time | ✅ | ✅ |
-| H16 | **Both 3.1 engines read the merge-on-read result correctly** - a full row scan through each returns exactly the surviving rows, so `iceberg-hive-runtime` 1.6.1 does apply position delete files | ✅ | ✅ |
-| H17 | The HDP 3.1 engine still `INSERT`s onto a table Hive 4 has row-level modified, and all four front doors then agree on the 4 rows | ✅ | ✅ |
-| H18 | Neither 3.1 engine can do row-level DML of its own: `DELETE` and `UPDATE` are refused at compile time with `SemanticException [Error 10297]: Attempt to do update or delete on table default.smoke_iceberg_rowlevel that is not transactional`, and the table's contents are unchanged afterwards | ✅ | ✅ |
-| H19 | `copy-on-write` really is copy-on-write: the same delete leaves **0 delete files** because Hive 4 rewrites the data file instead, and every engine reads the same result | ✅ | ✅ |
-| H20 | The purge-drop still cleans up a v2 table that has delete files: no parquet, avro or `metadata.json` survives under the table directory | ✅ | ✅ |
+| H13 | Hive 4 `DELETE FROM ... WHERE` removes rows from a REST-created v2 table, and REST sees it: its own scan drops from 5 rows to 3 and no longer finds the deleted id | `pass` | `pass` |
+| H14 | Hive 4 `UPDATE ... SET` changes a value in place, and REST sees the new one: still 3 rows, `src=updated` matches exactly 1 and `src=rest` the other 2 | `pass` | `pass` |
+| H15 | `merge-on-read` really is merge-on-read: after the delete the planned scan is 1 data file plus 1 delete file - the original five-row data file is untouched and the rows come out at read time | `pass` | `pass` |
+| H16 | Both 3.1 engines read the merge-on-read result correctly - a full row scan through each returns exactly the surviving rows, so `iceberg-hive-runtime` 1.6.1 does apply position delete files | `pass` | `pass` |
+| H17 | The HDP 3.1 engine still `INSERT`s onto a table Hive 4 has row-level modified, and all four front doors then agree on the 4 rows | `pass` | `pass` |
+| H18 | Neither 3.1 engine can do row-level DML of its own: `DELETE` and `UPDATE` are refused at compile time with `SemanticException [Error 10297]: Attempt to do update or delete on table default.smoke_iceberg_rowlevel that is not transactional`, and the table's contents are unchanged afterwards | `pass` | `pass` |
+| H19 | `copy-on-write` really is copy-on-write: the same delete leaves 0 delete files because Hive 4 rewrites the data file instead, and every engine reads the same result | `pass` | `pass` |
+| H20 | The purge-drop still cleans up a v2 table that has delete files: no parquet, avro or `metadata.json` survives under the table directory | `pass` | `pass` |
 
-**The boundary is on the write side, not the read side** - the same way round as H12 above. A 3.1
+The boundary is on the write side, not the read side - the same way round as H12 above. A 3.1
 HiveServer2 carrying `iceberg-hive-runtime` 1.6.1 plans a scan of a format-version 2 table with
 position deletes and applies them; what it cannot do is *produce* them, because the Hive 3
 storage handler registers no ACID-capable table and the semantic analyzer stops the statement
@@ -312,7 +312,7 @@ What building this surfaced (all found by the scenario, not by review):
   (`libthrift-0.16.0`, `libfb303-0.9.3`, `hive-storage-api-4.1.0`, vendored in
   `hive-metastore/`) child-first, and `ThriftValueConverter` converts structs and thrift
   infrastructure exceptions across the loader boundary; pinned by `Hive4IsolatedRuntimeTest`.
-- The `APACHE_4_1_0` **front door** could not serve a write either: Hive 4 added a fourth
+- The `APACHE_4_1_0` front door could not serve a write either: Hive 4 added a fourth
   `LockType` constant, `EXCL_WRITE`, which Apache 3.1.3 - the shape every request is converted
   into before routing - does not have. The value vanished in conversion, the required field
   failed validation, and a Hive 4 client's `INSERT` got a bare "Internal error processing lock"
@@ -336,18 +336,18 @@ What building this surfaced (all found by the scenario, not by review):
 
 ## I. Writer isolation
 
-The write gate lets writes into the default catalog only, on the argument that just that
+The write gate lets writes into the default catalog only, on the argument that only that
 catalog's commits take a real Hive lock while the rest are served by a shim that grants locks
 without checking conflicts. Both halves of that argument are now pinned.
 
 | # | Check | plain | kerberos |
 | --- | --- | --- | --- |
 | I1 | The synthetic shim grants two conflicting EXCLUSIVE locks on the same partition at once - the unsafety the write gate exists to contain, pinned as a unit test so making the shim conflict-aware has to be deliberate (`RoutingMetaStoreProxySyntheticReadLocksTest#syntheticShimGrantsConflictingExclusiveLocksOnTheSameObject`) | n/a | n/a |
-| I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | ✅ | ✅ Hive 4 backend |
-| I3 | 8 concurrent writers: the row count equals the writers that reported success plus the baseline, and a writer that is refused is refused with `CommitFailedException: branch main has changed` - contention is resolved by rejecting a stale writer, never by silently overwriting one | ✅ 7 commit, 1 refused | ✅ Hive 4 backend; how many are refused varies run to run - 7 commits and 1 refusal in one run, 8 and none in another |
-| I4 | **Across front doors**: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | ✅ | ✅ 12/12 on the 3.1 backend, against 1 loss in 12 before the repair took the Iceberg table lock |
-| I5 | **Multi-table transaction under contention**: a two-table `POST /v1/{prefix}/transactions/commit` whose requirement for the second table was invalidated by a competing writer is refused `409 CommitFailedException: Requirement failed: branch main has changed`, **neither** table is left carrying the update, and the competing writer's rows survive | ✅ | ✅ |
-| I6 | The same route is **not** atomic when a commit fails rather than a requirement: requirements are all validated up front, then the tables are committed one by one with no rollback, so a failure partway leaves the earlier tables committed and the request answers `500 CommitStateUnknownException` (`IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`, confirmed on the stand's real Hive 4 metastore by starving the ddl rate-limit class) | — | ✅ |
+| I2 | 5 concurrent REST writers appending to one table on the default catalog: all 5 commit, the table holds exactly 6 rows (1 baseline + 5) - no lost update | `pass` | `pass` Hive 4 backend |
+| I3 | 8 concurrent writers: the row count equals the writers that reported success plus the baseline, and a writer that is refused is refused with `CommitFailedException: branch main has changed` - contention is resolved by rejecting a stale writer, never by silently overwriting one | `pass` 7 commit, 1 refused | `pass` Hive 4 backend; how many are refused varies run to run - 7 commits and 1 refusal in one run, 8 and none in another |
+| I4 | Across front doors: REST appends and Hive `INSERT`s (Hortonworks front door) commit to the same table with overlapping commit windows | `pass` | `pass` 12/12 on the 3.1 backend, against 1 loss in 12 before the repair took the Iceberg table lock |
+| I5 | Multi-table transaction under contention: a two-table `POST /v1/{prefix}/transactions/commit` whose requirement for the second table was invalidated by a competing writer is refused `409 CommitFailedException: Requirement failed: branch main has changed`, neither table is left carrying the update, and the competing writer's rows survive | `pass` | `pass` |
+| I6 | The same route is not atomic when a commit fails rather than a requirement: requirements are all validated up front, then the tables are committed one by one with no rollback, so a failure partway leaves the earlier tables committed and the request answers `500 CommitStateUnknownException` (`IcebergRestEndpointIntegrationTest#multiTableTransactionMustNotReportSuccessWhenTheSecondCommitFails`, confirmed on the stand's real Hive 4 metastore by starving the ddl rate-limit class) | — | `pass` |
 
 Driven by `smoke-stand/run-iceberg-concurrency-smoke.sh`, which counts the writers that exited 0
 and requires the row count to match them exactly. A writer that fails loudly is correct
@@ -356,8 +356,8 @@ does.
 
 For I4 the row count alone would prove nothing: a beeline `INSERT` spends tens of seconds in
 MapReduce before it commits, while a REST append commits a second after it starts, so firing
-both at once just runs them in sequence. The scenario therefore keeps issuing REST appends in
-rounds for as long as any SQL writer is alive, and then **asserts the overlap**: each Iceberg
+both at once runs them in sequence. The scenario therefore keeps issuing REST appends in
+rounds for as long as any SQL writer is alive, and then asserts the overlap: each Iceberg
 commit ends in an `alter_table` the proxy logs with its thread, REST requests on
 `hms-proxy-rest-*` and Thrift ones on `pool-*-thread-*`, and the two windows have to intersect.
 The detector was checked against a run that did *not* overlap (REST finished 4 s before the
@@ -368,13 +368,13 @@ I5 and I6 answer the same question from the two sides a client can hit. Driven b
 a second writer appends to one of the two tables through the same front door, which advances that
 table's `main` ref, and the transaction then arrives carrying the snapshot id it read before that
 append - the shape a losing racer would have sent, with no timing games needed. The scenario ends
-with a **positive control** - the same transaction with the current snapshot id must be accepted
+with a positive control - the same transaction with the current snapshot id must be accepted
 and applied to both tables - because without it a malformed body, a wrong prefix or a
-non-writable table would refuse the transaction just as convincingly. Requirement contention is
+non-writable table would refuse the transaction as convincingly. Requirement contention is
 therefore all-or-nothing while a mid-transaction commit failure is not, and a client must not read
 "transaction" as "atomic under every failure".
 
-What the run does **not** show: no `check_lock` and no `WAITING` appeared in the proxy log, so
+What the run does not show: no `check_lock` and no `WAITING` appeared in the proxy log, so
 what rejected the stale writer was Iceberg's own requirement check on the branch's snapshot id,
 not a lock wait. The Hive lock still matters - it is what makes the read-verify-then-`alter_table`
 window atomic - but this run did not have to exercise the blocking path to protect the data.
@@ -383,10 +383,10 @@ window atomic - but this run did not have to exercise the blocking path to prote
 
 On the plain profile the cross-path run passed repeatedly (13 of 14 writers commit, one REST
 writer refused with "branch main has changed", 14 rows - exactly right). On the Kerberos profile
-the same scenario **loses a committed row about half the time**, and the loss is on the REST
+the same scenario loses a committed row about half the time, and the loss is on the REST
 side: with 4 REST writers per round against 2 Hive `INSERT`s, a run ended with 14 writers
 reporting success and 14 rows instead of 15, and the per-marker breakdown named the victim -
-`baseline, sql901, sql902, w1..w7, w9..w12`, with **w8 missing**.
+`baseline, sql901, sql902, w1..w7, w9..w12`, with w8 missing.
 
 That writer's process exited 0, which means `newAppend().commit()` returned normally: Iceberg
 told it the commit had landed. A commit that returns success and then vanishes is data loss, not
@@ -404,9 +404,9 @@ smoke-stand/run-iceberg-concurrency-smoke.sh --prefix hive4 --writers 4 --sql-wr
 ```
 
 Not seen on plain yet, but nothing about the mechanism looks auth-specific; the Kerberos runs are
-simply slower, which widens the window.
+slower, which widens the window.
 
-**The cause, and how far the fix goes.** A HiveServer2 `INSERT` opens with an
+The cause, and how far the fix goes. A HiveServer2 `INSERT` opens with an
 `alter_table_with_environment_context` carrying `alterTableOpType=DROPPROPS` and the `Table` it
 snapshotted when the query was compiled. The metastore applies those parameters wholesale, so
 every Iceberg key the record holds and the request omits is erased - `metadata_location` first of
@@ -418,16 +418,16 @@ tells a genuine commit apart by its `previous_metadata_location` (a request whos
 current pointer is moving forward and is passed through untouched; anything else carries a stale
 copy).
 
-**Keying the guard off the request was a no-op; it is now keyed off the metastore record.**
+Keying the guard off the request was a no-op; it is now keyed off the metastore record.
 Verified on the wire: the `alter_table` HiveServer2 sends carries `params={EXTERNAL, numFiles,
-numRows, totalSize, transient_lastDdlTime}` and **no `metadata_location` at all**, so the first
+numRows, totalSize, transient_lastDdlTime}` and no `metadata_location` at all, so the first
 version of the guard - which looked for a stale pointer *in the request* - returned on its first
 check. The six clean runs it was credited with proved nothing: the WARN it logs when it repairs a
 pointer never appeared once, and at the observed one-in-eight loss rate a six-run clean streak
 happens about 45% of the time anyway. Whether the target is an Iceberg table is now read from the
 metastore.
 
-**Measured, with the counter that makes a green run mean something.** Ten consecutive runs of the
+Measured, with the counter that makes a green run mean something. Ten consecutive runs of the
 command above, all green *and* all with `hms_proxy_iceberg_pointer_guard_events_total{outcome=
 "repaired"}` incremented by exactly 2 per run - one per SQL writer, the DROPPROPS alter that
 opens each `INSERT`. Row counts: 11/11, 15/15, 15/15, 10/10, 11/11, 11/11, 11/11, 10/10, 15/15,
@@ -442,7 +442,7 @@ failed with `NoSuchMethodException` (`outcome="read_failed"`) and nothing was re
 exactly the backend line whose compare-and-swap the guard depends on. The read now goes through
 the backend adapter, which upgrades it to `get_table_req`.
 
-**What the extra read costs.** Same stand, both HiveServer2 instances, `create table` plus five
+What the extra read costs. Same stand, both HiveServer2 instances, `create table` plus five
 `INSERT`s each - 15 `alter_table` either way, none of them on an Iceberg table:
 
 | `table-cache-ttl-ms` | reads (`not_iceberg`) | no read (`cache_suppressed`) | mean `alter_table` |
@@ -455,13 +455,13 @@ the read is about 1.3 ms on an `alter_table` that already costs ~11 ms. Iceberg 
 cached - their pointer must be read fresh - which is why the concurrency runs above show reads on
 every alter of the table under test.
 
-**The rest of the race, and how it was closed.** Reading the pointer and applying the alter were
+The rest of the race, and how it was closed. Reading the pointer and applying the alter were
 two separate calls, so a commit landing between them was still overwritten. On Hive 4 backends the
 repaired alter's `expected_parameter_key`/`expected_parameter_value` turned that into a loud
 failure; the 3.1 line ignores both keys, so there the window stayed open. It is now closed by
 holding the table lock Iceberg itself takes across the repair.
 
-**What the stand showed about the locks, before any code was written.** One SQL `INSERT` into an
+What the stand showed about the locks, before any code was written. One SQL `INSERT` into an
 Iceberg table on this profile, from the proxy trace log:
 
 | time | call | lock |
@@ -469,26 +469,26 @@ Iceberg table on this profile, from the proxy trace log:
 | `08,045` | Hive locks for its own transaction (txnid 957) | `LockComponent(db=_dummy_database, table=_dummy_table)` and nothing else |
 | `08,249` | the `DROPPROPS` alter the guard repairs | no lock held on the table |
 | `12,982` | HiveServer2's Iceberg commit takes its lock | `LockRequest(txnid=0, components=[LockComponent(db=default, table=<table>)])` |
-| `13,033` | that commit's `alter_table` | **inside** that lock |
+| `13,033` | that commit's `alter_table` | inside that lock |
 | `13,097` | `unlock` | held for 115 ms |
 
-Two facts decided the design. Hive takes **no** lock on the target table of an `INSERT`, so a lock
+Two facts decided the design. Hive takes no lock on the target table of an `INSERT`, so a lock
 the guard takes while serving that `INSERT`'s alter cannot queue behind the statement it serves.
-And a genuine Iceberg commit sends its `alter_table` from **inside** the table lock, so acquiring
+And a genuine Iceberg commit sends its `alter_table` from inside the table lock, so acquiring
 that lock before deciding what the alter is would block on a lock held by the caller waiting for
 the answer - a self-deadlock on every honest commit. The guard therefore reads unlocked first and
-locks **only to repair**, then re-reads under the lock and merges over what it finds. The request
+locks only to repair, then re-reads under the lock and merges over what it finds. The request
 shape is copied from `org.apache.iceberg.hive.MetastoreLock`, which is identical in Iceberg 1.6.1
 (inside HiveServer2) and 1.9.2 (the proxy's REST path): one EXCLUSIVE, table-level component with
 the backend database name, no `txnid`.
 
-**Measured, both before and after.** Twelve runs of the command above with `--prefix hdp` (the 3.1
+Measured, both before and after. Twelve runs of the command above with `--prefix hdp` (the 3.1
 backend, where the metastore ignores the compare-and-swap), first on the unchanged jar:
 
 | | runs | lost updates | `repaired` | under the lock |
 | --- | --- | --- | --- | --- |
-| before (guard, no lock) | 12 | **1** - run 12 held 10 rows for 10 successful writers, and the missing marker was `sql901` | 2 per run | n/a |
-| after (guard holds the lock) | 12 | **0** - every run matched rows to successful writers | 2 per run | 2 per run |
+| before (guard, no lock) | 12 | 1 - run 12 held 10 rows for 10 successful writers, and the missing marker was `sql901` | 2 per run | n/a |
+| after (guard holds the lock) | 12 | 0 - every run matched rows to successful writers | 2 per run | 2 per run |
 
 The loss rate on the 3.1 line had never been measured before this - the earlier figures are all
 from `hive4`, whose compare-and-swap already turns a lost update into a loud failure. Across the
@@ -498,23 +498,23 @@ was atomic, and no lock was stranded. That last one matters on this stand in par
 metastore runs with `metastore.compactor.initiator.on=false` and no housekeeping threads, so a
 leaked lock would never be reaped and would block every later commit on the table.
 
-**What the lock costs.** Sections B and C through both HiveServer2 instances, and separately five
+What the lock costs. Sections B and C through both HiveServer2 instances, and separately five
 SQL `INSERT`s into one Iceberg table (each one repair plus one forward commit):
 
 | workload | `lock-enabled` | `alter_table` | mean | locks taken |
 | --- | --- | --- | --- | --- |
-| sections B + C | `true` | 14 | 20.7 ms | **0** |
+| sections B + C | `true` | 14 | 20.7 ms | 0 |
 | sections B + C | `false` | 14 | 13.9 ms | 0 |
 | 5 `INSERT`s, Iceberg table | `true` | 10 | 14.7 ms | 5 (`repair_locked`) |
 | 5 `INSERT`s, Iceberg table | `false` | 10 | 15.7 ms | 0 (`repair_lock_skipped`) |
 
-The SQL sections take **no lock at all** in either configuration - none of their tables is an
+The SQL sections take no lock at all in either configuration - none of their tables is an
 Iceberg table, so no repair fires - which makes the 20.7-vs-13.9 ms gap pure run-to-run variance
 and, incidentally, the resolution limit of this measurement: about 7 ms on 14 samples. On the path
 that does lock, three added RPCs (`lock`, the second `get_table`, `unlock`) land inside that same
 noise - the locked runs came out 1 ms *faster* than the unlocked ones on 5 repairs each.
 
-**What is still open.** A lock that is not granted within `lock-acquire-timeout-ms` (10 s by
+What is still open. A lock that is not granted within `lock-acquire-timeout-ms` (10 s by
 default) leaves the repair unprotected rather than refusing the write, and a backend whose ACID
 housekeeping does reap timed-out locks could reap this one out from under an `alter_table` that
 takes longer than `hive.txn.timeout`. Both are counted (`repair_lock_timeout`, and the WARN that
@@ -524,20 +524,20 @@ goes with it) rather than assumed away; neither occurred in these runs.
 
 | Area | Reason |
 | --- | --- |
-| ACID on a non-default catalog | The proxy refuses `allocate_table_write_ids` outside the default catalog **by design** — there is nothing to pass |
+| ACID on a non-default catalog | The proxy refuses `allocate_table_write_ids` outside the default catalog by design — there is nothing to pass |
 | YARN / Tez, distributed execution | The stand runs local MapReduce only; nothing here says how the proxy behaves under a real cluster's concurrency |
 | Ranger, Atlas, HA | Out of the stand's scope |
 | Cross-realm Kerberos trust | Both clusters share one realm on purpose; cross-realm would test the KDC, not the proxy |
 | Sustained load | Section I covers concurrent REST commits to a single table (I2, I3), REST mixed with SQL writers across front doors (I4) and a two-table transaction under contention (I5, I6). What is still missing is duration: every run is a burst of a handful of writers, never sustained load, and nothing measures throughput or latency under it |
-| `LOAD DATA` across the two clusters | Measured by hand and it works - a file staged on `namenode` loaded into a table of the `apache` catalog left the first cluster and appeared under `/warehouse/apache` on `namenode-b`, so Hive copies across filesystems itself rather than refusing. It is **not** in the scenario: the runner has to stay usable on an installation with one filesystem, where the statement has no cross-cluster form at all. C12 loads within each catalog |
+| `LOAD DATA` across the two clusters | Measured by hand and it works - a file staged on `namenode` loaded into a table of the `apache` catalog left the first cluster and appeared under `/warehouse/apache` on `namenode-b`, so Hive copies across filesystems itself rather than refusing. It is not in the scenario: the runner has to stay usable on an installation with one filesystem, where the statement has no cross-cluster form at all. C12 loads within each catalog |
 | Iceberg partitioned tables, schema evolution, `MERGE INTO` | H13-H20 cover row-level `DELETE`/`UPDATE` on an unpartitioned table with a fixed schema. Partition specs (and their evolution), added/renamed/dropped columns and `MERGE INTO` have never been run through the proxy |
 
 ## Revalidation log
 
 Full-matrix reruns after the table above was first filled in. Only what a rerun actually
-executed is claimed; a row not listed was not repeated and its ✅ stands on the earlier run.
+executed is claimed; a row not listed was not repeated and its `pass` stands on the earlier run.
 
-- **2026-07-27**, jar `1.0.4-38128c8b` (branch `feature/iceberg-rest-fe-phase1` rebased onto
+- 2026-07-27, jar `1.0.4-38128c8b` (branch `feature/iceberg-rest-fe-phase1` rebased onto
   `main`; the Iceberg REST listener stays disabled, so the Thrift path is what was under test).
   Rerun and green: all of section A on both profiles, sections B and C on both profiles through
   both HiveServer2 instances — except the steps their env flags keep off by default (B9
@@ -597,9 +597,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   hive.execution.engine=mr;` supplied for the Hortonworks pass, as documented
   in `smoke-stand/env/simple.env`.
 
-- **2026-07-28**, jar `1.0.43-c4685ef7` (unchanged on the stand; only the smoke script grew new
+- 2026-07-28, jar `1.0.43-c4685ef7` (unchanged on the stand; only the smoke script grew new
   checks against it). Added rows G26-G30: the write round trip now includes a REAL commit against
-  the just-created table and a rename round trip, not just create/load/drop, and the gate
+  the just-created table and a rename round trip, not only create/load/drop, and the gate
   negatives now cover COMMIT_TRANSACTION, CREATE_NAMESPACE and rename-with-federated-destination
   on top of the existing CREATE_TABLE pair - COMMIT_TRANSACTION in particular was a critical
   bypass found during phase 5a and had until now only been pinned down by unit tests. `--scenario
@@ -611,11 +611,11 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   confirming the check would catch a silently no-opped commit; the assertion was restored and
   both scenarios re-ran green.
 
-- **2026-07-28** (second entry), the Iceberg REST listener was turned on for the first time in
+- 2026-07-28 (second entry), the Iceberg REST listener was turned on for the first time in
   the Kerberos profile: the KDC gained an `HTTP/proxy@SMOKE.LOCAL` principal in the same keytab
   the Thrift front door already uses, and `hms-proxy-kerberos.properties` gained a
   `rest-catalog.*` block pointing at it, on the same port 19183 the plain profile uses. Bringing
-  the stand up this way surfaced a real bug, not just a missing config row: `IcebergRestService`
+  the stand up this way surfaced a real bug, not only a missing config row: `IcebergRestService`
   built its own bare `Configuration` instead of reusing the catalog's Kerberos-aware `HiveConf`,
   so every REST write failed with "Failed to specify server's Kerberos principal name" once the
   NameNode RPC was reached; fixed by threading `CatalogBackend.hiveConf()` through
@@ -644,7 +644,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   of those entries. The remaining Kerberos-column read-only rows (G2-G22, G27-G30) were not
   re-run and stay `n/a`.
 
-- **2026-07-28** (third entry), jar `1.0.49-2b778592` (phase 5b: namespace DDL in
+- 2026-07-28 (third entry), jar `1.0.49-2b778592` (phase 5b: namespace DDL in
   `RoutingMetaStoreClient` and the full-write-surface `GET /v1/config` advertising). Before this
   run the stand was still on a pre-phase jar, and probing it directly showed `POST
   /v1/{prefix}/namespaces` answering `406` ("does not support `IMetaStoreClient.createDatabase`")
@@ -695,7 +695,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   instead of moving it; the assertion was restored and both `--scenario rest` and `--scenario all`
   re-ran green.
 
-- **2026-07-29**, jar `1.0.4-14af4def` (post-merge `main`; includes the fail-closed unresolved-
+- 2026-07-29, jar `1.0.4-14af4def` (post-merge `main`; includes the fail-closed unresolved-
   namespace gate hardening of `5f84d4e`). The smoke script grew the six checks that completed the
   write-surface coverage - a REGISTER_TABLE round trip (G39: create, non-purge drop, re-register
   from the surviving metadata file, load back, drop) and one gate negative per still-uncovered
@@ -725,7 +725,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   A-section CLI scenarios (txn, locks, notification) re-ran green on both profiles as part of
   the two `--scenario all` passes.
 
-- **2026-07-29** (second entry), section H added: the Iceberg interop scenario over a Hive 4.1.0
+- 2026-07-29 (second entry), section H added: the Iceberg interop scenario over a Hive 4.1.0
   backend, run green on both profiles the same day it was built. New stand pieces: the
   `hms-hive4` container (official `apache/hive:4.1.0`, thin wrapper in `smoke-stand/hms-hive4/` -
   the official image's own conf-symlink mechanism silently does nothing because the image lacks
@@ -739,7 +739,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   HDFS needs `/warehouse/hive4` created alongside the other warehouse dirs - the REST create
   path does not mkdir it. The purge-drop 500 (H notes) remains open.
 
-- **2026-07-29** (third entry), the Hive 4 **front door** was added to the same profile and
+- 2026-07-29 (third entry), the Hive 4 front door was added to the same profile and
   section H grew its H4 row: `additional-frontends.hive4fe` on 9085 (`APACHE_4_1_0`) plus
   `hs2-hive4`, a Hive 4.1.0 HiveServer2 from the official image (Tez local mode, Iceberg built
   in), and the `hive/hs2-hive4@SMOKE.LOCAL` principal. The scenario now proves one Iceberg table
@@ -757,7 +757,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   recreates the whole depends_on chain including HDFS, after which the 3.1 HiveServer2 pair must
   be restarted (and a run started during that recreation fails its HDFS write outright).
 
-- **2026-07-29** (fourth entry), the interop scenario stopped being hive4-only: `--prefix` now
+- 2026-07-29 (fourth entry), the interop scenario stopped being hive4-only: `--prefix` now
   names whichever catalog the running config makes default, `hs2-hive4` moved to its own compose
   profile (`hive4fe`) so the Hive 4 dialect can be driven against any backend, the Hive 4 front
   door was added to `hms-proxy.properties`/`hms-proxy-kerberos.properties`, and a new
@@ -772,7 +772,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   dialect work over a 3.1 backend, which is the `hive4_frontdoor_to_apache_backend_downgrade`
   capability being driven by a real Hive 4 client for the first time.
 
-- **2026-07-29** (fifth entry), `--origin` was added so each front door in turn creates the table
+- 2026-07-29 (fifth entry), `--origin` was added so each front door in turn creates the table
   while the other three modify it (rows H9-H12), and the scenario grew a read *before* every
   append plus a final all-participants round, so each hand-off is proven rather than assumed.
   Eight runs on the `hive4` backend, plain and Kerberos for each of the four origins, all green.
@@ -783,7 +783,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   produced `inputFormat: null` instead. The reverse direction works: tables created by the 3.1
   storage handler carry `HiveIcebergInputFormat` and Hive 4 reads and appends to them happily.
 
-- **2026-07-29** (sixth entry), the purge fix landed and the scenario stopped working around it.
+- 2026-07-29 (sixth entry), the purge fix landed and the scenario stopped working around it.
   `DELETE ...?purgeRequested=true` had answered 500 because Maven resolved avro 1.7.4 over the
   1.12.0 `iceberg-core` is compiled against; with the pin in place the purge was driven by hand
   against the stand first - a table with two rows, five files under it (parquet, manifest,
@@ -792,7 +792,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   proxy turned out to cache stale namenode DNS the same way the HiveServer2 JVMs do: the first
   create after an HDFS recreation failed its write until the proxy container was restarted.
 
-- **2026-07-29** (seventh entry), section I - writer isolation - was added and then extended
+- 2026-07-29 (seventh entry), section I - writer isolation - was added and then extended
   across front doors. The stand runs: 5 REST writers (all commit, 6 rows), 8 REST writers (7
   commit, 1 refused with "branch main has changed", 8 rows), and REST against Hive `INSERT`s on
   the Hortonworks front door (13 of 14 commit, 14 rows). The cross-path row count was worthless
@@ -802,7 +802,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   original non-overlapping log and correctly calls it a non-overlap, so the assertion cannot pass
   vacuously.
 
-- **2026-07-30**, repo at `074526b` on `main`; **no proxy code was under test** - this change is a
+- 2026-07-30, repo at `074526b` on `main`; no proxy code was under test - this change is a
   new runner (`run-iceberg-rowlevel-smoke.sh`) plus three additions to the REST writer
   (`--properties` on `create`, `--where` on `count`, and a `files` command that reports the
   planned scan's data- and delete-file counts). The stand ran the fat jar already staged in
@@ -819,7 +819,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   purge-drops the table with the no-leftovers assertion. The writer was then refactored (methods
   moved, one log line) and the Kerberos merge-on-read pass re-run green against the rebuilt jar,
   so no green cell rests on a jar that no longer exists.
-  The headline result is a **negative** finding, recorded as such: the 3.1 line reads
+  The headline result is a negative finding, recorded as such: the 3.1 line reads
   merge-on-read fine. The expectation going in was that `iceberg-hive-runtime` 1.6.1 would not
   apply position deletes and that H16 would end up as another "Hive 4 wrote it, 3.1 cannot read
   it" limitation next to H12. It does apply them - both 3.1 engines returned exactly
@@ -839,7 +839,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   file-shape reading. Switching the stand between `.env.hive4` and `.env.hive4-kerberos`
   recreates the HDFS chain, and the usual stale-DNS restart applies.
 
-- **2026-07-30**, jar `1.0.19-f4cbeea7` built from `f4cbeea` and staged into the stand, so the
+- 2026-07-30, jar `1.0.19-f4cbeea7` built from `f4cbeea` and staged into the stand, so the
   proxy code under test is what is committed - the pointer guard's repair now takes Iceberg's
   table lock, and `rest-catalog.purge.mode` exists. Closed the last two open cells of section I
   and added rows I5 and I6.
@@ -861,7 +861,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   that on the plain profile needs the same config change and adds nothing the unit test does not
   decide deterministically. No other section was re-run, and `stand-hs2-hdp` was left on its
   Kerberos container throughout (it is in the `hdp` profile, which these runs do not use).
-  Stand notes for a repeat: the runner is host-side, so `sed` is BSD `sed` - `\?` is **not** read
+  Stand notes for a repeat: the runner is host-side, so `sed` is BSD `sed` - `\?` is not read
   as "optional" there, and a GNU-style BRE silently matched nothing, returning each JSON field
   with its own name still attached (`grep` does honour `\?`, which is what masked it). Under
   Kerberos `curl` runs inside `stand-proxy`, so neither `-o` nor `--data @file` may name a host
@@ -870,9 +870,9 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   profiles does not work: the metastores keep their own auth and answer `500`, so the whole stand
   has to come up on the other env file.
 
-- **2026-07-31**, jar built from this change and staged into the stand (byte count of
-  `/opt/hms-proxy/hms-proxy.jar` compared against the built fat jar, equal), **H12 changed from a
-  documented limitation to a passing row** - and the limitation it documented turned out never to
+- 2026-07-31, jar built from this change and staged into the stand (byte count of
+  `/opt/hms-proxy/hms-proxy.jar` compared against the built fat jar, equal), H12 changed from a
+  documented limitation to a passing row - and the limitation it documented turned out never to
   have existed. The old text said a Hive 4-created Iceberg table is unreadable by the 3.1 line
   because `STORED BY ICEBERG` leaves an abstract `inputFormat`. It does not: the table is created
   with the concrete `HiveIcebergInputFormat`, and both 3.1 engines read it. The old wording
@@ -891,12 +891,12 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   checked for the flag before any code was changed.
   Runs, all green: the isolated probe (Hive 4 creates, HDP inserts, descriptor intact afterwards
   and the rows readable through HDP, with the metric showing exactly one `hive_descriptor_kept`);
-  `run-iceberg-interop-smoke.sh --prefix hive4` for **all four origins** on plain, and
+  `run-iceberg-interop-smoke.sh --prefix hive4` for all four origins on plain, and
   `--origin hive4` and `--origin rest` on Kerberos; `run-iceberg-rowlevel-smoke.sh --prefix hive4`
   and `run-iceberg-concurrency-smoke.sh --prefix hive4` on plain as regression cover for a guard
   change that now touches every Iceberg `alter_table`. Unit suite: 714 tests, 0 failures, 0
   skipped, on Java 17.
-  The stand deliberately still does **not** set `iceberg.engine.hive.enabled` in either 3.1
+  The stand deliberately still does not set `iceberg.engine.hive.enabled` in either 3.1
   HiveServer2. Setting it there would fix the second defect at its source and make the scenario
   green without the proxy - which is exactly why it is not set: the row would stop testing the
   fix. On a real cluster, setting it is worth doing anyway.
@@ -905,7 +905,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   by all three backends and is covered by unit tests on both runtime profiles, but the other two
   backends were not re-run on the stand for this change.
 
-- **2026-08-03**, jar `1.0.27-d14e85c2`, the SQL layer of the stand driven from repository files for
+- 2026-08-03, jar `1.0.27-d14e85c2`, the SQL layer of the stand driven from repository files for
   the first time. Until now every SQL setting in `smoke-stand/env/*.env` was commented out, so
   `--scenario all` logged "skipping beeline SQL smoke" and `--scenario sql` refused to start;
   sections B and C rested on hand-edited runs nobody could reproduce. Four env files now cover the
@@ -927,7 +927,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `set_aggr_stats_for` at all. Federation was ruled out by a non-federated database failing
   identically, stand configuration by both HiveServer2 instances carrying the same settings.
 
-- **2026-08-04**, same proxy jar as the entry above - this change is in the two metastore images
+- 2026-08-04, same proxy jar as the entry above - this change is in the two metastore images
   only (commits 5067ffa, c8794da, 2dec04a): each now runs the Hadoop its metastore jar was built
   against instead of the Maven-resolved `hadoop-common` 2.6.0 / `hadoop-hdfs` 2.2.0, staged into
   `hms/override-{hdp,apache}` and placed ahead of the Maven set. What that fixed is recorded in
@@ -949,7 +949,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   says `EXTERNAL`" in section H.
   Not run: the plain profile for any of it, and the row-level and concurrency scenarios.
 
-- **2026-08-04, same day**, that deadlock closed at its source: `sql_create_ddl` now creates the
+- 2026-08-04, same day, that deadlock closed at its source: `sql_create_ddl` now creates the
   3.1-line table as `create external table ... stored by 'HiveIcebergStorageHandler'`. External is
   what the table is on every other path anyway - REST creates it external, and the Hive 4 metastore
   translates the managed one into external - so this drops an accident of the DDL rather than
@@ -965,7 +965,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Not run: the plain profile, the remaining origins on the `apache` backend, and the row-level and
   concurrency scenarios.
 
-- **2026-08-04, third entry**, jar `1.0.44-a51616fb`, built from `a51616f` and staged by
+- 2026-08-04, third entry, jar `1.0.44-a51616fb`, built from `a51616f` and staged by
   `prepare.sh` (`using hms-proxy-1.0.44-a51616fb-fat.jar`). A whole-matrix rerun after the day's
   changes - the two Iceberg descriptor fixes in the proxy, both metastore images rebuilt on a
   matching Hadoop, the `EXTERNAL` DDL for the 3.1 line, and the metadata operations added to the
@@ -991,8 +991,8 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   Green on the plain profile: `--scenario all` from the host through `env/simple.env`, and
   `run-iceberg-interop-smoke.sh --prefix hdp` for `--origin hdp` and `--origin rest`.
   Unit suite on Java 17: 714 tests, 0 failures, 0 errors, 0 skipped.
-  **One real defect surfaced, and it was in the scenarios rather than the proxy: the purge
-  assertion could not fail under Kerberos.** The plain `--prefix hdp --origin hdp` run stopped with
+  One real defect surfaced, and it was in the scenarios rather than the proxy: the purge
+  assertion could not fail under Kerberos. The plain `--prefix hdp --origin hdp` run stopped with
   `purge left 7 file(s)`, and those seven turned out to be orphans of an earlier, aborted run -
   their mtimes ran 08:11-08:23 UTC in three-minute steps, the retry cadence of the commit that used
   to deadlock on a managed table, and their manifest and snapshot ids belonged to a different table
@@ -1023,7 +1023,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   and `apache` backends and on the plain profile, and I4 (`--sql-writers`, the mixed REST/SQL
   contention run) in any form.
 
-- **2026-08-05**, the same jar `1.0.44-a51616fb` (the sha256 of the file staged on the stand matches
+- 2026-08-05, the same jar `1.0.44-a51616fb` (the sha256 of the file staged on the stand matches
   `target/hms-proxy-1.0.44-a51616fb-fat.jar`) - the proxy did not change at all in this entry, the
   change is entirely in the SQL scenario. It closes row C11: `MSCK REPAIR TABLE`, until now listed
   in section F as never run.
@@ -1057,12 +1057,12 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   env file with `error: expected 'msck_repaired_managed_hdp_7'`.
   Not run: the plain profile in any form, sections A, D, E, G, H, I, and the C6/C7 cross pairings.
 
-- **2026-08-05 (second entry)**, still jar `1.0.44-a51616fb` - the proxy did not change here either;
+- 2026-08-05 (second entry), still jar `1.0.44-a51616fb` - the proxy did not change here either;
   the change is the SQL scenario again. It closes row C12 and empties the last "never run" line of
   section F: `CTAS`, `INSERT OVERWRITE`, `LOAD DATA` and managed↔external conversion.
   Measured by hand first, on the live stand, in both catalogs and through both front doors before
   a line of the scenario was written.
-  **CTAS.** A CTAS in `hdp__default` landed on `hdfs://namenode:8020/warehouse/hdp/<table>` and one
+  CTAS. A CTAS in `hdp__default` landed on `hdfs://namenode:8020/warehouse/hdp/<table>` and one
   in `apache__default` on `hdfs://namenode-b:8020/warehouse/apache/<table>` - on each catalog's own
   cluster, while *both* HiveServer2 instances carry
   `hive.metastore.warehouse.dir=hdfs://namenode:8020/warehouse/hdp`, so the location came from the
@@ -1072,13 +1072,13 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   not in the traced set, so the proxy log shows no body for it and nothing is claimed about what
   the request carried. `ExternalTableLocationRewriter` is by construction not on this path - it
   only rewrites `Table` arguments of external tables.
-  **INSERT OVERWRITE.** Unpartitioned and partitioned, both catalogs: the unpartitioned table went
+  INSERT OVERWRITE. Unpartitioned and partitioned, both catalogs: the unpartitioned table went
   from `io_before` to exactly one row of `io_after`, the partitioned one replaced `p=k1` and left
   `p=k2` untouched. Its partition write path showed up as
   `add_partition_with_environment_context` (two per catalog, the two inserts) and
   `alter_partitions_with_environment_context` (one per catalog, the overwritten partition) - again
   counters, not bodies.
-  **LOAD DATA.** Inside a catalog it moves as promised: the loaded value read back from the target
+  LOAD DATA. Inside a catalog it moves as promised: the loaded value read back from the target
   and the source directory empty afterwards. Across the two clusters it also works, which is the
   answer to whether the remote catalog can be loaded into at all: a file staged on `namenode`
   under `/external/hdp/loadsrc` and loaded into a table of `apache__default` disappeared from the
@@ -1086,7 +1086,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   taken from the namenode containers after their own `kinit`, exit status checked). Hive copies
   across filesystems itself; nothing was refused, so there is no limitation to record here. The
   cross-cluster form stays out of the scenario on purpose - see section F.
-  **managed↔external.** `SET TBLPROPERTIES('EXTERNAL'='TRUE')` flipped `Table Type` to
+  managed↔external. `SET TBLPROPERTIES('EXTERNAL'='TRUE')` flipped `Table Type` to
   `EXTERNAL_TABLE` and the following `DROP` left the data in place; `'EXTERNAL'='FALSE'` flipped it
   back to `MANAGED_TABLE` and the `DROP` took the data with it; with `external.table.purge=true`
   added, the data went too - and on the `apache` catalog it was the proxy that deleted it, logged
@@ -1100,12 +1100,12 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   `HMS_SMOKE_SQL_RUN_CTAS`, `HMS_SMOKE_SQL_RUN_INSERT_OVERWRITE`, `HMS_SMOKE_SQL_RUN_LOAD_DATA` and
   `HMS_SMOKE_SQL_RUN_TABLE_CONVERSION` - all on by default, none of them turned off in any env
   file, because every statement worked on both pairings.
-  **A vacuous-assertion class was found and closed along the way, and it predates this change.**
+  A vacuous-assertion class was found and closed along the way, and it predates this change.
   `beeline -f` echoes each statement, and HiveServer2 logs it twice more, so a marker that is a
   literal inside the SQL - the `then 'x' else 'y'` of a case expression - is in the output no matter
   which branch the query took. Measured on a green run: `convert_e2m_left_external_hdp`,
-  `convert_purge_left_external_hdp` and `msck_present_before_managed_hdp` each appear **three times**
-  as a substring and **zero times** as a result line, i.e. the old `grep -F` form of the assertion
+  `convert_purge_left_external_hdp` and `msck_present_before_managed_hdp` each appear three times
+  as a substring and zero times as a result line, i.e. the old `grep -F` form of the assertion
   would have passed on the wrong outcome. All markers now go through
   `assert_file_contains_result`, which anchors the match at the start of a line where beeline prints
   results and nothing else; the existing `truncate_emptied_*`, `msck_absent_before_*`,
@@ -1134,7 +1134,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   artefact of the mutation rather than of the scenario.
   Not run: the plain profile in any form, sections A, D, E, G, H, I, the C6/C7 cross pairings, and
   the unit suite - no Java changed in this entry.
-- **2026-10-27**, B7. The previous ✅ had been wrong since 2026-09-17, when
+- 2026-10-27, B7. The previous `pass` had been wrong since 2026-09-17, when
   `federation.view-text-rewrite.mode` started defaulting to `REWRITE` (`798f3a6`) and a cross-catalog
   reference in a view lost its catalog on write. A view in `hdp__default` over
   `apache__default.smoke_read_ap` came back as `` `hdp__default`.`smoke_read_ap` `` and could not be
@@ -1153,7 +1153,7 @@ executed is claimed; a row not listed was not repeated and its ✅ stands on the
   (`HMS_SMOKE_SQL_RUN_{EXCHANGE,EXTERNAL}_PARTITION=false`): their SQL escapes the variables
   (`\${...}`), so they are not expanded - a separate runner defect. Not run: the plain profile,
   sections A, D, E, G, H, I.
-- **2026-10-27 (second entry)**, B7. The cross-catalog view failure through the Hortonworks front
+- 2026-10-27 (second entry), B7. The cross-catalog view failure through the Hortonworks front
   door alternated between repeated runs, and the cause was not a proxy restart but whether the view
   existed before `CREATE OR REPLACE`. Measured with a probe using a fixed view name: a new view
   (`create_table`) stored `` `hdp__default`.`smoke_read_ap` `` and could not be read, replacing an

@@ -1,4 +1,4 @@
-**Smoke-тест для Beeline и HMS clients**
+# Smoke-тест для Beeline и HMS clients
 
 Укажите адрес подключения `jdbc:hive2://...` и при необходимости `principal=...`.
 Предположим:
@@ -18,7 +18,7 @@
 degraded-режим или падают явно ещё до подробных шагов ниже.
 
 | Client version | Front-door profile | Backend profile | Auth mode | Method families | Expected result |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` | read, namespace switching, DDL/DML | Проходит через один proxy endpoint с корректным cross-catalog routing. |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `KERBEROS` | read, namespace switching, DDL/DML | То же самое, плюс успешно проходит front-door SASL/Kerberos. |
 | Beeline / HiveServer2 SQL client | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные `APACHE_3_1_3` + Hortonworks `3.1.0.x` | `NONE` или `KERBEROS` | view, cross-catalog view rewrite, permanent UDF, materialized views | Проходит при включённом view rewrite и наличии выбранного UDF-класса на HS2 classpath; backend без поддержки MV падает явно. |
@@ -30,20 +30,20 @@ degraded-режим или падают явно ещё до подробных 
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | любой backend non-default catalog | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` с `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Проходит; проверяет synthetic shim для non-transactional DDL lock в стиле partition rename/drop. |
 | Direct HMS smoke CLI `lock` с `--second-db` | `APACHE_3_1_3` | default catalog плюс non-default | `NONE` или `KERBEROS` | один `lock`, компоненты которого называют два каталога, затем `check_lock`, `heartbeat`, `abort_txn` | Проходит; proxy маршрутизирует запрос по default catalog и отбрасывает остальные компоненты. Обратите внимание на `--unlock false`: уцелевший лок настоящий и принадлежит транзакции, а такие метастор снимать через `unlock` не даёт. |
 | Direct HMS smoke CLI `impersonation` | любой | default catalog backend | `NONE` или `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Проходит; подтверждает, что `set_ugi` привязывает пользователя к соединению, таблица создаётся с ожидаемым владельцем в метаданных и на HDFS (`owner:group`), а в audit log пишется `authenticatedUser`. |
-| Direct HMS smoke CLI `ranger` | любой (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` или `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Проходит при включённом Ranger-плагине; подтверждает гранулярную авторизацию пользователей и групп на уровне БД и таблиц, сокрытие запрещённых объектов в списках и строгий отказ (NoSuchObjectException) при попытке прямого доступа. |
-| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | смешанные (`hdp`, `apache`) | `NONE` или `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Проходит при включённых кэшах и fallback; подтверждает отказоустойчивость при сетевых сбоях и авариях удалённого ЦОД. |
-| Direct HMS smoke CLI `metadata` (unprefixed) | любой | смешанные (`hdp`, `apache`) | `NONE` или `KERBEROS` | `get_all_databases`, `get_databases`, `get_database`, `get_table`, DDL, SIGHUP reload | Проходит; подтверждает маппинг схем без префикса (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) одноимённых локальных схем и безопасную перечитку конфига на лету (Safe Reload). |
+| Direct HMS smoke CLI `ranger` | любой (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` или `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Проходит при включённом Ranger-плагине; подтверждает авторизацию пользователей и групп на уровне БД и таблиц, сокрытие запрещённых объектов в списках и отказ (NoSuchObjectException) при попытке прямого доступа. |
+| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | смешанные (`hdp`, `apache`) | `NONE` или `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Проходит при включённых кэшах и fallback; проверяет поведение при сетевых сбоях и аварии удалённого ЦОД. |
+| Direct HMS smoke CLI `metadata` (unprefixed) | любой | смешанные (`hdp`, `apache`) | `NONE` или `KERBEROS` | `get_all_databases`, `get_databases`, `get_database`, `get_table`, DDL, SIGHUP reload | Проходит; подтверждает маппинг схем без префикса (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) одноимённых локальных схем и перечитку конфига на лету (Safe Reload). |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` или `KERBEROS` | `add_write_notification_log` | Проходит только если и front door, и routed backend имеют совместимый Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | `add_write_notification_log` | Должно падать. Причину называет лог прокси (`requires a Hortonworks backend runtime`), клиент видит только `Internal error processing add_write_notification_log`: Hive IDL не объявляет исключений для этого метода. |
-| Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Это нужно трактовать как default-catalog-only поведение, а не как настоящее per-catalog routing. |
+| Любой клиент, использующий id-only txn / lock lifecycle RPC | любой | смешанные backend | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Трактуйте как default-catalog-only поведение: per-catalog routing для этих RPC нет. |
 
 Практическая автоматизация:
 - для Beeline / HS2 шагов ниже можно использовать `scripts/run-real-installation-smoke-simple.sh --scenario sql`
 - для шагов Beeline / HS2 с поддержкой Kerberos используйте `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
-- для сквозной проверки отказоустойчивости cross-DC и WAN используйте `./smoke-stand/run-cross-dc-resilience-smoke.sh` на стенде
+- для сквозной проверки поведения при сбоях cross-DC и WAN используйте `./smoke-stand/run-cross-dc-resilience-smoke.sh` на стенде
 - для проверки жесткого маппинга беспрефиксных схем и динамической перезагрузки используйте `./smoke-stand/run-unprefixed-db-and-reload-smoke.sh` на стенде или `--scenario unprefixed` в раннере
 
-**1. Базовая проверка фронта**
+## 1. Базовая проверка фронта
 
 ```sql
 set -v;
@@ -54,7 +54,7 @@ show databases;
 - видны базы в формате `hdp__...` и `apache__...`
 - подключение идёт через proxy без ошибок
 
-**2. Read path: Hortonworks backend**
+## 2. Read path: Hortonworks backend
 
 ```sql
 use hdp__default;
@@ -63,7 +63,7 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**3. Read path: Apache backend**
+## 3. Read path: Apache backend
 
 ```sql
 use apache__default;
@@ -72,7 +72,7 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**4. Переключение между backend в одной сессии**
+## 4. Переключение между backend в одной сессии
 
 ```sql
 use hdp__default;
@@ -89,7 +89,7 @@ show tables;
 - отсутствует ошибочное удержание контекста («залипание») одного бэкенда
 - routing остаётся корректным
 
-**5. DDL: Hortonworks backend**
+## 5. DDL: Hortonworks backend
 
 ```sql
 use hdp__default;
@@ -153,7 +153,7 @@ select * from smoke_txn_tbl where id=1;
 drop table smoke_txn_tbl;
 ```
 
-**6. DDL: Apache backend**
+## 6. DDL: Apache backend
 
 ```sql
 use apache__default;
@@ -224,7 +224,7 @@ drop table smoke_txn_tbl;
 - у `external` таблиц сохраняется явно заданный `LOCATION`
 - для `external` и `transactional='true'` тоже есть явная проверка insert + select там, где backend это поддерживает
 - таблицы с `transactional='true'` создаются только там, где backend поддерживает ACID
-- тип таблицы и ключевые properties видны в `describe formatted`
+- тип таблицы и properties из `tblproperties` (`smoke`, `table_kind`) видны в `describe formatted`
 
 Примечание:
 - В Beeline / HiveServer2 SQL сценариях неквалифицированный `LOCATION '/tmp/...'` резолвится через `fs.defaultFS`
@@ -232,7 +232,7 @@ drop table smoke_txn_tbl;
   должны писать в разные HDFS namespace, указывайте полные URI (fully qualified URI) для каждого каталога, например
   `hdfs://nameservice-hdp/tmp/...` и `hdfs://nameservice-apache/tmp/...`.
 
-**7. Mixed negative-check**
+## 7. Смешанная негативная проверка
 
 ```sql
 use hdp__default;
@@ -246,7 +246,7 @@ select count(*) from some_table;
 - команды идут в правильный backend
 - namespace не ломается
 
-**8. Views, materialized views и UDF**
+## 8. Views, materialized views и UDF
 
 Этот блок проверяет `federation.view-text-rewrite.mode=REWRITE` (дефолт). По умолчанию
 переписывается и клиентский `viewOriginalText`
@@ -273,12 +273,10 @@ select count(*) from some_table;
 Два join'а проверяют путь локов, до которого не добраться запросом в одном namespace: Hive берёт
 лок на все таблицы выражения одним запросом.
 
-- `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (по умолчанию `true`) джойнит read-таблицы двух каталогов.
-  Proxy маршрутизирует такой lock-запрос по одному каталогу и отбрасывает остальные компоненты;
-  proxy, который не умеет его расщеплять, роняет запрос с `Error in acquiring locks`.
-- `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (по умолчанию `false`) джойнит две базы одного каталога —
-  оба компонента доходят до одного backend, и каждый должен быть переписан в свою базу. Выключен по
-  умолчанию, потому что, в отличие от остальных блоков, создаёт базу данных.
+| Переменная | По умолчанию | Что делает |
+| --- | --- | --- |
+| `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` | `true` | Джойнит read-таблицы двух каталогов. Proxy маршрутизирует такой lock-запрос по одному каталогу и отбрасывает остальные компоненты; proxy, который не умеет его расщеплять, роняет запрос с `Error in acquiring locks`. |
+| `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` | `false` | Джойнит две базы одного каталога: оба компонента доходят до одного backend, и каждый должен быть переписан в свою базу. Выключен по умолчанию, потому что, в отличие от остальных блоков, создаёт базу данных. |
 
 ```sql
 use hdp__default;
@@ -303,7 +301,7 @@ select * from hdp__default.some_table;
 select * from smoke_view_cross_back limit 5;
 ```
 
-Для permanent UDF на non-default catalog дополнительно проверить:
+Для permanent UDF на non-default catalog дополнительно выполните:
 
 ```sql
 use apache__default;
@@ -315,7 +313,7 @@ select smoke_udf_reverse('proxy') as smoke_udf_reverse_value;
 drop function if exists smoke_udf_reverse;
 ```
 
-Если backend поддерживает materialized views, дополнительно проверить:
+Если backend поддерживает materialized views, дополнительно выполните:
 
 ```sql
 use hdp__default;
@@ -338,16 +336,16 @@ drop materialized view if exists smoke_mv_local;
   сессии и возвращает ожидаемое значение, например `yxorp` для `UDFReverse('proxy')`
 - если backend не поддерживает materialized views, ошибка явная, без silent success
 
-**9. Direct Synthetic Lock Smoke**
+## 9. Прямая проверка synthetic lock
 
 Эти проверки дополняют Beeline DDL шаги выше и напрямую воспроизводят проблемный
 cross-catalog lock lifecycle через HMS thrift. Запускать их нужно на каталоге, который для
 proxy является non-default. Ниже для примера считается, что `apache` не равен `routing.default-catalog`.
 
 Практически:
-- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario locks`
-- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
-- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
+- для simple front door запустите `scripts/run-real-installation-smoke-simple.sh --scenario locks`
+- для Kerberos front door запустите `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
+- либо соберите проект и запустите `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - примеры запуска с Kerberos есть в разделе "Ручной HMS smoke client" в [README.md](README.md)
 
 DB lock в стиле `CREATE TABLE`:
@@ -383,16 +381,16 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 - lock возвращается как `ACQUIRED` или в худшем случае `WAITING`, но не падает с `NoSuchTxnException`
 - второй запуск имеет смысл делать после managed-table сценария выше, где уже созданы таблица и partition
 
-**10. Notification / ACID path**
+## 10. Notification / ACID path
 
 Эти проверки лучше делать не только через Beeline, но и прямым HMS thrift client, потому что
 `add_write_notification_log` обычно не вызывается SQL-обёртками напрямую.
 
 Практически это можно запускать готовым клиентом из репозитория:
-- для simple front door удобнее `scripts/run-real-installation-smoke-simple.sh --scenario all`
-- для Kerberos front door удобнее `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
+- для simple front door запустите `scripts/run-real-installation-smoke-simple.sh --scenario all`
+- для Kerberos front door запустите `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
 - если нужно провалидировать и default Hortonworks, и default Apache txn target, задайте `HMS_SMOKE_TXN_SECONDARY_*`
-- собрать проект и использовать `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- либо соберите проект и запустите `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
 - режим `txn` покрывает `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
 - режим `notification` покрывает Hortonworks-only `add_write_notification_log`
@@ -425,14 +423,14 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 - в логах proxy видны `trace stage=backend-request` / `backend-response` для
   `add_write_notification_log`
 
-**11. Negative check: Hortonworks front -> Apache backend notification path**
+## 11. Negative check: Hortonworks front -> Apache backend notification path
 
 Практически:
 - задайте переменные `HMS_SMOKE_NOTIFICATION_NEGATIVE_DB` и `HMS_SMOKE_NOTIFICATION_NEGATIVE_TABLE`
 - затем запустите `scripts/run-real-installation-smoke-simple.sh --scenario notification` или
   `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
-Через HMS thrift client отправить `add_write_notification_log` на базу/таблицу, которая
+Отправьте через HMS thrift client `add_write_notification_log` на базу/таблицу, которая
 маршрутизируется в Apache backend.
 
 Ожидание:
@@ -445,22 +443,24 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
   Настоящий Hortonworks metastore точно так же прячет за ним свои ошибки, поэтому со стороны
   клиента отказ неотличим от любого другого сбоя backend — проверяйте лог proxy.
 
-**12. Проверка после mixed runtime переключений**
+## 12. Проверка после mixed runtime переключений
 
-В одной клиентской сессии последовательно выполнить:
-- read/DDL на `hdp__default`
-- read/DDL на `apache__default`
-- `add_write_notification_log` на `hdp__default`
-- повторный read на `apache__default`
+Выполните в одной клиентской сессии по порядку:
+1. read/DDL на `hdp__default`.
+2. read/DDL на `apache__default`.
+3. `add_write_notification_log` на `hdp__default`.
+4. Повторный read на `apache__default`.
 
 Ожидание:
 - контекст рантайма одного каталога не сохраняется ошибочно («не залипает») для другого
 - namespace rewrite остаётся корректным после notification/ACID вызова
 
-**13. Проверка graceful shutdown**
+## 13. Проверка graceful shutdown
 
-Настроить хотя бы один listener `additional-frontends.*`, запустить proxy, открыть клиентскую
-сессию на каждый listener, затем послать процессу `SIGTERM` (`kill <pid>`, не `kill -9`).
+1. Настройте хотя бы один listener `additional-frontends.*`.
+2. Запустите proxy.
+3. Откройте клиентскую сессию на каждый listener.
+4. Пошлите процессу `SIGTERM` (`kill <pid>`, не `kill -9`).
 
 Ожидание:
 - в логе видно `Shutdown requested, stopping HMS proxy`, затем `HMS proxy stopped`
@@ -470,11 +470,11 @@ java -cp target/hms-proxy-$(mvn -q -DforceStdout help:evaluate -Dexpression=proj
 - нет предупреждений `did not finish within` / `did not leave the Thrift accept loop`
 - не остаётся живого JVM-процесса, удерживающего порты (`ps` + `ss` после выхода)
 
-Отдельно проверить аварийный путь: настроить дополнительный frontend на уже занятый порт,
-запустить proxy и убедиться, что он завершается, а не остаётся живой JVM с занятым портом
+Отдельно проверьте аварийный путь: настройте дополнительный frontend на уже занятый порт,
+запустите proxy и убедитесь, что он завершается, а не остаётся живой JVM с занятым портом
 второго листенера.
 
-**14. Проверка имперсонации и владельца таблицы на HDFS**
+## 14. Проверка имперсонации и владельца таблицы на HDFS
 
 Проверяет, что идентификатор конечного пользователя, переданный через `--user <name>` и `set_ugi`,
 корректно транслируется в backend metastore и нижележащую файловую систему (HDFS):
@@ -493,7 +493,7 @@ scripts/run-real-installation-smoke-simple.sh --scenario impersonation
 scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
 ```
 
-**15. Проверка транслированных шаблонов схем (DBeaver / Hue)**
+## 15. Проверка транслированных шаблонов схем (DBeaver / Hue)
 
 Проверяет корректность маршрутизации запросов `get_databases` и `get_table_meta` при использовании шаблонов схем с транслированными разделителями (`catalog..*`, `catalog..default`), генерируемых HiveServer2 для JDBC GUI-клиентов (DBeaver, Hue):
 - Раннер запрашивает `get_databases` с шаблоном `${apache_catalog}..default` и проверяет экстернализацию результата в `${apache_catalog}__default`.
@@ -506,7 +506,7 @@ scripts/run-real-installation-smoke-simple.sh --scenario schema_pattern
 scripts/run-real-installation-smoke-kerberos.sh --scenario schema_pattern
 ```
 
-**16. Проверка работы политик авторизации Apache Ranger (включая Kerberos)**
+## 16. Проверка работы политик авторизации Apache Ranger (включая Kerberos)
 
 Проверяет интеграцию с Apache Ranger для авторизации операций на уровне метаданных:
 - разделяет доступ между пользователями (`sales_user` видит только базу `sales`, `finance_user` — только `finance`, `unauthorized_user` не видит ни одной);
@@ -525,13 +525,13 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 
 В `--scenario all` блок входит, если `HMS_SMOKE_RANGER_ENABLED=true`, либо если флаг не задан, а в env указаны `HMS_SMOKE_RANGER_SALES_DB` или `HMS_SMOKE_RANGER_SALES_USER`. Явное `HMS_SMOKE_RANGER_ENABLED=false` исключает его из `all`, даже когда пользователи и базы Ranger заданы: так env-файл может обслуживать и `--scenario ranger`, и прогон `all` против прокси без Ranger.
 
-**17. Проверка переименования таблиц и партиций, обмена партициями и локаций партиций**
+## 17. Проверка переименования таблиц и партиций, обмена партициями и локаций партиций
 
 Проверяет маршрутизацию мутаций, федерацию и нормализацию локаций:
-- **Переименование таблиц**: переименование внутри каталога (`rename_table`) работает корректно, а кросс-каталожный перенос отклоняется с `MetaException` (`Cross-catalog table rename is not supported`).
-- **Обмен партициями**: `EXCHANGE PARTITION` между двумя таблицами одного каталога перемещает партицию, а кросс-каталожный обмен отклоняется с `MetaException` (`Cross-catalog exchange partition is not supported`).
-- **Переименование партиций**: переименование партиции в федеративном каталоге (`rename_partition`) корректно транслирует namespace и возвращает обновлённую партицию.
-- **Локации партиций внешних таблиц**: неквалифицированные или кастомные пути при `add_partition` и `alter_partition` автоматически переписываются с квалификацией схемой и неймнодой целевого HDFS соответствующего каталога (`ExternalTableLocationRewriter`).
+- Переименование таблиц: переименование внутри каталога (`rename_table`) работает корректно, а кросс-каталожный перенос отклоняется с `MetaException` (`Cross-catalog table rename is not supported`).
+- Обмен партициями: `EXCHANGE PARTITION` между двумя таблицами одного каталога перемещает партицию, а кросс-каталожный обмен отклоняется с `MetaException` (`Cross-catalog exchange partition is not supported`).
+- Переименование партиций: переименование партиции в федеративном каталоге (`rename_partition`) корректно транслирует namespace и возвращает обновлённую партицию.
+- Локации партиций внешних таблиц: неквалифицированные или кастомные пути при `add_partition` и `alter_partition` автоматически переписываются с квалификацией схемой и неймнодой целевого HDFS соответствующего каталога (`ExternalTableLocationRewriter`).
 
 Запуск на Docker-стенде:
 ```bash
@@ -540,10 +540,10 @@ smoke-stand/run-partition-and-rename-smoke.sh
 
 В сценарии Beeline SQL (`scripts/run-real-installation-smoke-simple.sh --scenario sql`) шаги `EXCHANGE PARTITION` и проверка внешних партиций выполняются автоматически и могут быть выключены флагами `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` и `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
 
-**18. Проверка беспрефиксных баз данных и динамической перезагрузки конфига**
+## 18. Проверка беспрефиксных баз данных и динамической перезагрузки конфига
 
 Проверяет прямое сопоставление схем с удалённым каталогом (`catalog.<name>.unprefixed-databases`), вытеснение (shadowing) локальных баз дефолтного каталога и динамическую перезагрузку конфигурации без перезапуска процесса (Safe Reload / `SIGHUP`):
-- `get_database`: проверяет, что обращение к базе данных без префикса (например, `marketing`) прозрачно маршрутизируется в целевой удаленный каталог.
+- `get_database`: проверяет, что обращение к базе данных без префикса (например, `marketing`) маршрутизируется в целевой удаленный каталог.
 - `get_all_databases` и `get_databases`: подтверждает, что мапированная база возвращается клиенту в оригинальном виде (без префикса каталога `${remote_catalog}__${db}`), а одноименная база дефолтного каталога корректно вытесняется (shadowed).
 - `get_table`: проверяет чтение метаданных таблиц внутри беспрефиксной базы данных.
 - Dynamic Safe Reload (`SIGHUP`): проверяет перечитывание параметров `unprefixed-databases` и exposure-фильтров на лету без прерывания активных клиентских соединений.
@@ -555,12 +555,12 @@ scripts/run-real-installation-smoke-simple.sh --scenario unprefixed
 scripts/run-real-installation-smoke-kerberos.sh --scenario unprefixed
 ```
 
-Для полной сквозной проверки маппинга, DDL и SIGHUP reload на Docker-стенде:
+Для сквозной проверки маппинга, DDL и SIGHUP reload на Docker-стенде:
 ```bash
 smoke-stand/run-unprefixed-db-and-reload-smoke.sh
 ```
 
-**19. Что смотреть в логах proxy**
+## 19. Маркеры в логах proxy
 
 Обращайте внимание на следующие маркеры в логах:
 - `Starting HMS proxy`

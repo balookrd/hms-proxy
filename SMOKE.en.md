@@ -1,4 +1,4 @@
-**Beeline Smoke**
+# Smoke test for Beeline and HMS clients
 
 Replace `jdbc:hive2://...` with your actual connection string and add `principal=...` if needed.
 Assume:
@@ -30,20 +30,21 @@ running the detailed Beeline or direct HMS steps below.
 | Direct HMS smoke CLI `lock` | `APACHE_3_1_3` | any non-default catalog backend | `NONE` | `open_txns`, `lock`, `check_lock`, `heartbeat`, `unlock`, `abort_txn` with `EXCLUSIVE` + `PARTITION` + `NO_TXN` | Should pass; confirms the synthetic shim for partition rename/drop style non-transactional DDL locks. |
 | Direct HMS smoke CLI `lock` with `--second-db` | `APACHE_3_1_3` | default catalog plus a non-default one | `NONE` or `KERBEROS` | one `lock` whose components name two catalogs, then `check_lock`, `heartbeat`, `abort_txn` | Should pass; the proxy routes the request by the default catalog and drops the other components. Note `--unlock false`: the surviving lock is a real one owned by the transaction, and a metastore refuses to unlock those. |
 | Direct HMS smoke CLI `impersonation` | any | default catalog backend | `NONE` or `KERBEROS` | `set_ugi`, `create_table`, `get_table`, `drop_table` | Should pass; validates that `set_ugi` binds identity to the connection, table is created with expected owner in metadata and on HDFS (`owner:group`), and audit logs record `authenticatedUser`. |
-| Direct HMS smoke CLI `ranger` | any (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` or `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Expected to pass with Ranger plugin enabled; confirms granular user and group authorization at database and table levels, filtering of hidden objects from listings, and strict rejection (NoSuchObjectException) on direct access attempts. |
-| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | mixed (`hdp`, `apache`) | `NONE` or `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Should pass with caches and fallback enabled; verifies cross-DC resilience, WAN degradation survivability, and remote outage failover. |
-| Direct HMS smoke CLI `metadata` (unprefixed) | any | mixed (`hdp`, `apache`) | `NONE` or `KERBEROS` | `get_all_databases`, `get_databases`, `get_database`, `get_table`, DDL, SIGHUP reload | Should pass; validates unprefixed database mapping (`catalog.<name>.unprefixed-databases`), default-catalog database shadowing, and live dynamic reload (Safe Reload). |
+| Direct HMS smoke CLI `ranger` | any (`APACHE_3_1_3` / `HORTONWORKS_*`) | default catalog backend | `NONE` or `KERBEROS` | `get_all_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_table_meta`, `get_table` | Expected to pass with Ranger plugin enabled; confirms user and group authorization at database and table levels, filtering of hidden objects from listings, and rejection (NoSuchObjectException) on direct access attempts. |
+| Direct HMS smoke CLI `metadata` (cross-DC) | `APACHE_3_1_3` | mixed (`hdp`, `apache`) | `NONE` or `KERBEROS` | `get_table`, `get_partition`, `alter_table`, serve-stale, shadow fallback | Should pass with caches and fallback enabled; checks behavior under network failures and a remote DC outage. |
+| Direct HMS smoke CLI `metadata` (unprefixed) | any | mixed (`hdp`, `apache`) | `NONE` or `KERBEROS` | `get_all_databases`, `get_databases`, `get_database`, `get_table`, DDL, SIGHUP reload | Should pass; validates unprefixed database mapping (`catalog.<name>.unprefixed-databases`), default-catalog database shadowing, and live config reload (Safe Reload). |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | Hortonworks `3.1.0.x` default catalog | `NONE` or `KERBEROS` | `add_write_notification_log` | Should pass only when both the front door and routed backend expose a compatible Hortonworks runtime. |
 | Direct HMS smoke CLI `notification` | `HORTONWORKS_*` with standalone jar | `APACHE_3_1_3` | `NONE` or `KERBEROS` | `add_write_notification_log` | Should fail. The proxy log names the reason (`requires a Hortonworks backend runtime`); the client only sees `Internal error processing add_write_notification_log`, because the Hive IDL declares no exceptions for this method. |
-| Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Should be evaluated as default-catalog-only behavior, not true per-catalog fanout routing. |
+| Any client using id-only txn / lock lifecycle RPCs | any | mixed backends | `NONE` or `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Treat as default-catalog-only behavior: these RPCs have no per-catalog routing. |
 
 Practical automation:
 - for the Beeline / HS2 blocks below, you can automate them with `scripts/run-real-installation-smoke-simple.sh --scenario sql`
 - for the Beeline / HS2 blocks below with Kerberos, use `scripts/run-real-installation-smoke-kerberos.sh --scenario sql`
-- for end-to-end cross-DC and WAN resilience verification, run `./smoke-stand/run-cross-dc-resilience-smoke.sh` on the stand
+- for an end-to-end cross-DC and WAN failure check, run `./smoke-stand/run-cross-dc-resilience-smoke.sh` on the stand
 - for unprefixed database mapping and dynamic configuration reload verification, run `./smoke-stand/run-unprefixed-db-and-reload-smoke.sh` on the stand or `--scenario unprefixed` in the runner
 
-**1. Basic Front-Door Check**
+## 1. Basic front-door check
+
 ```sql
 set -v;
 show databases;
@@ -53,7 +54,8 @@ Expected:
 - databases are visible as `hdp__...` and `apache__...`
 - the connection succeeds through the proxy
 
-**2. Read path: Hortonworks backend**
+## 2. Read path: Hortonworks backend
+
 ```sql
 use hdp__default;
 show tables;
@@ -61,7 +63,8 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**3. Read path: Apache backend**
+## 3. Read path: Apache backend
+
 ```sql
 use apache__default;
 show tables;
@@ -69,7 +72,8 @@ describe formatted some_table;
 select * from some_table limit 5;
 ```
 
-**4. Переключение между backend в одной сессии**
+## 4. Switching between backends in one session
+
 ```sql
 use hdp__default;
 show tables;
@@ -85,7 +89,8 @@ Expected:
 - there is no backend “stickiness”
 - routing stays correct
 
-**5. DDL: Hortonworks backend**
+## 5. DDL: Hortonworks backend
+
 ```sql
 use hdp__default;
 
@@ -148,7 +153,8 @@ select * from smoke_txn_tbl where id=1;
 drop table smoke_txn_tbl;
 ```
 
-**6. DDL: Apache backend**
+## 6. DDL: Apache backend
+
 ```sql
 use apache__default;
 
@@ -218,7 +224,7 @@ Expected:
 - `external` tables keep an explicit custom `LOCATION`
 - `external` and `transactional='true'` variants also allow insert + select where supported
 - `transactional='true'` tables are accepted only where the backend supports ACID table creation
-- table type and key properties are visible in `describe formatted`
+- table type and the `tblproperties` values (`smoke`, `table_kind`) are visible in `describe formatted`
 
 Note:
 - In Beeline / HiveServer2 SQL flows, an unqualified `LOCATION '/tmp/...'` is resolved by the connected
@@ -226,7 +232,8 @@ Note:
   different HDFS namespaces, use fully qualified per-catalog URIs such as `hdfs://nameservice-hdp/tmp/...`
   and `hdfs://nameservice-apache/tmp/...`.
 
-**7. Mixed Negative Check**
+## 7. Mixed negative check
+
 ```sql
 use hdp__default;
 show tables;
@@ -236,9 +243,10 @@ select count(*) from some_table;
 ```
 
 Expected:
-- commands reach the correct backend without namespace errors
+- commands reach the correct backend
+- the namespace does not break
 
-**8. Views, Materialized Views, and UDFs**
+## 8. Views, materialized views and UDFs
 
 This block exercises `federation.view-text-rewrite.mode=REWRITE` (the default). The client-facing
 `viewOriginalText` is rewritten too by default
@@ -266,12 +274,10 @@ The automated runner keeps the view block enabled by default with
 Two joins exercise the lock path that a single-namespace statement never reaches, because Hive
 locks every table of a statement in one request:
 
-- `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` (default `true`) joins the two read tables across
-  catalogs. The proxy routes that lock request by one catalog and drops the other components;
-  a proxy that cannot split it fails the query with `Error in acquiring locks`.
-- `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` (default `false`) joins two databases of one catalog,
-  where both components reach the same backend and each must be rewritten to its own database. It
-  is off by default because, unlike every other block here, it creates a database.
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `HMS_SMOKE_SQL_RUN_CROSS_CATALOG_JOIN` | `true` | Joins the two read tables across catalogs. The proxy routes that lock request by one catalog and drops the other components; a proxy that cannot split it fails the query with `Error in acquiring locks`. |
+| `HMS_SMOKE_SQL_RUN_CROSS_DATABASE_JOIN` | `false` | Joins two databases of one catalog: both components reach the same backend and each must be rewritten to its own database. Off by default because, unlike every other block here, it creates a database. |
 
 ```sql
 use hdp__default;
@@ -331,16 +337,16 @@ Expected:
   session, and returns the expected value such as `yxorp` for `UDFReverse('proxy')`
 - if the backend does not support materialized views, the failure is explicit rather than silent
 
-**9. Direct Synthetic Lock Smoke**
+## 9. Direct synthetic lock check
 
 These checks complement the Beeline DDL steps above and reproduce the problematic cross-catalog
 lock lifecycle directly through HMS thrift. Run them against a catalog that is non-default from the
 proxy point of view. In the examples below, assume `apache` is not `routing.default-catalog`.
 
 Practical runner:
-- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario locks`
-- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
-- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
+- for a simple front door, run `scripts/run-real-installation-smoke-simple.sh --scenario locks`
+- for a Kerberos front door, run `scripts/run-real-installation-smoke-kerberos.sh --scenario locks`
+- or build the repo and run `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli lock`
 - see the "Manual HMS smoke client" section in [README.en.md](README.en.md) for Kerberos launch examples
 
 Create-table style DB lock:
@@ -376,16 +382,16 @@ Expected:
 - the lock is returned as `ACQUIRED` or at worst `WAITING`, but not with `NoSuchTxnException`
 - the second command should be run after the managed-table DDL block created and renamed the partition
 
-**10. Notification/ACID path**
+## 10. Notification / ACID path
 
-These checks are best done not only through Beeline, but also through a direct HMS thrift client,
+Run these checks not only through Beeline, but also through a direct HMS thrift client,
 because `add_write_notification_log` is not necessarily triggered by SQL wrappers directly.
 
 Practical runner:
-- for a simple front door, prefer `scripts/run-real-installation-smoke-simple.sh --scenario all`
-- for a Kerberos front door, prefer `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
+- for a simple front door, run `scripts/run-real-installation-smoke-simple.sh --scenario all`
+- for a Kerberos front door, run `scripts/run-real-installation-smoke-kerberos.sh --scenario all`
 - set `HMS_SMOKE_TXN_SECONDARY_*` if you want the runner to validate both default Hortonworks and default Apache txn targets
-- build the repo and use `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
+- or build the repo and run `io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli`
 - `txn` mode covers `open_txns` / `allocate_table_write_ids` / `lock` / `check_lock` /
   `get_valid_write_ids` / `commit_txn`
 - `notification` mode covers Hortonworks-only `add_write_notification_log`
@@ -417,7 +423,7 @@ Expected:
 - `add_write_notification_log` works only for the Hortonworks backend catalog
 - proxy logs contain `trace stage=backend-request` / `backend-response` for `add_write_notification_log`
 
-**11. Negative check: Hortonworks front -> Apache backend notification path**
+## 11. Negative check: Hortonworks front -> Apache backend notification path
 
 Send `add_write_notification_log` through an HMS thrift client to a database/table that routes to
 the Apache backend.
@@ -437,23 +443,24 @@ Practical runner:
 - then run `scripts/run-real-installation-smoke-simple.sh --scenario notification` or
   `scripts/run-real-installation-smoke-kerberos.sh --scenario notification`
 
-**12. Mixed Runtime Switching Check**
+## 12. Mixed runtime switching check
 
-In a single client session, run in sequence:
-- read/DDL on `hdp__default`
-- read/DDL on `apache__default`
-- `add_write_notification_log` on `hdp__default`
-- another read on `apache__default`
+Run in a single client session, in this order:
+1. read/DDL on `hdp__default`.
+2. read/DDL on `apache__default`.
+3. `add_write_notification_log` on `hdp__default`.
+4. Another read on `apache__default`.
 
 Expected:
 - one catalog runtime does not “stick” to another
 - namespace rewrite remains correct after notification/ACID calls
 
-**13. Graceful shutdown check**
+## 13. Graceful shutdown check
 
-With at least one `additional-frontends.*` listener configured, start the proxy, open a client
-session against each listener, then send `SIGTERM` to the proxy process (`kill <pid>`, not
-`kill -9`).
+1. Configure at least one `additional-frontends.*` listener.
+2. Start the proxy.
+3. Open a client session against each listener.
+4. Send `SIGTERM` to the proxy process (`kill <pid>`, not `kill -9`).
 
 Expected:
 - the log shows `Shutdown requested, stopping HMS proxy` followed by `HMS proxy stopped`
@@ -467,9 +474,9 @@ Also check the failure path once: configure an additional frontend on a port tha
 taken, start the proxy, and confirm it exits instead of leaving a JVM alive with the other
 listener's port still bound.
 
-**14. Impersonation and HDFS Table Ownership Check**
+## 14. Impersonation and HDFS table ownership check
 
-Validates that end-user identity passed through `--user <name>` and `set_ugi` is properly propagated
+Validates that end-user identity passed through `--user <name>` and `set_ugi` is propagated
 to backend metastores and the underlying file system (HDFS):
 - All smoke CLI operations run with impersonation enabled by default (`HMS_SMOKE_IMPERSONATION_ENABLED=true`).
 - In scenario `impersonation` (included in `--scenario all`), the CLI creates a table under `--user smoke-user`.
@@ -477,7 +484,7 @@ to backend metastores and the underlying file system (HDFS):
   1. Table owner in HMS metadata equals `smoke-user`.
   2. The table directory created on HDFS (e.g., `/warehouse/hdp/<table_name>`) is owned by `smoke-user` (`smoke-user:supergroup`).
   3. Audit log records `authenticatedUser=smoke-user`.
-  4. The table is cleanly dropped afterwards.
+  4. The table is dropped afterwards.
 
 Practical runner:
 ```bash
@@ -486,7 +493,7 @@ scripts/run-real-installation-smoke-simple.sh --scenario impersonation
 scripts/run-real-installation-smoke-kerberos.sh --scenario impersonation
 ```
 
-**15. Converted Schema Pattern Verification (DBeaver / Hue)**
+## 15. Converted schema pattern check (DBeaver / Hue)
 
 Verifies routing of `get_databases` and `get_table_meta` requests when using schema patterns with converted separators (`catalog..*`, `catalog..default`), generated by HiveServer2 for JDBC GUI clients (DBeaver, Hue):
 - The runner queries `get_databases` with pattern `${apache_catalog}..default` and validates externalization to `${apache_catalog}__default`.
@@ -499,12 +506,12 @@ scripts/run-real-installation-smoke-simple.sh --scenario schema_pattern
 scripts/run-real-installation-smoke-kerberos.sh --scenario schema_pattern
 ```
 
-**16. Apache Ranger Authorization Policy Verification (Including Kerberos)**
+## 16. Apache Ranger authorization policy check (including Kerberos)
 
 Verifies integration with Apache Ranger for metadata-level operation authorization:
 - User isolation check (`sales_user` sees only `sales` database, `finance_user` sees only `finance`, `unauthorized_user` sees neither).
 - Table listing filtering (`get_all_tables`, `get_tables` with pattern, `get_table_meta`): user can only see policy-allowed tables (`orders`, `customers`), while unauthorized tables within the same database (`secret_orders`) remain hidden.
-- Direct table access check (`get_table`): allowed tables return successfully; attempting to read forbidden tables within an accessible database or in another database strictly fails with `NoSuchObjectException`.
+- Direct table access check (`get_table`): allowed tables return successfully; attempting to read forbidden tables within an accessible database or in another database fails with `NoSuchObjectException`.
 - Group-based authorization (`sales_group` and `finance_group`): users `charlie` (in `sales` group) and `david` (in `finance` group) receive permissions according to group policies.
 - Kerberos authentication support: verifies SASL Kerberos principals and user keytab authentication (`alice`, `bob`, `eve`, `admin`).
 - Prometheus Ranger metrics check (`hms_proxy_ranger_evaluations_total` with `allowed` and `denied`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
@@ -518,13 +525,13 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario ranger
 
 `--scenario all` includes the block when `HMS_SMOKE_RANGER_ENABLED=true`, or, with the flag unset, when the env sets `HMS_SMOKE_RANGER_SALES_DB` or `HMS_SMOKE_RANGER_SALES_USER`. An explicit `HMS_SMOKE_RANGER_ENABLED=false` keeps it out of `all` even when the Ranger users and databases are set, so one env file can serve both `--scenario ranger` and an `all` run against a proxy without Ranger.
 
-**17. Table/Partition Rename, Partition Exchange, and Partition Locations Verification**
+## 17. Table and partition rename, partition exchange and partition locations check
 
-Verifies recent mutation routing, federation, and location normalization fixes:
-- **Table Rename**: renaming within a catalog (`rename_table`) works properly, while cross-catalog table renaming is strictly rejected with `MetaException` (`Cross-catalog table rename is not supported`).
-- **Partition Exchange**: `EXCHANGE PARTITION` between compatible tables within the same catalog moves the partition, while cross-catalog partition exchange is strictly rejected with `MetaException` (`Cross-catalog exchange partition is not supported`).
-- **Partition Rename**: partition rename in a federated catalog (`rename_partition`) correctly translates the namespace and returns the updated partition.
-- **External Partition Locations**: unqualified or custom paths specified during `add_partition` and `alter_partition` are automatically rewritten with the scheme and namenode authority of the catalog's target HDFS (`ExternalTableLocationRewriter`).
+Verifies mutation routing, federation and location normalization:
+- Table rename: renaming within a catalog (`rename_table`) works, while cross-catalog table renaming is rejected with `MetaException` (`Cross-catalog table rename is not supported`).
+- Partition exchange: `EXCHANGE PARTITION` between compatible tables within the same catalog moves the partition, while cross-catalog partition exchange is rejected with `MetaException` (`Cross-catalog exchange partition is not supported`).
+- Partition rename: partition rename in a federated catalog (`rename_partition`) correctly translates the namespace and returns the updated partition.
+- External partition locations: unqualified or custom paths specified during `add_partition` and `alter_partition` are automatically rewritten with the scheme and namenode authority of the catalog's target HDFS (`ExternalTableLocationRewriter`).
 
 Running on Docker stand:
 ```bash
@@ -533,10 +540,11 @@ smoke-stand/run-partition-and-rename-smoke.sh
 
 In the Beeline SQL scenario (`scripts/run-real-installation-smoke-simple.sh --scenario sql`), `EXCHANGE PARTITION` and external partition location steps run automatically and can be opted out via `HMS_SMOKE_SQL_RUN_EXCHANGE_PARTITION=false` and `HMS_SMOKE_SQL_RUN_EXTERNAL_PARTITION=false`.
 
-**18. Unprefixed Databases and Dynamic Config Reload Verification**
+## 18. Unprefixed databases and dynamic config reload check
+
 Validates hard mapping of schema names to remote catalogs (`catalog.<name>.unprefixed-databases`), shadowing of identical local database names in the default catalog, and online configuration reload without restarting the proxy process (Safe Reload / `SIGHUP`):
-- `get_database`: verifies that unprefixed database lookups (e.g., `marketing`) route transparently to the target remote catalog.
-- `get_all_databases` and `get_databases`: confirms that mapped databases are returned without catalog prefixes (`${unprefixed_db}` instead of `${remote_catalog}__${unprefixed_db}`), while any conflicting local database in the default catalog is cleanly shadowed.
+- `get_database`: verifies that unprefixed database lookups (e.g., `marketing`) route to the target remote catalog.
+- `get_all_databases` and `get_databases`: confirms that mapped databases are returned without catalog prefixes (`${unprefixed_db}` instead of `${remote_catalog}__${unprefixed_db}`), while any conflicting local database in the default catalog is shadowed.
 - `get_table`: verifies metadata retrieval for tables located within unprefixed databases.
 - Dynamic Safe Reload (`SIGHUP`): verifies re-reading `unprefixed-databases` mappings and exposure filters on the fly without dropping active client connections.
 
@@ -547,12 +555,13 @@ scripts/run-real-installation-smoke-simple.sh --scenario unprefixed
 scripts/run-real-installation-smoke-kerberos.sh --scenario unprefixed
 ```
 
-For complete end-to-end mapping, DDL, and SIGHUP reload verification on the Docker stand:
+For an end-to-end mapping, DDL, and SIGHUP reload verification on the Docker stand:
 ```bash
 smoke-stand/run-unprefixed-db-and-reload-smoke.sh
 ```
 
-**19. What To Watch In Proxy Logs**
+## 19. Markers in the proxy log
+
 Look for:
 - `Starting HMS proxy`
 - `front-door socket settings: clientTimeoutMs=..., tcpKeepAlive=...`
