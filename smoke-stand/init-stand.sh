@@ -10,6 +10,11 @@ log() {
   printf '[init-stand] %s\n' "$*"
 }
 
+fail() {
+  log "error: $*"
+  exit 1
+}
+
 is_running() {
   local container="$1"
   docker ps --format '{{.Names}}' | grep -q "^${container}$"
@@ -38,6 +43,9 @@ rest_writer() {
   local -a auth_args=()
   if kerberos_enabled; then
     auth_args+=(--keytab /keytabs/smoke-user.keytab --principal smoke-user@SMOKE.LOCAL --rest-auth spnego)
+    # The writer mints its SPNEGO token from the ticket cache, and a freshly created proxy
+    # container has none.
+    docker exec stand-proxy kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL
   fi
   docker exec stand-proxy java \
     --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
@@ -47,11 +55,23 @@ rest_writer() {
     ${auth_args[@]+"${auth_args[@]}"}
 }
 
+# On the Kerberos profile a namenode container holds no ticket, so every `hdfs dfs` run inside it
+# is refused with "Client cannot authenticate via:[TOKEN, KERBEROS]". Log it in by its own keytab.
+namenode_login() {
+  local container="$1"
+  local host="${container#stand-}"
+  if kerberos_enabled; then
+    docker exec "${container}" kinit -kt "/keytabs/${host}.keytab" "hdfs/${host}@SMOKE.LOCAL" \
+      || fail "kinit for hdfs/${host} inside ${container} failed"
+  fi
+}
+
 # 1. HDFS safemode and directory initialization
 if is_running "stand-namenode"; then
   log "Waiting for stand-namenode safemode..."
   docker exec stand-namenode hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
 
+  namenode_login stand-namenode
   log "Ensuring HDFS warehouse directories on stand-namenode..."
   docker exec stand-namenode bash -c \
     'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external' >/dev/null 2>&1 || true
@@ -61,6 +81,7 @@ if is_running "stand-namenode-b"; then
   log "Waiting for stand-namenode-b safemode..."
   docker exec stand-namenode-b hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
 
+  namenode_login stand-namenode-b
   log "Ensuring HDFS warehouse directories on stand-namenode-b..."
   docker exec stand-namenode-b bash -c \
     'hdfs dfs -mkdir -p /warehouse/apache /warehouse/hdp /warehouse/hive4 /external && hdfs dfs -chmod -R 1777 /warehouse /external' >/dev/null 2>&1 || true
@@ -106,7 +127,8 @@ if is_running "stand-namenode-b" && is_running "stand-hs2"; then
   docker exec stand-namenode-b bash -c \
     'echo '\''{"format-version":2,"table-uuid":"546edc8c-8dcd-444d-bbb1-8d1788a27ffa","location":"hdfs://namenode-b:8020/warehouse/apache/smoke_iceberg_tbl_ap","last-sequence-number":0,"last-updated-ms":1791929548977,"last-column-id":2,"current-schema-id":0,"schemas":[{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"int"},{"id":2,"name":"src","required":false,"type":"string"}]}],"default-spec-id":0,"partition-specs":[{"spec-id":0,"fields":[]}],"last-partition-id":999,"default-sort-order-id":0,"sort-orders":[{"order-id":0,"fields":[]}],"properties":{"engine.hive.enabled":"true","write.parquet.compression-codec":"zstd"},"current-snapshot-id":-1,"refs":{},"snapshots":[],"statistics":[],"partition-statistics":[],"snapshot-log":[],"metadata-log":[]}'\'' > /tmp/00000-smoke.metadata.json && \
      hdfs dfs -mkdir -p /warehouse/apache/smoke_iceberg_tbl_ap/metadata && \
-     hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/' >/dev/null 2>&1 || true
+     hdfs dfs -put -f /tmp/00000-smoke.metadata.json /warehouse/apache/smoke_iceberg_tbl_ap/metadata/' >/dev/null 2>&1 \
+    || fail "could not write the smoke_iceberg_tbl_ap metadata file to HDFS on stand-namenode-b"
 
   log "Ensuring smoke_iceberg_tbl_ap table exists in apache catalog..."
   hs2_beeline "create external table if not exists apache__default.smoke_iceberg_tbl_ap (id int, ds string)

@@ -34,7 +34,8 @@ public record CatalogConfig(
     long concurrencyTimeoutMs,
     String fallbackCatalog,
     boolean fallbackOnOutage,
-    boolean mergeWithDefault
+    boolean mergeWithDefault,
+    long sessionValidateAfterIdleMs
 ) {
   public static final CatalogAccessMode DEFAULT_ACCESS_MODE = CatalogAccessMode.READ_WRITE;
   public static final CatalogExposureMode DEFAULT_EXPOSE_MODE = CatalogExposureMode.ALLOW_ALL;
@@ -50,6 +51,7 @@ public record CatalogConfig(
   public static final int DEFAULT_SHARED_SESSION_POOL_SIZE = 1;
   public static final int DEFAULT_IMPERSONATION_POOL_MAX_SIZE = 4;
   public static final long DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS = 600_000L;
+  public static final long DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS = 5_000L;
   public static final String DEFAULT_BACKEND_CATALOG_NAME = "hive";
   private static final List<String> BACKEND_CATALOG_CONF_KEYS =
       List.of("metastore.catalog.default", "hive.metastore.catalog.default");
@@ -72,6 +74,8 @@ public record CatalogConfig(
     impersonationPoolMaxSize =
         impersonationPoolMaxSize <= 0 ? DEFAULT_IMPERSONATION_POOL_MAX_SIZE : impersonationPoolMaxSize;
     impersonationSessionIdleTtlMs = Math.max(impersonationSessionIdleTtlMs, 0L);
+    // 0 disables the pre-write liveness probe.
+    sessionValidateAfterIdleMs = Math.max(sessionValidateAfterIdleMs, 0L);
     ranger = ranger == null ? io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig.disabled() : ranger;
     startupMode = startupMode == null ? DEFAULT_STARTUP_MODE : startupMode;
     maxConcurrentCalls = Math.max(0, maxConcurrentCalls);
@@ -83,6 +87,100 @@ public record CatalogConfig(
     }
     exposeTablePatterns = Collections.unmodifiableMap(copiedExposeTablePatterns);
     hiveConf = Map.copyOf(hiveConf);
+  }
+
+  /** Every field except {@code sessionValidateAfterIdleMs}, which takes its default. */
+  public CatalogConfig(
+      String name,
+      String description,
+      String locationUri,
+      boolean impersonationEnabled,
+      CatalogAccessMode accessMode,
+      List<String> writeDbWhitelist,
+      CatalogExposureMode exposeMode,
+      List<String> exposeDbPatterns,
+      Map<String, List<String>> exposeTablePatterns,
+      List<String> unprefixedDatabases,
+      MetastoreRuntimeProfile runtimeProfile,
+      String backendStandaloneMetastoreJar,
+      Map<String, String> hiveConf,
+      long latencyBudgetMs,
+      int maxImpersonationClients,
+      long impersonationClientIdleTtlMs,
+      int sharedSessionPoolSize,
+      int impersonationPoolMaxSize,
+      long impersonationSessionIdleTtlMs,
+      io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig ranger,
+      CatalogStartupMode startupMode,
+      boolean requiredForReadiness,
+      int maxConcurrentCalls,
+      long concurrencyTimeoutMs,
+      String fallbackCatalog,
+      boolean fallbackOnOutage,
+      boolean mergeWithDefault
+  ) {
+    this(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        unprefixedDatabases,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        latencyBudgetMs,
+        maxImpersonationClients,
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize,
+        impersonationPoolMaxSize,
+        impersonationSessionIdleTtlMs,
+        ranger,
+        startupMode,
+        requiredForReadiness,
+        maxConcurrentCalls,
+        concurrencyTimeoutMs,
+        fallbackCatalog,
+        fallbackOnOutage,
+        mergeWithDefault,
+        DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS);
+  }
+
+  /** A copy with another pre-write liveness probe threshold; 0 turns the probe off. */
+  public CatalogConfig withSessionValidateAfterIdleMs(long validateAfterIdleMs) {
+    return new CatalogConfig(
+        name,
+        description,
+        locationUri,
+        impersonationEnabled,
+        accessMode,
+        writeDbWhitelist,
+        exposeMode,
+        exposeDbPatterns,
+        exposeTablePatterns,
+        unprefixedDatabases,
+        runtimeProfile,
+        backendStandaloneMetastoreJar,
+        hiveConf,
+        latencyBudgetMs,
+        maxImpersonationClients,
+        impersonationClientIdleTtlMs,
+        sharedSessionPoolSize,
+        impersonationPoolMaxSize,
+        impersonationSessionIdleTtlMs,
+        ranger,
+        startupMode,
+        requiredForReadiness,
+        maxConcurrentCalls,
+        concurrencyTimeoutMs,
+        fallbackCatalog,
+        fallbackOnOutage,
+        mergeWithDefault,
+        validateAfterIdleMs);
   }
 
   public CatalogConfig(

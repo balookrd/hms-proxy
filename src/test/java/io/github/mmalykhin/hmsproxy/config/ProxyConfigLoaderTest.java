@@ -2301,6 +2301,53 @@ public class ProxyConfigLoaderTest {
   }
 
   @Test
+  public void sessionValidateAfterIdleDefaultsToFiveSecondsAndZeroDisablesIt() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1,catalog2,catalog3
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog2.conf.hive.metastore.uris=thrift://hms2:9083
+          catalog.catalog2.session-validate-after-idle-ms=0
+          catalog.catalog3.conf.hive.metastore.uris=thrift://hms3:9083
+          catalog.catalog3.session-validate-after-idle-ms=250
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(5_000L, config.catalogs().get("catalog1").sessionValidateAfterIdleMs());
+      Assert.assertEquals("0 turns the probe off", 0L, config.catalogs().get("catalog2").sessionValidateAfterIdleMs());
+      Assert.assertEquals(250L, config.catalogs().get("catalog3").sessionValidateAfterIdleMs());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void aNegativeSessionValidateAfterIdleFailsStartup() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          catalog.catalog1.session-validate-after-idle-ms=-1
+          """);
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("expected a negative threshold to be rejected");
+      } catch (IllegalArgumentException expected) {
+        Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("session-validate-after-idle-ms"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
   public void impersonationIdleTtlsDefaultToTenAndThirtyMinutesAndZeroStillDisablesThem() throws Exception {
     Path file = Files.createTempFile("hms-proxy", ".properties");
     try {

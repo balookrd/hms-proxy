@@ -612,7 +612,8 @@ public final class CatalogBackend implements AutoCloseable {
 
     private Object invokeOnPool(String label, SessionCall call) throws Throwable {
       lastUsedMs = System.currentTimeMillis();
-      BackendInvocationSession session = borrow();
+      boolean replayable = HmsOperationPolicy.replayableAfterLostReply(label);
+      BackendInvocationSession session = replayable ? borrow() : borrowValidated();
       try {
         Object result = call.apply(session);
         release(session);
@@ -633,7 +634,14 @@ public final class CatalogBackend implements AutoCloseable {
         }
         discard(session, "transport_failure");
         session = null;
-        if (!ThriftFailureClassifier.isSafeToReplay(cause, HmsOperationPolicy.replayableAfterLostReply(label))) {
+        if (!ThriftFailureClassifier.isReadTimeout(cause)) {
+          closeStaleIdleSessions();
+        }
+        if (!ThriftFailureClassifier.isSafeToReplay(cause, replayable)) {
+          if (metrics != null) {
+            metrics.recordBackendCallNotReplayed(
+                config.name(), label, ThriftFailureClassifier.transportFailurePhase(cause));
+          }
           LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}; the backend may"
                   + " already have applied it, not replaying the call", config.name(), userName, label, cause);
           throw cause;
@@ -727,12 +735,72 @@ public final class CatalogBackend implements AutoCloseable {
       }
     }
 
+    /**
+     * Borrow for a call that cannot be replayed. A session idle past the threshold is probed first:
+     * a connection the backend dropped while it sat in the pool fails the probe, not the write, and
+     * the write then goes out once on a fresh session.
+     */
+    private BackendInvocationSession borrowValidated() throws MetaException {
+      BackendInvocationSession session = borrow();
+      long thresholdMs = config.sessionValidateAfterIdleMs();
+      if (thresholdMs <= 0L || session.idleMs() <= thresholdMs) {
+        return session;
+      }
+      try {
+        session.probe();
+      } catch (Throwable probeFailure) {
+        if (ThriftFailureClassifier.isTransportFailure(probeFailure)
+            || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
+          LOG.info("Backend catalog '{}' session of impersonated user '{}' idle for {} ms failed the liveness"
+              + " probe ({}), replacing it", config.name(), userName, session.idleMs(), probeFailure.toString());
+          recordValidation("stale");
+          discard(session, "stale_probe");
+          closeStaleIdleSessions();
+          return borrow();
+        }
+        // Any other answer came from a live backend over this very connection.
+      }
+      recordValidation("alive");
+      return session;
+    }
+
+    private void recordValidation(String outcome) {
+      if (metrics != null) {
+        metrics.recordBackendSessionValidation(config.name(), "impersonation", outcome);
+      }
+    }
+
+    /**
+     * Closes every idle session of this user after one of them turned out dead: the backend drops
+     * its connections together, so the rest are most likely dead too and a retry must not land on
+     * one. Closed outside the lock - closing queues a backend call (token revocation).
+     */
+    private void closeStaleIdleSessions() {
+      List<PooledSession> drained;
+      synchronized (lock) {
+        drained = new ArrayList<>(idle);
+        idle.clear();
+      }
+      if (drained.isEmpty()) {
+        return;
+      }
+      for (PooledSession s : drained) {
+        CatalogBackend.closeQuietly(s.session, "impersonation session (stale_idle) for user '" + userName + "'");
+        impersonationIdleSessions.decrementAndGet();
+        if (metrics != null) {
+          metrics.recordImpersonationSessionEviction(config.name(), "stale_idle");
+        }
+      }
+      publishImpersonationGauges();
+    }
+
     private void release(BackendInvocationSession session) {
       boolean drop = false;
       synchronized (lock) {
         if (evicted) {
           drop = true;
         } else {
+          session.markUsed();
           idle.addFirst(new PooledSession(session, System.currentTimeMillis()));
         }
       }

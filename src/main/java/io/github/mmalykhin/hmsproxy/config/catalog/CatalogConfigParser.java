@@ -145,6 +145,8 @@ public final class CatalogConfigParser {
         prefix + "impersonation-pool-max-size", CatalogConfig.DEFAULT_IMPERSONATION_POOL_MAX_SIZE);
     long impersonationSessionIdleTtlMs = reader.getNonNegativeLong(
         prefix + "impersonation-session-idle-ttl-ms", CatalogConfig.DEFAULT_IMPERSONATION_SESSION_IDLE_TTL_MS);
+    long sessionValidateAfterIdleMs = reader.getNonNegativeLong(
+        prefix + "session-validate-after-idle-ms", CatalogConfig.DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS);
 
     CatalogStartupMode startupMode = ConfigParsing.parseEnum(
         CatalogStartupMode.class,
@@ -216,7 +218,8 @@ public final class CatalogConfigParser {
         concurrencyTimeoutMs,
         fallbackCatalog,
         fallbackOnOutage,
-        mergeWithDefault);
+        mergeWithDefault,
+        sessionValidateAfterIdleMs);
   }
 
   private static Map<String, List<String>> parseExposeTablePatterns(PropertyReader reader, String prefix) {

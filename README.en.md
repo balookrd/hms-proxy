@@ -263,7 +263,16 @@ calls from the same user (or the HiveServer2 driving them) borrow distinct sessi
 instead of serializing on a single Thrift transport. Grafana surfaces this as
 `hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,
 `hms_proxy_impersonation_session_acquire_timeouts_total` (per-user borrow timeouts) and
-`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|user_evicted|user_capacity}`.
+`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|stale_idle|stale_probe|user_evicted|user_capacity}`.
+
+A session whose connection the backend closed while it sat in the pool looks alive to the pool. Two
+rules apply to both pools, shared and impersonation. After a transport failure (other than a read
+timeout) the proxy closes every idle session of the pool, so the retry of a read runs on a new
+connection. Before a call that cannot be replayed (a write, delegation token operations), a session
+idle longer than `catalog.<name>.session-validate-after-idle-ms` (default `5000`) is checked with
+`getStatus`; a session that fails the check is closed and the write goes out once on a new one. `0`
+turns the check off. The cost is one extra round-trip per write after a pause longer than the
+threshold. Details and metrics are in [FAILOVER.en.md](FAILOVER.en.md), section 2.1.
 The shared pool then carries only:
 
 - internal proxy-driven calls such as backend health probes and reconnect bookkeeping;

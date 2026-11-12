@@ -33,7 +33,7 @@ purge внешних таблиц.
 docker compose up -d --build
 
 # собственный раннер репозитория, против стенда
-JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
+JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 \
   ../scripts/run-real-installation-smoke-simple.sh --env-file env/simple.env --scenario all
 ```
 

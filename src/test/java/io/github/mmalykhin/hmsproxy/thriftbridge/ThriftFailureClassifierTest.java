@@ -112,4 +112,40 @@ public class ThriftFailureClassifierTest {
         new TApplicationException(TApplicationException.INTERNAL_ERROR, "boom"), true));
     Assert.assertFalse(ThriftFailureClassifier.isSafeToReplay(new MetaException("boom"), true));
   }
+
+  @Test
+  public void aReadTimeoutIsToldApartFromADroppedConnection() {
+    // libthrift 0.9.3 wraps the socket timeout with type UNKNOWN.
+    Assert.assertTrue(ThriftFailureClassifier.isReadTimeout(new TTransportException(
+        TTransportException.UNKNOWN, new java.net.SocketTimeoutException("Read timed out"))));
+    Assert.assertTrue(ThriftFailureClassifier.isReadTimeout(
+        new TTransportException(TTransportException.TIMED_OUT, "no answer")));
+    Assert.assertTrue(ThriftFailureClassifier.isReadTimeout(new TTransportException(
+        TTransportException.UNKNOWN, "java.net.SocketTimeoutException: Read timed out")));
+    Assert.assertTrue(ThriftFailureClassifier.isReadTimeout(new InvocationTargetException(
+        new TTransportException(TTransportException.TIMED_OUT, "no answer"))));
+
+    Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(
+        new TTransportException(TTransportException.END_OF_FILE)));
+    Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new TTransportException(
+        TTransportException.UNKNOWN, new java.net.SocketException("Connection reset"))));
+    Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new MetaException("timed out")));
+  }
+
+  @Test
+  public void theFailurePhaseIsReadFromTheGeneratedClientFrames() {
+    Assert.assertEquals("send", ThriftFailureClassifier.transportFailurePhase(withFrame("send_create_table")));
+    Assert.assertEquals("receive", ThriftFailureClassifier.transportFailurePhase(withFrame("recv_create_table")));
+    Assert.assertEquals("receive", ThriftFailureClassifier.transportFailurePhase(
+        new InvocationTargetException(withFrame("receiveBase"))));
+    Assert.assertEquals("unknown", ThriftFailureClassifier.transportFailurePhase(withFrame("invoke")));
+  }
+
+  private static TTransportException withFrame(String methodName) {
+    TTransportException failure = new TTransportException(TTransportException.END_OF_FILE);
+    failure.setStackTrace(new StackTraceElement[] {
+        new StackTraceElement("org.apache.thrift.transport.TIOStreamTransport", "read", "TIOStreamTransport.java", 132),
+        new StackTraceElement("ThriftHiveMetastore$Client", methodName, "ThriftHiveMetastore.java", 1)});
+    return failure;
+  }
 }

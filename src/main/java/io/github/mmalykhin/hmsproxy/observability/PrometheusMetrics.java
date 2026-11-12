@@ -132,6 +132,16 @@ public final class PrometheusMetrics {
       "hms_proxy_impersonation_session_evictions_total",
       "Per-user impersonation backend sessions discarded grouped by catalog and reason",
       List.of("catalog", "reason"));
+  private final Counter backendSessionValidationsTotal = new Counter(
+      "hms_proxy_backend_session_validations_total",
+      "Liveness probes sent on an idle backend session before a call that cannot be replayed,"
+          + " grouped by catalog, pool and outcome",
+      List.of("catalog", "pool", "outcome"));
+  private final Counter backendCallsNotReplayedTotal = new Counter(
+      "hms_proxy_backend_calls_not_replayed_total",
+      "Backend calls failed to the client after a transport failure because replaying them could apply"
+          + " them twice, grouped by catalog, method and the phase the failure hit",
+      List.of("catalog", "method", "phase"));
   private final Counter backendDelegationTokenCancelsTotal = new Counter(
       "hms_proxy_backend_delegation_token_cancels_total",
       "Backend delegation tokens revoked when their impersonation session closed, grouped by catalog and outcome",
@@ -349,6 +359,14 @@ public final class PrometheusMetrics {
 
   public void recordImpersonationSessionEviction(String catalog, String reason) {
     impersonationSessionEvictionsTotal.inc(labels("catalog", catalog, "reason", reason));
+  }
+
+  public void recordBackendSessionValidation(String catalog, String pool, String outcome) {
+    backendSessionValidationsTotal.inc(labels("catalog", catalog, "pool", pool, "outcome", outcome));
+  }
+
+  public void recordBackendCallNotReplayed(String catalog, String method, String phase) {
+    backendCallsNotReplayedTotal.inc(labels("catalog", catalog, "method", method, "phase", phase));
   }
 
   public void recordBackendDelegationTokenCancel(String catalog, String outcome) {
@@ -615,6 +633,8 @@ public final class PrometheusMetrics {
       impersonationPoolSessions,
       impersonationSessionAcquireTimeoutsTotal,
       impersonationSessionEvictionsTotal,
+      backendSessionValidationsTotal,
+      backendCallsNotReplayedTotal,
       backendDelegationTokenCancelsTotal,
       adaptiveTimeoutReconnectTotal,
       adaptiveTimeoutReconnectSkippedTotal,

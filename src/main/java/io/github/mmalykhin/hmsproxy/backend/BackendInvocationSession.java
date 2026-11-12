@@ -32,6 +32,8 @@ public final class BackendInvocationSession implements AutoCloseable {
   // Runs once the connection is closed: a delegation token must outlive the session that
   // authenticates with it, so it is revoked only after nothing uses it any more.
   private final AtomicReference<Runnable> afterClose = new AtomicReference<>();
+  // When a pool last handed this session back; a fresh session counts as just used.
+  private volatile long lastUsedNanos = System.nanoTime();
 
   private BackendInvocationSession(
       HiveMetaStoreClient client,
@@ -211,6 +213,20 @@ public final class BackendInvocationSession implements AutoCloseable {
           BackendInvocationSession.class.getClassLoader());
     }
     return converted;
+  }
+
+  /** Called by a pool when the session goes back to idle. */
+  void markUsed() {
+    lastUsedNanos = System.nanoTime();
+  }
+
+  long idleMs() {
+    return (System.nanoTime() - lastUsedNanos) / 1_000_000L;
+  }
+
+  /** A read with no arguments that every bundled runtime serves; throws when the connection is gone. */
+  void probe() throws Throwable {
+    invokeByName("getStatus", new Class<?>[0], new Object[0]);
   }
 
   void runAfterClose(Runnable action) {

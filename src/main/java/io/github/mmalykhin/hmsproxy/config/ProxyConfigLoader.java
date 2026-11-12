@@ -97,7 +97,8 @@ public final class ProxyConfigLoader {
             orig.concurrencyTimeoutMs(),
             orig.fallbackCatalog(),
             orig.fallbackOnOutage(),
-            orig.mergeWithDefault()
+            orig.mergeWithDefault(),
+            orig.sessionValidateAfterIdleMs()
         ));
       }
       catalogs = enrichedCatalogs;
@@ -443,6 +444,7 @@ public final class ProxyConfigLoader {
       "shared-session-pool-size",
       "impersonation-pool-max-size",
       "impersonation-session-idle-ttl-ms",
+      "session-validate-after-idle-ms",
       "startup-mode",
       "required-for-readiness",
       "max-concurrent-calls",

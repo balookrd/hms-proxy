@@ -232,7 +232,16 @@ catalog.catalog1.shared-session-pool-size=8
 а не сериализуются на одном Thrift transport. В Grafana это видно по метрикам
 `hms_proxy_impersonation_pool_users`, `hms_proxy_impersonation_pool_sessions{state=active|idle}`,
 `hms_proxy_impersonation_session_acquire_timeouts_total` (timeout per-user borrow) и
-`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|user_evicted|user_capacity}`.
+`hms_proxy_impersonation_session_evictions_total{reason=idle|transport_failure|stale_idle|stale_probe|user_evicted|user_capacity}`.
+
+Сессия, чьё соединение бэкенд закрыл, пока она лежала в пуле, выглядит для пула живой. Для обоих
+пулов, shared и impersonation, действуют два правила. После транспортной ошибки (кроме таймаута
+чтения) прокси закрывает все простаивающие сессии пула, поэтому повтор чтения идёт по новому
+соединению. Перед вызовом, который нельзя повторить (запись, операции с delegation token), сессия,
+простоявшая дольше `catalog.<name>.session-validate-after-idle-ms` (дефолт `5000`), проверяется
+вызовом `getStatus`; не прошедшая проверку сессия закрывается, и запись уходит один раз по новой.
+`0` отключает проверку. Цена — один дополнительный round-trip на запись после паузы длиннее порога.
+Подробности и метрики — в [FAILOVER.md](FAILOVER.md), раздел 2.1.
 В shared пуле тогда остаются только:
 
 - внутренние proxy-driven вызовы: backend health probe и reconnect-логика;

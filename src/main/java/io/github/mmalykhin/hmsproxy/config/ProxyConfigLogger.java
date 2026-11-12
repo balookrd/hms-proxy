@@ -165,7 +165,8 @@ public final class ProxyConfigLogger {
           .append(", clientIdleTtl=").append(cat.impersonationClientIdleTtlMs()).append("ms)\n");
       sb.append("      Session Pools: sharedPoolSize=").append(cat.sharedSessionPoolSize())
           .append(", impersonationMaxSize=").append(cat.impersonationPoolMaxSize())
-          .append(", idleTtl=").append(cat.impersonationSessionIdleTtlMs()).append("ms\n");
+          .append(", idleTtl=").append(cat.impersonationSessionIdleTtlMs()).append("ms")
+          .append(", validateAfterIdle=").append(cat.sessionValidateAfterIdleMs()).append("ms\n");
       sb.append("      Latency Budget: ").append(cat.latencyBudgetMs()).append(" ms\n");
       sb.append("      Concurrency Limit: maxConcurrentCalls=")
           .append(cat.maxConcurrentCalls() > 0 ? cat.maxConcurrentCalls() : "unlimited")

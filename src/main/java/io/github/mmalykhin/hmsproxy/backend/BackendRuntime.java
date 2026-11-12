@@ -400,7 +400,8 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private Object invokeOnPool(SessionCall call, String label) throws Throwable {
-    BackendInvocationSession session = borrow();
+    boolean replayable = HmsOperationPolicy.replayableAfterLostReply(label);
+    BackendInvocationSession session = replayable ? borrow() : borrowValidated();
     try {
       Object result = call.apply(session);
       release(session);
@@ -419,7 +420,14 @@ public final class BackendRuntime implements AutoCloseable {
       }
       discard(session);
       session = null;
-      if (!ThriftFailureClassifier.isSafeToReplay(cause, HmsOperationPolicy.replayableAfterLostReply(label))) {
+      if (!ThriftFailureClassifier.isReadTimeout(cause)) {
+        closeIdleSessions();
+      }
+      if (!ThriftFailureClassifier.isSafeToReplay(cause, replayable)) {
+        if (metrics != null) {
+          metrics.recordBackendCallNotReplayed(
+              catalogConfig.name(), label, ThriftFailureClassifier.transportFailurePhase(cause));
+        }
         LOG.warn("Backend catalog '{}' transport failed in method {}; the backend may already have applied it,"
                 + " discarding session without replaying the call", catalogConfig.name(), label, cause);
         throw cause;
@@ -498,6 +506,53 @@ public final class BackendRuntime implements AutoCloseable {
     return leaseOrReject(fresh);
   }
 
+  /**
+   * Borrow for a call that cannot be replayed. A session idle past the threshold is probed first:
+   * a connection the backend dropped while it sat in the pool fails the probe, not the write, and
+   * the write then goes out once on a fresh session.
+   */
+  private BackendInvocationSession borrowValidated() throws MetaException {
+    BackendInvocationSession session = borrow();
+    long thresholdMs = catalogConfig.sessionValidateAfterIdleMs();
+    if (thresholdMs <= 0L || session.idleMs() <= thresholdMs) {
+      return session;
+    }
+    try {
+      session.probe();
+    } catch (Throwable probeFailure) {
+      if (ThriftFailureClassifier.isTransportFailure(probeFailure)
+          || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
+        LOG.info("Backend catalog '{}' shared session idle for {} ms failed the liveness probe ({}),"
+            + " replacing it", catalogConfig.name(), session.idleMs(), probeFailure.toString());
+        recordValidation("stale");
+        discard(session);
+        closeIdleSessions();
+        return borrow();
+      }
+      // Any other answer came from a live backend over this very connection.
+    }
+    recordValidation("alive");
+    return session;
+  }
+
+  private void recordValidation(String outcome) {
+    if (metrics != null) {
+      metrics.recordBackendSessionValidation(catalogConfig.name(), "shared", outcome);
+    }
+  }
+
+  /**
+   * Closes every idle session after one of them turned out dead: the backend drops its connections
+   * together, so the rest of the pool is most likely dead too and a retry must not land on it.
+   */
+  private void closeIdleSessions() {
+    List<BackendInvocationSession> drained = new ArrayList<>(poolSize);
+    pool.drainTo(drained);
+    for (BackendInvocationSession s : drained) {
+      CatalogBackend.closeQuietly(s, "shared backend metastore session (stale idle)");
+    }
+  }
+
   /** Registers an in-flight session, or closes it when the runtime was closed concurrently. */
   private BackendInvocationSession leaseOrReject(BackendInvocationSession session) throws MetaException {
     synchronized (lifecycleLock) {
@@ -521,6 +576,7 @@ public final class BackendRuntime implements AutoCloseable {
     if (drop) {
       CatalogBackend.closeQuietly(session, "shared backend metastore session (runtime closed)");
     } else {
+      session.markUsed();
       pool.offer(session);
     }
     permits.release();

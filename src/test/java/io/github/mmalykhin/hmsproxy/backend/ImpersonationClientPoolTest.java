@@ -470,6 +470,341 @@ public class ImpersonationClientPoolTest {
     }
   }
 
+  @Test
+  public void aReadSurvivesSeveralStaleIdleSessionsOfTheImpersonationPool() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(3, CatalogConfig.DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS)) {
+      stand.warm(3, StaleBackend.ALICE);
+      stand.killOpenSessions();
+
+      stand.read(StaleBackend.ALICE);
+
+      Assert.assertEquals("the retry must run on a fresh session, not on the next dead one", 1, stand.liveCalls("get_all_databases") - 3);
+      Assert.assertEquals("every dead idle session is closed, none is left for the next caller", 3, stand.closedSessions());
+      Assert.assertTrue(
+          "expected stale_idle evictions:\n" + stand.metrics(),
+          stand.metrics().contains("reason=\"stale_idle\""));
+    }
+  }
+
+  @Test
+  public void aReadSurvivesSeveralStaleIdleSessionsOfTheSharedPool() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(3, CatalogConfig.DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS)) {
+      stand.warm(3, null);
+      stand.killOpenSessions();
+
+      stand.read(null);
+
+      Assert.assertEquals(3, stand.closedSessions());
+    }
+  }
+
+  @Test
+  public void aReadTimeoutLeavesTheOtherIdleSessionsOpen() throws Exception {
+    // The backend was slow, not gone: closing healthy idle sessions would only add reconnects.
+    try (StaleBackend stand = StaleBackend.open(3, CatalogConfig.DEFAULT_SESSION_VALIDATE_AFTER_IDLE_MS)) {
+      stand.warm(3, StaleBackend.ALICE);
+      stand.failNextCallWith(new TTransportException(
+          TTransportException.UNKNOWN, new java.net.SocketTimeoutException("Read timed out")));
+
+      stand.read(StaleBackend.ALICE);
+
+      Assert.assertEquals("only the session that timed out is dropped", 1, stand.closedSessions());
+    }
+  }
+
+  @Test
+  public void aWriteOnASessionIdlePastTheThresholdIsProbedAndMovedToAFreshSession() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(3, 1L)) {
+      stand.warm(3, StaleBackend.ALICE);
+      Thread.sleep(30L);
+      stand.killOpenSessions();
+
+      stand.write(StaleBackend.ALICE);
+
+      Assert.assertEquals("the write must reach the backend exactly once", 1, stand.liveCalls("create_database"));
+      Assert.assertEquals("the write must never be sent on a dead session", 0, stand.deadCalls("create_database"));
+      Assert.assertEquals("one probe finds the dead session", 1, stand.deadCalls("getStatus"));
+      Assert.assertEquals("the remaining dead idle sessions are closed too", 3, stand.closedSessions());
+      Assert.assertTrue(
+          "expected a stale probe outcome:\n" + stand.metrics(),
+          stand.metrics().contains("hms_proxy_backend_session_validations_total")
+              && stand.metrics().contains("outcome=\"stale\""));
+    }
+  }
+
+  @Test
+  public void aWriteOnTheSharedPoolIsProbedToo() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(1, 1L)) {
+      stand.warm(1, null);
+      Thread.sleep(30L);
+      stand.killOpenSessions();
+
+      stand.write(null);
+
+      Assert.assertEquals(1, stand.liveCalls("create_database"));
+      Assert.assertEquals(0, stand.deadCalls("create_database"));
+    }
+  }
+
+  @Test
+  public void aLiveIdleSessionIsProbedOnceAndReused() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(1, 1L)) {
+      stand.warm(1, StaleBackend.ALICE);
+      Thread.sleep(30L);
+      int openedBefore = stand.openedSessions();
+
+      stand.write(StaleBackend.ALICE);
+
+      Assert.assertEquals(1, stand.liveCalls("getStatus"));
+      Assert.assertEquals(1, stand.liveCalls("create_database"));
+      Assert.assertEquals("a live session is kept", openedBefore, stand.openedSessions());
+      Assert.assertEquals(0, stand.closedSessions());
+    }
+  }
+
+  @Test
+  public void aRecentlyUsedSessionIsNotProbedAndALostWriteIsStillNotReplayed() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(1, 60_000L)) {
+      stand.warm(1, StaleBackend.ALICE);
+      stand.killOpenSessions();
+
+      try {
+        stand.write(StaleBackend.ALICE);
+        Assert.fail("expected the transport failure to propagate");
+      } catch (TTransportException expected) {
+        // The reply was lost on a session inside the threshold: nothing proves the write did not land.
+      }
+
+      Assert.assertEquals("no probe inside the threshold", 0, stand.deadCalls("getStatus"));
+      Assert.assertEquals("the write is sent once", 1, stand.deadCalls("create_database"));
+      Assert.assertEquals(0, stand.liveCalls("create_database"));
+      Assert.assertTrue(
+          "expected the lost write to be counted:\n" + stand.metrics(),
+          stand.metrics().contains("hms_proxy_backend_calls_not_replayed_total")
+              && stand.metrics().contains("method=\"create_database\""));
+    }
+  }
+
+  @Test
+  public void zeroThresholdTurnsTheProbeOff() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(1, 0L)) {
+      stand.warm(1, StaleBackend.ALICE);
+      Thread.sleep(30L);
+      stand.killOpenSessions();
+
+      try {
+        stand.write(StaleBackend.ALICE);
+        Assert.fail("expected the transport failure to propagate");
+      } catch (TTransportException expected) {
+        // Probe is off, so this is the pre-existing behaviour.
+      }
+
+      Assert.assertEquals(0, stand.deadCalls("getStatus"));
+    }
+  }
+
+  @Test
+  public void aReadIsNeverProbed() throws Exception {
+    try (StaleBackend stand = StaleBackend.open(1, 1L)) {
+      stand.warm(1, StaleBackend.ALICE);
+      Thread.sleep(30L);
+
+      stand.read(StaleBackend.ALICE);
+
+      Assert.assertEquals("a read can be replayed, so it pays no probe", 0, stand.liveCalls("getStatus"));
+    }
+  }
+
+  /** A fake backend whose open connections can be killed, the way a metastore drops them. */
+  private static final class StaleBackend implements AutoCloseable {
+    static final ImpersonationContext ALICE = new ImpersonationContext("alice", List.of("g1"));
+
+    private final List<java.util.concurrent.atomic.AtomicBoolean> sessions =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final Map<String, AtomicInteger> liveCalls = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> deadCalls = new java.util.concurrent.ConcurrentHashMap<>();
+    private final AtomicInteger closed = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicReference<TException> nextFailure =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    private final PrometheusMetrics metrics = new PrometheusMetrics();
+    private volatile CyclicBarrier warmBarrier;
+    private CatalogBackend backend;
+
+    static StaleBackend open(int poolSize, long validateAfterIdleMs) throws Exception {
+      StaleBackend stand = new StaleBackend();
+      BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+        @Override
+        public BackendInvocationSession open(
+            ProxyConfig proxyConfig,
+            CatalogConfig catalogConfig,
+            HiveConf hiveConf,
+            boolean backendKerberosEnabled,
+            MetastoreRuntimeProfile runtimeProfile
+        ) throws MetaException {
+          return stand.newSession();
+        }
+
+        @Override
+        public BackendInvocationSession openImpersonating(
+            ProxyConfig proxyConfig,
+            CatalogConfig catalogConfig,
+            HiveConf hiveConf,
+            boolean backendKerberosEnabled,
+            MetastoreRuntimeProfile runtimeProfile,
+            String userName,
+            List<String> groupNames
+        ) throws MetaException {
+          return stand.newSession();
+        }
+      };
+      CatalogConfig catalogConfig = new CatalogConfig(
+          "catalog1",
+          "c1",
+          "file:///c1",
+          true,
+          CatalogAccessMode.READ_WRITE,
+          List.of(),
+          CatalogExposureMode.ALLOW_ALL,
+          List.of(),
+          Map.of(),
+          MetastoreRuntimeProfile.APACHE_3_1_3,
+          null,
+          Map.of("hive.metastore.uris", "thrift://one"),
+          0L,
+          128,
+          0L,
+          poolSize,
+          poolSize,
+          0L).withSessionValidateAfterIdleMs(validateAfterIdleMs);
+      BackendRuntime runtime = BackendRuntime.open(
+          config(catalogConfig),
+          catalogConfig,
+          new HiveConf(),
+          false,
+          MetastoreRuntimeProfile.APACHE_3_1_3,
+          factory,
+          stand.metrics);
+      stand.backend = newBackend(catalogConfig, runtime, stand.metrics);
+      return stand;
+    }
+
+    private BackendInvocationSession newSession() throws MetaException {
+      java.util.concurrent.atomic.AtomicBoolean dead = new java.util.concurrent.atomic.AtomicBoolean();
+      sessions.add(dead);
+      ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+          ThriftHiveMetastore.Iface.class.getClassLoader(),
+          new Class<?>[] {ThriftHiveMetastore.Iface.class},
+          (proxy, method, args) -> {
+            String name = method.getName();
+            if ("set_ugi".equals(name)) {
+              return List.of("g1");
+            }
+            if (dead.get()) {
+              deadCalls.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
+              throw new TTransportException(TTransportException.END_OF_FILE);
+            }
+            TException failure = nextFailure.getAndSet(null);
+            if (failure != null) {
+              throw failure;
+            }
+            liveCalls.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
+            CyclicBarrier barrier = warmBarrier;
+            if (barrier != null && "get_all_databases".equals(name)) {
+              barrier.await(5, TimeUnit.SECONDS);
+            }
+            return "get_all_databases".equals(name) ? List.of() : null;
+          });
+      try {
+        Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+            org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+            ThriftHiveMetastore.Iface.class,
+            IsolatedMetastoreClient.class);
+        ctor.setAccessible(true);
+        BackendInvocationSession session = ctor.newInstance(null, thriftClient, null);
+        session.runAfterClose(closed::incrementAndGet);
+        return session;
+      } catch (Exception e) {
+        MetaException me = new MetaException("session ctor failed");
+        me.initCause(e);
+        throw me;
+      }
+    }
+
+    /** Runs {@code parallelism} overlapping reads, so the pool ends up holding that many idle sessions. */
+    void warm(int parallelism, ImpersonationContext who) throws Exception {
+      warmBarrier = parallelism > 1 ? new CyclicBarrier(parallelism) : null;
+      ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+      try {
+        List<Future<?>> futures = new java.util.ArrayList<>();
+        for (int i = 0; i < parallelism; i++) {
+          futures.add(executor.submit(() -> {
+            read(who);
+            return null;
+          }));
+        }
+        for (Future<?> f : futures) {
+          f.get(10, TimeUnit.SECONDS);
+        }
+      } finally {
+        warmBarrier = null;
+        executor.shutdownNow();
+      }
+    }
+
+    void killOpenSessions() {
+      sessions.forEach(dead -> dead.set(true));
+    }
+
+    void failNextCallWith(TException failure) {
+      nextFailure.set(failure);
+    }
+
+    void read(ImpersonationContext who) throws Exception {
+      call("get_all_databases", new Class<?>[0], new Object[0], who);
+    }
+
+    void write(ImpersonationContext who) throws Exception {
+      call("create_database", new Class<?>[] {Database.class}, new Object[] {new Database()}, who);
+    }
+
+    private void call(String method, Class<?>[] types, Object[] args, ImpersonationContext who) throws Exception {
+      try {
+        backend.invokeRawByName(method, types, args, who);
+      } catch (Exception | Error e) {
+        throw e;
+      } catch (Throwable t) {
+        throw new IllegalStateException(t);
+      }
+    }
+
+    int liveCalls(String method) {
+      AtomicInteger n = liveCalls.get(method);
+      return n == null ? 0 : n.get();
+    }
+
+    int deadCalls(String method) {
+      AtomicInteger n = deadCalls.get(method);
+      return n == null ? 0 : n.get();
+    }
+
+    int closedSessions() {
+      return closed.get();
+    }
+
+    int openedSessions() {
+      return sessions.size();
+    }
+
+    String metrics() {
+      return metrics.render();
+    }
+
+    @Override
+    public void close() {
+      backend.close();
+    }
+  }
+
   private static FailureRun runFailingCall(Supplier<TException> failure) throws Exception {
     return runFailingCall(failure, FailingCall.READ, new ImpersonationContext("alice", List.of("g1")));
   }

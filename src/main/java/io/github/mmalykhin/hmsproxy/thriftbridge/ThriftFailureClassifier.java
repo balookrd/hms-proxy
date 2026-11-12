@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.thriftbridge;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.UndeclaredThrowableException;
+import java.net.SocketTimeoutException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 
@@ -57,6 +58,56 @@ public final class ThriftFailureClassifier {
       return false;
     }
     return callChangesNoState || transport.getType() == TTransportException.NOT_OPEN;
+  }
+
+  /**
+   * The backend did not answer within the socket timeout. The connection was alive when the call
+   * went out, so this failure says nothing about the other pooled sessions - unlike an EOF or a
+   * reset, after which the idle ones are usually dead as well. libthrift 0.9.3 reports a socket
+   * read timeout as type {@code UNKNOWN} with the {@code SocketTimeoutException} as cause, and an
+   * exception mapped across an isolated loader may keep only the text.
+   */
+  public static boolean isReadTimeout(Throwable cause) {
+    if (!(unwrap(cause) instanceof TTransportException transport)) {
+      return false;
+    }
+    if (transport.getType() == TTransportException.TIMED_OUT) {
+      return true;
+    }
+    Throwable current = transport;
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      if (current instanceof SocketTimeoutException) {
+        return true;
+      }
+      String message = current.getMessage();
+      if (message != null && (message.contains("SocketTimeoutException") || message.contains("timed out"))) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
+  }
+
+  /**
+   * Where a transport failure hit the generated Thrift client: {@code send} while writing the
+   * request, {@code receive} while waiting for the reply, {@code unknown} when the stack trace
+   * names neither. Diagnostic label only - no replay decision may be taken from it.
+   */
+  public static String transportFailurePhase(Throwable cause) {
+    Throwable current = unwrap(cause);
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      for (StackTraceElement frame : current.getStackTrace()) {
+        String method = frame.getMethodName();
+        if (method.startsWith("send_") || method.equals("sendBase")) {
+          return "send";
+        }
+        if (method.startsWith("recv_") || method.equals("receiveBase")) {
+          return "receive";
+        }
+      }
+      current = current.getCause();
+    }
+    return "unknown";
   }
 
   /**

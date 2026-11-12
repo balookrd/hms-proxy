@@ -33,7 +33,7 @@ What has actually been run here — and what has not — is recorded in
 docker compose up -d --build
 
 # the repo's own runner, against the stand
-JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.19 \
+JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 \
   ../scripts/run-real-installation-smoke-simple.sh --env-file env/simple.env --scenario all
 ```
 
