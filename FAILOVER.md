@@ -62,6 +62,11 @@ English version: [FAILOVER.en.md](FAILOVER.en.md)
    MetaException: Backend catalog 'hdp' failed in method 'get_table' with TTransportException: java.net.SocketException: Connection reset
    ```
   Клиенты (Spark, HiveServer2, Trino, Impala) получают в тексте исключения исходную причину сетевого отказа.
+* Отказ подключиться к бэкенду клиент метастора сам сообщает как `MetaException("Could not connect to meta store using any of the URIs provided…")`. В нём есть хост, но нет каталога, поэтому прокси оборачивает и его:
+   ```text
+   MetaException: Backend catalog 'apache' failed in method 'create_table' with MetaException: Could not connect to meta store using any of the URIs provided. Most recent failure: org.apache.thrift.transport.TTransportException: java.net.UnknownHostException: hms-apache
+   ```
+  Остальные `MetaException` и другие исключения из `org.apache.hadoop.hive.metastore.api` (`NoSuchObjectException` и т. п.) уходят клиенту без изменений.
 
 ### 2.5. Пустые ответы сервисных методов при сбое
 * Для вспомогательных и диагностических вызовов метастора, сбой которых не нарушает консистентность данных (например, `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), слой совместимости ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) перехватывает сбой и возвращает пустой валидный ответ, и пользовательская сессия не падает.

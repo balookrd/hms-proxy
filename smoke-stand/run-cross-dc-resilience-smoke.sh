@@ -367,15 +367,15 @@ log "Shadow fallback verified: read-only call succeeded via replica, metric incr
 log "Verifying split-brain protection (mutating RPC must be denied on outage)..."
 SPLIT_BRAIN_TBL="tbl_forbidden_split_brain"
 CREATE_FALLBACK_1=$(get_metric_sum 'hms_proxy_catalog_fallback_total\{.*method="create_table.*\}')
-# The wording depends on where the call died: "Backend catalog 'apache' ..." on the shared session,
-# "Unable to open backend metastore client for catalog apache ..." when an impersonation session
-# (Kerberos) cannot be opened, and the backend client's own "Could not connect to meta store ...
-# hms-apache" passed through unwrapped (simple). All three name the apache route; a MetaException
-# raised after the CLI connected rules out a refused connection or a login failure.
+# The wording depends on where the call died: "Backend catalog 'apache' failed in method ..." from
+# the proxy's error normalizer (a failed connect included, with the client's "Could not connect to
+# meta store ... hms-apache" kept inside), or "Unable to open backend metastore client for catalog
+# apache ..." when an impersonation session (Kerberos) cannot be opened. Both name the apache route;
+# a MetaException raised after the CLI connected rules out a refused connection or a login failure.
 SPLIT_BRAIN_OUT=$(run_cli admin --op create_table --db "apache__${TEST_DB}" --table "${SPLIT_BRAIN_TBL}" \
   --expect-error MetaException) \
   || fail "create_table on the failed apache catalog did not fail with a MetaException"
-echo "${SPLIT_BRAIN_OUT}" | grep -Eq "failed as expected with: MetaException: .*(catalog '?apache'?|hms-apache)" \
+echo "${SPLIT_BRAIN_OUT}" | grep -Eq "failed as expected with: MetaException: .*catalog '?apache'?" \
   || fail "create_table failed, but not on the apache route: ${SPLIT_BRAIN_OUT}"
 CREATE_FALLBACK_2=$(get_metric_sum 'hms_proxy_catalog_fallback_total\{.*method="create_table.*\}')
 if (( CREATE_FALLBACK_2 != CREATE_FALLBACK_1 )); then

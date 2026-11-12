@@ -62,6 +62,11 @@ When enabled via `routing.adaptive-timeout.enabled=true`:
    MetaException: Backend catalog 'hdp' failed in method 'get_table' with TTransportException: java.net.SocketException: Connection reset
    ```
   Upstream engines (Spark, HiveServer2, Trino, Impala) receive the original network failure cause in the exception text.
+* The metastore client reports a failed connect itself, as `MetaException("Could not connect to meta store using any of the URIs provided…")`. It names the host but not the catalog, so the proxy wraps it too:
+   ```text
+   MetaException: Backend catalog 'apache' failed in method 'create_table' with MetaException: Could not connect to meta store using any of the URIs provided. Most recent failure: org.apache.thrift.transport.TTransportException: java.net.UnknownHostException: hms-apache
+   ```
+  Other `MetaException`s and other exceptions from `org.apache.hadoop.hive.metastore.api` (`NoSuchObjectException` and so on) reach the client unchanged.
 
 ### 2.5. Empty responses for service methods on failure
 * For secondary and diagnostic metastore calls whose failure does not compromise metadata consistency (e.g., `get_active_resource_plan`, `get_all_resource_plans`, `get_runtime_stats`), the compatibility layer ([`CompatibilityLayer`](src/main/java/io/github/mmalykhin/hmsproxy/compatibility/CompatibilityLayer.java)) intercepts failures and returns an empty valid payload instead of failing the user session.
