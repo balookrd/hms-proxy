@@ -11,8 +11,11 @@ import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.LockLevel;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockType;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TException;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -266,5 +269,45 @@ public class HmsMetastoreSmokeCliTest {
     Object cli = parse("--partition-keys", "p:string,k:int", "--part-vals", "2026-01-01,10");
     Assert.assertEquals(List.of("p:string", "k:int"), invokeList(cli, "list", "partition-keys"));
     Assert.assertEquals(List.of("2026-01-01", "10"), invokeList(cli, "requiredList", "part-vals"));
+  }
+
+  @Test
+  public void expectedErrorMatchesByExceptionClassName() {
+    HmsMetastoreSmokeCli.checkExpectedError(
+        "get_table", "NoSuchObjectException", new NoSuchObjectException("hdp__default.t table not found"));
+  }
+
+  @Test
+  public void expectedErrorMatchesByMessageFragment() {
+    HmsMetastoreSmokeCli.checkExpectedError(
+        "rename_table",
+        "Cannot rename/move table across different catalogs",
+        new MetaException("Cannot rename/move table across different catalogs: hdp -> apache"));
+  }
+
+  @Test
+  public void expectedErrorMatchesAnywhereInTheCauseChain() {
+    HmsMetastoreSmokeCli.checkExpectedError(
+        "get_partition",
+        "NoSuchObjectException",
+        new IllegalStateException("wrapped", new NoSuchObjectException("partition not found")));
+  }
+
+  // The vacuous form this option replaces: any failure, a refused connection included, passed.
+  @Test
+  public void expectedErrorRejectsADifferentFailure() {
+    IllegalStateException e = Assert.assertThrows(
+        IllegalStateException.class,
+        () -> HmsMetastoreSmokeCli.checkExpectedError(
+            "get_table", "NoSuchObjectException", new TTransportException("java.net.ConnectException: refused")));
+    Assert.assertTrue(e.getMessage(), e.getMessage().contains("TTransportException"));
+  }
+
+  @Test
+  public void expectedErrorRejectsSuccess() {
+    IllegalStateException e = Assert.assertThrows(
+        IllegalStateException.class,
+        () -> HmsMetastoreSmokeCli.checkExpectedError("get_table", "NoSuchObjectException", null));
+    Assert.assertTrue(e.getMessage(), e.getMessage().contains("get_table succeeded"));
   }
 }

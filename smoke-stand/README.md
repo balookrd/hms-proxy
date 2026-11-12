@@ -558,6 +558,57 @@ cd smoke-stand && ./prepare.sh
 - проверяет, что неавторизованный пользователь `eve` не имеет доступа к приватным базам, а `admin` видит все базы данных и выполняет очистку;
 - проверяет метрики Prometheus (`hms_proxy_ranger_evaluations_total` с метками `result="allowed"` и `result="denied"`, `hms_proxy_ranger_filtered_objects_total`, `hms_proxy_ranger_plugin_info`).
 
+## Режим аутентификации сценариев `run-database-cache-smoke.sh`, `run-unprefixed-db-and-reload-smoke.sh`, `run-schema-pattern-smoke.sh`, `run-news-txn-smoke.sh`, `run-spark-path-based-smoke.sh`, `run-partition-and-rename-smoke.sh`, `run-merged-databases-smoke.sh`, `run-cross-dc-resilience-smoke.sh`
+
+Эти восемь сценариев не принимают флага режима: они читают `KERBEROS_ENABLED` у запущенного
+контейнера (`stand-proxy`, у `run-news-txn-smoke.sh` — `stand-hs2-hdp`) и на Kerberos-профиле
+сами переходят на SASL. Стенд для них:
+
+```bash
+cd smoke-stand
+docker compose --env-file .env.kerberos --profile kerberos --profile hdp up -d --build
+./init-stand.sh
+```
+
+`--profile hdp` нужен только `run-news-txn-smoke.sh` (контейнер `stand-hs2-hdp`).
+
+Что меняется на Kerberos-профиле:
+
+| Сценарий | Клиент | Аутентификация |
+| --- | --- | --- |
+| `run-database-cache-smoke.sh`, `run-unprefixed-db-and-reload-smoke.sh`, `run-schema-pattern-smoke.sh`, `run-spark-path-based-smoke.sh`, `run-partition-and-rename-smoke.sh`, `run-merged-databases-smoke.sh`, `run-cross-dc-resilience-smoke.sh` | `HmsMetastoreSmokeCli metadata` внутри `stand-proxy` | `--auth kerberos --client-principal <user>@SMOKE.LOCAL --keytab /keytabs/<user>.keytab --server-principal hive/proxy@SMOKE.LOCAL`; все вызовы идут от `admin`. До первого вызова сценарий делает `kinit` по `/keytabs/admin.keytab` в отдельный кэш `/tmp/krb5cc_<сценарий>` и завершается ошибкой, если KDC или keytab недоступны |
+| `run-news-txn-smoke.sh` | beeline внутри `stand-hs2-hdp` | `kinit -kt /keytabs/smoke-user.keytab smoke-user@SMOKE.LOCAL` в контейнере, JDBC URL `jdbc:hive2://hs2-hdp:10000/default;principal=hive/hs2-hdp@SMOKE.LOCAL` (переопределяется `BEELINE_JDBC_URL`) |
+
+Особенности отдельных сценариев:
+
+- `run-database-cache-smoke.sh` на Kerberos-профиле пересоздаёт прокси с
+  `hms-proxy-db-cache-kerberos.properties` (это `hms-proxy-kerberos.properties` плюс блок кэшей),
+  на simple — с `hms-proxy-db-cache.properties`. После прогона прокси возвращается на конфиг,
+  с которым был запущен до сценария (`PROXY_CONFIG` контейнера). Пересоздаётся только `proxy`
+  (`--no-deps`): пересозданный `kdc` выпустил бы новые ключи во все keytab-файлы под работающими
+  сервисами. Готовность прокси сценарий ждёт по `/readyz` до 90 с.
+- `run-unprefixed-db-and-reload-smoke.sh` дописывает строки в конфиг, с которым запущен прокси
+  (на Kerberos-профиле — `proxy/hms-proxy-kerberos.properties`), и восстанавливает его из
+  `.bak` в конце. Проверки сценария считают `hdp` каталогом по умолчанию, поэтому на конфиге с
+  другим `routing.default-catalog` (`.env.apache-kerberos`) сценарий сразу завершается ошибкой.
+  Перед проверками он логинит namenode-контейнеры по их keytab, иначе
+  `hdfs dfsadmin -safemode wait` получает отказ аутентификации и ничего не ждёт.
+- `run-merged-databases-smoke.sh` так же правит конфиг, с которым запущен прокси, и так же
+  логинит namenode-контейнеры перед `hdfs dfsadmin -safemode wait`; отказ `dfsadmin` завершает
+  сценарий ошибкой (раньше он глушился `|| true`).
+- `run-cross-dc-resilience-smoke.sh` на Kerberos-профиле пересоздаёт прокси с
+  `hms-proxy-cross-dc-kerberos.properties` (это `hms-proxy-cross-dc.properties` плюс Kerberos-блок
+  из `hms-proxy-kerberos.properties`), на simple — с `hms-proxy-cross-dc.properties`, и после
+  прогона возвращает конфиг, с которым прокси был запущен. Пересоздаётся только `proxy`
+  (`--no-deps`).
+
+Проверки «объекта нет» в этих сценариях передают CLI `--expect-error NoSuchObjectException`.
+CLI сверяет с ожидаемой строкой каждое исключение цепочки причин в форме
+`ИмяКласса: сообщение` и завершается ошибкой, если операция прошла или упала с другим
+исключением. Отказ подключения или логина ожидаемой ошибкой не считается никогда, поэтому
+недоступный прокси такую проверку не проходит. Раньше эти проверки имели вид
+`if run_cli ... 2>/dev/null; then fail; fi` и засчитывали как «объекта нет» любой отказ.
+
 ## Автообновление кэша баз данных (`run-database-cache-smoke.sh`)
 
 Проверяет фоновое периодическое автообновление кэша списка баз данных (`DatabaseListCache`) и метаданных баз данных (`DatabaseMetadataCache`), пока к ним есть активные обращения клиентов:
@@ -567,7 +618,7 @@ cd smoke-stand && ./prepare.sh
 ./run-database-cache-smoke.sh
 ```
 
-Сценарий тестирует жизненный цикл фонового обновления (`DatabaseCacheRefresher`) на запущенном прокси с конфигурацией `hms-proxy-db-cache.properties`:
+Сценарий тестирует жизненный цикл фонового обновления (`DatabaseCacheRefresher`) на запущенном прокси с конфигурацией `hms-proxy-db-cache.properties` (на Kerberos-профиле — `hms-proxy-db-cache-kerberos.properties`):
 - Создаёт тестовую базу данных `db_cache_smoke_test`.
 - Делает прогревочные запросы `get_all_databases` и `get_database`, заполняя кэши и фиксируя временные метки активности.
 - Проверяет инкремент метрики `hms_proxy_cache_refreshes_total` для обоих кэшей (`database_list` и `database_metadata`), подтверждая фоновый опрос бэкендов в активном окне.
@@ -638,7 +689,7 @@ cd smoke-stand
 - Создаёт базу данных и staging-таблицу `news_crawler_stg`, наполняя её тестовыми строками.
 - Создаёт партиционированную транзакционную ORC-таблицу `news` (`PARTITIONED BY (source string) CLUSTERED BY (id) INTO 2 BUCKETS STORED AS ORC TBLPROPERTIES ('transactional'='true')`).
 - Выполняет `INSERT INTO ... PARTITION (source = 'crawler') SELECT ... FROM news_crawler_stg` с вычислением выражений (`CAST`, `COALESCE`, `parse_url`, `NULL`).
-- Проверяет корректность чтения записанных данных из партиции и удаляет тестовые таблицы.
+- Проверяет корректность чтения записанных данных из партиции и удаляет тестовые таблицы. Кэш результатов запросов выключен (`hive.query.results.cache.enabled=false`): таблица пересоздаётся с тем же write id, и с кэшем проверочный запрос возвращал строки прошлого прогона.
 
 ## Переименование таблиц/партиций и перенос партиций (`run-partition-and-rename-smoke.sh`)
 
@@ -650,9 +701,9 @@ cd smoke-stand
 ```
 
 Сценарий проверяет:
-- Переименование таблиц внутри каталога и отказ при попытке кросс-каталожного переименования (`MetaException: Cross-catalog table rename is not supported`).
+- Переименование таблиц внутри каталога и отказ при попытке кросс-каталожного переименования (`MetaException: Cannot rename/move table across different catalogs`). Что старое имя исчезло, сценарий проверяет ожиданием `NoSuchObjectException` от `get_table`.
 - Переименование таблицы в федеративном (non-default) каталоге (`apache__default`).
-- Обмен партициями (`EXCHANGE PARTITION`) внутри каталога и отказ при кросс-каталожном обмене (`MetaException: Cross-catalog exchange partition is not supported`).
+- Обмен партициями (`EXCHANGE PARTITION`) внутри каталога и отказ при кросс-каталожном обмене (`MetaException: Cannot exchange partitions across different catalogs`).
 - Переименование партиции в федеративном каталоге (`apache__default`) с корректной трансляцией namespace.
 - Нормализацию и переписывание локаций внешних партиций (`ExternalTableLocationRewriter`) при добавлении (`add_partition`) и изменении (`alter_partition`) партиций.
 
@@ -665,15 +716,17 @@ cd smoke-stand && ./prepare.sh
 ./run-cross-dc-resilience-smoke.sh
 ```
 
-Сценарий тестирует на запущенном прокси с конфигурацией `hms-proxy-cross-dc.properties`:
+Сценарий тестирует на запущенном прокси с конфигурацией `hms-proxy-cross-dc.properties` (на Kerberos-профиле — `hms-proxy-cross-dc-kerberos.properties`):
 - Кэши таблиц и разделов (`TableMetadataCache`, `PartitionMetadataCache`): считает попадания (`hit`) и промахи (`miss`) в кэш при последовательных вызовах `get_table` и `get_partition` по счётчикам Prometheus `hms_proxy_cache_requests_total`.
 - Автоматическая DDL-инвалидация: сбрасывает кэшированные записи таблицы и разделов при выполнении мутаций `alter_table`.
 - Режим Serve-Stale-on-Error: выдаёт устаревшие метаданные из кэша (`stale_hit`) при искусственной остановке удалённого каталога (`docker stop stand-hms-apache`); клиентские запросы при этом не получают ошибок.
 - Гранулярный `/readyz`: подтверждает HTTP `200 OK` при падении вторичного каталога с флагом `required-for-readiness=false` (локальный балансировщик нагрузки не снимает прокси с локального трафика при отказе удалённого ЦОД).
 - Catalog Shadow / Replica Fallback: перенаправляет read-only запросы (`get_table`) на локальную теневую реплику (`hdp`) при сбое удалённого каталога с инкрементом метрики `hms_proxy_catalog_fallback_total`.
-- Защита от Split-Brain: отклоняет мутирующие операции (`create_table`, `alter_table`, `drop_table`) к отказавшему каталогу без изменения реплики.
-- Lenient Startup: запускает и инициализирует прокси при полностью выключенном удалённом вторичном бэкенде.
+- Защита от Split-Brain: `create_table` в отказавший каталог `apache` не уходит на реплику. Сценарий проверяет три вещи: вызов падает с `MetaException`, текст которого называет каталог `apache` (`Backend catalog 'apache' ...` на общей сессии, `Unable to open backend metastore client for catalog apache ...` при открытии impersonation-сессии под Kerberos, `Could not connect to meta store ... hms-apache` от клиента бэкенда без обёртки на simple); счётчик `hms_proxy_catalog_fallback_total` для `create_table` не растёт; таблицы нет на реплике `hdp` (`NoSuchObjectException`). Одного факта ошибки мало: без защиты запись тоже упала бы, на остановленном метасторе.
+- Lenient Startup: запускает и инициализирует прокси при полностью выключенном удалённом вторичном бэкенде. Прокси пересоздаётся с `--no-deps` и `WAIT_FOR_APACHE=false` (переменная передаётся в контейнер через `docker-compose.yml`); сценарий проверяет, что `stand-hms-apache` после перезапуска прокси остаётся остановленным. Раньше compose поднимал его обратно через `depends_on`, а `WAIT_FOR_APACHE` в контейнер не попадала, и шаг проверял запуск при работающем метасторе.
 - Восстановление (Recovery): возвращает удалённый бэкенд в строй и проверяет восстановление штатной маршрутизации.
+
+Известная проблема: на Kerberos-профиле шаг гранулярного `/readyz` падает. Пока `stand-hms-apache` остановлен, `/readyz` около 25 секунд отвечает `503`, а обязательный `hdp` числится в нём с `lastError: TimeoutException: readiness probe deadline exceeded`. Причина в пробнике `/readyz` (`ManagementHttpServer.runReadinessProbes`, путь без фонового опроса бэкендов): пробы ждутся по очереди с общим дедлайном, а с `routing.backend-state-polling.max-parallelism=1` по умолчанию проба `hdp` стоит в очереди за зависшей пробой `apache`. В фоновом опросе это исправлено коммитом `0334a4c`, в пробнике `/readyz` — ещё нет. На simple-профиле отказ подключения к `apache` приходит быстрее дедлайна, и шаг проходит.
 
 ## Плейсхолдеры Spark SQL и path-based таблицы (`run-spark-path-based-smoke.sh`)
 

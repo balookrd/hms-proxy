@@ -28,7 +28,26 @@ fail() {
 }
 
 CONTAINER_NAME="${CONTAINER_NAME:-stand-hs2-hdp}"
-BEELINE_JDBC_URL="${BEELINE_JDBC_URL:-jdbc:hive2://localhost:10000/default}"
+REALM="${REALM:-SMOKE.LOCAL}"
+
+container_running() {
+  docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"
+}
+
+# On the Kerberos profile (KERBEROS_ENABLED=true, .env.kerberos) HiveServer2 accepts only SASL:
+# the JDBC URL has to name its principal and the beeline container needs a ticket, otherwise
+# beeline fails in the handshake. The HiveServer2 host is the container name without "stand-".
+KERBEROS=false
+if container_running \
+    && [[ "$(docker exec "${CONTAINER_NAME}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]; then
+  KERBEROS=true
+fi
+if [[ "${KERBEROS}" == "true" ]]; then
+  HS2_HOST="${CONTAINER_NAME#stand-}"
+  BEELINE_JDBC_URL="${BEELINE_JDBC_URL:-jdbc:hive2://${HS2_HOST}:10000/default;principal=hive/${HS2_HOST}@${REALM}}"
+else
+  BEELINE_JDBC_URL="${BEELINE_JDBC_URL:-jdbc:hive2://localhost:10000/default}"
+fi
 BEELINE_USER="${BEELINE_USER:-hive}"
 TEST_DB="${TEST_DB:-b2b_mass_pers_dds}"
 STG_TABLE="${STG_TABLE:-news_crawler_stg}"
@@ -46,6 +65,10 @@ set hive.support.concurrency=true;
 set hive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
 set hive.exec.dynamic.partition.mode=nonstrict;
 set hive.stats.autogather=true;
+-- The tables are dropped and recreated on every run, so the new transactional table gets the same
+-- write id 1 again, and Hive 3's query results cache answered the verification query below with
+-- the previous run's rows: a run that inserted a different host still printed the old one.
+set hive.query.results.cache.enabled=false;
 
 -- 1. Setup database
 create database if not exists ${TEST_DB};
@@ -131,8 +154,13 @@ EOF
 
 log "Generated SQL script for test in ${SQL_FILE}"
 
-if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+if container_running; then
   log "Running smoke test inside docker container '${CONTAINER_NAME}'..."
+  if [[ "${KERBEROS}" == "true" ]]; then
+    log "Kerberos profile detected, logging in as smoke-user@${REALM} inside ${CONTAINER_NAME}"
+    docker exec "${CONTAINER_NAME}" kinit -kt /keytabs/smoke-user.keytab "smoke-user@${REALM}" \
+      || fail "kinit for smoke-user@${REALM} inside ${CONTAINER_NAME} failed"
+  fi
   docker cp "${SQL_FILE}" "${CONTAINER_NAME}:/tmp/news_txn_test.sql"
   
   BEELINE_BIN="/usr/hdp/3.1.0.0-78/hive/bin/beeline"
@@ -152,7 +180,7 @@ log "Validating test results..."
 if grep -E "^NEWS_TXN_SMOKE_COUNT_OK[[:space:]]+1[[:space:]]+crawler[[:space:]]+news\.yandex\.ru[[:space:]]+fp-smoke-1001" "${OUT_FILE}" >/dev/null; then
   log "SUCCESS: Transactional partition insert verified with expected data!"
 else
-  fail "Verification marker 'NEWS_TXN_SMOKE_COUNT_OK' not found in output."
+  fail "Expected row 'NEWS_TXN_SMOKE_COUNT_OK 1 crawler news.yandex.ru fp-smoke-1001' not found; got: $(grep -E '^NEWS_TXN_SMOKE_COUNT_OK' "${OUT_FILE}" || echo '<none>')"
 fi
 
 # Cleanup host temp files

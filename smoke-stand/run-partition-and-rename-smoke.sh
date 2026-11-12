@@ -31,10 +31,38 @@ if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+REALM=${REALM:-SMOKE.LOCAL}
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -51,6 +79,15 @@ run_cli() {
       "$@"
   fi
 }
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_partition_rename -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
 
 RUN_ID="$(date +%Y%m%d%H%M%S)"
 TBL_REN_SRC="smoke_ren_src_${RUN_ID}"
@@ -90,9 +127,9 @@ run_cli admin --op rename_table --db "hdp__default" --table "${TBL_REN_SRC}" --n
 
 log "Verifying new table exists and old table is gone"
 run_cli admin --op get_table --db "hdp__default" --table "${TBL_REN_DST}" >/dev/null
-if run_cli admin --op get_table --db "hdp__default" --table "${TBL_REN_SRC}" 2>/dev/null; then
-  fail "Old table ${TBL_REN_SRC} still exists after rename"
-fi
+run_cli admin --op get_table --db "hdp__default" --table "${TBL_REN_SRC}" \
+  --expect-error NoSuchObjectException \
+  || fail "Old table ${TBL_REN_SRC} still exists after rename"
 
 log "Negative test: cross-catalog table rename from hdp to apache must be rejected"
 run_cli admin --op rename_table \
@@ -104,9 +141,9 @@ log "Renaming within federated catalog: apache__default.${TBL_REN_AP_SRC} -> ${T
 run_cli admin --op create_table --db "apache__default" --table "${TBL_REN_AP_SRC}"
 run_cli admin --op rename_table --db "apache__default" --table "${TBL_REN_AP_SRC}" --new-table "${TBL_REN_AP_DST}"
 run_cli admin --op get_table --db "apache__default" --table "${TBL_REN_AP_DST}" >/dev/null
-if run_cli admin --op get_table --db "apache__default" --table "${TBL_REN_AP_SRC}" 2>/dev/null; then
-  fail "Old table ${TBL_REN_AP_SRC} still exists in apache catalog after rename"
-fi
+run_cli admin --op get_table --db "apache__default" --table "${TBL_REN_AP_SRC}" \
+  --expect-error NoSuchObjectException \
+  || fail "Old table ${TBL_REN_AP_SRC} still exists in apache catalog after rename"
 
 log "=== 2. Exchange Partition within Catalog and Negative Cross-Catalog Denial ==="
 log "Creating source and destination partitioned tables in hdp__default"
@@ -124,9 +161,9 @@ run_cli admin --op exchange_partition \
 
 log "Verifying partition moved to destination table"
 run_cli admin --op get_partition --db "hdp__default" --table "${TBL_EXCH_DST}" --part-vals "100" >/dev/null
-if run_cli admin --op get_partition --db "hdp__default" --table "${TBL_EXCH_SRC}" --part-vals "100" 2>/dev/null; then
-  fail "Partition p=100 still exists on source table ${TBL_EXCH_SRC} after exchange"
-fi
+run_cli admin --op get_partition --db "hdp__default" --table "${TBL_EXCH_SRC}" --part-vals "100" \
+  --expect-error NoSuchObjectException \
+  || fail "Partition p=100 still exists on source table ${TBL_EXCH_SRC} after exchange"
 
 log "Creating partitioned table in remote catalog: apache__default.${TBL_EXCH_AP}"
 run_cli admin --op create_table --db "apache__default" --table "${TBL_EXCH_AP}" --partition-keys "p:string"
@@ -156,9 +193,9 @@ log "get_partition output: ${RENAMED_PART_OUT}"
 echo "${RENAMED_PART_OUT}" | grep -q "db=apache__default" || fail "Expected db=apache__default in partition output"
 echo "${RENAMED_PART_OUT}" | grep -q "2026-01-02" || fail "Expected value 2026-01-02 in partition output"
 
-if run_cli admin --op get_partition --db "apache__default" --table "${TBL_PART_REN}" --part-vals "2026-01-01" 2>/dev/null; then
-  fail "Old partition 2026-01-01 still exists after rename"
-fi
+run_cli admin --op get_partition --db "apache__default" --table "${TBL_PART_REN}" --part-vals "2026-01-01" \
+  --expect-error NoSuchObjectException \
+  || fail "Old partition 2026-01-01 still exists after rename"
 
 log "=== 4. Partition Location Normalization for External Tables ==="
 log "Creating external partitioned table in hdp__default: ${TBL_EXT_PART_HDP}"

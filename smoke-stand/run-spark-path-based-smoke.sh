@@ -19,16 +19,44 @@ fail() {
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-19085}
 PROXY_CONTAINER=stand-proxy
+REALM=${REALM:-SMOKE.LOCAL}
 
 CLI_JAR="${REPO_DIR}/smoke-stand/proxy/hms-proxy-fat.jar"
 if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -45,6 +73,15 @@ run_cli() {
       "$@"
   fi
 }
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_spark_path -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
 
 HDFS_PATH="hdfs://titanium/warehouse/tablespace/external/hive/amdocs_arena_lz.db/csvlogs/tasks/"
 

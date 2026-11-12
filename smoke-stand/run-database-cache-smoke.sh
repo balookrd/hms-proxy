@@ -18,6 +18,7 @@ PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-19085}
 MGMT_PORT=${MGMT_PORT:-19090}
 PROXY_CONTAINER=stand-proxy
+REALM=${REALM:-SMOKE.LOCAL}
 TEST_DB="db_cache_smoke_test"
 
 CLI_JAR="${REPO_DIR}/smoke-stand/proxy/hms-proxy-fat.jar"
@@ -25,10 +26,37 @@ if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -45,6 +73,15 @@ run_cli() {
       "$@"
   fi
 }
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_db_cache -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
 
 get_metrics() {
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
@@ -67,19 +104,55 @@ get_metric_sum() {
   fi
 }
 
+# The scenario swaps the proxy onto the cache config and back. The proxy is recreated alone
+# (--no-deps): a recreated kdc would mint new keys for every keytab under the running services.
+# PROXY_CONFIG and KERBEROS_ENABLED are passed from the shell, which wins over any --env-file, so
+# the restored proxy comes back with the config and auth mode it had before the scenario.
+ORIG_PROXY_CONFIG=""
+if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  ORIG_PROXY_CONFIG="$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG 2>/dev/null || true)"
+fi
+ORIG_PROXY_CONFIG="${ORIG_PROXY_CONFIG:-/opt/hms-proxy/hms-proxy.properties}"
+if [[ "${KERBEROS}" == "true" ]]; then
+  CACHE_PROXY_CONFIG=/opt/hms-proxy/hms-proxy-db-cache-kerberos.properties
+else
+  CACHE_PROXY_CONFIG=/opt/hms-proxy/hms-proxy-db-cache.properties
+fi
+
+recreate_proxy() {
+  local config="$1"
+  (cd "${STAND_DIR}" && PROXY_CONFIG="${config}" KERBEROS_ENABLED="${KERBEROS}" \
+    docker compose up -d --no-deps --force-recreate proxy >/dev/null 2>&1)
+}
+
+wait_proxy_ready() {
+  for _ in $(seq 1 90); do
+    if docker exec "${PROXY_CONTAINER}" curl -sf http://localhost:9090/readyz >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 cleanup() {
   log "Cleaning up test database and restoring proxy configuration..."
   run_cli admin --op drop_database --db "${TEST_DB}" --cascade true 2>/dev/null || true
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
-    (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1) || true
+    log "Restoring proxy with ${ORIG_PROXY_CONFIG}..."
+    recreate_proxy "${ORIG_PROXY_CONFIG}" || true
+    wait_proxy_ready || log "WARN: proxy did not become ready on ${ORIG_PROXY_CONFIG}; check docker logs ${PROXY_CONTAINER}"
   fi
 }
 trap cleanup EXIT
 
 if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
-  log "Restarting proxy with hms-proxy-db-cache.properties..."
-  (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy-db-cache.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1)
-  sleep 4
+  log "Restarting proxy with ${CACHE_PROXY_CONFIG}..."
+  recreate_proxy "${CACHE_PROXY_CONFIG}" || fail "could not recreate ${PROXY_CONTAINER} with ${CACHE_PROXY_CONFIG}"
+  wait_proxy_ready || fail "proxy did not become ready on ${CACHE_PROXY_CONFIG}; check docker logs ${PROXY_CONTAINER}"
+  # The scenario reads the refresh counters, so make sure the cache config is the one running.
+  [[ "$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG)" == "${CACHE_PROXY_CONFIG}" ]] \
+    || fail "${PROXY_CONTAINER} did not pick up ${CACHE_PROXY_CONFIG}"
 fi
 
 log "=== 1. Setup test database ==="

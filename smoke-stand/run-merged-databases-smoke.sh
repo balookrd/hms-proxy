@@ -37,18 +37,53 @@ HDP_COLLISION_TABLE="hdp_col_tbl"
 NEW_DB="smoke_new_unprefixed_db"
 NEW_TABLE="smoke_new_tbl"
 
-CONFIG_FILE="${STAND_DIR}/proxy/hms-proxy.properties"
-BACKUP_FILE="${STAND_DIR}/proxy/hms-proxy.properties.bak"
+# The reload edits the file the running proxy actually reads: on the Kerberos profile that is
+# hms-proxy-kerberos.properties, and editing hms-proxy.properties there would reload nothing.
+RUNNING_PROXY_CONFIG=""
+if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  RUNNING_PROXY_CONFIG="$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG 2>/dev/null || true)"
+fi
+CONFIG_FILE="${STAND_DIR}/proxy/$(basename "${RUNNING_PROXY_CONFIG:-/opt/hms-proxy/hms-proxy.properties}")"
+BACKUP_FILE="${CONFIG_FILE}.bak"
+[[ -f "${CONFIG_FILE}" ]] || { printf '[merged-databases-smoke] ERROR: proxy config %s not found\n' "${CONFIG_FILE}" >&2; exit 1; }
 
 CLI_JAR="${REPO_DIR}/smoke-stand/proxy/hms-proxy-fat.jar"
 if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+REALM=${REALM:-SMOKE.LOCAL}
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -65,6 +100,15 @@ run_cli() {
       "$@"
   fi
 }
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_merged_databases -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
 
 send_reload_signal() {
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
@@ -114,13 +158,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# On the Kerberos profile a namenode container holds no ticket, and dfsadmin is refused with
+# "Client cannot authenticate via:[TOKEN, KERBEROS]"; that refusal used to be swallowed, so the
+# wait silently did nothing. Log in by the namenode's own keytab and let a refusal fail the run.
 wait_for_safemode() {
-  if docker ps --format '{{.Names}}' | grep -q "^stand-namenode$"; then
-    docker exec stand-namenode hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
-  fi
-  if docker ps --format '{{.Names}}' | grep -q "^stand-namenode-b$"; then
-    docker exec stand-namenode-b hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
-  fi
+  local container host
+  for container in stand-namenode stand-namenode-b; do
+    docker ps --format '{{.Names}}' | grep -q "^${container}$" || continue
+    host="${container#stand-}"
+    if [[ "${KERBEROS}" == "true" ]]; then
+      docker exec "${container}" kinit -kt "/keytabs/${host}.keytab" "hdfs/${host}@${REALM}" \
+        || fail "kinit for hdfs/${host} inside ${container} failed"
+    fi
+    docker exec "${container}" hdfs dfsadmin -safemode wait >/dev/null \
+      || fail "hdfs dfsadmin -safemode wait failed inside ${container}"
+  done
 }
 
 log "=== 0. Verify proxy connectivity and HDFS readiness ==="
@@ -214,9 +266,9 @@ HDP_DIRECT=$(run_cli admin --op get_all_tables --db "hdp__${NEW_DB}")
 echo "${HDP_DIRECT}" | grep -q "${NEW_TABLE}" || fail "Expected table in default catalog 'hdp__${NEW_DB}'"
 
 # Remote catalog apache__ must NOT contain it
-if run_cli admin --op get_database --db "apache__${NEW_DB}" 2>/dev/null; then
-  fail "Database '${NEW_DB}' was erroneously created in remote catalog 'apache' instead of default catalog"
-fi
+run_cli admin --op get_database --db "apache__${NEW_DB}" \
+  --expect-error NoSuchObjectException \
+  || fail "Database '${NEW_DB}' was erroneously created in remote catalog 'apache' instead of default catalog"
 
 log "Cleaning up newly created test database..."
 run_cli admin --op drop_table --db "${NEW_DB}" --table "${NEW_TABLE}"

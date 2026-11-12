@@ -560,6 +560,14 @@ scripts/run-real-installation-smoke-kerberos.sh --scenario unprefixed
 smoke-stand/run-unprefixed-db-and-reload-smoke.sh
 ```
 
+Режим аутентификации сценарий берёт у запущенного `stand-proxy`: на Kerberos-стенде
+(`docker compose --env-file .env.kerberos --profile kerberos up -d`) CLI ходит в прокси по SASL от
+`admin@SMOKE.LOCAL`, а перезагрузка применяется к `proxy/hms-proxy-kerberos.properties`. Так же
+устроены `run-database-cache-smoke.sh`, `run-schema-pattern-smoke.sh`,
+`run-spark-path-based-smoke.sh`, `run-news-txn-smoke.sh`, `run-partition-and-rename-smoke.sh`,
+`run-merged-databases-smoke.sh` и `run-cross-dc-resilience-smoke.sh`; детали — в
+`smoke-stand/README.md`.
+
 ## 19. Маркеры в логах proxy
 
 Обращайте внимание на следующие маркеры в логах:

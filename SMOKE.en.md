@@ -560,6 +560,13 @@ For an end-to-end mapping, DDL, and SIGHUP reload verification on the Docker sta
 smoke-stand/run-unprefixed-db-and-reload-smoke.sh
 ```
 
+The scenario takes its auth mode from the running `stand-proxy`: on the Kerberos stand
+(`docker compose --env-file .env.kerberos --profile kerberos up -d`) the CLI reaches the proxy over
+SASL as `admin@SMOKE.LOCAL`, and the reload is applied to `proxy/hms-proxy-kerberos.properties`.
+`run-database-cache-smoke.sh`, `run-schema-pattern-smoke.sh`, `run-spark-path-based-smoke.sh`,
+`run-news-txn-smoke.sh`, `run-partition-and-rename-smoke.sh`, `run-merged-databases-smoke.sh` and
+`run-cross-dc-resilience-smoke.sh` work the same way; details are in `smoke-stand/README.en.md`.
+
 ## 19. Markers in the proxy log
 
 Look for:

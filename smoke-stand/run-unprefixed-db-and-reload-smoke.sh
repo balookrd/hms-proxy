@@ -23,23 +23,52 @@ PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-19085}
 MGMT_PORT=${MGMT_PORT:-19090}
 PROXY_CONTAINER=stand-proxy
+REALM=${REALM:-SMOKE.LOCAL}
 
 TEST_DB="smoke_unprefixed_db"
 APACHE_TABLE="apache_remote_tbl"
 HDP_TABLE="hdp_shadowed_tbl"
+# Set once the running config is known; cleanup restores nothing until then.
+CONFIG_FILE=""
+BACKUP_FILE=""
 
-CONFIG_FILE="${STAND_DIR}/proxy/hms-proxy.properties"
-BACKUP_FILE="${STAND_DIR}/proxy/hms-proxy.properties.bak"
 
 CLI_JAR="${REPO_DIR}/smoke-stand/proxy/hms-proxy-fat.jar"
 if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -56,6 +85,15 @@ run_cli() {
       "$@"
   fi
 }
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_unprefixed_reload -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
 
 send_reload_signal() {
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
@@ -79,7 +117,7 @@ check_ready() {
 
 cleanup() {
   log "Cleaning up test databases and restoring configuration..."
-  if [[ -f "${BACKUP_FILE}" ]]; then
+  if [[ -n "${BACKUP_FILE}" && -f "${BACKUP_FILE}" ]]; then
     cp "${BACKUP_FILE}" "${CONFIG_FILE}"
     rm -f "${BACKUP_FILE}"
     send_reload_signal || true
@@ -95,17 +133,37 @@ cleanup() {
 trap cleanup EXIT
 
 wait_for_safemode() {
-  if docker ps --format '{{.Names}}' | grep -q "^stand-namenode$"; then
-    docker exec stand-namenode hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
-  fi
-  if docker ps --format '{{.Names}}' | grep -q "^stand-namenode-b$"; then
-    docker exec stand-namenode-b hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
-  fi
+  local container
+  for container in stand-namenode stand-namenode-b; do
+    docker ps --format '{{.Names}}' | grep -q "^${container}$" || continue
+    # Without a ticket the dfsadmin call is refused at once and the wait below waits for nothing.
+    if [[ "${KERBEROS}" == "true" ]]; then
+      docker exec "${container}" kinit -kt "/keytabs/${container#stand-}.keytab" "hdfs/${container#stand-}@${REALM}" \
+        || fail "kinit for hdfs/${container#stand-} inside ${container} failed"
+    fi
+    docker exec "${container}" hdfs dfsadmin -safemode wait >/dev/null 2>&1 || true
+  done
 }
 
 log "=== 0. Verify proxy connectivity and HDFS readiness ==="
 wait_for_safemode
 check_ready || fail "Proxy readiness check failed at http://${PROXY_HOST}:${MGMT_PORT}/readyz"
+
+# The reload is applied to the file the running proxy was started with, so on the Kerberos
+# profile (hms-proxy-kerberos.properties) the scenario edits that file, not the plain one. Each
+# config under proxy/ is bind-mounted file by file; cp and >> rewrite it in place, so the
+# container sees the change.
+CONFIG_NAME="hms-proxy.properties"
+if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  CONFIG_NAME="$(basename "$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG)")"
+fi
+CONFIG_FILE="${STAND_DIR}/proxy/${CONFIG_NAME}"
+BACKUP_FILE="${CONFIG_FILE}.bak"
+[[ -f "${CONFIG_FILE}" ]] || fail "proxy config ${CONFIG_FILE} not found"
+# The checks below name hdp as the default catalog and apache as the remote one.
+grep -qx 'routing.default-catalog=hdp' "${CONFIG_FILE}" \
+  || fail "${CONFIG_NAME} does not make hdp the default catalog; run the scenario on .env.kerberos or the plain stand"
+log "Reloading ${CONFIG_FILE}"
 
 # Backup configuration
 cp "${CONFIG_FILE}" "${BACKUP_FILE}"

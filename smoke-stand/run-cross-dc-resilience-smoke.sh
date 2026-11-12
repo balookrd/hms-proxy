@@ -37,10 +37,38 @@ if [[ ! -f "${CLI_JAR}" ]]; then
   CLI_JAR=$(ls -t "${REPO_DIR}"/target/hms-proxy-*-fat.jar 2>/dev/null | head -1 || true)
 fi
 
+# The scenario follows the auth mode of the running proxy: on the Kerberos profile
+# (KERBEROS_ENABLED=true, .env.kerberos) its front door speaks only SASL, so a simple-auth client
+# cannot talk to it. Decided once, before anything restarts the proxy.
+REALM=${REALM:-SMOKE.LOCAL}
+kerberos_enabled() {
+  docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$" \
+    && [[ "$(docker exec "${PROXY_CONTAINER}" printenv KERBEROS_ENABLED 2>/dev/null || true)" == "true" ]]
+}
+KERBEROS=false
+if kerberos_enabled; then
+  KERBEROS=true
+fi
+
 run_cli() {
   local user="$1"
   shift
-  if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  if [[ "${KERBEROS}" == "true" ]]; then
+    # Each scenario user has its own principal and keytab (kdc/entrypoint.sh). The CLI logs in
+    # from the keytab, so the proxy sees <user>@REALM and impersonates it towards the backends.
+    docker exec "${PROXY_CONTAINER}" java \
+      --add-opens=java.base/java.lang=ALL-UNNAMED \
+      --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+      -cp /opt/hms-proxy/hms-proxy.jar \
+      io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
+      --uri "thrift://localhost:9083" \
+      --auth kerberos \
+      --client-principal "${user}@${REALM}" \
+      --keytab "/keytabs/${user}.keytab" \
+      --server-principal "hive/proxy@${REALM}" \
+      "$@"
+  elif docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
     docker exec -e HADOOP_USER_NAME="${user}" "${PROXY_CONTAINER}" java \
       -cp /opt/hms-proxy/hms-proxy.jar \
       io.github.mmalykhin.hmsproxy.tools.HmsMetastoreSmokeCli metadata \
@@ -56,6 +84,38 @@ run_cli() {
       --user "${user}" \
       "$@"
   fi
+}
+
+# Fails fast with a readable message when the KDC is down or the keytab is missing; otherwise the
+# first CLI call dies deep in a GSS stack trace. A private ticket cache keeps the container's
+# default one (used by the Iceberg REST writer) untouched.
+if [[ "${KERBEROS}" == "true" ]]; then
+  log "Kerberos profile detected, checking the admin@${REALM} keytab"
+  docker exec "${PROXY_CONTAINER}" kinit -c FILE:/tmp/krb5cc_cross_dc -kt /keytabs/admin.keytab "admin@${REALM}" \
+    || fail "kinit for admin@${REALM} inside ${PROXY_CONTAINER} failed"
+fi
+
+# The scenario restarts the proxy on its own config and then puts back whatever the stand ran.
+# PROXY_CONFIG and KERBEROS_ENABLED are passed from the shell, which wins over any --env-file, so
+# the recreated container keeps the auth mode of the stand. --no-deps matters: without it compose
+# starts a stopped hms-apache again through depends_on, and the lenient-startup step would boot
+# against a live metastore.
+ORIG_PROXY_CONFIG=""
+if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
+  ORIG_PROXY_CONFIG="$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG 2>/dev/null || true)"
+fi
+ORIG_PROXY_CONFIG="${ORIG_PROXY_CONFIG:-/opt/hms-proxy/hms-proxy.properties}"
+if [[ "${KERBEROS}" == "true" ]]; then
+  CROSS_DC_PROXY_CONFIG=/opt/hms-proxy/hms-proxy-cross-dc-kerberos.properties
+else
+  CROSS_DC_PROXY_CONFIG=/opt/hms-proxy/hms-proxy-cross-dc.properties
+fi
+
+recreate_proxy() {
+  local config="$1"
+  local wait_for_apache="${2:-true}"
+  (cd "${STAND_DIR}" && PROXY_CONFIG="${config}" KERBEROS_ENABLED="${KERBEROS}" WAIT_FOR_APACHE="${wait_for_apache}" \
+    docker compose up -d --no-deps --force-recreate proxy >/dev/null 2>&1)
 }
 
 get_metrics() {
@@ -114,6 +174,7 @@ cleanup() {
 
   run_cli admin --op drop_table --db "${TEST_DB}" --table "${TEST_TBL}" 2>/dev/null || true
   run_cli admin --op drop_table --db "${TEST_DB}" --table "${SHADOW_TBL}" 2>/dev/null || true
+  run_cli admin --op drop_table --db "${TEST_DB}" --table "tbl_forbidden_split_brain" 2>/dev/null || true
   run_cli admin --op drop_database --db "${TEST_DB}" --cascade true 2>/dev/null || true
 
   run_cli admin --op drop_table --db "apache__${TEST_DB}" --table "${TEST_TBL}" 2>/dev/null || true
@@ -121,15 +182,18 @@ cleanup() {
   run_cli admin --op drop_database --db "apache__${TEST_DB}" --cascade true 2>/dev/null || true
 
   if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
-    (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1) || true
+    log "Restoring proxy with ${ORIG_PROXY_CONFIG}..."
+    recreate_proxy "${ORIG_PROXY_CONFIG}" || true
   fi
 }
 trap cleanup EXIT
 
 log "=== 1. Starting proxy with cross-DC resilience configuration ==="
 if docker ps --format '{{.Names}}' | grep -q "^${PROXY_CONTAINER}$"; then
-  (cd "${STAND_DIR}" && PROXY_CONFIG=/opt/hms-proxy/hms-proxy-cross-dc.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1)
+  recreate_proxy "${CROSS_DC_PROXY_CONFIG}" || fail "could not recreate ${PROXY_CONTAINER} with ${CROSS_DC_PROXY_CONFIG}"
   wait_for_proxy_ready 40
+  [[ "$(docker exec "${PROXY_CONTAINER}" printenv PROXY_CONFIG)" == "${CROSS_DC_PROXY_CONFIG}" ]] \
+    || fail "${PROXY_CONTAINER} did not pick up ${CROSS_DC_PROXY_CONFIG}"
 fi
 
 log "=== 2. Setting up test metadata in default (hdp) and remote (apache) catalogs ==="
@@ -261,18 +325,41 @@ if (( FALLBACK_2 <= FALLBACK_1 )); then
 fi
 log "Shadow fallback verified: read-only call succeeded via replica, metric incremented by +$(( FALLBACK_2 - FALLBACK_1 ))"
 
-# Verify strict split-brain protection: mutating RPC (create_table) MUST be rejected
+# Split-brain protection: a mutating RPC on the failed catalog must not fall back to the replica.
+# A bare "the call failed" proves nothing here: with the protection gone the write still fails on
+# the stopped metastore. So the failure must come from the apache route, the fallback counter for
+# create_table must not move, and the table must not exist on the replica.
 log "Verifying split-brain protection (mutating RPC must be denied on outage)..."
-if run_cli admin --op create_table --db "apache__${TEST_DB}" --table "tbl_forbidden_split_brain" >/dev/null 2>&1; then
-  fail "Mutating RPC (create_table) succeeded on failed catalog! Split-brain protection failed."
+SPLIT_BRAIN_TBL="tbl_forbidden_split_brain"
+CREATE_FALLBACK_1=$(get_metric_sum 'hms_proxy_catalog_fallback_total\{.*method="create_table.*\}')
+# The wording depends on where the call died: "Backend catalog 'apache' ..." on the shared session,
+# "Unable to open backend metastore client for catalog apache ..." when an impersonation session
+# (Kerberos) cannot be opened, and the backend client's own "Could not connect to meta store ...
+# hms-apache" passed through unwrapped (simple). All three name the apache route; a MetaException
+# raised after the CLI connected rules out a refused connection or a login failure.
+SPLIT_BRAIN_OUT=$(run_cli admin --op create_table --db "apache__${TEST_DB}" --table "${SPLIT_BRAIN_TBL}" \
+  --expect-error MetaException) \
+  || fail "create_table on the failed apache catalog did not fail with a MetaException"
+echo "${SPLIT_BRAIN_OUT}" | grep -Eq "failed as expected with: MetaException: .*(catalog '?apache'?|hms-apache)" \
+  || fail "create_table failed, but not on the apache route: ${SPLIT_BRAIN_OUT}"
+CREATE_FALLBACK_2=$(get_metric_sum 'hms_proxy_catalog_fallback_total\{.*method="create_table.*\}')
+if (( CREATE_FALLBACK_2 != CREATE_FALLBACK_1 )); then
+  fail "create_table was routed to the shadow catalog (fallback counter ${CREATE_FALLBACK_1} -> ${CREATE_FALLBACK_2})"
 fi
-log "Split-brain protection verified: mutating RPC was rejected with error as expected"
+run_cli admin --op get_table --db "${TEST_DB}" --table "${SPLIT_BRAIN_TBL}" \
+  --expect-error NoSuchObjectException \
+  || fail "${SPLIT_BRAIN_TBL} exists on the hdp replica: the write leaked through the fallback"
+log "Split-brain protection verified: create_table failed on the apache route and left nothing on the replica"
 
 log "=== 8. Testing Lenient Startup Mode ==="
 # Restart proxy while stand-hms-apache is STILL STOPPED
 log "Restarting proxy while apache metastore is stopped (lenient startup test)..."
-(cd "${STAND_DIR}" && WAIT_FOR_APACHE=false PROXY_CONFIG=/opt/hms-proxy/hms-proxy-cross-dc.properties docker compose up -d --force-recreate proxy >/dev/null 2>&1)
+recreate_proxy "${CROSS_DC_PROXY_CONFIG}" false || fail "could not recreate ${PROXY_CONTAINER} with ${CROSS_DC_PROXY_CONFIG}"
 wait_for_proxy_ready 40
+# The point of the step: the proxy came up while apache was down, not after compose revived it.
+if docker ps --format '{{.Names}}' | grep -q "^${APACHE_CONTAINER}$"; then
+  fail "${APACHE_CONTAINER} is running again after the proxy restart; lenient startup was not exercised"
+fi
 
 # Verify local catalog works normally
 HDP_DATA=$(run_cli admin --op get_table --db "${TEST_DB}" --table "${TEST_TBL}")

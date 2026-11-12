@@ -294,6 +294,8 @@ services:
     environment:
       PROXY_CONFIG: "${PROXY_CONFIG:-/opt/hms-proxy/hms-proxy.properties}"
       KERBEROS_ENABLED: "${KERBEROS_ENABLED:-false}"
+      # false lets the proxy start while hms-apache is down (cross-DC lenient startup check).
+      WAIT_FOR_APACHE: "${WAIT_FOR_APACHE:-true}"
       KEYTAB: /keytabs/proxy.keytab
     ports:
       - "19085:9083"
@@ -312,7 +314,9 @@ services:
       - ./proxy/hms-proxy-ranger.properties:/opt/hms-proxy/hms-proxy-ranger.properties:ro
       - ./proxy/hms-proxy-ranger-kerberos.properties:/opt/hms-proxy/hms-proxy-ranger-kerberos.properties:ro
       - ./proxy/hms-proxy-db-cache.properties:/opt/hms-proxy/hms-proxy-db-cache.properties:ro
+      - ./proxy/hms-proxy-db-cache-kerberos.properties:/opt/hms-proxy/hms-proxy-db-cache-kerberos.properties:ro
       - ./proxy/hms-proxy-cross-dc.properties:/opt/hms-proxy/hms-proxy-cross-dc.properties:ro
+      - ./proxy/hms-proxy-cross-dc-kerberos.properties:/opt/hms-proxy/hms-proxy-cross-dc-kerberos.properties:ro
       - ./proxy/entrypoint.sh:/opt/hms-proxy/entrypoint.sh:ro
       - ./ranger/policy-cache:/opt/hms-proxy/ranger-cache
       # The Iceberg REST writer runs inside this container: data-file writes need the

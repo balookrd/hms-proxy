@@ -440,11 +440,17 @@ public final class HmsMetastoreSmokeCli {
 
     applyOptionalKrbs(cli);
     HiveConf conf = baseConf(cli, uri);
+    String expectError = cli.get("expect-error");
+    boolean expectingError = expectError != null && !expectError.isBlank();
+    // Set once the session is up: a failure to connect or log in is never the expected error, so a
+    // negative check cannot pass on a proxy it never reached.
+    boolean opStarted = false;
 
     try (HiveMetaStoreClient client = openApacheClient(cli, conf)) {
       ThriftHiveMetastore.Iface thriftClient = extractThriftClient(client);
 
       maybeSendSetUgi(cli, thriftClient);
+      opStarted = true;
 
       switch (op.toLowerCase(Locale.ROOT)) {
         case "get_all_databases" -> {
@@ -625,27 +631,11 @@ public final class HmsMetastoreSmokeCli {
           }
           String newDb = cli.getOrDefault("new-db", db);
           String newTable = cli.required("new-table");
-          String expectError = cli.get("expect-error");
-          try {
-            org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
-            t.setDbName(newDb);
-            t.setTableName(newTable);
-            thriftClient.alter_table(db, table, t);
-            if (expectError != null && !expectError.isBlank()) {
-              throw new IllegalStateException("Expected error containing '" + expectError + "', but rename_table succeeded");
-            }
-            System.out.println("renamed table from " + db + "." + table + " to " + newDb + "." + newTable);
-          } catch (Exception e) {
-            if (expectError != null && !expectError.isBlank()) {
-              String msg = e.getMessage();
-              if (msg != null && msg.contains(expectError)) {
-                System.out.println("rename_table failed as expected with: " + msg);
-                break;
-              }
-              throw new IllegalStateException("Expected error containing '" + expectError + "', but got: " + msg, e);
-            }
-            throw e;
-          }
+          org.apache.hadoop.hive.metastore.api.Table t = thriftClient.get_table(db, table);
+          t.setDbName(newDb);
+          t.setTableName(newTable);
+          thriftClient.alter_table(db, table, t);
+          System.out.println("renamed table from " + db + "." + table + " to " + newDb + "." + newTable);
         }
         case "exchange_partition" -> {
           String sourceDb = cli.getOrDefault("source-db", db);
@@ -657,26 +647,10 @@ public final class HmsMetastoreSmokeCli {
           String destTable = cli.required("dest-table");
           String partSpecsStr = cli.required("partition-specs");
           Map<String, String> partitionSpecs = parsePartitionSpecs(partSpecsStr);
-          String expectError = cli.get("expect-error");
-          try {
-            org.apache.hadoop.hive.metastore.api.Partition exchanged =
-                thriftClient.exchange_partition(partitionSpecs, sourceDb, sourceTable, destDb, destTable);
-            if (expectError != null && !expectError.isBlank()) {
-              throw new IllegalStateException("Expected error containing '" + expectError + "', but exchange_partition succeeded");
-            }
-            System.out.println("exchanged partition db=" + exchanged.getDbName() + " table=" + exchanged.getTableName()
-                + " values=" + exchanged.getValues() + " location=" + (exchanged.getSd() != null ? exchanged.getSd().getLocation() : "null"));
-          } catch (Exception e) {
-            if (expectError != null && !expectError.isBlank()) {
-              String msg = e.getMessage();
-              if (msg != null && msg.contains(expectError)) {
-                System.out.println("exchange_partition failed as expected with: " + msg);
-                break;
-              }
-              throw new IllegalStateException("Expected error containing '" + expectError + "', but got: " + msg, e);
-            }
-            throw e;
-          }
+          org.apache.hadoop.hive.metastore.api.Partition exchanged =
+              thriftClient.exchange_partition(partitionSpecs, sourceDb, sourceTable, destDb, destTable);
+          System.out.println("exchanged partition db=" + exchanged.getDbName() + " table=" + exchanged.getTableName()
+              + " values=" + exchanged.getValues() + " location=" + (exchanged.getSd() != null ? exchanged.getSd().getLocation() : "null"));
         }
         case "rename_partition" -> {
           if (db == null || table == null) {
@@ -754,7 +728,40 @@ public final class HmsMetastoreSmokeCli {
         }
         default -> throw new IllegalArgumentException("Unknown metadata op: " + op);
       }
+    } catch (Exception failure) {
+      if (!expectingError || !opStarted) {
+        throw failure;
+      }
+      checkExpectedError(op, expectError, failure);
+      return;
     }
+    if (expectingError) {
+      checkExpectedError(op, expectError, null);
+    }
+  }
+
+  /**
+   * Matches an op outcome against {@code --expect-error}. Each throwable of the cause chain is
+   * compared as {@code SimpleClassName: message}, so the option takes either a class name
+   * ({@code NoSuchObjectException}) or a fragment of the message. Throws unless the op failed with
+   * a matching error.
+   */
+  static void checkExpectedError(String op, String expectError, Throwable failure) {
+    if (failure == null) {
+      throw new IllegalStateException(
+          "Expected error containing '" + expectError + "', but " + op + " succeeded");
+    }
+    Throwable current = failure;
+    for (int depth = 0; current != null && depth < 10; depth++) {
+      String observed = current.getClass().getSimpleName() + ": " + current.getMessage();
+      if (observed.contains(expectError)) {
+        System.out.println(op + " failed as expected with: " + observed);
+        return;
+      }
+      current = current.getCause() == current ? null : current.getCause();
+    }
+    throw new IllegalStateException(
+        "Expected error containing '" + expectError + "', but " + op + " failed with: " + failure, failure);
   }
 
   private static HiveMetaStoreClient openApacheClient(CliArgs cli, HiveConf conf) throws Exception {
