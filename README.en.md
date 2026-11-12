@@ -273,6 +273,14 @@ idle longer than `catalog.<name>.session-validate-after-idle-ms` (default `5000`
 `getStatus`; a session that fails the check is closed and the write goes out once on a new one. `0`
 turns the check off. The cost is one extra round-trip per write after a pause longer than the
 threshold. Details and metrics are in [FAILOVER.en.md](FAILOVER.en.md), section 2.1.
+
+An example alert on failed writes that reached clients:
+
+```yaml
+# A call failed with a transport error and was not replayed: the client got the failure.
+- alert: HmsProxyBackendCallNotReplayed
+  expr: increase(hms_proxy_backend_calls_not_replayed_total[10m]) > 0
+```
 The shared pool then carries only:
 
 - internal proxy-driven calls such as backend health probes and reconnect bookkeeping;

@@ -242,6 +242,14 @@ catalog.catalog1.shared-session-pool-size=8
 вызовом `getStatus`; не прошедшая проверку сессия закрывается, и запись уходит один раз по новой.
 `0` отключает проверку. Цена — один дополнительный round-trip на запись после паузы длиннее порога.
 Подробности и метрики — в [FAILOVER.md](FAILOVER.md), раздел 2.1.
+
+Пример алерта на отказы записи, дошедшие до клиентов:
+
+```yaml
+# Вызов упал с транспортной ошибкой и не был повторён: клиент получил отказ.
+- alert: HmsProxyBackendCallNotReplayed
+  expr: increase(hms_proxy_backend_calls_not_replayed_total[10m]) > 0
+```
 В shared пуле тогда остаются только:
 
 - внутренние proxy-driven вызовы: backend health probe и reconnect-логика;

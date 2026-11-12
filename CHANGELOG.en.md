@@ -10,6 +10,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ### Added
 
+- **Grafana panels and an example alert for the session check metrics**: the Backend Operations row of the dashboard gains the panels `Backend Calls Not Replayed by Method / Phase` (`hms_proxy_backend_calls_not_replayed_total`) and `Backend Session Liveness Checks by Pool / Outcome` (`hms_proxy_backend_session_validations_total`); the impersonation session evictions panel description now covers the `stale_idle` and `stale_probe` reasons. README carries an example alert, `HmsProxyBackendCallNotReplayed`.
+
 - **Proxy and backend liveness metrics**: `hms_proxy_up`, `hms_proxy_start_time_seconds`, `hms_proxy_backend_up{backend}`, `hms_proxy_backend_last_success_timestamp_seconds{backend}`, `hms_proxy_backend_last_probe_timestamp_seconds{backend}`, and `hms_proxy_backend_circuit_state{backend,state}`. Values are sampled at scrape time from the backend runtime state that also backs `/readyz`. Backend liveness without client traffic is only visible with `routing.backend-state-polling.enabled=true`; example alerts are in the README, panels in the Grafana dashboard.
 
 - **Iceberg REST request body limit (`rest-catalog.max-request-body-bytes`, default 16 MiB)**: a larger body is refused with `413` before any JSON parsing, from its `Content-Length` or, for a chunked upload, as soon as more than the limit has been read. Previously a body of any size was parsed into memory whole.
