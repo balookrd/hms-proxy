@@ -646,7 +646,10 @@ until it does: the metastore client does not stop its connect retries on cancell
 probe of the same backend would take another thread. Such a backend is marked unavailable (`previous
 probe still running`), and the probes of the other backends do not wait in the queue. With
 `routing.backend-state-polling.max-parallelism` below the number of catalogs the queue is still
-possible: the probe pool is never larger than that value.
+possible: the probe pool is never larger than that value. A probe that returned before it is awaited
+counts by its own result even when a hung probe of another backend used up the round's shared
+deadline. Without background polling `/readyz` probes the backends itself under the same rules: both
+paths use one `routing/BackendProbeRunner`.
 
 Example alerts (with `interval-ms=10000`):
 

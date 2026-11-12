@@ -9,6 +9,7 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
+import io.github.mmalykhin.hmsproxy.routing.BackendProbeRunner;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.util.HttpResponseWriter;
 import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
@@ -16,18 +17,13 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,6 +48,15 @@ public final class ManagementHttpServer implements AutoCloseable {
       CatalogRouter router,
       ProxyObservability observability
   ) throws IOException {
+    return open(config, router, observability, CatalogBackend::probeConnectivity);
+  }
+
+  static ManagementHttpServer open(
+      ProxyConfig config,
+      CatalogRouter router,
+      ProxyObservability observability,
+      BackendProbeRunner.BackendProbe backendProbe
+  ) throws IOException {
     if (!config.management().enabled()) {
       return null;
     }
@@ -72,6 +77,7 @@ public final class ManagementHttpServer implements AutoCloseable {
       respond(exchange, 200, "application/json; charset=utf-8", body);
     });
     ExecutorService readinessProbeExecutor = null;
+    BackendProbeRunner readinessProbeRunner = null;
     if (!config.latencyRouting().backendStatePolling().enabled() && !router.backends().isEmpty()) {
       int probePoolSize = Math.max(1, Math.min(
           config.latencyRouting().backendStatePolling().maxParallelism(),
@@ -84,8 +90,9 @@ public final class ManagementHttpServer implements AutoCloseable {
           new ArrayBlockingQueue<>(router.backends().size()),
           namedThreadFactory("hms-proxy-readyz-probe"),
           new ThreadPoolExecutor.CallerRunsPolicy());
+      readinessProbeRunner = new BackendProbeRunner(readinessProbeExecutor, backendProbe);
     }
-    server.createContext("/readyz", new ReadinessHandler(config, router, observability, readinessProbeExecutor));
+    server.createContext("/readyz", new ReadinessHandler(config, router, observability, readinessProbeRunner));
     server.createContext("/metrics", exchange -> respond(
         exchange,
         200,
@@ -156,18 +163,18 @@ public final class ManagementHttpServer implements AutoCloseable {
     private final ProxyConfig config;
     private final CatalogRouter router;
     private final ProxyObservability observability;
-    private final ExecutorService probeExecutor;
+    private final BackendProbeRunner probeRunner;
     private final SingleFlightCache<ProbeSnapshot> probeCache;
 
     private ReadinessHandler(
         ProxyConfig config,
         CatalogRouter router,
         ProxyObservability observability,
-        ExecutorService probeExecutor) {
+        BackendProbeRunner probeRunner) {
       this.config = config;
       this.router = router;
       this.observability = observability;
-      this.probeExecutor = probeExecutor;
+      this.probeRunner = probeRunner;
       this.probeCache = new SingleFlightCache<>(config.management().readinessCacheMs());
     }
 
@@ -248,9 +255,9 @@ public final class ManagementHttpServer implements AutoCloseable {
     }
 
     private ProbeSnapshot refreshProbes() {
-      // probeExecutor is only created when background backend-state polling is disabled; with
+      // probeRunner is only created when background backend-state polling is disabled; with
       // polling on, readiness reuses the poller's results and only refreshes Kerberos status.
-      if (probeExecutor != null) {
+      if (probeRunner != null) {
         runReadinessProbes();
       }
       return new ProbeSnapshot(
@@ -264,56 +271,22 @@ public final class ManagementHttpServer implements AutoCloseable {
     }
 
     private void runReadinessProbes() {
-      long probeTimeoutMs = config.latencyRouting().backendStatePolling().probeTimeoutMs();
-      List<CatalogBackend> backends = new ArrayList<>(router.backends());
-      List<ProbeInFlight> inFlight = new ArrayList<>(backends.size());
-      for (CatalogBackend backend : backends) {
-        long startedAt = System.nanoTime();
-        Future<?> probe = probeExecutor.submit((Callable<Void>) () -> {
-          try {
-            backend.probeConnectivity(probeTimeoutMs);
-          } catch (Exception e) {
-            throw e;
-          } catch (Throwable t) {
-            throw new RuntimeException(t);
-          }
-          return null;
-        });
-        inFlight.add(new ProbeInFlight(backend, startedAt, probe));
-      }
-      long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(probeTimeoutMs);
-      for (ProbeInFlight entry : inFlight) {
-        try {
-          long remainingNanos = deadlineNanos - System.nanoTime();
-          if (remainingNanos <= 0L) {
-            entry.probe.cancel(true);
-            throw new TimeoutException("readiness probe deadline exceeded");
-          }
-          entry.probe.get(remainingNanos, TimeUnit.NANOSECONDS);
-          observability.runtimeState().recordBackendProbeSuccess(
-              entry.backend.name(),
-              (System.nanoTime() - entry.startedAt) / 1_000_000L,
-              config.latencyRouting());
-        } catch (TimeoutException e) {
-          entry.probe.cancel(true);
-          observability.runtimeState().recordBackendProbeFailure(
-              entry.backend.name(), e, config.latencyRouting());
-        } catch (ExecutionException e) {
-          observability.runtimeState().recordBackendProbeFailure(
-              entry.backend.name(),
-              e.getCause() != null ? e.getCause() : e,
-              config.latencyRouting());
-        } catch (InterruptedException e) {
-          entry.probe.cancel(true);
-          Thread.currentThread().interrupt();
-          observability.runtimeState().recordBackendProbeFailure(
-              entry.backend.name(), e, config.latencyRouting());
-          return;
-        }
-      }
-    }
+      probeRunner.runRound(
+          List.copyOf(router.backends()),
+          config.latencyRouting().backendStatePolling().probeTimeoutMs(),
+          new BackendProbeRunner.ProbeListener() {
+            @Override
+            public void succeeded(CatalogBackend backend, long latencyMs) {
+              observability.runtimeState().recordBackendProbeSuccess(
+                  backend.name(), latencyMs, config.latencyRouting());
+            }
 
-    private record ProbeInFlight(CatalogBackend backend, long startedAt, Future<?> probe) {
+            @Override
+            public void failed(CatalogBackend backend, Throwable error) {
+              observability.runtimeState().recordBackendProbeFailure(
+                  backend.name(), error, config.latencyRouting());
+            }
+          });
     }
 
     private KerberosHealthProbe.KerberosStatus configKerberosStatus() {

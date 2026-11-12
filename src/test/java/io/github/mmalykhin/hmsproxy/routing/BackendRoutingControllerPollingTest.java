@@ -47,7 +47,7 @@ public class BackendRoutingControllerPollingTest {
     CountDownLatch release = new CountDownLatch(1);
     AtomicInteger deadProbes = new AtomicInteger();
     AtomicInteger liveProbes = new AtomicInteger();
-    BackendRoutingController.BackendProbe probe = (backend, timeoutMs) -> {
+    BackendProbeRunner.BackendProbe probe = (backend, timeoutMs) -> {
       if (backend.name().equals("dead")) {
         deadProbes.incrementAndGet();
         // Like the metastore client's connect retries: cancellation does not stop it.

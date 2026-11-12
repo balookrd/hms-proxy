@@ -165,6 +165,9 @@ wait_for_proxy_ready() {
 }
 
 cleanup() {
+  if [[ -n "${READYZ_WATCH_PID:-}" ]]; then
+    kill "${READYZ_WATCH_PID}" 2>/dev/null || true
+  fi
   log "Cleaning up test databases and restoring standard stand configuration..."
   # Ensure secondary metastore is started if it was stopped
   if docker ps -a --format '{{.Names}}' | grep -q "^${APACHE_CONTAINER}$"; then
@@ -280,6 +283,25 @@ sleep 4
 log "Simulating remote datacenter outage: stopping ${APACHE_CONTAINER}..."
 docker stop "${APACHE_CONTAINER}" >/dev/null
 
+# Readiness is sampled every second from the moment of the outage, not once in step 6: a /readyz
+# that reports the required hdp catalog down for a few seconds after apache goes away (a hung apache
+# probe failing the hdp one) is invisible to a single late sample.
+READYZ_WATCH_SECONDS=${READYZ_WATCH_SECONDS:-20}
+READYZ_WATCH_FILE="$(mktemp)"
+(
+  for _ in $(seq 1 "${READYZ_WATCH_SECONDS}"); do
+    sample=$(get_readyz_code_and_body)
+    code=$(echo "${sample}" | tail -n 1)
+    if [[ "${code}" == "200" ]]; then
+      echo "200" >> "${READYZ_WATCH_FILE}"
+    else
+      echo "${code} $(echo "${sample}" | sed '$d' | tr -d '\n' | cut -c1-400)" >> "${READYZ_WATCH_FILE}"
+    fi
+    sleep 1
+  done
+) &
+READYZ_WATCH_PID=$!
+
 STALE_HIT_1=$(get_metric_sum 'hms_proxy_cache_requests_total\{.*cache="table_metadata".*result="stale_hit".*\}')
 
 # Query remote table while secondary HMS is down: serve-stale must return cached copy
@@ -295,6 +317,19 @@ log "Serve-stale-on-error verified: remote table returned from stale cache, stal
 
 log "=== 6. Testing Granular /readyz Health Probing ==="
 # While secondary HMS is down, verify /readyz remains 200 because required-for-readiness=false for apache
+log "Waiting for the ${READYZ_WATCH_SECONDS}s /readyz watch that started with the outage..."
+wait "${READYZ_WATCH_PID}" || true
+READYZ_WATCH_PID=""
+READYZ_SAMPLES=$(grep -c . "${READYZ_WATCH_FILE}" || true)
+READYZ_BAD=$(grep -v '^200$' "${READYZ_WATCH_FILE}" || true)
+rm -f "${READYZ_WATCH_FILE}"
+if (( READYZ_SAMPLES < READYZ_WATCH_SECONDS / 2 )); then
+  fail "/readyz watch collected only ${READYZ_SAMPLES} samples in ${READYZ_WATCH_SECONDS}s"
+fi
+if [[ -n "${READYZ_BAD}" ]]; then
+  fail "/readyz left 200 while only the non-required apache catalog was down ($(echo "${READYZ_BAD}" | grep -c .) of ${READYZ_SAMPLES} samples); first: $(echo "${READYZ_BAD}" | head -1)"
+fi
+log "/readyz stayed 200 in all ${READYZ_SAMPLES} samples since the outage began"
 READYZ_OUT=$(get_readyz_code_and_body)
 READYZ_CODE=$(echo "${READYZ_OUT}" | tail -n 1)
 READYZ_BODY=$(echo "${READYZ_OUT}" | sed '$d')
