@@ -701,6 +701,8 @@ The scenario validates:
 - Partition renaming inside a federated catalog (`apache__default`) with correct namespace translation.
 - External partition location rewriting and normalization (`ExternalTableLocationRewriter`) during partition additions (`add_partition`) and modifications (`alter_partition`).
 
+Before the checks the scenario waits for both namenodes to leave safe mode (`hdfs dfsadmin -safemode wait`, after a `kinit` with the namenode keytab under Kerberos): right after the stand is recreated the first `create_table` otherwise fails with `SafeModeException`.
+
 ## Cross-DC and WAN resilience (`run-cross-dc-resilience-smoke.sh`)
 
 Exercises the proxy's failover mechanisms for linked remote datacenters and degraded WAN links:

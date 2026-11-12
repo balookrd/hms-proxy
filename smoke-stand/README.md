@@ -707,6 +707,8 @@ cd smoke-stand
 - Переименование партиции в федеративном каталоге (`apache__default`) с корректной трансляцией namespace.
 - Нормализацию и переписывание локаций внешних партиций (`ExternalTableLocationRewriter`) при добавлении (`add_partition`) и изменении (`alter_partition`) партиций.
 
+Перед проверками сценарий ждёт выхода обоих namenode из safemode (`hdfs dfsadmin -safemode wait`, под Kerberos после `kinit` по keytab namenode): сразу после пересоздания стенда первый `create_table` иначе падает с `SafeModeException`.
+
 ## Отказоустойчивость Cross-DC и WAN (`run-cross-dc-resilience-smoke.sh`)
 
 Проверяет механизмы отказоустойчивости при связывании удалённых датацентров и деградации WAN-каналов:

@@ -118,6 +118,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The scenario creates managed tables, i.e. HDFS directories, right away; on a freshly recreated
+# stand the namenodes are still in safe mode and the first create_table fails with
+# SafeModeException. On the Kerberos profile a namenode container holds no ticket, so it is logged
+# in by its own keytab first; a refused dfsadmin fails the run instead of skipping the wait.
+wait_for_safemode() {
+  local container host
+  for container in stand-namenode stand-namenode-b; do
+    docker ps --format '{{.Names}}' | grep -q "^${container}$" || continue
+    host="${container#stand-}"
+    if [[ "${KERBEROS}" == "true" ]]; then
+      docker exec "${container}" kinit -kt "/keytabs/${host}.keytab" "hdfs/${host}@${REALM}" \
+        || fail "kinit for hdfs/${host} inside ${container} failed"
+    fi
+    docker exec "${container}" hdfs dfsadmin -safemode wait >/dev/null \
+      || fail "hdfs dfsadmin -safemode wait failed inside ${container}"
+  done
+}
+wait_for_safemode
+
 log "=== 1. Table Rename within Catalog and Negative Cross-Catalog Denial ==="
 log "Creating table in default catalog: hdp__default.${TBL_REN_SRC}"
 run_cli admin --op create_table --db "hdp__default" --table "${TBL_REN_SRC}"
