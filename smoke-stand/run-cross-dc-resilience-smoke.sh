@@ -169,6 +169,8 @@ cleanup() {
     kill "${READYZ_WATCH_PID}" 2>/dev/null || true
   fi
   log "Cleaning up test databases and restoring standard stand configuration..."
+  # A run that failed inside step 4b leaves the metastore paused; docker start does not resume it.
+  docker unpause "${APACHE_CONTAINER}" >/dev/null 2>&1 || true
   # Ensure secondary metastore is started if it was stopped
   if docker ps -a --format '{{.Names}}' | grep -q "^${APACHE_CONTAINER}$"; then
     docker start "${APACHE_CONTAINER}" >/dev/null 2>&1 || true
@@ -272,6 +274,59 @@ if (( TABLE_MISS_AFTER_ALTER <= TABLE_MISS_BEFORE_ALTER )); then
 fi
 log "Cache invalidation on alter_table verified successfully"
 
+log "=== 4b. Testing /readyz with a Hung (Not Down) Remote Catalog ==="
+# docker stop makes the apache probe fail fast once the JVM's 30 s DNS cache for hms-apache has
+# expired (UnknownHostException), so it never exercises a probe that hangs. docker pause does: the
+# name resolves and the kernel accepts the connection, but the metastore never answers, like a
+# remote DC that is unreachable rather than gone. A hung apache probe must not fail the hdp one,
+# and with apache not required for readiness /readyz must stay 200 the whole time.
+#
+# Measured on the Kerberos stand with the pre-fix /readyz prober: the hdp probe was failed only when
+# the proxy had seen no backend traffic for ~35 s before the pause (503 in every sample); right after
+# traffic the same pause left /readyz at 200. The likely cause is the JVM's 30 s DNS cache pushing the
+# apache probe past its deadline, which equals its own socket timeout - inferred, not measured. The
+# idle wait below reproduces the measured precondition so that a regression turns this step red.
+HUNG_IDLE_SECONDS=${HUNG_IDLE_SECONDS:-35}
+HUNG_WATCH_SECONDS=${HUNG_WATCH_SECONDS:-20}
+log "Leaving the proxy without backend traffic for ${HUNG_IDLE_SECONDS}s before the pause..."
+sleep "${HUNG_IDLE_SECONDS}"
+docker pause "${APACHE_CONTAINER}" >/dev/null
+HUNG_SAMPLES=0
+HUNG_SEEN_DOWN=false
+HUNG_BAD=""
+HUNG_DEADLINE=$(( SECONDS + HUNG_WATCH_SECONDS ))
+while (( SECONDS < HUNG_DEADLINE )); do
+  sample=$(get_readyz_code_and_body)
+  code=$(echo "${sample}" | tail -n 1)
+  body=$(echo "${sample}" | sed '$d')
+  HUNG_SAMPLES=$(( HUNG_SAMPLES + 1 ))
+  if [[ "${code}" != "200" && -z "${HUNG_BAD}" ]]; then
+    HUNG_BAD="${code} $(echo "${body}" | tr -d '\n' | cut -c1-400)"
+  fi
+  if echo "${body}" | grep -q '"backend":"apache","requiredForReadiness":false,"connected":false'; then
+    HUNG_SEEN_DOWN=true
+  fi
+  sleep 1
+done
+docker unpause "${APACHE_CONTAINER}" >/dev/null
+if [[ -n "${HUNG_BAD}" ]]; then
+  fail "/readyz left 200 while the non-required apache catalog was hung; first bad sample: ${HUNG_BAD}"
+fi
+# Without this the step would also pass if the probes never noticed the hang at all.
+[[ "${HUNG_SEEN_DOWN}" == "true" ]] \
+  || fail "apache never showed connected=false in /readyz during the ${HUNG_WATCH_SECONDS}s pause (${HUNG_SAMPLES} samples)"
+(( HUNG_SAMPLES >= 3 )) || fail "/readyz watch collected only ${HUNG_SAMPLES} samples during the pause"
+log "/readyz stayed 200 in all ${HUNG_SAMPLES} samples while apache was hung, and reported apache down"
+log "Waiting for apache to answer probes again..."
+for _ in $(seq 1 60); do
+  if get_readyz_code_and_body | sed '$d' | grep -q '"backend":"apache","requiredForReadiness":false,"connected":true'; then
+    break
+  fi
+  sleep 1
+done
+get_readyz_code_and_body | sed '$d' | grep -q '"backend":"apache","requiredForReadiness":false,"connected":true' \
+  || fail "apache did not come back in /readyz after docker unpause"
+
 log "=== 5. Testing Serve-Stale-on-Error on Remote Outage ==="
 # Prime cache for remote unique table
 run_cli admin --op get_table --db "apache__${TEST_DB}" --table "${UNIQUE_TBL}" >/dev/null
@@ -283,9 +338,8 @@ sleep 4
 log "Simulating remote datacenter outage: stopping ${APACHE_CONTAINER}..."
 docker stop "${APACHE_CONTAINER}" >/dev/null
 
-# Readiness is sampled every second from the moment of the outage, not once in step 6: a /readyz
-# that reports the required hdp catalog down for a few seconds after apache goes away (a hung apache
-# probe failing the hdp one) is invisible to a single late sample.
+# Readiness is sampled every second from the moment of the outage, not once in step 6. This covers a
+# backend that is gone (connection refused, then an unresolvable name); a hung backend is step 4b.
 READYZ_WATCH_SECONDS=${READYZ_WATCH_SECONDS:-20}
 READYZ_WATCH_FILE="$(mktemp)"
 (
