@@ -280,16 +280,11 @@ log "=== 4b. Testing /readyz with a Hung (Not Down) Remote Catalog ==="
 # name resolves and the kernel accepts the connection, but the metastore never answers, like a
 # remote DC that is unreachable rather than gone. A hung apache probe must not fail the hdp one,
 # and with apache not required for readiness /readyz must stay 200 the whole time.
-#
-# Measured on the Kerberos stand with the pre-fix /readyz prober: the hdp probe was failed only when
-# the proxy had seen no backend traffic for ~35 s before the pause (503 in every sample); right after
-# traffic the same pause left /readyz at 200. The likely cause is the JVM's 30 s DNS cache pushing the
-# apache probe past its deadline, which equals its own socket timeout - inferred, not measured. The
-# idle wait below reproduces the measured precondition so that a regression turns this step red.
-HUNG_IDLE_SECONDS=${HUNG_IDLE_SECONDS:-35}
+# The cross-DC configs declare catalogs=apache,hdp, so the hung apache probe is awaited before the
+# hdp one: the case where a prober that fails finished probes at the shared deadline turns /readyz
+# 503. With the catalogs in the other order that prober passed this step. Measured: with the
+# isDone() check removed from BackendProbeRunner this step failed 3 of 3 runs, with it passed 3 of 3.
 HUNG_WATCH_SECONDS=${HUNG_WATCH_SECONDS:-20}
-log "Leaving the proxy without backend traffic for ${HUNG_IDLE_SECONDS}s before the pause..."
-sleep "${HUNG_IDLE_SECONDS}"
 docker pause "${APACHE_CONTAINER}" >/dev/null
 HUNG_SAMPLES=0
 HUNG_SEEN_DOWN=false
