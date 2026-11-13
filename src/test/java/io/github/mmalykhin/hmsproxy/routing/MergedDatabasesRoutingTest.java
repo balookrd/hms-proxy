@@ -582,6 +582,55 @@ public class MergedDatabasesRoutingTest {
         "catalog2", second.catalogName());
   }
 
+  // A name present in two merged catalogs goes to the one declared first in catalogs=. The walk
+  // used to follow Map.copyOf order, salted per JVM start, so the same name could route to a
+  // different catalog after a restart. Both declaration orders are checked: within one JVM the old
+  // salted order is fixed, so one of the two failed on every run.
+  @Test
+  public void aNameInTwoMergedCatalogsGoesToTheOneDeclaredFirst() throws Throwable {
+    Assert.assertEquals("remoteB", resolveSharedName(List.of("remoteB", "remoteA")));
+    Assert.assertEquals("remoteA", resolveSharedName(List.of("remoteA", "remoteB")));
+  }
+
+  private String resolveSharedName(List<String> mergedOrder) throws Throwable {
+    Map<String, CatalogConfig> catalogs = new LinkedHashMap<>();
+    catalogs.put("catalog1", new CatalogConfig(
+        "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), false, null, null,
+        Map.of("hive.metastore.uris", "thrift://one")));
+    for (String name : mergedOrder) {
+      catalogs.put(name, new CatalogConfig(
+          name, name, "file:///" + name, false, CatalogAccessMode.READ_WRITE, List.of(),
+          CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+          Map.of("hive.metastore.uris", "thrift://" + name)));
+    }
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(catalogs)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    for (String name : config.catalogs().keySet()) {
+      boolean holdsShared = !name.equals("catalog1");
+      backends.put(name, newBackend(config, config.catalogs().get(name), new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get(name), newSession((proxy, method, args) -> {
+            if ("get_database".equals(method.getName()) && holdsShared && "shared".equals(args[0])) {
+              Database db = new Database();
+              db.setName("shared");
+              return db;
+            }
+            if ("get_database".equals(method.getName())) {
+              throw new NoSuchObjectException("No such db in " + name + ": " + args[0]);
+            }
+            throw new UnsupportedOperationException(method.getName());
+          }))));
+    }
+    return new CatalogRouter(config, backends).resolveDatabase("shared").catalogName();
+  }
+
   @FunctionalInterface
   private interface RemoteGetDatabase {
     Object answer(String dbName, int callNumber) throws Exception;

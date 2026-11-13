@@ -1,5 +1,7 @@
 package io.github.mmalykhin.hmsproxy.config;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -44,8 +46,20 @@ public record ProxyConfig(
 ) {
   public static final long DEFAULT_RELOAD_POLL_INTERVAL_SECONDS = 5L;
 
+  private static Map<String, CatalogConfig> copyInDeclaredOrder(Map<String, CatalogConfig> catalogs) {
+    Map<String, CatalogConfig> copy = new LinkedHashMap<>();
+    for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+      // Same null rejection as Map.copyOf.
+      copy.put(Objects.requireNonNull(entry.getKey()), Objects.requireNonNull(entry.getValue()));
+    }
+    return Collections.unmodifiableMap(copy);
+  }
+
   public ProxyConfig {
-    catalogs = Map.copyOf(catalogs);
+    // Declared order, not Map.copyOf: the iteration order of an immutable Map is salted per JVM
+    // start, so every catalog walk (router backends, probes, fan-out, listings) changed order from
+    // one restart to the next.
+    catalogs = copyInDeclaredOrder(catalogs);
     backend = backend == null ? new BackendConfig(Map.of()) : backend;
     compatibility = compatibility == null
         ? new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false)
