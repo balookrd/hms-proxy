@@ -1,11 +1,15 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.security.DelegationTokenStore;
+import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
 import org.apache.thrift.TException;
 import org.apache.thrift.TProcessor;
 import org.junit.Assert;
@@ -148,6 +152,92 @@ public class FrontDoorSecurityTest {
 
     Assert.assertEquals(java.util.Collections.singletonList(null), observedAddresses);
     Assert.assertEquals(java.util.Collections.singletonList(null), observedUsers);
+  }
+
+  @Test
+  public void delegationTokenOperationsWrapTokenStoreExceptionInMetaException() {
+    DelegationTokenStore.TokenStoreException zkError =
+        new DelegationTokenStore.TokenStoreException(
+            "Error getting children for /hive/hms-proxy-delegation-tokens/METASTORE/tokens",
+            new RuntimeException("connection loss"));
+    MetastoreDelegationTokenManager failingManager = new MetastoreDelegationTokenManager() {
+      @Override
+      public String getDelegationToken(String owner, String renewer, String remoteAddr) {
+        throw zkError;
+      }
+
+      @Override
+      public long renewDelegationToken(String tokenStrForm) {
+        throw zkError;
+      }
+
+      @Override
+      public void cancelDelegationToken(String tokenStrForm) {
+        throw zkError;
+      }
+    };
+    FrontDoorSecurity security = new FrontDoorSecurity(
+        new Configuration(false), null, null, failingManager, null);
+
+    MetaException issueError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.issueDelegationToken("alice", "hive"));
+    Assert.assertTrue(issueError.getMessage().contains("Unable to issue delegation token"));
+    Assert.assertTrue(issueError.getMessage().contains("Error getting children"));
+    Assert.assertSame(zkError, issueError.getCause());
+
+    MetaException renewError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.renewDelegationToken("tok"));
+    Assert.assertTrue(renewError.getMessage().contains("Unable to renew delegation token"));
+    Assert.assertSame(zkError, renewError.getCause());
+
+    MetaException cancelError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.cancelDelegationToken("tok"));
+    Assert.assertTrue(cancelError.getMessage().contains("Unable to cancel delegation token"));
+    Assert.assertSame(zkError, cancelError.getCause());
+  }
+
+  @Test
+  public void delegationTokenOperationsWrapIoExceptionInMetaException() {
+    IOException ioError = new IOException("Token can't be found");
+    MetastoreDelegationTokenManager failingManager = new MetastoreDelegationTokenManager() {
+      @Override
+      public String getDelegationToken(String owner, String renewer, String remoteAddr) throws IOException {
+        throw ioError;
+      }
+
+      @Override
+      public long renewDelegationToken(String tokenStrForm) throws IOException {
+        throw ioError;
+      }
+
+      @Override
+      public void cancelDelegationToken(String tokenStrForm) throws IOException {
+        throw ioError;
+      }
+    };
+    FrontDoorSecurity security = new FrontDoorSecurity(
+        new Configuration(false), null, null, failingManager, null);
+
+    MetaException issueError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.issueDelegationToken("alice", "hive"));
+    Assert.assertFalse(issueError.getMessage().contains("IOException"));
+    Assert.assertSame(ioError, issueError.getCause());
+
+    MetaException renewError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.renewDelegationToken("tok"));
+    Assert.assertFalse(renewError.getMessage().contains("IOException"));
+    Assert.assertSame(ioError, renewError.getCause());
+
+    MetaException cancelError = Assert.assertThrows(
+        MetaException.class,
+        () -> security.cancelDelegationToken("tok"));
+    Assert.assertFalse(cancelError.getMessage().contains("IOException"));
+    Assert.assertSame(ioError, cancelError.getCause());
   }
 
   /**

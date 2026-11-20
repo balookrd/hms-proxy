@@ -90,6 +90,21 @@ public class LocalDelegationTokenStoreTest {
     Assert.assertEquals("updated", tokenStore.updatedMasterKeyValue);
   }
 
+  @Test
+  public void removeMasterKeyWrapsTokenStoreExceptionInMetaException() {
+    RecordingTokenStore tokenStore = new RecordingTokenStore();
+    tokenStore.removeMasterKeyFailure =
+        new DelegationTokenStore.TokenStoreException(
+            "Error deleting master key from ZK", new RuntimeException("connection loss"));
+    LocalDelegationTokenStore localTokenStore = new LocalDelegationTokenStore(tokenStore);
+
+    org.apache.hadoop.hive.metastore.api.MetaException error = Assert.assertThrows(
+        org.apache.hadoop.hive.metastore.api.MetaException.class,
+        () -> localTokenStore.removeMasterKey(42));
+    Assert.assertTrue(error.getMessage().contains("Error deleting master key from ZK"));
+    Assert.assertSame(tokenStore.removeMasterKeyFailure, error.getCause());
+  }
+
   private static DelegationTokenIdentifier tokenIdentifier(String owner) throws IOException {
     return new DelegationTokenIdentifier(
         new org.apache.hadoop.io.Text(owner),
@@ -106,6 +121,7 @@ public class LocalDelegationTokenStoreTest {
     private int updatedMasterKeySeq = -1;
     private String updatedMasterKeyValue;
     private boolean removeMasterKeyResult;
+    private DelegationTokenStore.TokenStoreException removeMasterKeyFailure;
     private String[] masterKeys = new String[0];
 
     @Override
@@ -121,6 +137,9 @@ public class LocalDelegationTokenStoreTest {
 
     @Override
     public boolean removeMasterKey(int keySeq) {
+      if (removeMasterKeyFailure != null) {
+        throw removeMasterKeyFailure;
+      }
       return removeMasterKeyResult;
     }
 

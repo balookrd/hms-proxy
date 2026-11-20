@@ -11,6 +11,7 @@ import java.util.function.UnaryOperator;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.security.DelegationTokenStore;
 import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
 import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
@@ -44,7 +45,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
   private final MetastoreDelegationTokenManager delegationTokenManager;
   private final LocalDelegationTokenStore localTokenStore;
 
-  private FrontDoorSecurity(
+  FrontDoorSecurity(
       Configuration securityConf,
       HadoopThriftAuthBridge bridge,
       HadoopThriftAuthBridge.Server saslServer,
@@ -259,8 +260,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     return saslWrapper.apply(contextAware);
   }
 
-  public String issueDelegationToken(String owner, String renewer)
-      throws IOException, InterruptedException, MetaException {
+  public String issueDelegationToken(String owner, String renewer) throws MetaException {
     try {
       return delegationTokenManager.getDelegationToken(owner, renewer, remoteAddress());
     } catch (AuthorizationException e) {
@@ -268,15 +268,28 @@ public final class FrontDoorSecurity implements AutoCloseable {
           delegationTokenAuthorizationMessage(owner, renewer, remoteUser(), remoteAddress()));
       metaException.initCause(e);
       throw metaException;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw delegationTokenMetaException("Unable to issue delegation token", e);
+    } catch (DelegationTokenStore.TokenStoreException | IOException e) {
+      throw delegationTokenMetaException("Unable to issue delegation token", e);
     }
   }
 
-  public long renewDelegationToken(String token) throws IOException {
-    return delegationTokenManager.renewDelegationToken(token);
+  public long renewDelegationToken(String token) throws MetaException {
+    try {
+      return delegationTokenManager.renewDelegationToken(token);
+    } catch (DelegationTokenStore.TokenStoreException | IOException e) {
+      throw delegationTokenMetaException("Unable to renew delegation token", e);
+    }
   }
 
-  public void cancelDelegationToken(String token) throws IOException {
-    delegationTokenManager.cancelDelegationToken(token);
+  public void cancelDelegationToken(String token) throws MetaException {
+    try {
+      delegationTokenManager.cancelDelegationToken(token);
+    } catch (DelegationTokenStore.TokenStoreException | IOException e) {
+      throw delegationTokenMetaException("Unable to cancel delegation token", e);
+    }
   }
 
   public boolean addToken(String tokenIdentifier, String token) throws MetaException {
@@ -303,7 +316,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
     localTokenStore.updateMasterKey(keySeq, key);
   }
 
-  public boolean removeMasterKey(int keySeq) {
+  public boolean removeMasterKey(int keySeq) throws MetaException {
     return localTokenStore.removeMasterKey(keySeq);
   }
 
@@ -312,7 +325,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   String remoteUser() {
-    return saslServer.getRemoteUser();
+    return saslServer == null ? null : saslServer.getRemoteUser();
   }
 
   public static String delegationTokenAuthorizationMessage(
@@ -349,11 +362,22 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   private String remoteAddress() {
+    if (saslServer == null) {
+      return null;
+    }
     InetAddress address = saslServer.getRemoteAddress();
     if (address == null) {
       return null;
     }
     return address.getHostAddress();
+  }
+
+  private static MetaException delegationTokenMetaException(String action, Throwable cause) {
+    String detail = cause.getMessage();
+    String message = detail == null || detail.isBlank() ? action : action + ": " + detail;
+    MetaException metaException = new MetaException(message);
+    metaException.initCause(cause);
+    return metaException;
   }
 
   @Override

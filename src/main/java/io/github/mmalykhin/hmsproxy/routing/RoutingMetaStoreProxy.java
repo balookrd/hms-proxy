@@ -176,24 +176,28 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
         observation.markError();
       }
       long elapsedMs = elapsedMillis(startedAt);
-      LOG.warn("requestId={} client-error method={} elapsedMs={} error={}",
-          requestId, name, elapsedMs, throwable.toString(), throwable);
+      if (throwable instanceof Error) {
+        LOG.error("requestId={} fatal error in method={} elapsedMs={}",
+            requestId, name, elapsedMs, throwable);
+        throw throwable;
+      }
       if (throwable instanceof TException) {
+        LOG.warn("requestId={} client-error method={} elapsedMs={} error={}",
+            requestId, name, elapsedMs, throwable.toString(), throwable);
         throw throwable;
       }
       if (throwable instanceof RuntimeException) {
         LOG.error("requestId={} unexpected runtime error in method={} elapsedMs={}",
             requestId, name, elapsedMs, throwable);
-        throw throwable;
+        if (!acceptsMetaException(method)) {
+          throw throwable;
+        }
+        throw unexpectedProxyMetaException(name, throwable);
       }
 
       LOG.error("requestId={} unexpected checked error in method={} elapsedMs={}",
           requestId, name, elapsedMs, throwable);
-      MetaException metaException =
-          new MetaException("Proxy internal error in " + name + ": " + throwable.getClass().getSimpleName()
-              + (throwable.getMessage() == null ? "" : " - " + throwable.getMessage()));
-      metaException.initCause(throwable);
-      throw metaException;
+      throw unexpectedProxyMetaException(name, throwable);
     } finally {
       // The thread goes back to a server pool: a throwing metric or audit write must not leave this
       // request's id and observation behind for the next request served on it.
@@ -392,6 +396,23 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     fields.put("remoteAddress", ClientRequestContext.remoteAddress().orElse(null));
     fields.put("authenticatedUser", ClientRequestContext.remoteUser().orElse(null));
     AUDIT_LOG.info(AuditLogUtil.toJson(fields));
+  }
+
+  private static boolean acceptsMetaException(Method method) {
+    for (Class<?> declared : method.getExceptionTypes()) {
+      if (declared.isAssignableFrom(MetaException.class)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static MetaException unexpectedProxyMetaException(String methodName, Throwable throwable) {
+    MetaException metaException = new MetaException(
+        "Proxy internal error in " + methodName + ": " + throwable.getClass().getSimpleName()
+            + (throwable.getMessage() == null ? "" : " - " + throwable.getMessage()));
+    metaException.initCause(throwable);
+    return metaException;
   }
 
   private static long elapsedMillis(long startedAt) {

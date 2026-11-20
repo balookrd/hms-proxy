@@ -57,8 +57,12 @@ final class LocalDelegationTokenStore {
     }
   }
 
-  boolean removeMasterKey(int keySeq) {
-    return tokenStore.removeMasterKey(keySeq);
+  boolean removeMasterKey(int keySeq) throws MetaException {
+    try {
+      return tokenStore.removeMasterKey(keySeq);
+    } catch (DelegationTokenStore.TokenStoreException e) {
+      throw metaException("Unable to remove delegation-token master key " + keySeq, e);
+    }
   }
 
   List<String> getMasterKeys() throws MetaException {
