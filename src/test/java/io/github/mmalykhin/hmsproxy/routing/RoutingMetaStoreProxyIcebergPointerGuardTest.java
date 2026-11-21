@@ -704,6 +704,8 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     private volatile IntConsumer onRead = read -> { };
     /** Fails the next alter, to check what happens to a lock held across a failing backend call. */
     private volatile boolean failNextAlter;
+    private volatile Runnable onCheckLock = () -> { };
+    private final AtomicReference<Boolean> unlockObservedInterrupted = new AtomicReference<>();
     private ProxyObservability observability;
     private ThriftHiveMetastore.Iface handler;
 
@@ -801,6 +803,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
               return new LockResponse(lockId, LockState.WAITING);
             }
             case "check_lock": {
+              stand.onCheckLock.run();
               long lockId = ((CheckLockRequest) args[0]).getLockid();
               if (!stand.lockNeverGranted && stand.lockHolder.compareAndSet(0L, lockId)) {
                 stand.events.add("lock:" + lockId);
@@ -809,6 +812,7 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
               return new LockResponse(lockId, LockState.WAITING);
             }
             case "unlock": {
+              stand.unlockObservedInterrupted.set(Thread.currentThread().isInterrupted());
               long lockId = ((UnlockRequest) args[0]).getLockid();
               if (stand.lockHolder.compareAndSet(lockId, 0L)) {
                 stand.events.add("unlock:" + lockId);
@@ -950,5 +954,280 @@ public class RoutingMetaStoreProxyIcebergPointerGuardTest {
     EnvironmentContext context = new EnvironmentContext();
     context.setProperties(new HashMap<>(Map.of("DO_NOT_UPDATE_STATS", "true", "alterTableOpType", "DROPPROPS")));
     return context;
+  }
+
+  @Test
+  public void lockedReadFailureRefusesAlterWithMetaExceptionAndReleasesLock() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    stand.onRead = read -> {
+      if (read == 2) {
+        throw new IllegalStateException("metastore down during locked reread");
+      }
+    };
+
+    try {
+      invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+      Assert.fail("Expected MetaException when locked reread returns null");
+    } catch (MetaException expected) {
+      Assert.assertTrue(expected.getMessage().contains("Unable to re-read Iceberg table"));
+    }
+
+    Assert.assertNull("backend alter must not run when locked reread fails", stand.forwarded.get());
+    Assert.assertFalse("table lock must be released on locked reread failure", stand.holdsLock());
+    Assert.assertTrue(stand.events.stream().anyMatch(e -> e.startsWith("unlock:")));
+    String metrics = stand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains(
+        "hms_proxy_iceberg_pointer_guard_events_total{catalog=\"catalog1\",outcome=\"read_failed\"} 1"));
+  }
+
+  @Test
+  public void keepHiveEngineDescriptorRunsAfterLockedRereadAndOnForwardCommit() throws Throwable {
+    // 1. Unlocked read sees plain files Iceberg table; locked reread sees Hive-engine storage_handler added concurrently
+    Stand rereadStand = newStand(icebergTable(CURRENT, PREVIOUS));
+    rereadStand.onRead = read -> {
+      if (read == 1) {
+        rereadStand.record.set(icebergRecord("hdfs://nn/warehouse/sales/events/metadata/00007-next.json", CURRENT));
+      }
+    };
+    Table staleWithPlainFiles = hiveInsertAlter();
+    staleWithPlainFiles.setSd(plainFilesDescriptor());
+    invokeAlter(rereadStand, staleWithPlainFiles, dropPropsContext());
+
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergStorageHandler",
+        rereadStand.forwarded.get().getParameters().get("storage_handler"));
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergInputFormat",
+        rereadStand.forwarded.get().getSd().getInputFormat());
+
+    // 2. Honest forward commit stripping storage_handler still keeps Hive-engine descriptor
+    Stand forwardStand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    Table forwardCommit = icebergTable("hdfs://nn/warehouse/sales/events/metadata/00007-next.json", CURRENT);
+    forwardCommit.setSd(plainFilesDescriptor());
+    invokeAlter(forwardStand, forwardCommit, null);
+
+    Assert.assertTrue("forward commit must not take a lock", forwardStand.lockRequests.isEmpty());
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergStorageHandler",
+        forwardStand.forwarded.get().getParameters().get("storage_handler"));
+    Assert.assertEquals("org.apache.iceberg.mr.hive.HiveIcebergInputFormat",
+        forwardStand.forwarded.get().getSd().getInputFormat());
+    String metrics = forwardStand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains(
+        "hms_proxy_iceberg_pointer_guard_events_total{catalog=\"catalog1\",outcome=\"hive_descriptor_kept\"} 1"));
+    Assert.assertTrue(metrics, metrics.contains(
+        "hms_proxy_iceberg_pointer_guard_events_total{catalog=\"catalog1\",outcome=\"forward_commit\"} 1"));
+  }
+
+  @Test
+  public void negativeNotIcebergCacheIsCaseInsensitive() throws Throwable {
+    Stand stand = newStand(hiveRecord());
+
+    invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+    Assert.assertEquals(1, stand.reads.get());
+
+    Table upperCase = hiveInsertAlter();
+    upperCase.setDbName("SALES");
+    upperCase.setTableName("EVENTS");
+    Method alter = ThriftHiveMetastore.Iface.class.getMethod(
+        "alter_table_with_environment_context", String.class, String.class, Table.class, EnvironmentContext.class);
+    invoke(stand.handler, alter, "SALES", "EVENTS", upperCase, dropPropsContext());
+
+    Assert.assertEquals("case variant must hit negative cache without second get_table", 1, stand.reads.get());
+    String metrics = stand.observability.metrics().render();
+    Assert.assertTrue(metrics, metrics.contains(
+        "hms_proxy_iceberg_pointer_guard_events_total{catalog=\"catalog1\",outcome=\"cache_suppressed\"} 1"));
+  }
+
+  @Test
+  public void repairLogsOriginalIncomingMetadataLocationBeforeMerge() throws Throwable {
+    Stand stand = newStand(icebergRecord(CURRENT, PREVIOUS));
+    List<String> warnings = new CopyOnWriteArrayList<>();
+    org.apache.log4j.Logger logger = org.apache.log4j.Logger.getLogger(IcebergTablePointerGuard.class);
+    org.apache.log4j.AppenderSkeleton appender = new org.apache.log4j.AppenderSkeleton() {
+      @Override
+      protected void append(org.apache.log4j.spi.LoggingEvent event) {
+        if (event.getLevel().isGreaterOrEqual(org.apache.log4j.Level.WARN)) {
+          warnings.add(event.getRenderedMessage());
+        }
+      }
+
+      @Override
+      public void close() { }
+
+      @Override
+      public boolean requiresLayout() { return false; }
+    };
+    logger.addAppender(appender);
+    try {
+      Table stale = icebergTable(STALE, null);
+      invokeAlter(stand, stale, dropPropsContext());
+    } finally {
+      logger.removeAppender(appender);
+    }
+
+    Assert.assertTrue(
+        "WARN log must print original incoming STALE location before merge overwrite: " + warnings,
+        warnings.stream().anyMatch(msg -> msg.contains("sent metadata_location='" + STALE + "'")
+            && msg.contains("while the metastore holds '" + CURRENT + "'")));
+  }
+
+  @Test
+  public void icebergCommitLockReleasesBeforeRestoringInterruptFlag() throws Throwable {
+    Stand stand = newStand(
+        icebergRecord(CURRENT, PREVIOUS),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 5_000L, true));
+    stand.lockNeverGranted = true;
+
+    CountDownLatch inCheckLock = new CountDownLatch(1);
+    stand.onCheckLock = inCheckLock::countDown;
+    java.util.concurrent.atomic.AtomicBoolean interruptedAfterCall = new java.util.concurrent.atomic.AtomicBoolean();
+    Thread caller = new Thread(() -> {
+      try {
+        invokeAlter(stand, hiveInsertAlter(), dropPropsContext());
+      } catch (Throwable ignored) {
+      } finally {
+        interruptedAfterCall.set(Thread.currentThread().isInterrupted());
+      }
+    }, "iceberg-lock-interrupt-test");
+    caller.start();
+    Assert.assertTrue(inCheckLock.await(5L, TimeUnit.SECONDS));
+    caller.interrupt();
+    caller.join(5_000L);
+
+    Assert.assertEquals("unlock RPC must run while interrupt flag is still clear",
+        Boolean.FALSE, stand.unlockObservedInterrupted.get());
+    Assert.assertTrue("interrupt flag must be restored once lock release finishes",
+        interruptedAfterCall.get());
+  }
+
+  @Test
+  public void childClassLoaderAlterTableReqRepairsPointerAndAttachesCompareAndSwapOnHive4() throws Throwable {
+    org.junit.Assume.assumeTrue(java.nio.file.Files.isReadable(RoutingMetaStoreProxyTestSupport.HIVE_4_JAR));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0,
+                RoutingMetaStoreProxyTestSupport.HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .icebergPointerGuard(new IcebergPointerGuardConfig(true, 30_000L, 10_000, true, 5_000L, true))
+        .build();
+
+    ClassLoader frontendCl = new io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader(
+        io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader.buildIsolatedRuntimeUrls(
+            RoutingMetaStoreProxyTestSupport.HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    ClassLoader backendCl = io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader.forBackendRuntime(
+        RoutingMetaStoreProxyTestSupport.HIVE_4_JAR,
+        MetastoreRuntimeProfile.APACHE_4_1_0,
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> backendIface = Class.forName(
+        "org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Iface", true, backendCl);
+
+    AtomicReference<String> forwardedLocation = new AtomicReference<>();
+    AtomicReference<String> forwardedCasKey = new AtomicReference<>();
+    AtomicReference<String> forwardedCasValue = new AtomicReference<>();
+    AtomicLong lockIds = new AtomicLong();
+
+    Object delegate = java.lang.reflect.Proxy.newProxyInstance(
+        backendCl,
+        new Class<?>[] {backendIface},
+        (proxy, method, args) -> switch (method.getName()) {
+          case "get_table_req" -> {
+            Class<?> respClass = backendCl.loadClass("org.apache.hadoop.hive.metastore.api.GetTableResult");
+            Class<?> tableClass = backendCl.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+            Object tbl = tableClass.getConstructor().newInstance();
+            tableClass.getMethod("setDbName", String.class).invoke(tbl, "sales");
+            tableClass.getMethod("setTableName", String.class).invoke(tbl, "events");
+            tableClass.getMethod("setParameters", Map.class).invoke(tbl, new HashMap<>(Map.of(
+                "table_type", "ICEBERG",
+                "metadata_location", CURRENT,
+                "previous_metadata_location", PREVIOUS)));
+            Object resp = respClass.getConstructor().newInstance();
+            respClass.getMethod("setTable", tableClass).invoke(resp, tbl);
+            yield resp;
+          }
+          case "lock" -> {
+            Class<?> lrClass = backendCl.loadClass("org.apache.hadoop.hive.metastore.api.LockResponse");
+            Class<?> lsClass = backendCl.loadClass("org.apache.hadoop.hive.metastore.api.LockState");
+            @SuppressWarnings("unchecked")
+            Object acquired = Enum.valueOf(lsClass.asSubclass(Enum.class), "ACQUIRED");
+            Object lr = lrClass.getConstructor().newInstance();
+            lrClass.getMethod("setLockid", long.class).invoke(lr, lockIds.incrementAndGet());
+            lrClass.getMethod("setState", lsClass).invoke(lr, acquired);
+            yield lr;
+          }
+          case "unlock" -> null;
+          case "alter_table_req" -> {
+            Object req = args[0];
+            Object tbl = req.getClass().getMethod("getTable").invoke(req);
+            @SuppressWarnings("unchecked")
+            Map<String, String> params = (Map<String, String>) tbl.getClass().getMethod("getParameters").invoke(tbl);
+            forwardedLocation.set(params.get("metadata_location"));
+            Object env = req.getClass().getMethod("getEnvironmentContext").invoke(req);
+            if (env != null) {
+              @SuppressWarnings("unchecked")
+              Map<String, String> props = (Map<String, String>) env.getClass().getMethod("getProperties").invoke(env);
+              forwardedCasKey.set(props.get("expected_parameter_key"));
+              forwardedCasValue.set(props.get("expected_parameter_value"));
+            }
+            yield null;
+          }
+          default -> throw new NoSuchMethodException(method.getName());
+        });
+
+    io.github.mmalykhin.hmsproxy.backend.IsolatedInvocationBridge bridge =
+        new io.github.mmalykhin.hmsproxy.backend.IsolatedInvocationBridge(backendCl, delegate, backendIface);
+    Constructor<io.github.mmalykhin.hmsproxy.backend.IsolatedMetastoreClient> isolatedCtor =
+        io.github.mmalykhin.hmsproxy.backend.IsolatedMetastoreClient.class.getDeclaredConstructor(
+            Object.class, io.github.mmalykhin.hmsproxy.backend.IsolatedInvocationBridge.class);
+    isolatedCtor.setAccessible(true);
+    Object closableClient = new Object() {
+      @SuppressWarnings("unused")
+      public void close() { }
+    };
+    io.github.mmalykhin.hmsproxy.backend.IsolatedMetastoreClient isolatedClient =
+        isolatedCtor.newInstance(closableClient, bridge);
+    Constructor<io.github.mmalykhin.hmsproxy.backend.BackendInvocationSession> sessionCtor =
+        io.github.mmalykhin.hmsproxy.backend.BackendInvocationSession.class.getDeclaredConstructor(
+            org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+            org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore.Iface.class,
+            io.github.mmalykhin.hmsproxy.backend.IsolatedMetastoreClient.class);
+    sessionCtor.setAccessible(true);
+    io.github.mmalykhin.hmsproxy.backend.BackendInvocationSession session =
+        sessionCtor.newInstance(null, null, isolatedClient);
+
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        adapterFor(MetastoreRuntimeProfile.APACHE_4_1_0),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> alterReqClass = frontendCl.loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Class<?> tableClass = frontendCl.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Object incomingTbl = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(incomingTbl, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(incomingTbl, "events");
+    tableClass.getMethod("setParameters", Map.class).invoke(incomingTbl, new HashMap<>(Map.of("numRows", "42")));
+
+    Object alterReq = alterReqClass.getConstructor().newInstance();
+    alterReqClass.getMethod("setDbName", String.class).invoke(alterReq, "sales");
+    alterReqClass.getMethod("setTableName", String.class).invoke(alterReq, "events");
+    alterReqClass.getMethod("setTable", tableClass).invoke(alterReq, incomingTbl);
+    // Notice EnvironmentContext is initially null on alterReq: the guard must instantiate it in request's CL.
+
+    handler.alter_table_req(alterReq);
+
+    Assert.assertEquals(CURRENT, forwardedLocation.get());
+    Assert.assertEquals("metadata_location", forwardedCasKey.get());
+    Assert.assertEquals(CURRENT, forwardedCasValue.get());
   }
 }

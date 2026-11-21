@@ -510,4 +510,195 @@ public class RoutingMetaStoreProxyFanoutDegradedTest {
     }
   }
 
+  @Test
+  public void hedgedReadDisabledExecutesFanoutSequentiallyOnCallerThread() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 3, 200L),
+            new HedgedReadConfig(false, 2, 30_000L),
+            DegradedRoutingPolicy.STRICT));
+
+    List<String> callingThreads = new ArrayList<>();
+    CatalogBackend backend1 = newBackend(
+        config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          callingThreads.add(Thread.currentThread().getName());
+          return List.of("sales");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          callingThreads.add(Thread.currentThread().getName());
+          return List.of("reports");
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+    String callerThreadName = Thread.currentThread().getName();
+
+    try (RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, new ProxyObservability(config))) {
+      @SuppressWarnings("unchecked")
+      List<String> result = (List<String>) handler.invoke(null, method, new Object[0]);
+      Assert.assertEquals(List.of("sales", "catalog2__reports"), result);
+      Assert.assertEquals(List.of(callerThreadName, callerThreadName), callingThreads);
+    }
+  }
+
+  @Test
+  public void fanoutWorkersReceiveParentRequestIdAndClientRequestContext() throws Throwable {
+    ProxyConfig config = latencyAwareConfig(
+        Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 3, 200L),
+            new HedgedReadConfig(true, 2, 30_000L),
+            DegradedRoutingPolicy.STRICT));
+
+    Map<String, Long> workerRequestIds = new java.util.concurrent.ConcurrentHashMap<>();
+    Map<String, String> workerRemoteAddrs = new java.util.concurrent.ConcurrentHashMap<>();
+    Map<String, String> workerAuthUsers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    CatalogBackend backend1 = newBackend(
+        config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          workerRequestIds.put("catalog1", RequestContext.currentRequestId());
+          workerRemoteAddrs.put("catalog1", ClientRequestContext.remoteAddress().orElse(null));
+          workerAuthUsers.put("catalog1", ClientRequestContext.authenticatedUser().orElse(null));
+          return List.of("sales");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          workerRequestIds.put("catalog2", RequestContext.currentRequestId());
+          workerRemoteAddrs.put("catalog2", ClientRequestContext.remoteAddress().orElse(null));
+          workerAuthUsers.put("catalog2", ClientRequestContext.authenticatedUser().orElse(null));
+          return List.of("reports");
+        })));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+    String prevAddr = ClientRequestContext.setRemoteAddress("10.20.30.40");
+    String prevAuth = ClientRequestContext.setAuthenticatedUser("alice@EXAMPLE.COM");
+    try (RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, new ProxyObservability(config))) {
+      handler.invoke(null, method, new Object[0]);
+      Assert.assertEquals(2, workerRequestIds.size());
+      Assert.assertTrue(workerRequestIds.get("catalog1") > 0L);
+      Assert.assertEquals(workerRequestIds.get("catalog1"), workerRequestIds.get("catalog2"));
+      Assert.assertEquals("10.20.30.40", workerRemoteAddrs.get("catalog1"));
+      Assert.assertEquals("10.20.30.40", workerRemoteAddrs.get("catalog2"));
+      Assert.assertEquals("alice@EXAMPLE.COM", workerAuthUsers.get("catalog1"));
+      Assert.assertEquals("alice@EXAMPLE.COM", workerAuthUsers.get("catalog2"));
+    } finally {
+      ClientRequestContext.restoreAuthenticatedUser(prevAuth);
+      ClientRequestContext.restoreRemoteAddress(prevAddr);
+    }
+  }
+
+  @Test
+  public void boundedQueueOverflowDegradesUnderSafePolicyAndFailsFastUnderStrict() throws Throwable {
+    for (DegradedRoutingPolicy policy : List.of(DegradedRoutingPolicy.SAFE_FANOUT_READS, DegradedRoutingPolicy.STRICT)) {
+      ProxyConfig config = latencyAwareConfig(
+          Map.of(
+              "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+              "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))),
+          new LatencyRoutingConfig(
+              new BackendStatePollingConfig(false, 10_000, 5_000L),
+              new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+              new CircuitBreakerConfig(false, 3, 200L),
+              new HedgedReadConfig(true, 1, 5_000L),
+              policy));
+
+      CountDownLatch workerBusy = new CountDownLatch(1);
+      CountDownLatch releaseWorker = new CountDownLatch(1);
+      CatalogBackend backend1 = newBackend(
+          config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+            workerBusy.countDown();
+            releaseWorker.await(10L, TimeUnit.SECONDS);
+            return List.of("sales");
+          })));
+      CatalogBackend backend2 = newBackend(
+          config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+            releaseWorker.await(10L, TimeUnit.SECONDS);
+            return List.of("reports");
+          })));
+      LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+      backends.put("catalog1", backend1);
+      backends.put("catalog2", backend2);
+      ProxyObservability observability = new ProxyObservability(config);
+      CatalogRouter router = new CatalogRouter(config, backends);
+      Method method = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+
+      java.util.concurrent.ExecutorService callers = java.util.concurrent.Executors.newFixedThreadPool(40);
+      try (RoutingMetaStoreProxy handler =
+          new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, observability)) {
+        List<java.util.concurrent.Future<?>> blockers = new ArrayList<>();
+        blockers.add(callers.submit(() -> {
+          try {
+            return handler.invoke(null, method, new Object[0]);
+          } catch (Throwable t) {
+            return t;
+          }
+        }));
+        Assert.assertTrue(workerBusy.await(5L, TimeUnit.SECONDS));
+
+        // 35 concurrent requests * 2 backends = 70 tasks > bounded queue capacity 64
+        for (int i = 0; i < 35; i++) {
+          blockers.add(callers.submit(() -> {
+            try {
+              return handler.invoke(null, method, new Object[0]);
+            } catch (Throwable t) {
+              return t;
+            }
+          }));
+        }
+
+        if (policy == DegradedRoutingPolicy.STRICT) {
+          boolean sawOverloadMetaException = false;
+          long deadline = System.currentTimeMillis() + 5_000L;
+          while (!sawOverloadMetaException && System.currentTimeMillis() < deadline) {
+            for (java.util.concurrent.Future<?> f : blockers) {
+              if (f.isDone()) {
+                Object val = f.get();
+                if (val instanceof MetaException me && me.getMessage() != null && me.getMessage().contains("overloaded")) {
+                  sawOverloadMetaException = true;
+                  break;
+                }
+              }
+            }
+            Thread.sleep(20L);
+          }
+          releaseWorker.countDown();
+          Assert.assertTrue("STRICT policy must reject queue overflow with MetaException", sawOverloadMetaException);
+        } else {
+          Thread.sleep(250L);
+          releaseWorker.countDown();
+          for (java.util.concurrent.Future<?> f : blockers) {
+            f.get(10L, TimeUnit.SECONDS);
+          }
+          Assert.assertTrue(observability.metrics().render().contains("status=\"degraded\""));
+        }
+      } finally {
+        releaseWorker.countDown();
+        callers.shutdownNow();
+      }
+    }
+  }
+
 }

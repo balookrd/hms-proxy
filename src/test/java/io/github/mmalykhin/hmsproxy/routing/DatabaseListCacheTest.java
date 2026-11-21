@@ -204,4 +204,43 @@ public class DatabaseListCacheTest {
     });
     Assert.assertEquals("only the least recently used key was evicted", before + 1, loads.get());
   }
+
+  @Test
+  public void singleFlightDoesNotResurrectStaleListAcrossInvalidationAndIsolatesCopies() throws Throwable {
+    DatabaseListCache cache = new DatabaseListCache(new DatabaseListCacheConfig(60_000L, 100, true));
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<List<String>> staleFuture = pool.submit(() -> {
+        try {
+          return cache.get("get_all_databases", "cat1", null, user, () -> {
+            entered.countDown();
+            release.await(5L, TimeUnit.SECONDS);
+            return new ArrayList<>(List.of("stale_db"));
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+      Assert.assertTrue(entered.await(5L, TimeUnit.SECONDS));
+      cache.invalidate("cat1");
+      release.countDown();
+      Assert.assertEquals(List.of("stale_db"), staleFuture.get(5L, TimeUnit.SECONDS));
+
+      AtomicInteger loads = new AtomicInteger();
+      List<String> fresh = cache.get("get_all_databases", "cat1", null, user, () -> {
+        loads.incrementAndGet();
+        return new ArrayList<>(List.of("fresh_db"));
+      });
+      Assert.assertEquals(1, loads.get());
+      fresh.add("caller_mutated");
+
+      List<String> cached = cache.get("get_all_databases", "cat1", null, user, () -> List.of("unused"));
+      Assert.assertEquals(List.of("fresh_db"), cached);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
 }

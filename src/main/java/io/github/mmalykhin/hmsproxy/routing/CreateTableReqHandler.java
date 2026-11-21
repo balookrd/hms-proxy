@@ -21,17 +21,22 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       String.class, String.class, Table.class, EnvironmentContext.class);
 
   private final RoutingSupport support;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
 
   CreateTableReqHandler(
       RoutingSupport support,
-      ExternalTableLocationRewriter externalTableLocationRewriter,
       IcebergTablePointerGuard icebergTablePointerGuard
   ) {
     this.support = support;
-    this.externalTableLocationRewriter = externalTableLocationRewriter;
     this.icebergTablePointerGuard = icebergTablePointerGuard;
+  }
+
+  CreateTableReqHandler(
+      RoutingSupport support,
+      ExternalTableLocationRewriter ignored,
+      IcebergTablePointerGuard icebergTablePointerGuard
+  ) {
+    this(support, icebergTablePointerGuard);
   }
 
   @Override
@@ -67,6 +72,7 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
 
     internalizeCreateTableRequest(request, namespace);
 
+    ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (externalTableLocationRewriter != null) {
       Object tableObj = ThriftReflectionCache.invokeGetter(request, "getTable");
       if (tableObj != null) {
@@ -85,8 +91,11 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       }
     }
 
-    if (icebergTablePointerGuard != null && tableName != null) {
-      icebergTablePointerGuard.invalidate(namespace.catalogName(), namespace.backendDbName(), tableName);
+    if (tableName != null) {
+      if (icebergTablePointerGuard != null) {
+        icebergTablePointerGuard.invalidate(namespace.catalogName(), namespace.backendDbName(), tableName);
+      }
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
     }
 
     return result;

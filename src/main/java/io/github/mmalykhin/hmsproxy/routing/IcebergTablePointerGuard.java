@@ -5,12 +5,13 @@ import io.github.mmalykhin.hmsproxy.config.routing.IcebergPointerGuardConfig;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
-import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.slf4j.Logger;
@@ -123,17 +124,18 @@ final class IcebergTablePointerGuard {
    * Never throws: a table that cannot be read back is left to the backend to judge, because
    * refusing the alter outright would fail an ordinary Hive write whenever the backend hiccups.
    */
-  Protection protect(Object[] routedArgs, CatalogRouter.ResolvedNamespace namespace, String methodName) {
+  Protection protect(Object[] routedArgs, CatalogRouter.ResolvedNamespace namespace, String methodName)
+      throws MetaException {
     if (routedArgs == null || !config.enabled()
         || (!appliesTo(methodName) && !createsTable(methodName))) {
       return UNLOCKED;
     }
-    Table incoming = tableArgument(routedArgs);
+    TableObjectView incoming = TableObjectView.findInArgs(routedArgs);
     if (incoming == null) {
       return UNLOCKED;
     }
-    String backendDbName = argumentOrTableField(routedArgs, 0, incoming.getDbName());
-    String tableName = argumentOrTableField(routedArgs, 1, incoming.getTableName());
+    String backendDbName = argumentOrTableField(routedArgs, 0, incoming.dbName());
+    String tableName = argumentOrTableField(routedArgs, 1, incoming.tableName());
     if (backendDbName == null || tableName == null) {
       return UNLOCKED;
     }
@@ -155,7 +157,7 @@ final class IcebergTablePointerGuard {
       return UNLOCKED;
     }
 
-    Table current = readCurrentTable(namespace, backendDbName, tableName);
+    Table current = readCurrentTable(namespace, backendDbName, tableName, false);
     if (current == null) {
       record(namespace, OUTCOME_READ_FAILED);
       return UNLOCKED;
@@ -166,11 +168,11 @@ final class IcebergTablePointerGuard {
       record(namespace, OUTCOME_NOT_ICEBERG);
       return UNLOCKED;
     }
-    keepHiveEngineDescriptor(namespace, incoming, current, backendDbName, tableName);
     if (currentLocation.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
       // A commit built on what the metastore holds now - the table is moving forward. Nothing is
       // locked here: this is the request an Iceberg commit sends from inside the table lock, and
       // asking for that lock would mean waiting for the caller of this very call.
+      keepHiveEngineDescriptor(namespace, incoming, current, backendDbName, tableName);
       record(namespace, OUTCOME_FORWARD_COMMIT);
       return UNLOCKED;
     }
@@ -193,33 +195,41 @@ final class IcebergTablePointerGuard {
       Object[] routedArgs,
       CatalogRouter.ResolvedNamespace namespace,
       String methodName,
-      Table incoming,
+      TableObjectView incoming,
       Table current,
       String currentLocation,
       String backendDbName,
       String tableName
-  ) {
+  ) throws MetaException {
     Long heldLockId = acquireLock(namespace, backendDbName, tableName);
     try {
       if (heldLockId != null) {
-        Table underLock = readCurrentTable(namespace, backendDbName, tableName);
-        if (underLock != null) {
-          String locationUnderLock = parameter(underLock, METADATA_LOCATION);
-          if (locationUnderLock == null) {
-            // It stopped being an Iceberg table while we waited; there is nothing to keep.
-            record(namespace, OUTCOME_NOT_ICEBERG);
-            return UNLOCKED;
-          }
-          if (locationUnderLock.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
-            record(namespace, OUTCOME_FORWARD_COMMIT);
-            return UNLOCKED;
-          }
-          current = underLock;
-          currentLocation = locationUnderLock;
+        Table underLock = readCurrentTable(namespace, backendDbName, tableName, true);
+        if (underLock == null) {
+          record(namespace, OUTCOME_READ_FAILED);
+          throw new MetaException(
+              "Unable to re-read Iceberg table '" + backendDbName + "." + tableName
+                  + "' under lock (catalog '" + namespace.catalogName()
+                  + "'); refusing to apply alter_table against a potentially stale snapshot");
         }
+        String locationUnderLock = parameter(underLock, METADATA_LOCATION);
+        if (locationUnderLock == null) {
+          // It stopped being an Iceberg table while we waited; there is nothing to keep.
+          record(namespace, OUTCOME_NOT_ICEBERG);
+          return UNLOCKED;
+        }
+        if (locationUnderLock.equals(parameter(incoming, PREVIOUS_METADATA_LOCATION))) {
+          keepHiveEngineDescriptor(namespace, incoming, underLock, backendDbName, tableName);
+          record(namespace, OUTCOME_FORWARD_COMMIT);
+          return UNLOCKED;
+        }
+        current = underLock;
+        currentLocation = locationUnderLock;
         record(namespace, OUTCOME_REPAIR_LOCKED);
       }
 
+      keepHiveEngineDescriptor(namespace, incoming, current, backendDbName, tableName);
+      String incomingLocationBeforeMerge = parameter(incoming, METADATA_LOCATION);
       attachCompareAndSwap(routedArgs, namespace, currentLocation);
       mergeOverCurrentRecord(incoming, current, currentLocation);
       record(namespace, OUTCOME_REPAIRED);
@@ -232,7 +242,7 @@ final class IcebergTablePointerGuard {
           backendDbName,
           tableName,
           methodName,
-          parameter(incoming, METADATA_LOCATION) == null ? "<absent>" : parameter(incoming, METADATA_LOCATION),
+          incomingLocationBeforeMerge == null ? "<absent>" : incomingLocationBeforeMerge,
           currentLocation,
           heldLockId == null ? "not held" : "held (id " + heldLockId + ")");
 
@@ -332,7 +342,7 @@ final class IcebergTablePointerGuard {
    */
   private void keepHiveEngineDescriptor(
       CatalogRouter.ResolvedNamespace namespace,
-      Table incoming,
+      TableObjectView incoming,
       Table current,
       String backendDbName,
       String tableName
@@ -344,12 +354,12 @@ final class IcebergTablePointerGuard {
     if (storageHandler == null || parameter(incoming, STORAGE_HANDLER) != null) {
       return;
     }
-    Map<String, String> parameters = incoming.isSetParameters()
-        ? incoming.getParameters()
+    Map<String, String> parameters = incoming.hasParameters() && incoming.parameters() != null
+        ? incoming.parameters()
         : new LinkedHashMap<>();
     parameters.put(STORAGE_HANDLER, storageHandler);
     incoming.setParameters(parameters);
-    copyFormats(current.getSd(), incoming.getSd());
+    incoming.copyStorageFormatsFrom(current.getSd());
     record(namespace, OUTCOME_HIVE_DESCRIPTOR_KEPT);
     LOG.warn(
         "requestId={} kept the Hive-engine storage descriptor of catalog '{}' db='{}' table='{}':"
@@ -364,24 +374,6 @@ final class IcebergTablePointerGuard {
   }
 
   /**
-   * Moves only the three fields Iceberg flips together with {@code storage_handler}. A request
-   * that carries no descriptor at all is left without one - inventing a whole
-   * {@code StorageDescriptor}, columns and location included, for a call that never named one
-   * would be the guard changing more than it is keeping.
-   */
-  private static void copyFormats(StorageDescriptor from, StorageDescriptor to) {
-    if (from == null || to == null) {
-      return;
-    }
-    to.setInputFormat(from.getInputFormat());
-    to.setOutputFormat(from.getOutputFormat());
-    if (from.getSerdeInfo() == null || to.getSerdeInfo() == null) {
-      return;
-    }
-    to.getSerdeInfo().setSerializationLib(from.getSerdeInfo().getSerializationLib());
-  }
-
-  /**
    * Rebuilds the parameters the backend will apply: the metastore's record as the base, the
    * client's own parameters on top, and both pointers forced back to the record's values. The
    * price of the merge is that an {@code alter_table} which legitimately removes a property from
@@ -389,13 +381,13 @@ final class IcebergTablePointerGuard {
    * goes through {@code HiveIcebergMetaHook} and arrives as a forward commit, which is never
    * merged.
    */
-  private static void mergeOverCurrentRecord(Table incoming, Table current, String currentLocation) {
+  private static void mergeOverCurrentRecord(TableObjectView incoming, Table current, String currentLocation) {
     Map<String, String> merged = new LinkedHashMap<>();
     if (current.isSetParameters()) {
       merged.putAll(current.getParameters());
     }
-    if (incoming.isSetParameters()) {
-      merged.putAll(incoming.getParameters());
+    if (incoming.hasParameters() && incoming.parameters() != null) {
+      merged.putAll(incoming.parameters());
     }
     merged.put(METADATA_LOCATION, currentLocation);
     String currentPrevious = parameter(current, PREVIOUS_METADATA_LOCATION);
@@ -427,9 +419,56 @@ final class IcebergTablePointerGuard {
       return;
     }
     for (Object arg : routedArgs) {
-      if (!(arg instanceof EnvironmentContext context)) {
+      if (arg instanceof EnvironmentContext context) {
+        Map<String, String> properties = context.getProperties();
+        if (properties == null) {
+          properties = new HashMap<>();
+          context.setProperties(properties);
+        }
+        properties.put(EXPECTED_PARAMETER_KEY, METADATA_LOCATION);
+        properties.put(EXPECTED_PARAMETER_VALUE, expectedLocation);
+        return;
+      }
+      if (arg != null && "org.apache.hadoop.hive.metastore.api.EnvironmentContext".equals(arg.getClass().getName())) {
+        applyCompareAndSwapToForeignEnv(arg, expectedLocation);
+        return;
+      }
+    }
+    for (Object arg : routedArgs) {
+      if (arg == null) {
         continue;
       }
+      Method setter = findEnvironmentContextSetter(arg.getClass());
+      if (setter == null) {
+        continue;
+      }
+      Object env = ThriftReflectionCache.invokeGetter(arg, "getEnvironmentContext");
+      if (env == null) {
+        try {
+          env = setter.getParameterTypes()[0].getDeclaredConstructor().newInstance();
+          setter.invoke(arg, env);
+        } catch (Exception e) {
+          LOG.warn("Failed to instantiate EnvironmentContext on {}: {}", arg.getClass().getName(), e.toString());
+          return;
+        }
+      }
+      applyCompareAndSwapToForeignEnv(env, expectedLocation);
+      return;
+    }
+  }
+
+  private static Method findEnvironmentContextSetter(Class<?> type) {
+    for (Method method : type.getMethods()) {
+      if ("setEnvironmentContext".equals(method.getName()) && method.getParameterCount() == 1) {
+        return method;
+      }
+    }
+    return null;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void applyCompareAndSwapToForeignEnv(Object env, String expectedLocation) {
+    if (env instanceof EnvironmentContext context) {
       Map<String, String> properties = context.getProperties();
       if (properties == null) {
         properties = new HashMap<>();
@@ -439,6 +478,23 @@ final class IcebergTablePointerGuard {
       properties.put(EXPECTED_PARAMETER_VALUE, expectedLocation);
       return;
     }
+    Object rawProps = ThriftReflectionCache.invokeGetter(env, "getProperties");
+    Map<String, String> properties = rawProps instanceof Map<?, ?> ? (Map<String, String>) rawProps : null;
+    if (properties == null) {
+      properties = new HashMap<>();
+      for (Method method : env.getClass().getMethods()) {
+        if ("setProperties".equals(method.getName()) && method.getParameterCount() == 1) {
+          try {
+            method.invoke(env, properties);
+          } catch (Exception e) {
+            throw new IllegalStateException("Failed to invoke setProperties on " + env.getClass().getName(), e);
+          }
+          break;
+        }
+      }
+    }
+    properties.put(EXPECTED_PARAMETER_KEY, METADATA_LOCATION);
+    properties.put(EXPECTED_PARAMETER_VALUE, expectedLocation);
   }
 
   private boolean knownNotToBeIceberg(TableKey key) {
@@ -490,15 +546,18 @@ final class IcebergTablePointerGuard {
   private Table readCurrentTable(
       CatalogRouter.ResolvedNamespace namespace,
       String backendDbName,
-      String tableName
+      String tableName,
+      boolean underLock
   ) {
     try {
       // Through the adapter, not by raw method name: Hive 4 has no positional get_table in its
       // IDL, and only the adapter knows to upgrade the read to get_table_req there. A raw
       // by-name call fails with NoSuchMethodException on exactly the backend whose
       // compare-and-swap this guard depends on.
-      return (Table) support.invokeDirect(
-          namespace.backend(), GET_TABLE, new Object[] {backendDbName, tableName});
+      Object[] args = new Object[] {backendDbName, tableName};
+      return (Table) (underLock
+          ? support.invokeDirectUnmetered(namespace.backend(), GET_TABLE, args)
+          : support.invokeDirect(namespace.backend(), GET_TABLE, args));
     } catch (Throwable throwable) {
       LOG.warn(
           "requestId={} unable to read the current Iceberg pointer for catalog '{}' db='{}'"
@@ -520,15 +579,6 @@ final class IcebergTablePointerGuard {
     }
   }
 
-  private static Table tableArgument(Object[] routedArgs) {
-    for (Object arg : routedArgs) {
-      if (arg instanceof Table table) {
-        return table;
-      }
-    }
-    return null;
-  }
-
   /**
    * {@code alter_table*} names its target in the first two arguments; {@code create_table*} names
    * it only inside the table itself.
@@ -538,6 +588,18 @@ final class IcebergTablePointerGuard {
       return RoutingSupport.blankToNull(value);
     }
     return RoutingSupport.blankToNull(tableField);
+  }
+
+  private static String parameter(TableObjectView table, String key) {
+    if (table == null || !table.hasParameters()) {
+      return null;
+    }
+    Map<String, String> parameters = table.parameters();
+    if (parameters == null) {
+      return null;
+    }
+    String value = parameters.get(key);
+    return value == null || value.isBlank() ? null : value;
   }
 
   private static String parameter(Table table, String key) {
@@ -550,5 +612,10 @@ final class IcebergTablePointerGuard {
   }
 
   private record TableKey(String catalog, String backendDbName, String tableName) {
+    TableKey {
+      catalog = catalog == null ? null : catalog.toLowerCase(Locale.ROOT);
+      backendDbName = backendDbName == null ? null : backendDbName.toLowerCase(Locale.ROOT);
+      tableName = tableName == null ? null : tableName.toLowerCase(Locale.ROOT);
+    }
   }
 }

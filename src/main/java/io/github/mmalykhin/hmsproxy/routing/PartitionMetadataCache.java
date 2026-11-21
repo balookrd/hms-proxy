@@ -8,9 +8,9 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.PartitionSpec;
+import org.apache.thrift.TBase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,6 +26,7 @@ final class PartitionMetadataCache {
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Object>> inFlight = new ConcurrentHashMap<>();
+  private final AtomicLong generation = new AtomicLong();
 
   PartitionMetadataCache(PartitionMetadataCacheConfig config) {
     this(config, false, 0L, null, System::currentTimeMillis);
@@ -92,6 +93,9 @@ final class PartitionMetadataCache {
           metrics.recordCacheRequest("partition_metadata", catalogName, "hit");
         }
         return (T) deepCopy(result);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -104,18 +108,18 @@ final class PartitionMetadataCache {
         if (metrics != null) {
           metrics.recordCacheRequest("partition_metadata", catalogName, "hit");
         }
-        Object result = deepCopy(cached.value());
-        future.complete(result);
-        return (T) result;
+        future.complete(deepCopy(cached.value()));
+        return (T) deepCopy(cached.value());
       }
       if (metrics != null) {
         metrics.recordCacheRequest("partition_metadata", catalogName, "miss");
       }
+      long loadEpoch = generation.get();
       T loaded = loader.load();
       if (loaded != null) {
-        put(key, loaded, clock.getAsLong() + ttlMs, nowMs);
+        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loadEpoch);
       }
-      future.complete(loaded);
+      future.complete(deepCopy(loaded));
       return (T) deepCopy(loaded);
     } catch (Throwable t) {
       if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
@@ -124,9 +128,8 @@ final class PartitionMetadataCache {
         if (metrics != null) {
           metrics.recordCacheRequest("partition_metadata", catalogName, "stale_hit");
         }
-        Object staleResult = deepCopy(cached.value());
-        future.complete(staleResult);
-        return (T) staleResult;
+        future.complete(deepCopy(cached.value()));
+        return (T) deepCopy(cached.value());
       }
       future.completeExceptionally(t);
       throw t;
@@ -139,6 +142,7 @@ final class PartitionMetadataCache {
     if (catalogName == null || backendDbName == null || tableName == null) {
       return;
     }
+    generation.incrementAndGet();
     boolean removed = entries.keySet().removeIf(k ->
         k.catalogName().equals(catalogName)
             && k.backendDbName().equalsIgnoreCase(backendDbName)
@@ -155,6 +159,7 @@ final class PartitionMetadataCache {
     if (catalogName == null || backendDbName == null) {
       return;
     }
+    generation.incrementAndGet();
     boolean removed = entries.keySet().removeIf(k ->
         k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
     if (metrics != null) {
@@ -169,6 +174,7 @@ final class PartitionMetadataCache {
     if (catalogName == null) {
       return;
     }
+    generation.incrementAndGet();
     int removed = 0;
     for (var it = entries.keySet().iterator(); it.hasNext(); ) {
       if (it.next().catalogName().equals(catalogName)) {
@@ -185,26 +191,27 @@ final class PartitionMetadataCache {
   }
 
   void clear() {
+    generation.incrementAndGet();
     entries.clear();
-    inFlight.clear();
   }
 
   int size() {
     return entries.size();
   }
 
-  private void put(Key key, Object value, long expiresAtMs, long nowMs) {
+  private void put(Key key, Object value, long expiresAtMs, long nowMs, long loadEpoch) {
+    if (generation.get() != loadEpoch) {
+      return;
+    }
     if (entries.size() >= maxEntries && !entries.containsKey(key)) {
       evictOldest();
     }
-    entries.compute(key, (k, existing) -> {
-      if (existing == null) {
-        return new Entry(value, expiresAtMs, nowMs);
-      }
-      existing.update(value, expiresAtMs);
-      existing.recordAccess(nowMs);
-      return existing;
-    });
+    Entry inserted = new Entry(value, expiresAtMs, nowMs);
+    entries.put(key, inserted);
+    if (generation.get() != loadEpoch) {
+      entries.remove(key, inserted);
+      return;
+    }
     if (metrics != null) {
       metrics.setCacheEntries("partition_metadata", key.catalogName(), countEntries(key.catalogName()));
     }
@@ -238,37 +245,19 @@ final class PartitionMetadataCache {
     return count;
   }
 
-  @SuppressWarnings("unchecked")
   private static Object deepCopy(Object value) {
     if (value == null) {
       return null;
     }
-    if (value instanceof Partition p) {
-      return new Partition(p);
+    if (value instanceof TBase<?, ?> tBase) {
+      return tBase.deepCopy();
     }
     if (value instanceof List<?> list) {
-      if (list.isEmpty()) {
-        return new ArrayList<>();
+      List<Object> copy = new ArrayList<>(list.size());
+      for (Object item : list) {
+        copy.add(deepCopy(item));
       }
-      Object first = list.get(0);
-      if (first instanceof Partition) {
-        List<Partition> copy = new ArrayList<>(list.size());
-        for (Object item : list) {
-          copy.add(new Partition((Partition) item));
-        }
-        return copy;
-      }
-      if (first instanceof PartitionSpec) {
-        List<PartitionSpec> copy = new ArrayList<>(list.size());
-        for (Object item : list) {
-          copy.add(new PartitionSpec((PartitionSpec) item));
-        }
-        return copy;
-      }
-      if (first instanceof String) {
-        return new ArrayList<>((List<String>) list);
-      }
-      return new ArrayList<>(list);
+      return copy;
     }
     return value;
   }

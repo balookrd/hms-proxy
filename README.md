@@ -580,7 +580,7 @@ scrape_configs:
 - `hms_proxy_backend_session_acquire_timeouts_total` считает fail-fast события, когда пул shared backend metastore session исчерпан и permit не освобождается за `latencyBudgetMs` каталога (или 30s по умолчанию); `operation=borrow` для обычной диспетчеризации RPC, `operation=reconnect` для административных переподключений, которым не удалось перевести пул в состояние покоя (дождаться освобождения активных сессий)
 - `hms_proxy_adaptive_timeout_reconnect_total` считает, сколько раз adaptive socket timeout приводил к reconnect shared backend client (с принудительным сбросом impersonation-кэша); полезен для отслеживания reconnect storm при нестабильной latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` считает adaptive-timeout правки, подавленные троттлингом (`reason=hysteresis` для дельт ниже порога, `reason=cooldown` для срабатываний раньше cooldown окна после предыдущего reconnect)
-- `hms_proxy_iceberg_pointer_guard_events_total` считает решения Iceberg pointer guard по `alter_table`: `repaired` (запрос стёр бы Iceberg-состояние записи, поэтому был слит поверх неё), `forward_commit` (Iceberg-коммит, построенный на текущем указателе, пропущен как есть), `not_iceberg` (в записи нет указателя, имя запомнено как не-Iceberg), `cache_suppressed` (ответ из этой памяти, без чтения бэкенда), `read_failed` (запись прочитать не удалось, alter пропущен как есть). Всё, кроме `cache_suppressed`, стоило одного `get_table`, поэтому по одной метрике видно и добавленные round trip, и hit rate кэша
+- `hms_proxy_iceberg_pointer_guard_events_total` считает решения Iceberg pointer guard по `alter_table` / `alter_table_req`: `repaired` (запрос стёр бы Iceberg-состояние записи, поэтому был слит поверх неё), `forward_commit` (Iceberg-коммит, построенный на текущем указателе, пропущен как есть), `not_iceberg` (в записи нет указателя, имя запомнено как не-Iceberg), `cache_suppressed` (ответ из этой памяти без чтения бэкенда), `read_failed` (если первое чтение до лока не удалось — alter пропущен как есть; если сбой произошёл при повторном чтении под локом уже подтверждённой Iceberg-таблицы — alter отклоняется с `MetaException`, чтобы не откатить свежий коммит). Всё, кроме `cache_suppressed`, стоило одного `get_table`, поэтому по одной метрике видно и добавленные round trip, и hit rate кэша
 - `hms_proxy_rest_requests_total` считает HTTP-запросы Iceberg REST с группировкой по catalog prefix, route и terminal HTTP-статусу
 - `hms_proxy_rest_request_duration_seconds` измеряет длительность запросов Iceberg REST с группировкой по catalog prefix и route
 - `hms_proxy_rest_listener_info` это constant-info gauge, который показывает настроенные bind host и port Iceberg REST listener'а
@@ -1125,8 +1125,7 @@ federation.view-text-rewrite.mode=REWRITE
 federation.view-text-rewrite.preserve-original-text=false
 ```
 
-Это переписывает SQL внутри view между внешними и внутренними именами, включая `viewOriginalText` и
-Spark-параметры `view.default.database`. Если нужно выключить переписывание, установи `federation.view-text-rewrite.mode=DISABLED`,
+Это переписывает SQL внутри view между внешними и внутренними именами (включая как собственную БД view, так и ссылки на другие БД того же каталога, оставляя межкаталожные ссылки во внешнем виде), а также `viewOriginalText` и Spark-параметры `view.default.database` / завершающий namespace в `view.catalogAndNamespace.part.*` (не затрагивая префикс `spark_catalog`). Если нужно выключить переписывание, установи `federation.view-text-rewrite.mode=DISABLED`,
 а для сохранения сырого `viewOriginalText` — `federation.view-text-rewrite.preserve-original-text=true`. На выбор backend для самого RPC ни
 одна из настроек не влияет.
 
@@ -1173,7 +1172,7 @@ federation.external-table-location-rewrite.mode=QUALIFY_UNQUALIFIED
 - `QUALIFY_UNQUALIFIED`: неквалифицированные пути (без схемы и authority) автоматически дополняются схемой и authority целевого каталога (`fs.defaultFS` из `catalog.<name>.conf.fs.defaultFS`).
 - `REWRITE_IF_SOURCE_DEFAULT_FS`: если входящий путь совпадает с `federation.external-table-location-rewrite.source-default-fs` (по умолчанию `fs.defaultFS` каталога по умолчанию), authority заменяется на `fs.defaultFS` целевого каталога.
 
-Переписывание применяется к объектам `Table` и `Partition` во всех мутирующих RPC (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`).
+Переписывание применяется к объектам `Table` и `Partition` во всех мутирующих RPC (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`, `rename_partition*`) и автоматически перечитывается при hot-reload конфигурации.
 
 ## Iceberg REST Catalog frontend
 
@@ -1833,7 +1832,7 @@ shared backend client и сбросу кэша impersonation-клиентов (K
 учитываются в circuit breaker. Когда backend достигает
 `routing.circuit-breaker.failure-threshold`, proxy начинает fail-fast для этого backend до конца
 open-window, а потом пускает один half-open retry, который либо закрывает circuit, либо снова
-открывает его.
+открывает его. При `routing.hedged-read.enabled=false` (по умолчанию) безопасный fanout выполняется последовательно на текущем потоке без worker-пула; при `true` используется ограниченный worker-пул с fail-fast отклонением при переполнении очереди и деградацией по `routing.degraded-routing-policy`.
 
 ### Кэширование метаданных таблиц, разделов и распределенная DDL-инвалидация (ZooKeeper)
 
@@ -2000,7 +1999,7 @@ routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 
 Чтение записи и запись alter'а — два разных вызова, поэтому починка держит тот самый табличный
 лок, который берёт сам Iceberg (EXCLUSIVE, уровень таблицы — форма запроса из
-`org.apache.iceberg.hive.MetastoreLock`), на всё перечитывание, слияние и `alter_table` бэкенда.
+`org.apache.iceberg.hive.MetastoreLock`), на всё перечитывание (через `invokeDirectUnmetered`), слияние и `alter_table` / `alter_table_req` бэкенда (включая изолированные child-CL запросы HDP и Hive 4). Если повторное чтение под локом завершилось ошибкой, alter отклоняется с `MetaException` (с гарантированным освобождением лока), а не уходит поверх устаревшего снимка.
 Лок запрашивается только когда починка действительно нужна: честный Iceberg-коммит шлёт свой
 `alter_table` изнутри этого же лока, поэтому запрос лока до решения означал бы ожидание того, кто
 ждёт ответа на обслуживаемый вызов. Не полученный за `lock-acquire-timeout-ms` лок никогда не

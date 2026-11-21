@@ -25,8 +25,8 @@ final class GetAllDatabasesHandler implements SpecialCaseHandler {
               backend.name(),
               null,
               impersonation,
-              () -> (List<String>) support.dispatcher.invokeDirect(
-                  backend, method, null, impersonation, requestId, false, false));
+              (effectiveImpersonation, background) -> (List<String>) support.dispatcher.invokeDirect(
+                  backend, method, null, effectiveImpersonation, background ? -1L : requestId, false, false));
           return result;
         });
 

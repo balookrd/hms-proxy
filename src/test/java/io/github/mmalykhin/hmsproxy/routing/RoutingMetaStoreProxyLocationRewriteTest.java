@@ -349,4 +349,108 @@ public class RoutingMetaStoreProxyLocationRewriteTest {
     public void setPartitions(List<Partition> partitions) { this.partitions = partitions; }
   }
 
+  @Test
+  public void reconfigureHotReloadsExternalTableLocationRewriterInHandlers() throws Throwable {
+    AtomicReference<Table> capturedCreateTable = new AtomicReference<>();
+    AtomicReference<List<Partition>> capturedAddedPartitions = new AtomicReference<>();
+    AtomicReference<Table> capturedAlteredTable = new AtomicReference<>();
+
+    ProxyConfig initialConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1",
+            catalogConfig("catalog1", "c1", null, null,
+                Map.of("hive.metastore.uris", "thrift://one", "fs.defaultFS", "hdfs://ns-catalog1")),
+            "catalog2",
+            catalogConfig("catalog2", "c2", null, null,
+                Map.of("hive.metastore.uris", "thrift://two", "fs.defaultFS", "hdfs://ns-catalog2"))))
+        .compatibility(new CompatibilityConfig(false))
+        .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false,
+            ExternalTableLocationRewriteMode.DISABLED, null))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    BackendInvocationSession session2 = newSession((proxy, method, args) -> {
+      switch (method.getName()) {
+        case "create_table" -> {
+          capturedCreateTable.set((Table) args[0]);
+          return null;
+        }
+        case "add_partitions_req" -> {
+          org.apache.hadoop.hive.metastore.api.AddPartitionsRequest req =
+              (org.apache.hadoop.hive.metastore.api.AddPartitionsRequest) args[0];
+          capturedAddedPartitions.set(req.getParts());
+          return new org.apache.hadoop.hive.metastore.api.AddPartitionsResult();
+        }
+        case "alter_table" -> {
+          capturedAlteredTable.set((Table) args[2]);
+          return null;
+        }
+        case "get_table" -> throw new NoSuchObjectException("not found");
+        default -> throw new UnsupportedOperationException(method.getName());
+      }
+    });
+    CatalogBackend backend1 = newBackend(
+        initialConfig,
+        initialConfig.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(initialConfig, initialConfig.catalogs().get("catalog1"), newSession((p, m, a) -> null)));
+    CatalogBackend backend2 = newBackend(
+        initialConfig,
+        initialConfig.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(initialConfig, initialConfig.catalogs().get("catalog2"), session2));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(initialConfig, backends);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(initialConfig, router, new FederationLayer(initialConfig, router), null);
+
+    Table before = externalTable("catalog2__sales", "events", "/tmp/external/events", false);
+    Method createMethod = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+    handler.invoke(null, createMethod, new Object[] {before});
+    Assert.assertEquals("/tmp/external/events", capturedCreateTable.get().getSd().getLocation());
+
+    ProxyConfig updatedConfig = ProxyConfig.builder()
+        .server(initialConfig.server())
+        .security(initialConfig.security())
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(initialConfig.catalogs())
+        .compatibility(initialConfig.compatibility())
+        .federation(new FederationConfig(false, ViewTextRewriteMode.DISABLED, false,
+            ExternalTableLocationRewriteMode.QUALIFY_UNQUALIFIED, null))
+        .transactionalDdlGuard(initialConfig.transactionalDdlGuard())
+        .syntheticReadLockStore(initialConfig.syntheticReadLockStore())
+        .build();
+    handler.reconfigure(updatedConfig);
+
+    // create_table via routeByExtractedNamespace uses refreshed rewriter
+    handler.invoke(null, createMethod,
+        new Object[] {externalTable("catalog2__sales", "events2", "/tmp/external/events2", false)});
+    Assert.assertEquals("hdfs://ns-catalog2/tmp/external/events2", capturedCreateTable.get().getSd().getLocation());
+
+    // add_partitions_req special-case handler uses refreshed rewriter
+    org.apache.hadoop.hive.metastore.api.AddPartitionsRequest addPartReq =
+        new org.apache.hadoop.hive.metastore.api.AddPartitionsRequest("catalog2__sales", "events2",
+            List.of(partition("catalog2__sales", "events2", List.of("2026-11-21"), "/tmp/external/events2/p1")), false);
+    Method addPartsReqMethod = ThriftHiveMetastore.Iface.class.getMethod(
+        "add_partitions_req", org.apache.hadoop.hive.metastore.api.AddPartitionsRequest.class);
+    handler.invoke(null, addPartsReqMethod, new Object[] {addPartReq});
+    Assert.assertEquals("hdfs://ns-catalog2/tmp/external/events2/p1",
+        capturedAddedPartitions.get().get(0).getSd().getLocation());
+
+    // alter_table special-case handler uses refreshed rewriter
+    Method alterMethod = ThriftHiveMetastore.Iface.class.getMethod(
+        "alter_table", String.class, String.class, Table.class);
+    handler.invoke(null, alterMethod, new Object[] {
+        "catalog2__sales", "events2",
+        externalTable("catalog2__sales", "events2", "/tmp/external/events2_moved", false)});
+    Assert.assertEquals("hdfs://ns-catalog2/tmp/external/events2_moved", capturedAlteredTable.get().getSd().getLocation());
+  }
 }

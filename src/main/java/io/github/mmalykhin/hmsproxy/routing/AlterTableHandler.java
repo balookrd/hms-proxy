@@ -18,16 +18,21 @@ final class AlterTableHandler implements SpecialCaseHandler {
 
   private final RoutingSupport support;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
+
+  AlterTableHandler(
+      RoutingSupport support,
+      IcebergTablePointerGuard icebergTablePointerGuard
+  ) {
+    this.support = support;
+    this.icebergTablePointerGuard = icebergTablePointerGuard;
+  }
 
   AlterTableHandler(
       RoutingSupport support,
       IcebergTablePointerGuard icebergTablePointerGuard,
-      ExternalTableLocationRewriter externalTableLocationRewriter
+      ExternalTableLocationRewriter ignored
   ) {
-    this.support = support;
-    this.icebergTablePointerGuard = icebergTablePointerGuard;
-    this.externalTableLocationRewriter = externalTableLocationRewriter;
+    this(support, icebergTablePointerGuard);
   }
 
   @Override
@@ -106,6 +111,7 @@ final class AlterTableHandler implements SpecialCaseHandler {
     }
 
     Object internalizedTable = null;
+    ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (rawTable != null) {
       internalizedTable = support.federationLayer.internalizeArgument(rawTable, targetNamespace);
       if (externalTableLocationRewriter != null) {
@@ -131,11 +137,12 @@ final class AlterTableHandler implements SpecialCaseHandler {
       if (internalizedTable != null) {
         setTableOnRequest(routedRequest, internalizedTable);
       }
+      Object requestTable = ThriftReflectionCache.invokeGetter(routedRequest, "getTable");
 
       Object[] guardArgs = new Object[]{
           sourceNamespace.backendDbName(),
           sourceTable,
-          internalizedTable != null ? internalizedTable : rawTable,
+          requestTable != null ? requestTable : (internalizedTable != null ? internalizedTable : rawTable),
           routedRequest
       };
 
@@ -163,19 +170,17 @@ final class AlterTableHandler implements SpecialCaseHandler {
       }
     }
 
-    if (icebergTablePointerGuard != null) {
-      boolean isRename = !sourceNamespace.backendDbName().equalsIgnoreCase(targetNamespace.backendDbName())
-          || (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable));
-      if (isRename) {
-        icebergTablePointerGuard.invalidate(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
-        if (targetTable != null) {
-          icebergTablePointerGuard.invalidate(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
-        }
+    boolean isRename = !sourceNamespace.backendDbName().equalsIgnoreCase(targetNamespace.backendDbName())
+        || (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable));
+    if (icebergTablePointerGuard != null && isRename) {
+      icebergTablePointerGuard.invalidate(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
+      if (targetTable != null) {
+        icebergTablePointerGuard.invalidate(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
       }
     }
 
     support.invalidateTable(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
-    if (targetTable != null && !targetTable.equalsIgnoreCase(sourceTable)) {
+    if (isRename && targetTable != null) {
       support.invalidateTable(targetNamespace.catalogName(), targetNamespace.backendDbName(), targetTable);
     }
 

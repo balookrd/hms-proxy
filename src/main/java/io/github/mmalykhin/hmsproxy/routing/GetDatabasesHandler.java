@@ -27,14 +27,14 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
           resolved.backend().name(),
           resolved.backendDbName(),
           impersonation,
-          () -> (List<String>) support.dispatcher.invokeDirect(
+          (effectiveImpersonation, background) -> (List<String>) support.dispatcher.invokeDirect(
               resolved.backend(),
               method,
               new Object[]{resolved.backendDbName()},
-              impersonation,
-              RequestContext.currentRequestId(),
-              true,
-              true));
+              effectiveImpersonation,
+              background ? -1L : RequestContext.currentRequestId(),
+              !background,
+              !background));
       return support.exposedDatabaseNames(method.getName(), resolved.catalogName(), backendDatabases);
     }
 
@@ -51,14 +51,14 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
           defaultBackend.name(),
           pattern,
           impersonation,
-          () -> (List<String>) support.dispatcher.invokeDirect(
+          (effectiveImpersonation, background) -> (List<String>) support.dispatcher.invokeDirect(
               defaultBackend,
               method,
               new Object[]{pattern},
-              impersonation,
-              RequestContext.currentRequestId(),
-              true,
-              true));
+              effectiveImpersonation,
+              background ? -1L : RequestContext.currentRequestId(),
+              !background,
+              !background));
       return support.exposedDatabaseNames(method.getName(), defaultNamespace.catalogName(), backendDatabases);
     }
 
@@ -78,8 +78,14 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
               backend.name(),
               backendPattern,
               impersonation,
-              () -> (List<String>) support.dispatcher.invokeDirect(
-                  backend, method, new Object[]{backendPattern}, impersonation, requestId, false, false));
+              (effectiveImpersonation, background) -> (List<String>) support.dispatcher.invokeDirect(
+                  backend,
+                  method,
+                  new Object[]{backendPattern},
+                  effectiveImpersonation,
+                  background ? -1L : requestId,
+                  false,
+                  false));
           return result;
         });
 

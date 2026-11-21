@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +25,7 @@ final class DatabaseListCache {
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<List<String>>> inFlight = new ConcurrentHashMap<>();
+  private final AtomicLong generation = new AtomicLong();
 
   DatabaseListCache(DatabaseListCacheConfig config) {
     this(config, null, System::currentTimeMillis);
@@ -73,14 +75,25 @@ final class DatabaseListCache {
       ImpersonationContext impersonation,
       Loader loader
   ) throws Throwable {
+    return get(methodName, catalogName, pattern, impersonation, (ignoredImp, ignoredBg) -> loader.load());
+  }
+
+  List<String> get(
+      String methodName,
+      String catalogName,
+      String pattern,
+      ImpersonationContext impersonation,
+      RefreshableLoader loader
+  ) throws Throwable {
+    ImpersonationContext refreshImpersonation = sharedAcrossUsers ? null : impersonation;
     if (ttlMs == 0L) {
-      return loader.load();
+      return loader.load(impersonation, false);
     }
     long nowMs = clock.getAsLong();
     Key key = Key.of(methodName, catalogName, pattern, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
-      cached.recordAccess(nowMs, loader);
+      cached.recordAccess(nowMs, loader, refreshImpersonation);
       if (metrics != null) {
         metrics.recordCacheRequest("database_list", catalogName, "hit");
       }
@@ -94,12 +107,15 @@ final class DatabaseListCache {
         List<String> result = existing.get();
         cached = entries.get(key);
         if (cached != null) {
-          cached.recordAccess(nowMs, loader);
+          cached.recordAccess(nowMs, loader, refreshImpersonation);
         }
         if (metrics != null) {
           metrics.recordCacheRequest("database_list", catalogName, "hit");
         }
         return result == null ? null : new ArrayList<>(result);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -108,22 +124,23 @@ final class DatabaseListCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
-        cached.recordAccess(nowMs, loader);
+        cached.recordAccess(nowMs, loader, refreshImpersonation);
         if (metrics != null) {
           metrics.recordCacheRequest("database_list", catalogName, "hit");
         }
-        List<String> result = new ArrayList<>(cached.databases());
-        future.complete(result);
-        return result;
+        List<String> snapshot = List.copyOf(cached.databases());
+        future.complete(snapshot);
+        return new ArrayList<>(snapshot);
       }
       if (metrics != null) {
         metrics.recordCacheRequest("database_list", catalogName, "miss");
       }
-      List<String> loaded = loader.load();
+      long loadEpoch = generation.get();
+      List<String> loaded = loader.load(refreshImpersonation, false);
       if (loaded != null) {
-        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loader);
+        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loader, refreshImpersonation, loadEpoch);
       }
-      future.complete(loaded);
+      future.complete(loaded == null ? null : List.copyOf(loaded));
       return loaded == null ? null : new ArrayList<>(loaded);
     } catch (Throwable t) {
       if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
@@ -132,9 +149,9 @@ final class DatabaseListCache {
         if (metrics != null) {
           metrics.recordCacheRequest("database_list", catalogName, "stale_hit");
         }
-        List<String> staleResult = new ArrayList<>(cached.databases());
-        future.complete(staleResult);
-        return staleResult;
+        List<String> staleSnapshot = List.copyOf(cached.databases());
+        future.complete(staleSnapshot);
+        return new ArrayList<>(staleSnapshot);
       }
       future.completeExceptionally(t);
       throw t;
@@ -160,6 +177,7 @@ final class DatabaseListCache {
     if (catalogName == null) {
       return;
     }
+    generation.incrementAndGet();
     int removed = 0;
     for (var it = entries.keySet().iterator(); it.hasNext(); ) {
       if (it.next().catalogName().equals(catalogName)) {
@@ -176,6 +194,7 @@ final class DatabaseListCache {
   }
 
   void invalidateAll() {
+    generation.incrementAndGet();
     int total = entries.size();
     entries.clear();
     if (metrics != null && total > 0) {
@@ -183,9 +202,25 @@ final class DatabaseListCache {
     }
   }
 
-  private void put(Key key, List<String> databases, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
+  private void put(
+      Key key,
+      List<String> databases,
+      long expiresAtMs,
+      long lastAccessedAtMs,
+      RefreshableLoader loader,
+      ImpersonationContext refreshImpersonation,
+      long loadEpoch
+  ) {
+    if (generation.get() != loadEpoch) {
+      return;
+    }
     pruneIfFull();
-    entries.put(key, new Entry(List.copyOf(databases), expiresAtMs, lastAccessedAtMs, loader));
+    Entry inserted = new Entry(List.copyOf(databases), expiresAtMs, lastAccessedAtMs, loader, refreshImpersonation);
+    entries.put(key, inserted);
+    if (generation.get() != loadEpoch) {
+      entries.remove(key, inserted);
+      return;
+    }
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(key.catalogName())
           && (sharedAcrossUsers || entry.getKey().userName().equals(key.userName()))) {
@@ -208,7 +243,7 @@ final class DatabaseListCache {
       if (nowMs - entry.lastAccessedAtMs() > activityWindowMs) {
         continue;
       }
-      Loader loader = entry.loader();
+      RefreshableLoader loader = entry.loader();
       if (loader == null) {
         continue;
       }
@@ -218,16 +253,22 @@ final class DatabaseListCache {
         continue;
       }
       try {
-        List<String> loaded = loader.load();
-        if (loaded != null) {
-          entry.update(loaded, nowMs + ttlMs);
-          if (metrics != null) {
-            metrics.recordCacheRefresh("database_list", key.catalogName(), "success");
-            metrics.setCacheEntries("database_list", key.catalogName(), countEntries(key.catalogName()));
+        long loadEpoch = generation.get();
+        List<String> loaded = loader.load(entry.refreshImpersonation(), true);
+        if (loaded != null && generation.get() == loadEpoch && entries.get(key) == entry) {
+          long refreshedAtMs = clock.getAsLong();
+          entry.update(loaded, refreshedAtMs + ttlMs);
+          if (generation.get() != loadEpoch) {
+            entries.remove(key, entry);
+          } else {
+            if (metrics != null) {
+              metrics.recordCacheRefresh("database_list", key.catalogName(), "success");
+              metrics.setCacheEntries("database_list", key.catalogName(), countEntries(key.catalogName()));
+            }
+            refreshed++;
           }
-          refreshed++;
         }
-        future.complete(loaded);
+        future.complete(loaded == null ? null : List.copyOf(loaded));
       } catch (Throwable t) {
         future.completeExceptionally(t);
         LOG.warn("Background refresh failed for database list of catalog {}: {}", key.catalogName(), t.toString());
@@ -299,6 +340,11 @@ final class DatabaseListCache {
     List<String> load() throws Throwable;
   }
 
+  @FunctionalInterface
+  interface RefreshableLoader {
+    List<String> load(ImpersonationContext impersonation, boolean background) throws Throwable;
+  }
+
   private record Key(
       String methodName,
       String catalogName,
@@ -328,13 +374,21 @@ final class DatabaseListCache {
     private volatile List<String> databases;
     private volatile long expiresAtMs;
     private volatile long lastAccessedAtMs;
-    private volatile Loader loader;
+    private volatile RefreshableLoader loader;
+    private volatile ImpersonationContext refreshImpersonation;
 
-    Entry(List<String> databases, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
+    Entry(
+        List<String> databases,
+        long expiresAtMs,
+        long lastAccessedAtMs,
+        RefreshableLoader loader,
+        ImpersonationContext refreshImpersonation
+    ) {
       this.databases = databases;
       this.expiresAtMs = expiresAtMs;
       this.lastAccessedAtMs = lastAccessedAtMs;
       this.loader = loader;
+      this.refreshImpersonation = refreshImpersonation;
     }
 
     List<String> databases() {
@@ -349,15 +403,20 @@ final class DatabaseListCache {
       return lastAccessedAtMs;
     }
 
-    Loader loader() {
+    RefreshableLoader loader() {
       return loader;
     }
 
-    void recordAccess(long accessedAtMs, Loader currentLoader) {
+    ImpersonationContext refreshImpersonation() {
+      return refreshImpersonation;
+    }
+
+    void recordAccess(long accessedAtMs, RefreshableLoader currentLoader, ImpersonationContext currentImpersonation) {
       this.lastAccessedAtMs = accessedAtMs;
       if (currentLoader != null) {
         this.loader = currentLoader;
       }
+      this.refreshImpersonation = currentImpersonation;
     }
 
     void update(List<String> newDatabases, long newExpiresAtMs) {

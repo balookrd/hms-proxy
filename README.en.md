@@ -611,7 +611,7 @@ Metric semantics:
 - `hms_proxy_backend_session_acquire_timeouts_total` counts fail-fast events when the shared backend metastore session pool runs out of permits within the catalog's `latencyBudgetMs` (or 30s default); `operation=borrow` covers regular RPC dispatch, `operation=reconnect` covers admin reconnect attempts that could not quiesce the pool
 - `hms_proxy_adaptive_timeout_reconnect_total` counts how often the adaptive socket timeout reconnected the shared backend client (and forced impersonation-cache eviction); use it to spot reconnect storms under volatile latency
 - `hms_proxy_adaptive_timeout_reconnect_skipped_total` counts adaptive-timeout adjustments suppressed by the throttles (`reason=hysteresis` for sub-threshold deltas, `reason=cooldown` for events too close to a previous reconnect)
-- `hms_proxy_iceberg_pointer_guard_events_total` counts the Iceberg pointer guard's decisions on `alter_table`: `repaired` (the request would have erased the record's Iceberg state and was merged over it), `forward_commit` (an Iceberg commit built on the current pointer, passed through), `not_iceberg` (the record holds no pointer, remembered as such), `cache_suppressed` (answered from that memory, no backend read), `read_failed` (the record could not be read and the alter was passed through). Everything except `cache_suppressed` cost one `get_table`, so the added round trips and the cache hit rate are both readable from this one metric
+- `hms_proxy_iceberg_pointer_guard_events_total` counts the Iceberg pointer guard's decisions on `alter_table` / `alter_table_req`: `repaired` (the request would have erased the record's Iceberg state and was merged over it), `forward_commit` (an Iceberg commit built on the current pointer, passed through), `not_iceberg` (the record holds no pointer, remembered as such), `cache_suppressed` (answered from that memory, no backend read), `read_failed` (if the initial unlocked read failed the alter is passed through; if the locked re-read of a known Iceberg table fails, the alter is rejected with `MetaException` to avoid writing over a stale snapshot). Everything except `cache_suppressed` cost one `get_table`, so the added round trips and the cache hit rate are both readable from this one metric
 - `hms_proxy_rest_requests_total` counts Iceberg REST HTTP requests by catalog prefix, route, and terminal HTTP status
 - `hms_proxy_rest_request_duration_seconds` measures Iceberg REST request duration grouped by catalog prefix and route
 - `hms_proxy_rest_listener_info` is a constant-info gauge that exposes the configured bind host and port of the Iceberg REST listener
@@ -1162,8 +1162,8 @@ federation.view-text-rewrite.mode=REWRITE
 federation.view-text-rewrite.preserve-original-text=false
 ```
 
-That rewrites view SQL between external and internal names, including `viewOriginalText` and Spark properties
-`view.default.database`. If you need to disable view rewrite, set `federation.view-text-rewrite.mode=DISABLED`,
+That rewrites view SQL between external and internal names (covering both the view's own database and references to sibling databases in the same catalog while leaving cross-catalog references external), including `viewOriginalText` and Spark properties
+`view.default.database` / the trailing namespace element of `view.catalogAndNamespace.part.*` (keeping `spark_catalog` intact). If you need to disable view rewrite, set `federation.view-text-rewrite.mode=DISABLED`,
 or set `federation.view-text-rewrite.preserve-original-text=true` to keep raw `viewOriginalText`. Neither switch
 changes backend selection for the RPC itself.
 
@@ -1210,7 +1210,7 @@ Modes for `federation.external-table-location-rewrite.mode`:
 - `QUALIFY_UNQUALIFIED`: unqualified paths (missing scheme and authority) are automatically qualified with the target catalog's default filesystem (`fs.defaultFS` from `catalog.<name>.conf.fs.defaultFS`).
 - `REWRITE_IF_SOURCE_DEFAULT_FS`: if the incoming URI matches `federation.external-table-location-rewrite.source-default-fs` (defaults to default-catalog `fs.defaultFS`), its authority is replaced with the target catalog's `fs.defaultFS`.
 
-Location rewriting applies to `Table` and `Partition` objects across all mutating RPCs (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`).
+Location rewriting applies to `Table` and `Partition` objects across all mutating RPCs (`create_table*`, `alter_table*`, `add_partition*`, `alter_partition*`, `alter_partitions*`, `rename_partition*`) and is refreshed automatically on hot-reload.
 
 Then a non-default catalog is used through the external database name:
 
@@ -1938,7 +1938,7 @@ cooldown, so an overloaded backend is not re-quiesced on every following request
 failures and latency-budget breaches
 count toward the circuit breaker. Once a backend crosses `routing.circuit-breaker.failure-threshold`,
 the proxy fails fast for that backend until the open window expires, then lets one half-open retry
-decide whether to close or reopen the circuit.
+decide whether to close or reopen the circuit. When `routing.hedged-read.enabled=false` (the default), safe fanout executes sequentially on the caller thread without a worker pool; when `true`, it uses a bounded worker queue with abort-on-overflow back-pressure governed by `routing.degraded-routing-policy`.
 
 ### Table and partition metadata caching and distributed DDL invalidation (ZooKeeper)
 
@@ -2106,8 +2106,8 @@ routing.iceberg-pointer-guard.lock-acquire-timeout-ms=10000
 
 Reading the record and writing the alter are two calls, so a repair holds the table lock Iceberg
 itself takes (EXCLUSIVE, table level - the request shape of
-`org.apache.iceberg.hive.MetastoreLock`) across the re-read, the merge and the backend's
-`alter_table`. The lock is requested only when a repair is needed: an honest Iceberg commit
+`org.apache.iceberg.hive.MetastoreLock`) across the unmetered re-read, the merge and the backend's
+`alter_table` / `alter_table_req` (including isolated child-classloader requests on HDP and Hive 4). If the locked re-read fails, the alter is rejected with `MetaException` (and the lock is released) rather than proceeding against a potentially stale snapshot. The lock is requested only when a repair is needed: an honest Iceberg commit
 sends its `alter_table` from inside that very lock, so asking for it before deciding would wait on
 the caller of the call being served. A lock that is not granted within `lock-acquire-timeout-ms`
 never refuses the write - the alter goes through repaired but unprotected, counted as

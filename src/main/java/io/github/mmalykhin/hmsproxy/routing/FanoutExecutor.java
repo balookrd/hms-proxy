@@ -2,10 +2,12 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -52,40 +54,54 @@ final class FanoutExecutor {
       FanoutBackendCall<T> call
   ) throws Throwable {
     RequestObservation parentObservation = RequestContext.REQUEST_OBSERVATION.get();
+    Long parentRequestId = RequestContext.REQUEST_ID.get();
+    long effectiveWorkerRequestId = parentRequestId != null ? parentRequestId : requestId;
+    ClientRequestContext.Snapshot parentClientContext = ClientRequestContext.capture();
     String observationMethod = parentObservation != null ? parentObservation.method() : methodName;
     long timeoutMs = backendRoutingController.fanoutTimeoutMs();
-    // The deadline starts before submission: the shared pool applies CallerRunsPolicy back-pressure,
-    // so tasks can execute synchronously inside the submit loop and that time must count against the
-    // fanout budget instead of being added on top of it.
     long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-    List<Future<FanoutTaskResult<T>>> futures = new ArrayList<>(backends.size());
-    for (CatalogBackend backend : backends) {
-      futures.add(backendRoutingController.fanoutExecutor().submit(() -> {
-        RequestObservation previousObservation = RequestContext.REQUEST_OBSERVATION.get();
-        RequestObservation workerObservation = new RequestObservation(observationMethod);
-        RequestContext.REQUEST_OBSERVATION.set(workerObservation);
-        try {
-          T value = call.call(backend, impersonation, requestId);
-          return FanoutTaskResult.success(backend, value, workerObservation.fallback());
-        } catch (Throwable error) {
-          return FanoutTaskResult.failure(backend, error, workerObservation.fallback());
-        } finally {
-          // CallerRunsPolicy can run this task on the request thread: restore whatever observation
-          // was installed there instead of clearing the parent request's one.
-          if (previousObservation == null) {
-            RequestContext.REQUEST_OBSERVATION.remove();
-          } else {
-            RequestContext.REQUEST_OBSERVATION.set(previousObservation);
-          }
-        }
-      }));
-    }
-
+    List<SubmittedTask<T>> submitted = new ArrayList<>(backends.size());
     MetaException timeoutError = new MetaException("Fanout backend timed out after " + timeoutMs + " ms");
     List<FanoutBackendResult<T>> results = new ArrayList<>(backends.size());
     try {
-      for (int i = 0; i < futures.size(); i++) {
-        Future<FanoutTaskResult<T>> future = futures.get(i);
+      for (CatalogBackend backend : backends) {
+        try {
+          Future<FanoutTaskResult<T>> future = backendRoutingController.fanoutExecutor().submit(() -> {
+            RequestObservation previousObservation = RequestContext.REQUEST_OBSERVATION.get();
+            Long previousRequestId = RequestContext.REQUEST_ID.get();
+            ClientRequestContext.Snapshot previousClientContext = ClientRequestContext.install(parentClientContext);
+            RequestObservation workerObservation = new RequestObservation(observationMethod);
+            RequestContext.REQUEST_OBSERVATION.set(workerObservation);
+            RequestContext.REQUEST_ID.set(effectiveWorkerRequestId);
+            try {
+              T value = call.call(backend, impersonation, requestId);
+              return FanoutTaskResult.success(backend, value, workerObservation.fallback());
+            } catch (Throwable error) {
+              return FanoutTaskResult.failure(backend, error, workerObservation.fallback());
+            } finally {
+              ClientRequestContext.restore(previousClientContext);
+              if (previousRequestId == null) {
+                RequestContext.REQUEST_ID.remove();
+              } else {
+                RequestContext.REQUEST_ID.set(previousRequestId);
+              }
+              if (previousObservation == null) {
+                RequestContext.REQUEST_OBSERVATION.remove();
+              } else {
+                RequestContext.REQUEST_OBSERVATION.set(previousObservation);
+              }
+            }
+          });
+          submitted.add(new SubmittedTask<>(backend, future));
+        } catch (RejectedExecutionException rejected) {
+          MetaException overloadError = new MetaException(
+              "Fanout executor overloaded for method " + methodName + " and backend " + backend.name());
+          handleFanoutFailure(methodName, backend, requestId, overloadError);
+        }
+      }
+
+      for (SubmittedTask<T> task : submitted) {
+        Future<FanoutTaskResult<T>> future = task.future();
         FanoutTaskResult<T> taskResult = null;
         try {
           long remainingNanos = deadlineNanos - System.nanoTime();
@@ -106,7 +122,7 @@ final class FanoutExecutor {
         }
         if (taskResult == null) {
           future.cancel(true);
-          handleFanoutFailure(methodName, backends.get(i), requestId, timeoutError);
+          handleFanoutFailure(methodName, task.backend(), requestId, timeoutError);
           continue;
         }
         if (taskResult.fallback() && parentObservation != null) {
@@ -120,9 +136,9 @@ final class FanoutExecutor {
       }
     } finally {
       // Nothing may outlive this request: cancel whatever is still pending, including tasks left
-      // behind when a strict-policy failure aborts the harvest loop.
-      for (Future<FanoutTaskResult<T>> pending : futures) {
-        pending.cancel(true);
+      // behind when a strict-policy failure or queue rejection aborts the request.
+      for (SubmittedTask<T> pending : submitted) {
+        pending.future().cancel(true);
       }
     }
     return results;
@@ -166,6 +182,9 @@ final class FanoutExecutor {
   }
 
   record FanoutBackendResult<T>(CatalogBackend backend, T value) {
+  }
+
+  private record SubmittedTask<T>(CatalogBackend backend, Future<FanoutTaskResult<T>> future) {
   }
 
   private record FanoutTaskResult<T>(CatalogBackend backend, T value, Throwable error, boolean fallback) {

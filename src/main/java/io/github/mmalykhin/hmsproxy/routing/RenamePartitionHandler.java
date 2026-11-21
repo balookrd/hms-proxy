@@ -17,17 +17,15 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
 
   private final RoutingSupport support;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
 
   RenamePartitionHandler(RoutingSupport support, IcebergTablePointerGuard icebergTablePointerGuard) {
-    this(support, icebergTablePointerGuard, null);
+    this.support = support;
+    this.icebergTablePointerGuard = icebergTablePointerGuard;
   }
 
   RenamePartitionHandler(RoutingSupport support, IcebergTablePointerGuard icebergTablePointerGuard,
-      ExternalTableLocationRewriter externalTableLocationRewriter) {
-    this.support = support;
-    this.icebergTablePointerGuard = icebergTablePointerGuard;
-    this.externalTableLocationRewriter = externalTableLocationRewriter;
+      ExternalTableLocationRewriter ignored) {
+    this(support, icebergTablePointerGuard);
   }
 
   @Override
@@ -107,6 +105,7 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
         ThriftReflectionCache.invokeStringSetter(routedRequest, "setValidWriteIdList",
             NamespaceInternalizer.transformValidWriteIdList(validWriteIdList, namespace));
       }
+      ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
       if (rawNewPart != null) {
         Object internalizedPart = support.federationLayer.internalizeArgument(rawNewPart, namespace);
         if (externalTableLocationRewriter != null) {
@@ -127,6 +126,7 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
     } else {
       Object[] routedArgs = Arrays.copyOf(args, args.length);
       routedArgs[0] = namespace.backendDbName();
+      ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
       if (rawNewPart != null) {
         Object internalizedPart = support.federationLayer.internalizeArgument(rawNewPart, namespace);
         if (externalTableLocationRewriter != null) {
@@ -137,8 +137,11 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
       result = support.invokeDirect(backend, method, routedArgs);
     }
 
-    if (icebergTablePointerGuard != null && tableName != null) {
-      icebergTablePointerGuard.invalidate(namespace.catalogName(), namespace.backendDbName(), tableName);
+    if (tableName != null) {
+      if (icebergTablePointerGuard != null) {
+        icebergTablePointerGuard.invalidate(namespace.catalogName(), namespace.backendDbName(), tableName);
+      }
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
     }
 
     return isReq ? support.federationLayer.externalizeResult(result, namespace) : result;

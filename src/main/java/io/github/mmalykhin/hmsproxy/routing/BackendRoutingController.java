@@ -66,21 +66,18 @@ public final class BackendRoutingController implements AutoCloseable {
       this.probeExecutor = null;
       this.probeRunner = null;
     }
-    if (router.backends().size() > 1) {
+    if (config.latencyRouting().hedgedRead().enabled() && router.backends().size() > 1) {
       int maxParallelism = config.latencyRouting().hedgedRead().maxParallelism();
       int poolSize = Math.max(1, Math.min(maxParallelism > 0 ? maxParallelism : 8, router.backends().size()));
-      // Bound the queue to the number of backends: a single request submits at most backends.size()
-      // tasks. The pool is shared, so concurrent fanout requests can still exhaust it; CallerRunsPolicy
-      // then applies back-pressure by running a task on the request thread, and FanoutExecutor counts
-      // that time against the fanout deadline.
+      int queueCapacity = Math.max(64, poolSize * 16);
       this.fanoutExecutor = new ThreadPoolExecutor(
           poolSize,
           poolSize,
           0L,
           TimeUnit.MILLISECONDS,
-          new ArrayBlockingQueue<>(router.backends().size()),
+          new ArrayBlockingQueue<>(queueCapacity),
           namedThreadFactory("hms-proxy-fanout"),
-          new ThreadPoolExecutor.CallerRunsPolicy());
+          new ThreadPoolExecutor.AbortPolicy());
     } else {
       this.fanoutExecutor = null;
     }
@@ -131,7 +128,9 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public boolean hedgedReadEnabled(String methodName) {
-    return fanoutExecutor != null && HmsOperationPolicy.describe(methodName).safeFanout();
+    return config.latencyRouting().hedgedRead().enabled()
+        && fanoutExecutor != null
+        && HmsOperationPolicy.describe(methodName).safeFanout();
   }
 
   public ExecutorService fanoutExecutor() {

@@ -16,15 +16,13 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
       String.class, String.class, List.class, EnvironmentContext.class);
 
   private final RoutingSupport support;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
 
   AlterPartitionsReqHandler(RoutingSupport support) {
-    this(support, null);
+    this.support = support;
   }
 
-  AlterPartitionsReqHandler(RoutingSupport support, ExternalTableLocationRewriter externalTableLocationRewriter) {
-    this.support = support;
-    this.externalTableLocationRewriter = externalTableLocationRewriter;
+  AlterPartitionsReqHandler(RoutingSupport support, ExternalTableLocationRewriter ignored) {
+    this(support);
   }
 
   @Override
@@ -76,17 +74,25 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
         }
       }
     }
+    ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (externalTableLocationRewriter != null) {
       externalTableLocationRewriter.rewriteObjectArguments(new Object[]{routedRequest}, namespace, "alter_partitions_req");
     }
+    Object result;
     try {
-      return support.invokeBackendNamed(backend, "alter_partitions_req", routedRequest);
+      result = support.invokeBackendNamed(backend, "alter_partitions_req", routedRequest);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        return fallbackToLegacy(backend, routedRequest);
+        result = fallbackToLegacy(backend, routedRequest);
+      } else {
+        throw cause;
       }
-      throw cause;
     }
+    String tableName = RoutingSupport.extractTableName(routedRequest);
+    if (tableName != null) {
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
+    }
+    return result;
   }
 
   @SuppressWarnings("unchecked")

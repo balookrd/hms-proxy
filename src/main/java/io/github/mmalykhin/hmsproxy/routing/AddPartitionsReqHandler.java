@@ -12,15 +12,13 @@ final class AddPartitionsReqHandler implements SpecialCaseHandler {
   private static final Method ADD_PARTITIONS_REQ = findMethod("add_partitions_req", AddPartitionsRequest.class);
 
   private final RoutingSupport support;
-  private final ExternalTableLocationRewriter externalTableLocationRewriter;
 
   AddPartitionsReqHandler(RoutingSupport support) {
-    this(support, null);
+    this.support = support;
   }
 
-  AddPartitionsReqHandler(RoutingSupport support, ExternalTableLocationRewriter externalTableLocationRewriter) {
-    this.support = support;
-    this.externalTableLocationRewriter = externalTableLocationRewriter;
+  AddPartitionsReqHandler(RoutingSupport support, ExternalTableLocationRewriter ignored) {
+    this(support);
   }
 
   @Override
@@ -38,6 +36,7 @@ final class AddPartitionsReqHandler implements SpecialCaseHandler {
     support.validateCatalogAccess(backend, "add_partitions_req", namespace.backendDbName());
 
     Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
+    ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (externalTableLocationRewriter != null) {
       externalTableLocationRewriter.rewriteObjectArguments(new Object[]{routedRequest}, namespace, "add_partitions_req");
     }
@@ -52,6 +51,10 @@ final class AddPartitionsReqHandler implements SpecialCaseHandler {
       } else {
         throw cause;
       }
+    }
+    String tableName = RoutingSupport.extractTableName(routedRequest);
+    if (tableName != null) {
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
     }
     return support.federationLayer.externalizeResult(result, namespace);
   }

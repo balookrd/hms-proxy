@@ -141,6 +141,24 @@ public class ThriftFailureClassifierTest {
     Assert.assertEquals("unknown", ThriftFailureClassifier.transportFailurePhase(withFrame("invoke")));
   }
 
+  @Test
+  public void unknownMethodWrappedInMetaExceptionOrDeepCauseIsRecognizedWithoutAlteringTransportCheck() {
+    MetaException wrappedUnknown = new MetaException("Backend error");
+    wrappedUnknown.initCause(new TApplicationException(TApplicationException.UNKNOWN_METHOD, "get_table_req"));
+    Assert.assertTrue(ThriftFailureClassifier.isUnsupportedMethod(wrappedUnknown));
+    Assert.assertFalse(ThriftFailureClassifier.isTransportFailure(wrappedUnknown));
+
+    Throwable nested = new MetaException("outer");
+    nested.initCause(new IllegalStateException("middle",
+        new InvocationTargetException(
+            new TApplicationException(TApplicationException.UNKNOWN_METHOD, "alter_partitions_req"))));
+    Assert.assertTrue(ThriftFailureClassifier.isUnsupportedMethod(nested));
+
+    MetaException wrappedInternal = new MetaException("Backend error");
+    wrappedInternal.initCause(new TApplicationException(TApplicationException.INTERNAL_ERROR, "boom"));
+    Assert.assertFalse(ThriftFailureClassifier.isUnsupportedMethod(wrappedInternal));
+  }
+
   private static TTransportException withFrame(String methodName) {
     TTransportException failure = new TTransportException(TTransportException.END_OF_FILE);
     failure.setStackTrace(new StackTraceElement[] {

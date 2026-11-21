@@ -32,11 +32,18 @@ public final class ThriftFailureClassifier {
    */
   public static boolean isUnsupportedMethod(Throwable cause) {
     Throwable root = unwrap(cause);
-    if (root instanceof NoSuchMethodException || root instanceof NoSuchMethodError) {
-      return true;
+    Throwable current = root;
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      if (current instanceof NoSuchMethodException || current instanceof NoSuchMethodError) {
+        return true;
+      }
+      if (current instanceof TApplicationException application
+          && application.getType() == TApplicationException.UNKNOWN_METHOD) {
+        return true;
+      }
+      current = current.getCause();
     }
-    return root instanceof TApplicationException application
-        && application.getType() == TApplicationException.UNKNOWN_METHOD;
+    return false;
   }
 
   /**

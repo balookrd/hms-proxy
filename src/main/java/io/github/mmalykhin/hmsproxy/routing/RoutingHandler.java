@@ -41,7 +41,6 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
   private final CompatibilityLayer compatibilityLayer;
   private final ProxyObservability observability;
   private final RoutingSupport support;
-  private volatile ExternalTableLocationRewriter externalTableLocationRewriter;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
   private final DropTableHandler dropTableHandler;
   private final Map<String, SpecialCaseHandler> specialCaseHandlers;
@@ -190,7 +189,6 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         config, router, federationLayer, observability, dispatcher, impersonationResolver,
         databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache,
         metadataAuthorizer, cacheInvalidator);
-    this.externalTableLocationRewriter = new ExternalTableLocationRewriter(config.federation());
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger, icebergTablePointerGuard);
     this.specialCaseHandlers = buildSpecialCaseHandlers(dropTableHandler);
@@ -231,19 +229,19 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     SpecialCaseHandler lock = new LockRoutingHandler(support, this);
     SpecialCaseHandler refreshPrivileges = new RefreshPrivilegesHandler(support);
     SpecialCaseHandler setAggrStatsFor = new SetAggrStatsForHandler(support);
-    SpecialCaseHandler alterTable = new AlterTableHandler(support, icebergTablePointerGuard, externalTableLocationRewriter);
-    SpecialCaseHandler alterPartitionsReq = new AlterPartitionsReqHandler(support, externalTableLocationRewriter);
+    SpecialCaseHandler alterTable = new AlterTableHandler(support, icebergTablePointerGuard);
+    SpecialCaseHandler alterPartitionsReq = new AlterPartitionsReqHandler(support);
     SpecialCaseHandler truncateTableReq = new TruncateTableReqHandler(support);
-    SpecialCaseHandler renamePartition = new RenamePartitionHandler(support, icebergTablePointerGuard, externalTableLocationRewriter);
+    SpecialCaseHandler renamePartition = new RenamePartitionHandler(support, icebergTablePointerGuard);
     SpecialCaseHandler exchangePartition = new ExchangePartitionHandler(support, icebergTablePointerGuard);
     SpecialCaseHandler tableStatisticsReq = new TableStatisticsReqHandler(support);
-    SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support, externalTableLocationRewriter);
+    SpecialCaseHandler addPartitionsReq = new AddPartitionsReqHandler(support);
     SpecialCaseHandler addWriteNotificationLogBatch = new AddWriteNotificationLogBatchHandler(support);
     SpecialCaseHandler getPartitionReq = new GetPartitionReqHandler(support);
     SpecialCaseHandler getPartitionsReq = new GetPartitionsReqHandler(support);
     SpecialCaseHandler getPartitionsByNamesReq = new GetPartitionsByNamesReqHandler(support);
     SpecialCaseHandler getPartitionsByFilterReq = new GetPartitionsByFilterReqHandler(support);
-    SpecialCaseHandler createTableReq = new CreateTableReqHandler(support, externalTableLocationRewriter, icebergTablePointerGuard);
+    SpecialCaseHandler createTableReq = new CreateTableReqHandler(support, icebergTablePointerGuard);
     SpecialCaseHandler deleteColumnStatisticsReq = new DeleteColumnStatisticsReqHandler(support);
     SpecialCaseHandler tableConstraints = new TableConstraintsHandler(support);
     SpecialCaseHandler getMaxAllocatedTableWriteId = new GetMaxAllocatedTableWriteIdHandler(support);
@@ -409,11 +407,20 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     Object result;
     if ("get_database".equals(method.getName())) {
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+      long requestId = RequestContext.currentRequestId();
       result = support.databaseMetadataCache.get(
           namespace.catalogName(),
           namespace.backendDbName(),
           impersonation,
-          () -> (org.apache.hadoop.hive.metastore.api.Database) support.invokeDirect(namespace.backend(), method, routedArgs));
+          (effectiveImpersonation, background) -> (org.apache.hadoop.hive.metastore.api.Database)
+              support.dispatcher.invokeDirect(
+                  namespace.backend(),
+                  method,
+                  routedArgs,
+                  effectiveImpersonation,
+                  background ? -1L : requestId,
+                  !background,
+                  !background));
     } else if ("get_table".equals(method.getName()) && args.length >= 2 && args[1] instanceof String tblNameArg) {
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
       result = support.tableMetadataCache.get(
@@ -477,7 +484,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     Object result;
     if (isPartitionReadMethod(methodName)) {
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
-      String querySig = methodName + ":" + java.util.Arrays.deepToString(java.util.Arrays.copyOfRange(routedArgs, 2, routedArgs.length));
+      String querySig = encodeQuerySignature(methodName, routedArgs, 2);
       result = support.partitionMetadataCache.get(
           namespace.catalogName(),
           namespace.backendDbName(),
@@ -495,6 +502,90 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     return support.federationLayer.externalizeResult(result, namespace);
   }
 
+  private static String encodeQuerySignature(String methodName, Object[] args, int fromIndex) {
+    StringBuilder out = new StringBuilder(64);
+    out.append(methodName.length()).append(':').append(methodName).append(':');
+    int count = args == null ? 0 : Math.max(0, args.length - fromIndex);
+    out.append(count).append('[');
+    if (args != null) {
+      for (int i = fromIndex; i < args.length; i++) {
+        if (i > fromIndex) {
+          out.append(',');
+        }
+        appendSignatureValue(out, args[i]);
+      }
+    }
+    return out.append(']').toString();
+  }
+
+  private static void appendSignatureValue(StringBuilder out, Object value) {
+    if (value == null) {
+      out.append("N;");
+      return;
+    }
+    if (value instanceof String str) {
+      out.append("S:").append(str.length()).append(':').append(str).append(';');
+      return;
+    }
+    if (value instanceof Boolean bool) {
+      out.append(bool ? "Z:1;" : "Z:0;");
+      return;
+    }
+    if (value instanceof Number num) {
+      out.append("Num:").append(num.getClass().getSimpleName()).append(':').append(num).append(';');
+      return;
+    }
+    if (value instanceof byte[] bytes) {
+      String encoded = java.util.Base64.getEncoder().encodeToString(bytes);
+      out.append("B:").append(encoded.length()).append(':').append(encoded).append(';');
+      return;
+    }
+    if (value instanceof Object[] array) {
+      out.append("A:").append(array.length).append('[');
+      for (int i = 0; i < array.length; i++) {
+        if (i > 0) {
+          out.append(',');
+        }
+        appendSignatureValue(out, array[i]);
+      }
+      out.append("];");
+      return;
+    }
+    if (value instanceof Iterable<?> iterable) {
+      String kind = value.getClass().getName();
+      out.append("C:").append(kind.length()).append(':').append(kind).append('[');
+      boolean first = true;
+      for (Object item : iterable) {
+        if (!first) {
+          out.append(',');
+        }
+        first = false;
+        appendSignatureValue(out, item);
+      }
+      out.append("];");
+      return;
+    }
+    if (value instanceof Map<?, ?> map) {
+      out.append("M:").append(map.size()).append('{');
+      boolean first = true;
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        if (!first) {
+          out.append(',');
+        }
+        first = false;
+        appendSignatureValue(out, entry.getKey());
+        out.append('=');
+        appendSignatureValue(out, entry.getValue());
+      }
+      out.append("};");
+      return;
+    }
+    String typeName = value.getClass().getName();
+    String text = String.valueOf(value);
+    out.append("O:").append(typeName.length()).append(':').append(typeName)
+        .append(':').append(text.length()).append(':').append(text).append(';');
+  }
+
   private static boolean isPartitionReadMethod(String methodName) {
     return methodName.startsWith("get_partition")
         || methodName.startsWith("get_part_spec");
@@ -504,6 +595,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     return methodName.startsWith("append_partition")
         || methodName.startsWith("drop_partition")
         || methodName.startsWith("delete_partition")
+        || "delete_table_column_statistics".equals(methodName)
         || methodName.startsWith("alter_partition")
         || methodName.startsWith("markPartition")
         || methodName.startsWith("update_creation_metadata");
@@ -536,7 +628,10 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     validateAcidNotOnNonDefaultCatalog(operation, extractedNamespace, methodName);
     validateTransactionalTableCreationOnDefaultCatalog(methodName, extractedNamespace, args);
     Object[] routedArgs = support.federationLayer.internalizeObjectArguments(args, extractedNamespace);
-    externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
+    ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
+    if (externalTableLocationRewriter != null) {
+      externalTableLocationRewriter.rewriteObjectArguments(routedArgs, extractedNamespace, methodName);
+    }
     Object result;
     // The guard holds the Iceberg table lock across the backend call when it had to repair the
     // request, so that its read and this write cannot be separated by another writer's commit.
@@ -553,9 +648,8 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
       } else if (methodName.startsWith("drop_database")) {
         router.unregisterDatabase(extractedNamespace.catalogName(), extractedNamespace.backendDbName());
       }
-    } else if (methodName.contains("table") || methodName.contains("partition")) {
-      String tableName = RoutingSupport.extractTableName(args != null && args.length > 0 ? args[0] : null);
-      if (tableName != null) {
+    } else if (operation.mutating() && (methodName.contains("table") || methodName.contains("partition"))) {
+      for (String tableName : RoutingSupport.extractTableNames(args)) {
         support.invalidateTable(extractedNamespace.catalogName(), extractedNamespace.backendDbName(), tableName);
       }
     }
@@ -752,7 +846,6 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
 
   public synchronized void reconfigure(ProxyConfig newConfig) {
     this.config = newConfig;
-    this.externalTableLocationRewriter = new ExternalTableLocationRewriter(newConfig.federation());
     this.support.reconfigure(newConfig);
   }
 }

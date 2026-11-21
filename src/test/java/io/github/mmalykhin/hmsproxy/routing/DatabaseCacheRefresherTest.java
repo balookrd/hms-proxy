@@ -174,4 +174,65 @@ public class DatabaseCacheRefresherTest {
 
     refresher.close();
   }
+
+  @Test
+  public void passesEffectiveImpersonationBasedOnSharedAcrossUsersFlag() throws Throwable {
+    AtomicLong clock = new AtomicLong(1_000_000L);
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    DatabaseCacheBackgroundRefreshConfig refreshConfig =
+        new DatabaseCacheBackgroundRefreshConfig(true, 60_000L, 3_600_000L);
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+
+    // shared=true -> background refresh passes null impersonation
+    DatabaseListCache sharedList = new DatabaseListCache(
+        new DatabaseListCacheConfig(120_000L, 100, true, refreshConfig), metrics, clock::get);
+    DatabaseMetadataCache sharedMeta = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(120_000L, 100, true, refreshConfig), sharedList, metrics, clock::get);
+    DatabaseCacheRefresher sharedRefresher = new DatabaseCacheRefresher(
+        sharedList, sharedMeta, refreshConfig, refreshConfig, clock::get, false);
+    java.util.List<ImpersonationContext> sharedCalls = new java.util.ArrayList<>();
+    sharedList.get("get_all_databases", "cat1", null, user, (imp, bg) -> {
+      if (bg) {
+        sharedCalls.add(imp);
+      }
+      return List.of("db1");
+    });
+    sharedMeta.get("cat1", "db1", user, (imp, bg) -> {
+      if (bg) {
+        sharedCalls.add(imp);
+      }
+      return new Database("db1", "d", "hdfs://ns/db1", null);
+    });
+    clock.addAndGet(30_000L);
+    sharedRefresher.refreshTick();
+    Assert.assertEquals(2, sharedCalls.size());
+    Assert.assertNull(sharedCalls.get(0));
+    Assert.assertNull(sharedCalls.get(1));
+    sharedRefresher.close();
+
+    // shared=false -> background refresh preserves original user impersonation
+    DatabaseListCache isolatedList = new DatabaseListCache(
+        new DatabaseListCacheConfig(120_000L, 100, false, refreshConfig), metrics, clock::get);
+    DatabaseMetadataCache isolatedMeta = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(120_000L, 100, false, refreshConfig), isolatedList, metrics, clock::get);
+    DatabaseCacheRefresher isolatedRefresher = new DatabaseCacheRefresher(
+        isolatedList, isolatedMeta, refreshConfig, refreshConfig, clock::get, false);
+    java.util.List<ImpersonationContext> isolatedCalls = new java.util.ArrayList<>();
+    isolatedList.get("get_all_databases", "cat1", null, user, (imp, bg) -> {
+      if (bg) {
+        isolatedCalls.add(imp);
+      }
+      return List.of("db1");
+    });
+    isolatedMeta.get("cat1", "db1", user, (imp, bg) -> {
+      if (bg) {
+        isolatedCalls.add(imp);
+      }
+      return new Database("db1", "d", "hdfs://ns/db1", null);
+    });
+    clock.addAndGet(30_000L);
+    isolatedRefresher.refreshTick();
+    Assert.assertEquals(List.of(user, user), isolatedCalls);
+    isolatedRefresher.close();
+  }
 }

@@ -51,6 +51,11 @@ final class ExchangePartitionHandler implements SpecialCaseHandler {
       icebergTablePointerGuard.invalidate(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
       icebergTablePointerGuard.invalidate(destNamespace.catalogName(), destNamespace.backendDbName(), destTable);
     }
+    support.invalidateTable(sourceNamespace.catalogName(), sourceNamespace.backendDbName(), sourceTable);
+    if (!sourceNamespace.backendDbName().equalsIgnoreCase(destNamespace.backendDbName())
+        || !sourceTable.equalsIgnoreCase(destTable)) {
+      support.invalidateTable(destNamespace.catalogName(), destNamespace.backendDbName(), destTable);
+    }
 
     return support.federationLayer.externalizeResult(result, destNamespace);
   }

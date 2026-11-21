@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.slf4j.Logger;
@@ -25,6 +26,7 @@ final class DatabaseMetadataCache {
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Database>> inFlight = new ConcurrentHashMap<>();
+  private final AtomicLong generation = new AtomicLong();
 
   DatabaseMetadataCache(DatabaseMetadataCacheConfig config) {
     this(config, null, null, System::currentTimeMillis);
@@ -85,14 +87,24 @@ final class DatabaseMetadataCache {
       ImpersonationContext impersonation,
       Loader loader
   ) throws Throwable {
+    return get(catalogName, backendDbName, impersonation, (ignoredImp, ignoredBg) -> loader.load());
+  }
+
+  Database get(
+      String catalogName,
+      String backendDbName,
+      ImpersonationContext impersonation,
+      RefreshableLoader loader
+  ) throws Throwable {
+    ImpersonationContext refreshImpersonation = sharedAcrossUsers ? null : impersonation;
     if (ttlMs == 0L) {
-      return loader.load();
+      return loader.load(impersonation, false);
     }
     long nowMs = clock.getAsLong();
     Key key = Key.of(catalogName, backendDbName, impersonation, sharedAcrossUsers);
     Entry cached = entries.get(key);
     if (cached != null && cached.expiresAtMs() > nowMs) {
-      cached.recordAccess(nowMs, loader);
+      cached.recordAccess(nowMs, loader, refreshImpersonation);
       if (metrics != null) {
         metrics.recordCacheRequest("database_metadata", catalogName, "hit");
       }
@@ -106,12 +118,15 @@ final class DatabaseMetadataCache {
         Database result = existing.get();
         cached = entries.get(key);
         if (cached != null) {
-          cached.recordAccess(nowMs, loader);
+          cached.recordAccess(nowMs, loader, refreshImpersonation);
         }
         if (metrics != null) {
           metrics.recordCacheRequest("database_metadata", catalogName, "hit");
         }
         return result == null ? null : new Database(result);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -120,22 +135,22 @@ final class DatabaseMetadataCache {
     try {
       cached = entries.get(key);
       if (cached != null && cached.expiresAtMs() > nowMs) {
-        cached.recordAccess(nowMs, loader);
+        cached.recordAccess(nowMs, loader, refreshImpersonation);
         if (metrics != null) {
           metrics.recordCacheRequest("database_metadata", catalogName, "hit");
         }
-        Database result = new Database(cached.database());
-        future.complete(result);
-        return result;
+        future.complete(new Database(cached.database()));
+        return new Database(cached.database());
       }
       if (metrics != null) {
         metrics.recordCacheRequest("database_metadata", catalogName, "miss");
       }
-      Database loaded = loader.load();
+      long loadEpoch = generation.get();
+      Database loaded = loader.load(refreshImpersonation, false);
       if (loaded != null) {
-        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loader);
+        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loader, refreshImpersonation, loadEpoch);
       }
-      future.complete(loaded);
+      future.complete(loaded == null ? null : new Database(loaded));
       return loaded == null ? null : new Database(loaded);
     } catch (Throwable t) {
       if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
@@ -144,9 +159,8 @@ final class DatabaseMetadataCache {
         if (metrics != null) {
           metrics.recordCacheRequest("database_metadata", catalogName, "stale_hit");
         }
-        Database staleResult = new Database(cached.database());
-        future.complete(staleResult);
-        return staleResult;
+        future.complete(new Database(cached.database()));
+        return new Database(cached.database());
       }
       future.completeExceptionally(t);
       throw t;
@@ -159,6 +173,7 @@ final class DatabaseMetadataCache {
     if (catalogName == null || backendDbName == null) {
       return;
     }
+    generation.incrementAndGet();
     boolean removed = entries.keySet().removeIf(k -> k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
     if (metrics != null) {
       if (removed) {
@@ -172,6 +187,7 @@ final class DatabaseMetadataCache {
     if (catalogName == null) {
       return;
     }
+    generation.incrementAndGet();
     int removed = 0;
     for (var it = entries.keySet().iterator(); it.hasNext(); ) {
       if (it.next().catalogName().equals(catalogName)) {
@@ -188,6 +204,7 @@ final class DatabaseMetadataCache {
   }
 
   void invalidateAll() {
+    generation.incrementAndGet();
     int total = entries.size();
     entries.clear();
     if (metrics != null && total > 0) {
@@ -199,9 +216,25 @@ final class DatabaseMetadataCache {
     return entries.size();
   }
 
-  private void put(Key key, Database database, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
+  private void put(
+      Key key,
+      Database database,
+      long expiresAtMs,
+      long lastAccessedAtMs,
+      RefreshableLoader loader,
+      ImpersonationContext refreshImpersonation,
+      long loadEpoch
+  ) {
+    if (generation.get() != loadEpoch) {
+      return;
+    }
     pruneIfFull();
-    entries.put(key, new Entry(new Database(database), expiresAtMs, lastAccessedAtMs, loader));
+    Entry inserted = new Entry(new Database(database), expiresAtMs, lastAccessedAtMs, loader, refreshImpersonation);
+    entries.put(key, inserted);
+    if (generation.get() != loadEpoch) {
+      entries.remove(key, inserted);
+      return;
+    }
     for (var entry : entries.entrySet()) {
       if (entry.getKey().catalogName().equals(key.catalogName())
           && (sharedAcrossUsers || entry.getKey().userName().equals(key.userName()))) {
@@ -227,7 +260,7 @@ final class DatabaseMetadataCache {
       if (nowMs - entry.lastAccessedAtMs() > activityWindowMs) {
         continue;
       }
-      Loader loader = entry.loader();
+      RefreshableLoader loader = entry.loader();
       if (loader == null) {
         continue;
       }
@@ -237,19 +270,25 @@ final class DatabaseMetadataCache {
         continue;
       }
       try {
-        Database loaded = loader.load();
-        if (loaded != null) {
-          entry.update(new Database(loaded), nowMs + ttlMs);
-          if (databaseListCache != null) {
-            databaseListCache.extendCatalogExpiration(key.catalogName(), key.userName(), nowMs + ttlMs);
+        long loadEpoch = generation.get();
+        Database loaded = loader.load(entry.refreshImpersonation(), true);
+        if (loaded != null && generation.get() == loadEpoch && entries.get(key) == entry) {
+          long refreshedExpiresAtMs = clock.getAsLong() + ttlMs;
+          entry.update(loaded, refreshedExpiresAtMs);
+          if (generation.get() != loadEpoch) {
+            entries.remove(key, entry);
+          } else {
+            if (databaseListCache != null) {
+              databaseListCache.extendCatalogExpiration(key.catalogName(), key.userName(), refreshedExpiresAtMs);
+            }
+            if (metrics != null) {
+              metrics.recordCacheRefresh("database_metadata", key.catalogName(), "success");
+              metrics.setCacheEntries("database_metadata", key.catalogName(), countEntries(key.catalogName()));
+            }
+            refreshed++;
           }
-          if (metrics != null) {
-            metrics.recordCacheRefresh("database_metadata", key.catalogName(), "success");
-            metrics.setCacheEntries("database_metadata", key.catalogName(), countEntries(key.catalogName()));
-          }
-          refreshed++;
         }
-        future.complete(loaded);
+        future.complete(loaded == null ? null : new Database(loaded));
       } catch (Throwable t) {
         future.completeExceptionally(t);
         LOG.warn("Background refresh failed for database metadata {}/{}: {}",
@@ -323,6 +362,11 @@ final class DatabaseMetadataCache {
     Database load() throws Throwable;
   }
 
+  @FunctionalInterface
+  interface RefreshableLoader {
+    Database load(ImpersonationContext impersonation, boolean background) throws Throwable;
+  }
+
   private record Key(
       String catalogName,
       String backendDbName,
@@ -349,13 +393,21 @@ final class DatabaseMetadataCache {
     private volatile Database database;
     private volatile long expiresAtMs;
     private volatile long lastAccessedAtMs;
-    private volatile Loader loader;
+    private volatile RefreshableLoader loader;
+    private volatile ImpersonationContext refreshImpersonation;
 
-    Entry(Database database, long expiresAtMs, long lastAccessedAtMs, Loader loader) {
+    Entry(
+        Database database,
+        long expiresAtMs,
+        long lastAccessedAtMs,
+        RefreshableLoader loader,
+        ImpersonationContext refreshImpersonation
+    ) {
       this.database = database;
       this.expiresAtMs = expiresAtMs;
       this.lastAccessedAtMs = lastAccessedAtMs;
       this.loader = loader;
+      this.refreshImpersonation = refreshImpersonation;
     }
 
     Database database() {
@@ -370,15 +422,20 @@ final class DatabaseMetadataCache {
       return lastAccessedAtMs;
     }
 
-    Loader loader() {
+    RefreshableLoader loader() {
       return loader;
     }
 
-    void recordAccess(long accessedAtMs, Loader currentLoader) {
+    ImpersonationContext refreshImpersonation() {
+      return refreshImpersonation;
+    }
+
+    void recordAccess(long accessedAtMs, RefreshableLoader currentLoader, ImpersonationContext currentImpersonation) {
       this.lastAccessedAtMs = accessedAtMs;
       if (currentLoader != null) {
         this.loader = currentLoader;
       }
+      this.refreshImpersonation = currentImpersonation;
     }
 
     void update(Database newDatabase, long newExpiresAtMs) {

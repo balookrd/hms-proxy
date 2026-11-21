@@ -33,16 +33,23 @@ final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "delete_column_statistics_req", namespace.backendDbName());
 
+    String tblName = RoutingSupport.extractTableName(request);
     ThriftReflectionCache.invokeStringSetter(request, "setDb_name", namespace.backendDbName());
 
+    Object result;
     try {
-      return support.invokeBackendNamed(backend, "delete_column_statistics_req", request);
+      result = support.invokeBackendNamed(backend, "delete_column_statistics_req", request);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        return fallbackToLegacy(backend, request, namespace.backendDbName());
+        result = fallbackToLegacy(backend, request, namespace.backendDbName());
+      } else {
+        throw cause;
       }
-      throw cause;
     }
+    if (tblName != null) {
+      support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
+    }
+    return result;
   }
 
   private Object fallbackToLegacy(CatalogBackend backend, Object routedRequest, String backendDb) throws Throwable {

@@ -328,4 +328,45 @@ public class DatabaseMetadataCacheTest {
     }).getName());
     Assert.assertEquals("the hot database survives one new key arriving", before, loads.get());
   }
+
+  @Test
+  public void singleFlightDoesNotResurrectStaleValueAfterInvalidationAndPreservesCallerIsolation() throws Throwable {
+    DatabaseMetadataCache cache = new DatabaseMetadataCache(
+        new DatabaseMetadataCacheConfig(60_000L, 100, true));
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      java.util.concurrent.Future<Database> f = pool.submit(() -> {
+        try {
+          return cache.get("cat1", "sales", user, () -> {
+            entered.countDown();
+            release.await(5L, java.util.concurrent.TimeUnit.SECONDS);
+            return new Database("sales", "stale", "file:///stale", new HashMap<>());
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+      Assert.assertTrue(entered.await(5L, java.util.concurrent.TimeUnit.SECONDS));
+      cache.invalidate("cat1", "sales");
+      release.countDown();
+      f.get(5L, java.util.concurrent.TimeUnit.SECONDS);
+
+      AtomicInteger freshLoads = new AtomicInteger();
+      Database fresh1 = cache.get("cat1", "sales", user, () -> {
+        freshLoads.incrementAndGet();
+        return new Database("sales", "fresh", "file:///fresh", new HashMap<>());
+      });
+      Assert.assertEquals(1, freshLoads.get());
+      Assert.assertEquals("fresh", fresh1.getDescription());
+      fresh1.setDescription("mutated-by-caller");
+
+      Database fresh2 = cache.get("cat1", "sales", user, () -> new Database("sales", "unused", "", null));
+      Assert.assertEquals("fresh", fresh2.getDescription());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
 }

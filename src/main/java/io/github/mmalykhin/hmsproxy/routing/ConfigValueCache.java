@@ -5,6 +5,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /**
@@ -28,6 +29,7 @@ final class ConfigValueCache {
   private final LongSupplier clock;
   private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, CompletableFuture<Optional<String>>> inFlight = new ConcurrentHashMap<>();
+  private final AtomicLong generation = new AtomicLong();
 
   ConfigValueCache(ConfigValueCacheConfig config) {
     this(config, System::currentTimeMillis);
@@ -59,6 +61,9 @@ final class ConfigValueCache {
       try {
         Optional<String> result = existing.get();
         return result.orElse(defaultValue);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -71,9 +76,10 @@ final class ConfigValueCache {
         return cached.value().orElse(defaultValue);
       }
 
+      long loadEpoch = generation.get();
       String raw = fetcher.fetch(name, SENTINEL);
       Optional<String> resolved = SENTINEL.equals(raw) ? Optional.empty() : Optional.ofNullable(raw);
-      put(name, resolved, nowMs + ttlMs);
+      put(name, resolved, clock.getAsLong() + ttlMs, loadEpoch);
       future.complete(resolved);
       return resolved.orElse(defaultValue);
     } catch (Throwable t) {
@@ -84,9 +90,16 @@ final class ConfigValueCache {
     }
   }
 
-  private void put(String name, Optional<String> value, long expiresAtMs) {
+  private void put(String name, Optional<String> value, long expiresAtMs, long loadEpoch) {
+    if (generation.get() != loadEpoch) {
+      return;
+    }
     pruneIfFull();
-    entries.put(name, new Entry(value, expiresAtMs));
+    Entry inserted = new Entry(value, expiresAtMs);
+    entries.put(name, inserted);
+    if (generation.get() != loadEpoch) {
+      entries.remove(name, inserted);
+    }
   }
 
   private void pruneIfFull() {
@@ -116,6 +129,7 @@ final class ConfigValueCache {
   }
 
   void invalidateAll() {
+    generation.incrementAndGet();
     entries.clear();
   }
 

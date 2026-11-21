@@ -210,4 +210,74 @@ public class PartitionMetadataCacheTest {
     }
     Assert.assertEquals(1, loads.get());
   }
+
+  @Test
+  public void deepCopiesColumnStatisticsAndPreventsStaleResurrectionAcrossClear() throws Throwable {
+    PartitionMetadataCache cache = new PartitionMetadataCache(new PartitionMetadataCacheConfig(60_000L, 100, true));
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+
+    org.apache.hadoop.hive.metastore.api.ColumnStatistics stats =
+        new org.apache.hadoop.hive.metastore.api.ColumnStatistics();
+    org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc desc =
+        new org.apache.hadoop.hive.metastore.api.ColumnStatisticsDesc(true, "sales", "orders");
+    org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj obj =
+        new org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj(
+            "id", "bigint",
+            org.apache.hadoop.hive.metastore.api.ColumnStatisticsData.longStats(
+                new org.apache.hadoop.hive.metastore.api.LongColumnStatsData(10L, 0L)));
+    stats.setStatsDesc(desc);
+    stats.setStatsObj(new ArrayList<>(List.of(obj)));
+
+    Object first = cache.get("cat1", "sales", "orders", "stats_sig", user, () -> stats);
+    ((org.apache.hadoop.hive.metastore.api.ColumnStatistics) first).getStatsObj().get(0)
+        .setColName("mutated_col");
+
+    Object second = cache.get("cat1", "sales", "orders", "stats_sig", user, () -> null);
+    Assert.assertEquals("id",
+        ((org.apache.hadoop.hive.metastore.api.ColumnStatistics) second).getStatsObj().get(0).getColName());
+
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<Object> staleFuture = pool.submit(() -> {
+        try {
+          return cache.get("cat1", "sales", "orders", "stale_sig", user, () -> {
+            entered.countDown();
+            release.await(5L, TimeUnit.SECONDS);
+            Partition p = new Partition();
+            p.setTableName("orders");
+            p.setValues(new ArrayList<>(List.of("stale")));
+            return new ArrayList<>(List.of(p));
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+      Assert.assertTrue(entered.await(5L, TimeUnit.SECONDS));
+      cache.clear();
+      release.countDown();
+      staleFuture.get(5L, TimeUnit.SECONDS);
+
+      AtomicInteger freshLoads = new AtomicInteger();
+      @SuppressWarnings("unchecked")
+      List<Partition> freshList = (List<Partition>) cache.get("cat1", "sales", "orders", "stale_sig", user, () -> {
+        freshLoads.incrementAndGet();
+        Partition p = new Partition();
+        p.setTableName("orders");
+        p.setValues(new ArrayList<>(List.of("fresh")));
+        return new ArrayList<>(List.of(p));
+      });
+      Assert.assertEquals(1, freshLoads.get());
+      Assert.assertEquals(List.of("fresh"), freshList.get(0).getValues());
+      freshList.get(0).setValues(new ArrayList<>(List.of("caller_mutated")));
+
+      @SuppressWarnings("unchecked")
+      List<Partition> cached = (List<Partition>) cache.get(
+          "cat1", "sales", "orders", "stale_sig", user, () -> List.<Partition>of());
+      Assert.assertEquals(List.of("fresh"), cached.get(0).getValues());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
 }

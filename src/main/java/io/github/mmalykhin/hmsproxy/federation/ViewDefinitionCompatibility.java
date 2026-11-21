@@ -164,8 +164,10 @@ final class ViewDefinitionCompatibility {
     if (numPartsStr != null) {
       try {
         int numParts = Integer.parseInt(numPartsStr.trim());
-        for (int i = 0; i < numParts; i++) {
-          String partKey = "view.catalogAndNamespace.part." + i;
+        if (numParts > 0) {
+          // Only the trailing part names the database/namespace; earlier parts carry catalog names
+          // such as "spark_catalog" that must stay untouched.
+          String partKey = "view.catalogAndNamespace.part." + (numParts - 1);
           String partVal = params.get(partKey);
           if (partVal != null && !partVal.isBlank()) {
             String rewritten = rewriteDbName(partVal, namespace, direction);
@@ -256,12 +258,13 @@ final class ViewDefinitionCompatibility {
     String catalogToken = catalogPart.unquoted();
     String dbToken = dbPart.unquoted();
     if (direction == Direction.EXTERNALIZE) {
-      if (!dbToken.equals(namespace.backendDbName())) {
+      String externalDb = externalizeDbName(dbToken, namespace);
+      if (externalDb == null) {
         return null;
       }
       if (catalogToken.equalsIgnoreCase(backendCatalogName(namespace))) {
         // '<backend catalog>.<backend db>.<table>' collapses into the external database name.
-        return replacementFor(catalogPart, dbPart, namespace.externalDbName(), dbPart.quoted());
+        return replacementFor(catalogPart, dbPart, externalDb, dbPart.quoted());
       }
       LOG.debug(
           "Leaving view SQL reference '{}' untouched: catalog qualifier '{}' is not the backend"
@@ -304,9 +307,26 @@ final class ViewDefinitionCompatibility {
       return null;
     }
     return switch (direction) {
-      case EXTERNALIZE -> dbToken.equals(namespace.backendDbName()) ? namespace.externalDbName() : null;
+      case EXTERNALIZE -> externalizeDbIfChanged(dbToken, namespace);
       case INTERNALIZE -> internalizeDbName(dbToken, namespace);
     };
+  }
+
+  private String externalizeDbIfChanged(String dbToken, CatalogRouter.ResolvedNamespace namespace) {
+    String external = externalizeDbName(dbToken, namespace);
+    return (external == null || external.equals(dbToken)) ? null : external;
+  }
+
+  private String externalizeDbName(String dbToken, CatalogRouter.ResolvedNamespace namespace) {
+    if (dbToken.equals(namespace.backendDbName())) {
+      return namespace.externalDbName();
+    }
+    // Already external / catalog-prefixed or explicitly routed unprefixed name (e.g. a cross-catalog
+    // reference preserved as-is during internalization): never prefix it a second time.
+    if (router.resolvePattern(dbToken).isPresent()) {
+      return null;
+    }
+    return router.externalDatabaseName(namespace.catalogName(), dbToken);
   }
 
   private String internalizeDbName(String dbToken, CatalogRouter.ResolvedNamespace namespace) {

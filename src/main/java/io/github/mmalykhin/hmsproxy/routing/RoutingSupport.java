@@ -5,7 +5,10 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -38,6 +41,7 @@ final class RoutingSupport {
   final PartitionMetadataCache partitionMetadataCache;
   final MetadataAuthorizer metadataAuthorizer;
   final CacheInvalidator cacheInvalidator;
+  private volatile ExternalTableLocationRewriter externalTableLocationRewriter;
 
   RoutingSupport(
       ProxyConfig config,
@@ -167,6 +171,17 @@ final class RoutingSupport {
     this.cacheInvalidator = cacheInvalidator != null
         ? cacheInvalidator
         : new LocalCacheInvalidator(databaseListCache, databaseMetadataCache, this.tableMetadataCache, this.partitionMetadataCache);
+    this.externalTableLocationRewriter = newExternalTableLocationRewriter(config);
+  }
+
+  ExternalTableLocationRewriter externalTableLocationRewriter() {
+    return externalTableLocationRewriter;
+  }
+
+  private static ExternalTableLocationRewriter newExternalTableLocationRewriter(ProxyConfig config) {
+    return config != null && config.federation() != null
+        ? new ExternalTableLocationRewriter(config.federation())
+        : null;
   }
 
   void invalidateTable(String catalogName, String backendDbName, String tableName) {
@@ -722,9 +737,17 @@ final class RoutingSupport {
     if (value instanceof Table table) {
       return blankToNull(table.getTableName());
     }
-    String name = blankToNull(ThriftReflectionCache.readString(value, "getTableName", "getTblName", "getName"));
+    String name = blankToNull(
+        ThriftReflectionCache.readString(value, "getTableName", "getTblName", "getTbl_name", "getTablename", "getName"));
     if (name != null) {
       return name;
+    }
+    Object statsDesc = ThriftReflectionCache.invokeGetter(value, "getStatsDesc");
+    if (statsDesc != null) {
+      String statsTable = extractTableName(statsDesc);
+      if (statsTable != null) {
+        return statsTable;
+      }
     }
     String fullTableName = blankToNull(
         ThriftReflectionCache.readString(value, "getFullTableName", "getFull_table_name"));
@@ -737,6 +760,46 @@ final class RoutingSupport {
         : blankToNull(fullTableName);
   }
 
+  static Set<String> extractTableNames(Object[] args) {
+    if (args == null || args.length == 0) {
+      return Set.of();
+    }
+    Set<String> names = new LinkedHashSet<>();
+    for (Object arg : args) {
+      collectTableNames(arg, names);
+    }
+    return names;
+  }
+
+  private static void collectTableNames(Object value, Set<String> out) {
+    if (value == null) {
+      return;
+    }
+    if (value instanceof Iterable<?> iterable) {
+      for (Object element : iterable) {
+        collectTableNames(element, out);
+      }
+      return;
+    }
+    String name = extractTableName(value);
+    if (name != null) {
+      out.add(name);
+      return;
+    }
+    Object nestedParts = ThriftReflectionCache.invokeGetter(value, "getParts");
+    if (nestedParts instanceof Collection<?> parts) {
+      collectTableNames(parts, out);
+    }
+    Object nestedPartitions = ThriftReflectionCache.invokeGetter(value, "getPartitions");
+    if (nestedPartitions instanceof Collection<?> partitions) {
+      collectTableNames(partitions, out);
+    }
+    Object nestedColStats = ThriftReflectionCache.invokeGetter(value, "getColStats");
+    if (nestedColStats instanceof Collection<?> colStats) {
+      collectTableNames(colStats, out);
+    }
+  }
+
   static String blankToNull(String value) {
     if (value == null) {
       return null;
@@ -747,6 +810,7 @@ final class RoutingSupport {
 
   synchronized void reconfigure(ProxyConfig newConfig) {
     this.config = newConfig;
+    this.externalTableLocationRewriter = newExternalTableLocationRewriter(newConfig);
     if (databaseListCache != null) {
       databaseListCache.invalidateAll();
     }

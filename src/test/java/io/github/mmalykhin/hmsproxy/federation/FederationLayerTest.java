@@ -221,8 +221,8 @@ public class FederationLayerTest {
     CatalogRouter.ResolvedNamespace namespace =
         new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
     String sql = "select o.id  ,  extract(year from o.dt) as sales\n"
-        + "from   `other_db`.`orders`  o\n"
-        + "  left join other_db.customers c on o.cid = c.id -- keep this\n"
+        + "from   `hdp__other_db`.`orders`  o\n"
+        + "  left join hdp__other_db.customers c on o.cid = c.id -- keep this\n"
         + "where c.name like '%sales.orders%'";
     Table table = viewTable(sql, sql);
 
@@ -244,7 +244,57 @@ public class FederationLayerTest {
     Table routed = (Table) layer.externalizeResult(table, namespace);
 
     Assert.assertEquals(
-        "select extract(year from sales.dt) from other_db.t", routed.getViewExpandedText());
+        "select extract(year from sales.dt) from catalog2__other_db.t", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void internalizeAndExternalizeRoundTripSameCatalogOtherDatabaseReferences() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "catalog2", "catalog2__sales", "sales");
+    Table table = viewTable(
+        "select * from catalog2__other_db.orders o join hdp__dim.customers c on o.cid = c.id",
+        "select * from `catalog2__other_db`.`orders` o join `hdp__dim`.`customers` c on o.cid = c.id");
+    table.setDbName("catalog2__sales");
+
+    Table stored = (Table) layer.internalizeArgument(table, namespace);
+    Assert.assertEquals(
+        "select * from other_db.orders o join hdp__dim.customers c on o.cid = c.id",
+        stored.getViewOriginalText());
+    Assert.assertEquals(
+        "select * from `other_db`.`orders` o join `hdp__dim`.`customers` c on o.cid = c.id",
+        stored.getViewExpandedText());
+
+    stored.setDbName("sales");
+    Table readBack = (Table) layer.externalizeResult(stored, namespace);
+    Assert.assertEquals(
+        "select * from catalog2__other_db.orders o join hdp__dim.customers c on o.cid = c.id",
+        readBack.getViewOriginalText());
+    Assert.assertEquals(
+        "select * from `catalog2__other_db`.`orders` o join `hdp__dim`.`customers` c on o.cid = c.id",
+        readBack.getViewExpandedText());
+  }
+
+  @Test
+  public void externalizeResultDoesNotPrefixSparkCatalogPart() throws Exception {
+    FederationLayer layer = federationLayer(viewRewriteConfig(false));
+    CatalogRouter.ResolvedNamespace namespace =
+        new CatalogRouter.ResolvedNamespace(null, "hdp", "hdp__inrs_dds", "inrs_dds");
+    Table table = viewTable(
+        "select * from other_db.inwhs_transaction",
+        "select * from hive.other_db.inwhs_transaction");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.catalogAndNamespace.numParts", "2");
+    params.put("view.catalogAndNamespace.part.0", "spark_catalog");
+    params.put("view.catalogAndNamespace.part.1", "other_db");
+    table.setParameters(params);
+
+    Table routed = (Table) layer.externalizeResult(table, namespace);
+
+    Assert.assertEquals("select * from hdp__other_db.inwhs_transaction", routed.getViewOriginalText());
+    Assert.assertEquals("select * from hdp__other_db.inwhs_transaction", routed.getViewExpandedText());
+    Assert.assertEquals("spark_catalog", routed.getParameters().get("view.catalogAndNamespace.part.0"));
+    Assert.assertEquals("hdp__other_db", routed.getParameters().get("view.catalogAndNamespace.part.1"));
   }
 
   @Test

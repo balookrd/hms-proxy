@@ -727,4 +727,101 @@ public class RoutingMetaStoreProxyTransactionalDdlTest {
     Assert.assertFalse(capturedTable.get().getParameters().containsKey("external.table.purge"));
   }
 
+  @Test
+  public void transactionalDdlGuardHandlesChildClassLoaderReqAndBlankTableTypeAsManaged() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<String> capturedTableType = new AtomicReference<>();
+    @SuppressWarnings("unchecked")
+    AtomicReference<Map<String, String>> capturedParams = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one"))))
+        .compatibility(new CompatibilityConfig(false))
+        .transactionalDdlGuard(new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.REWRITE_MANAGED_TO_EXTERNAL, List.of()))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    CatalogBackend backend = newIsolatedHive4Backend(
+        config,
+        config.catalogs().get("catalog1"),
+        HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("create_table_req".equals(method.getName()) || "alter_table_req".equals(method.getName())) {
+            backendCalls.incrementAndGet();
+            Object req = args[0];
+            Object tbl = req.getClass().getMethod("getTable").invoke(req);
+            capturedTableType.set((String) tbl.getClass().getMethod("getTableType").invoke(tbl));
+            @SuppressWarnings("unchecked")
+            Map<String, String> p = (Map<String, String>) tbl.getClass().getMethod("getParameters").invoke(tbl);
+            capturedParams.set(p);
+            return null;
+          }
+          if ("get_table_req".equals(method.getName())) {
+            throw (Throwable) classLoader.loadClass("org.apache.hadoop.hive.metastore.api.NoSuchObjectException")
+                .getConstructor(String.class).newInstance("missing");
+          }
+          throw new NoSuchMethodException(method.getName());
+        });
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    Class<?> createReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+
+    // 1. child-CL CreateTableRequest with tableType == null (default Hive 4/Spark managed omission) -> rewritten
+    Object managedByDefault = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(managedByDefault, "catalog1__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(managedByDefault, "events_null_type");
+    tableClass.getMethod("setParameters", Map.class).invoke(managedByDefault, new java.util.HashMap<>(Map.of("owner", "etl")));
+    Object createReq1 = createReqClass.getConstructor().newInstance();
+    createReqClass.getMethod("setTable", tableClass).invoke(createReq1, managedByDefault);
+    handler.create_table_req(createReq1);
+
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTableType.get());
+    Assert.assertEquals("TRUE", capturedParams.get().get("EXTERNAL"));
+    Assert.assertEquals("true", capturedParams.get().get("external.table.purge"));
+
+    // 2. child-CL CreateTableRequest with tableType == null BUT EXTERNAL=TRUE -> not rewritten to add purge
+    Object externalByParam = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(externalByParam, "catalog1__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(externalByParam, "events_ext_param");
+    tableClass.getMethod("setParameters", Map.class).invoke(
+        externalByParam, new java.util.HashMap<>(Map.of("EXTERNAL", "TRUE", "owner", "etl")));
+    Object createReq2 = createReqClass.getConstructor().newInstance();
+    createReqClass.getMethod("setTable", tableClass).invoke(createReq2, externalByParam);
+    handler.create_table_req(createReq2);
+
+    Assert.assertEquals(2, backendCalls.get());
+    Assert.assertNull(capturedTableType.get());
+    Assert.assertFalse(capturedParams.get().containsKey("external.table.purge"));
+
+    // 3. child-CL AlterTableRequest with empty tableType ("") -> rewritten
+    Class<?> alterReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Object alterTable = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(alterTable, "catalog1__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(alterTable, "events_blank_type");
+    tableClass.getMethod("setTableType", String.class).invoke(alterTable, "");
+    tableClass.getMethod("setParameters", Map.class).invoke(alterTable, new java.util.HashMap<>(Map.of("owner", "etl")));
+    Object alterReq = alterReqClass.getConstructor().newInstance();
+    alterReqClass.getMethod("setDbName", String.class).invoke(alterReq, "catalog1__sales");
+    alterReqClass.getMethod("setTableName", String.class).invoke(alterReq, "events_blank_type");
+    alterReqClass.getMethod("setTable", tableClass).invoke(alterReq, alterTable);
+    handler.alter_table_req(alterReq);
+
+    Assert.assertEquals(3, backendCalls.get());
+    Assert.assertEquals("EXTERNAL_TABLE", capturedTableType.get());
+    Assert.assertEquals("TRUE", capturedParams.get().get("EXTERNAL"));
+  }
+
 }

@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.slf4j.Logger;
@@ -24,6 +25,7 @@ final class TableMetadataCache {
   private final LongSupplier clock;
   private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Key, CompletableFuture<Table>> inFlight = new ConcurrentHashMap<>();
+  private final AtomicLong generation = new AtomicLong();
 
   TableMetadataCache(TableMetadataCacheConfig config) {
     this(config, false, 0L, null, System::currentTimeMillis);
@@ -88,6 +90,9 @@ final class TableMetadataCache {
           metrics.recordCacheRequest("table_metadata", catalogName, "hit");
         }
         return result == null ? null : new Table(result);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw e;
       } catch (ExecutionException e) {
         throw e.getCause() != null ? e.getCause() : e;
       }
@@ -100,18 +105,18 @@ final class TableMetadataCache {
         if (metrics != null) {
           metrics.recordCacheRequest("table_metadata", catalogName, "hit");
         }
-        Table result = new Table(cached.table());
-        future.complete(result);
-        return result;
+        future.complete(new Table(cached.table()));
+        return new Table(cached.table());
       }
       if (metrics != null) {
         metrics.recordCacheRequest("table_metadata", catalogName, "miss");
       }
+      long loadEpoch = generation.get();
       Table loaded = loader.load();
       if (loaded != null) {
-        put(key, loaded, clock.getAsLong() + ttlMs, nowMs);
+        put(key, loaded, clock.getAsLong() + ttlMs, nowMs, loadEpoch);
       }
-      future.complete(loaded);
+      future.complete(loaded == null ? null : new Table(loaded));
       return loaded == null ? null : new Table(loaded);
     } catch (Throwable t) {
       if (serveStaleOnError && cached != null && (nowMs - cached.expiresAtMs() <= staleGracePeriodMs)) {
@@ -120,9 +125,8 @@ final class TableMetadataCache {
         if (metrics != null) {
           metrics.recordCacheRequest("table_metadata", catalogName, "stale_hit");
         }
-        Table staleResult = new Table(cached.table());
-        future.complete(staleResult);
-        return staleResult;
+        future.complete(new Table(cached.table()));
+        return new Table(cached.table());
       }
       future.completeExceptionally(t);
       throw t;
@@ -141,15 +145,17 @@ final class TableMetadataCache {
     if (ttlMs == 0L || table == null) {
       return;
     }
+    long epoch = generation.get();
     long nowMs = clock.getAsLong();
     Key key = Key.of(catalogName, backendDbName, tableName, impersonation, sharedAcrossUsers);
-    put(key, table, nowMs + ttlMs, nowMs);
+    put(key, table, nowMs + ttlMs, nowMs, epoch);
   }
 
   void invalidateTable(String catalogName, String backendDbName, String tableName) {
     if (catalogName == null || backendDbName == null || tableName == null) {
       return;
     }
+    generation.incrementAndGet();
     boolean removed = entries.keySet().removeIf(k ->
         k.catalogName().equals(catalogName)
             && k.backendDbName().equalsIgnoreCase(backendDbName)
@@ -166,6 +172,7 @@ final class TableMetadataCache {
     if (catalogName == null || backendDbName == null) {
       return;
     }
+    generation.incrementAndGet();
     boolean removed = entries.keySet().removeIf(k ->
         k.catalogName().equals(catalogName) && k.backendDbName().equalsIgnoreCase(backendDbName));
     if (metrics != null) {
@@ -180,6 +187,7 @@ final class TableMetadataCache {
     if (catalogName == null) {
       return;
     }
+    generation.incrementAndGet();
     int removed = 0;
     for (var it = entries.keySet().iterator(); it.hasNext(); ) {
       if (it.next().catalogName().equals(catalogName)) {
@@ -196,26 +204,27 @@ final class TableMetadataCache {
   }
 
   void clear() {
+    generation.incrementAndGet();
     entries.clear();
-    inFlight.clear();
   }
 
   int size() {
     return entries.size();
   }
 
-  private void put(Key key, Table table, long expiresAtMs, long nowMs) {
+  private void put(Key key, Table table, long expiresAtMs, long nowMs, long loadEpoch) {
+    if (generation.get() != loadEpoch) {
+      return;
+    }
     if (entries.size() >= maxEntries && !entries.containsKey(key)) {
       evictOldest();
     }
-    entries.compute(key, (k, existing) -> {
-      if (existing == null) {
-        return new Entry(table, expiresAtMs, nowMs);
-      }
-      existing.update(table, expiresAtMs);
-      existing.recordAccess(nowMs);
-      return existing;
-    });
+    Entry inserted = new Entry(table, expiresAtMs, nowMs);
+    entries.put(key, inserted);
+    if (generation.get() != loadEpoch) {
+      entries.remove(key, inserted);
+      return;
+    }
     if (metrics != null) {
       metrics.setCacheEntries("table_metadata", key.catalogName(), countEntries(key.catalogName()));
     }

@@ -7,7 +7,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.Table;
 import io.github.mmalykhin.hmsproxy.config.ddlguard.TransactionalDdlGuardConfig;
 
 final class TransactionalTableMutationGuard {
@@ -27,7 +26,7 @@ final class TransactionalTableMutationGuard {
       return;
     }
 
-    Table table = findTable(args);
+    TableObjectView table = TableObjectView.findInArgs(args);
     if (table == null || !isManagedTable(table)) {
       return;
     }
@@ -37,7 +36,7 @@ final class TransactionalTableMutationGuard {
       return;
     }
 
-    if (!isBlockedTransactionalMutation(table.getParameters())) {
+    if (!isBlockedTransactionalMutation(table.parameters())) {
       return;
     }
 
@@ -59,11 +58,8 @@ final class TransactionalTableMutationGuard {
             + " by guard.transactional-ddl.* policy");
   }
 
-  // Prefix match covers every positional create/alter variant of the supported Ifaces
-  // (create_table_with_environment_context is the RPC HiveMetaStoreClient 3.1.x actually sends
-  // for createTable, plus create_table_with_constraints and alter_table_with_cascade). The
-  // *_req wrappers are unwrapped into these positional RPCs by the frontend bridges before
-  // this guard runs, so findTable(args) always sees the Table argument.
+  // Prefix match covers every positional and *_req create/alter variant of the supported Ifaces
+  // (including CreateTableRequest/AlterTableRequest envelopes carrying parent or child-CL Table).
   private static boolean isGuardedMethod(String methodName) {
     return methodName != null
         && (methodName.startsWith("create_table") || methodName.startsWith("alter_table"));
@@ -86,18 +82,6 @@ final class TransactionalTableMutationGuard {
     return false;
   }
 
-  private static Table findTable(Object[] args) {
-    if (args == null) {
-      return null;
-    }
-    for (Object argument : args) {
-      if (argument instanceof Table table) {
-        return table;
-      }
-    }
-    return null;
-  }
-
   private static boolean isBlockedTransactionalMutation(Map<String, String> parameters) {
     if (parameters == null || parameters.isEmpty()) {
       return false;
@@ -110,26 +94,31 @@ final class TransactionalTableMutationGuard {
     return transactionalProperties != null && !transactionalProperties.isBlank();
   }
 
-  private static boolean isManagedTable(Table table) {
-    String tableType = table.getTableType();
-    return tableType != null && "MANAGED_TABLE".equalsIgnoreCase(tableType.trim());
+  private static boolean isManagedTable(TableObjectView table) {
+    String tableType = table.tableType();
+    if (tableType == null || tableType.isBlank()) {
+      Map<String, String> parameters = table.parameters();
+      String external = parameters == null ? null : parameters.get("EXTERNAL");
+      return external == null || !"TRUE".equalsIgnoreCase(external.trim());
+    }
+    return "MANAGED_TABLE".equalsIgnoreCase(tableType.trim());
   }
 
-  private static void rewriteToNonTransactional(Table table) {
+  private static void rewriteToNonTransactional(TableObjectView table) {
     Map<String, String> parameters = new LinkedHashMap<>();
-    if (table.getParameters() != null) {
-      parameters.putAll(table.getParameters());
+    if (table.parameters() != null) {
+      parameters.putAll(table.parameters());
     }
     parameters.remove("transactional");
     parameters.remove("transactional_properties");
     table.setParameters(parameters);
   }
 
-  private static void rewriteToExternal(Table table) {
+  private static void rewriteToExternal(TableObjectView table) {
     table.setTableType("EXTERNAL_TABLE");
     Map<String, String> parameters = new LinkedHashMap<>();
-    if (table.getParameters() != null) {
-      parameters.putAll(table.getParameters());
+    if (table.parameters() != null) {
+      parameters.putAll(table.parameters());
     }
     parameters.remove("transactional");
     parameters.remove("transactional_properties");
@@ -138,10 +127,10 @@ final class TransactionalTableMutationGuard {
     table.setParameters(parameters);
   }
 
-  private static String qualifiedName(Table table) {
-    String dbName = table.getDbName() == null || table.getDbName().isBlank() ? "<unknown_db>" : table.getDbName();
+  private static String qualifiedName(TableObjectView table) {
+    String dbName = table.dbName() == null || table.dbName().isBlank() ? "<unknown_db>" : table.dbName();
     String tableName =
-        table.getTableName() == null || table.getTableName().isBlank() ? "<unknown_table>" : table.getTableName();
+        table.tableName() == null || table.tableName().isBlank() ? "<unknown_table>" : table.tableName();
     return dbName + "." + tableName;
   }
 }

@@ -107,8 +107,11 @@ final class IcebergCommitLock {
             backend, CHECK_LOCK, new Object[] {new CheckLockRequest(lockId)});
         state = response == null ? null : response.getState();
       } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        release(backend, lockId);
+        try {
+          release(backend, lockId);
+        } finally {
+          Thread.currentThread().interrupt();
+        }
         return new Attempt(lockId, Outcome.FAILED);
       } catch (Throwable throwable) {
         LOG.warn("requestId={} could not check the lock on '{}.{}', continuing without it: {}",

@@ -234,4 +234,88 @@ public class ConfigValueCacheTest {
     }));
     Assert.assertEquals("recent values survive", before, fetches.get());
   }
+
+  @Test
+  public void inFlightFetchDoesNotResurrectStaleValueAcrossInvalidateAll() throws Throwable {
+    ConfigValueCache cache = new ConfigValueCache(new ConfigValueCacheConfig(60_000L, 100));
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<String> stale = pool.submit(() -> {
+        try {
+          return cache.getOrFetch("k", "def", (name, sentinel) -> {
+            entered.countDown();
+            release.await(5L, TimeUnit.SECONDS);
+            return "stale";
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+
+      Assert.assertTrue(entered.await(5L, TimeUnit.SECONDS));
+      cache.invalidateAll();
+      release.countDown();
+      Assert.assertEquals("stale", stale.get(5L, TimeUnit.SECONDS));
+
+      AtomicInteger loads = new AtomicInteger();
+      String fresh = cache.getOrFetch("k", "def", (name, sentinel) -> {
+        loads.incrementAndGet();
+        return "fresh";
+      });
+      Assert.assertEquals("fresh", fresh);
+      Assert.assertEquals(1, loads.get());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  public void waiterRestoresInterruptFlagWhenInterruptedDuringInFlightFetch() throws Throwable {
+    ConfigValueCache cache = new ConfigValueCache(new ConfigValueCacheConfig(60_000L, 100));
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<String> owner = pool.submit(() -> {
+        try {
+          return cache.getOrFetch("k", "def", (name, sentinel) -> {
+            entered.countDown();
+            release.await(5L, TimeUnit.SECONDS);
+            return "v1";
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+      Assert.assertTrue(entered.await(5L, TimeUnit.SECONDS));
+
+      java.util.concurrent.atomic.AtomicBoolean interruptedFlagAfterCatch =
+          new java.util.concurrent.atomic.AtomicBoolean();
+      java.util.concurrent.atomic.AtomicBoolean threwInterrupted =
+          new java.util.concurrent.atomic.AtomicBoolean();
+      Thread waiter = new Thread(() -> {
+        try {
+          cache.getOrFetch("k", "def", (name, sentinel) -> "unexpected");
+        } catch (InterruptedException e) {
+          threwInterrupted.set(true);
+          interruptedFlagAfterCatch.set(Thread.currentThread().isInterrupted());
+        } catch (Throwable ignored) {
+        }
+      });
+      waiter.start();
+      Thread.sleep(50L);
+      waiter.interrupt();
+      waiter.join(5_000L);
+      release.countDown();
+      owner.get(5L, TimeUnit.SECONDS);
+
+      Assert.assertTrue(threwInterrupted.get());
+      Assert.assertTrue(interruptedFlagAfterCatch.get());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
 }

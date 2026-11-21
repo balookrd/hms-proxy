@@ -200,4 +200,58 @@ public final class ClientRequestContext {
       AUTH_MECHANISM.set(authMechanism);
     }
   }
+
+  public record Snapshot(
+      String remoteAddress,
+      String remoteUser,
+      String authenticatedUser,
+      String authMechanism,
+      TTransport currentTransport,
+      Map<String, String> threadLocalMetaConf
+  ) {
+  }
+
+  public static Snapshot capture() {
+    Map<String, String> meta = THREAD_LOCAL_META_CONF.get();
+    Map<String, String> metaCopy = (meta == null || meta.isEmpty()) ? Map.of() : Map.copyOf(meta);
+    return new Snapshot(
+        REMOTE_ADDRESS.get(),
+        REMOTE_USER.get(),
+        AUTHENTICATED_USER.get(),
+        AUTH_MECHANISM.get(),
+        CURRENT_TRANSPORT.get(),
+        metaCopy);
+  }
+
+  public static Snapshot install(Snapshot snapshot) {
+    Snapshot previous = capture();
+    apply(snapshot);
+    return previous;
+  }
+
+  public static void restore(Snapshot previous) {
+    apply(previous);
+  }
+
+  private static void apply(Snapshot snapshot) {
+    if (snapshot == null) {
+      REMOTE_ADDRESS.remove();
+      REMOTE_USER.remove();
+      AUTHENTICATED_USER.remove();
+      AUTH_MECHANISM.remove();
+      CURRENT_TRANSPORT.remove();
+      THREAD_LOCAL_META_CONF.remove();
+      return;
+    }
+    restoreRemoteAddress(snapshot.remoteAddress());
+    restoreRemoteUser(snapshot.remoteUser());
+    restoreAuthenticatedUser(snapshot.authenticatedUser());
+    restoreAuthMechanism(snapshot.authMechanism());
+    restoreCurrentTransport(snapshot.currentTransport());
+    if (snapshot.threadLocalMetaConf() == null || snapshot.threadLocalMetaConf().isEmpty()) {
+      THREAD_LOCAL_META_CONF.remove();
+    } else {
+      THREAD_LOCAL_META_CONF.set(new ConcurrentHashMap<>(snapshot.threadLocalMetaConf()));
+    }
+  }
 }

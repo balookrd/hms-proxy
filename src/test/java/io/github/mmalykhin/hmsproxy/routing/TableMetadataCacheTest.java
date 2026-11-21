@@ -251,4 +251,66 @@ public class TableMetadataCacheTest {
     }
     Assert.assertEquals(1, loads.get());
   }
+
+  @Test
+  public void singleFlightDoesNotResurrectStaleTableAfterClearAndRestoresInterrupt() throws Throwable {
+    TableMetadataCache cache = new TableMetadataCache(new TableMetadataCacheConfig(60_000L, 100, true));
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<Table> leader = pool.submit(() -> {
+        try {
+          return cache.get("cat1", "sales", "orders", user, () -> {
+            entered.countDown();
+            release.await(5L, TimeUnit.SECONDS);
+            Table t = new Table();
+            t.setTableName("orders");
+            t.putToParameters("ver", "stale");
+            return t;
+          });
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      });
+      Assert.assertTrue(entered.await(5L, TimeUnit.SECONDS));
+
+      java.util.concurrent.atomic.AtomicBoolean interruptedFlag = new java.util.concurrent.atomic.AtomicBoolean();
+      Thread waiter = new Thread(() -> {
+        try {
+          cache.get("cat1", "sales", "orders", user, () -> new Table());
+        } catch (InterruptedException e) {
+          interruptedFlag.set(Thread.currentThread().isInterrupted());
+        } catch (Throwable ignored) {
+        }
+      });
+      waiter.start();
+      Thread.sleep(50L);
+      waiter.interrupt();
+      waiter.join(5_000L);
+      Assert.assertTrue(interruptedFlag.get());
+
+      cache.clear();
+      release.countDown();
+      leader.get(5L, TimeUnit.SECONDS);
+
+      AtomicInteger loads = new AtomicInteger();
+      Table fresh = cache.get("cat1", "sales", "orders", user, () -> {
+        loads.incrementAndGet();
+        Table t = new Table();
+        t.setTableName("orders");
+        t.putToParameters("ver", "fresh");
+        return t;
+      });
+      Assert.assertEquals(1, loads.get());
+      Assert.assertEquals("fresh", fresh.getParameters().get("ver"));
+      fresh.putToParameters("ver", "caller_mutated");
+
+      Table cached = cache.get("cat1", "sales", "orders", user, () -> new Table());
+      Assert.assertEquals("fresh", cached.getParameters().get("ver"));
+    } finally {
+      pool.shutdownNow();
+    }
+  }
 }
