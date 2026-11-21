@@ -2,11 +2,18 @@
 
 Все заметные изменения проекта документируются в этом файле.
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
-и проект придерживается [Семантического версионирования](https://semver.org/lang/ru/).
+и проект использует [CalVer](https://calver.org/) вида `vYY.M.PATCH` без ведущего нуля в месяце (начиная с линейки `v26.11.0`; исторические релизы `v1.0.0` … `v1.3.0` придерживались [SemVer](https://semver.org/lang/ru/)).
 
 English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
+
+### Изменено (Релизы и версионирование)
+
+- **Переход на CalVer (`vYY.M.PATCH`) с сохранением `jgitver`**:
+  - `.mvn/jgitver.config.xml`: в `versionPattern` захардкоженная серия `1.0.` заменена на `${v}` (`${v}-${meta.COMMIT_DISTANCE}-${meta.GIT_SHA1_8}`) и отключён `autoIncrementPatch` (`<autoIncrementPatch>false</autoIncrementPatch>`), чтобы версии сборок веток следовали за актуальным базовым тегом (`v1.3.0`, затем `vYY.M.PATCH`).
+  - `.github/workflows/release.yml`, `tag-release.yml`, `_release-build.yml` и `.github/scripts/gen-release-notes.sh`: workflow `Release` принимает необязательную серию `series` (`YY.M`, по умолчанию текущий месяц UTC) без ведущего нуля в месяце; `Tag Release`, `nightly` и `gen-release-notes.sh` фильтруют теги строго по формату `vX.Y.Z` (`v1.x.y` + CalVer `vYY.M.PATCH`), сохраняя непрерывную цепочку сравнений начиная с `v1.3.0`.
+  - Документация (`README.md`, `README.en.md`, `CHANGELOG.md`, `CHANGELOG.en.md`, `AGENTS.md`) синхронно обновлена под CalVer.
 
 ### Исправлено (Backend, Thrift-мост и Front-door совместимость)
 

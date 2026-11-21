@@ -271,20 +271,22 @@ mvn -o package
 mvn -q -DforceStdout help:evaluate -Dexpression=project.version
 ```
 
-Версия сборки вычисляется из git. Обычные branch-сборки используют настроенный jgitver-шаблон
-`1.0.<git-distance>-<short-sha>`, tag release берёт pushed-тег `vMAJOR.MINOR.PATCH`, а rolling
-nightly фиксирует Maven на последнем достижимом release-теге, поэтому nightly после `v1.2.0`
-собирает jar-файлы версии `1.2.0-<short-sha>`.
+Версия сборки вычисляется из git через `jgitver`. Релизы используют CalVer формата
+`vYY.M.PATCH` без ведущего нуля в месяце (например, `v26.11.0`; историческая линейка —
+`v1.0.0` … `v1.3.0`). Обычные branch-сборки используют шаблон
+`<base-version>-<git-distance>-<short-sha>`, tag release берёт pushed-тег `vYY.M.PATCH`,
+а rolling `nightly` фиксирует Maven на последнем достижимом release-теге, поэтому nightly
+после `v26.11.0` собирает jar-файлы версии `26.11.0-<short-sha>`.
 
 GitHub Actions автоматически публикует сборки:
 - branch и pull-request CI загружают jar-файлы как artifacts
 - каждый push в `main`, плюс ручной `workflow_dispatch`, обновляет rolling prerelease `nightly` с актуального `main`
-- pushed-теги `v*` публикуют обычные releases с GitHub-generated release notes
+- pushed-теги `v[0-9]*.[0-9]*.[0-9]*` (CalVer `vYY.M.PATCH`) публикуют обычные releases с release notes, генерируемыми `git-cliff`
 
-Ручные релизы публикуются через workflow `Release`:
+Ручные релизы подготавливаются через workflow `Release`:
 - запускается через `workflow_dispatch`
-- передаётся только `major_minor`, например `1.7`
-- workflow сам вычисляет следующий patch и публикует GitHub release с тегом вида `v1.7.0`, `v1.7.1` и далее
+- принимает необязательный параметр `series` (`YY.M`, по умолчанию текущий месяц UTC, например `26.11`)
+- вычисляет следующий `PATCH` по существующим тегам `vYY.M.*` (`v26.11.0`, `v26.11.1` и далее) и печатает команды создания локального подписанного тега `git tag -s`, push которого запускает `Tag Release`
 
 ## Запуск
 

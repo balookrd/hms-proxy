@@ -2,7 +2,7 @@
 # Generate a GitHub release body from Conventional Commits / commits.
 #
 #   gen-release-notes.sh <tag> <output-file>
-#     tag    : v1.3.0 (release) or nightly (rolling)
+#     tag    : v26.11.0 (CalVer release) or nightly (rolling)
 #     output : path to write the markdown body to
 #
 # Requires git-cliff on PATH and a checkout with full history + tags
@@ -16,24 +16,27 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 config="${repo_root}/cliff.toml"
 
-# Rolling tag (e.g. nightly) is anything not shaped like vX.Y.Z.
+# Rolling tag (e.g. nightly) is anything not shaped like vX.Y.Z (CalVer vYY.M.PATCH or legacy v1.x.y).
 rolling=false
 if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   rolling=true
 fi
 
+# Only consider release tags shaped like vX.Y.Z (legacy v1.x.y + CalVer vYY.M.PATCH).
+release_tags="$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+
 if [[ "$rolling" == "true" ]]; then
   # Rolling: diff from the newest stable tag up to HEAD.
-  prev="$(git tag -l "v*" --sort=-v:refname | head -n1)"
+  prev="$(printf '%s\n' "$release_tags" | grep -v '^$' | sort -V | tail -n1 || true)"
   end_ref="HEAD"
   compare_to="$(git rev-parse HEAD)"
 else
-  # Release: previous stable tag is the greatest v* strictly LESS than
-  # the current one by semver (not just "the greatest other tag"). Insert the
+  # Release: previous stable tag is the greatest vX.Y.Z strictly LESS than
+  # the current one by version sort (not just "the greatest other tag"). Insert the
   # tag into the sorted list and take the line before it. bash 3.2-safe: no
   # `mapfile` (macOS ships bash 3.2), plain awk instead.
-  prev="$( { git tag -l "v*" | grep -vx "$tag"; printf '%s\n' "$tag"; } \
-            | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
+  prev="$( { printf '%s\n' "$release_tags" | grep -vx "$tag" || true; printf '%s\n' "$tag"; } \
+            | grep -v '^$' | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
   end_ref="$tag"
   compare_to="$tag"
 fi

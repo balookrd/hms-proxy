@@ -1,18 +1,20 @@
 name: Release
+run-name: "${{ github.workflow }} — ${{ github.event.inputs.series != '' && github.event.inputs.series || 'auto' }}"
 
 on:
   workflow_dispatch:
     inputs:
-      major_minor:
-        description: "MAJOR.MINOR (например 1.7)"
-        required: true
+      series:
+        description: "YY.M CalVer series (пусто = текущий UTC месяц, например 26.11)"
+        required: false
         type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.major_minor }}
+  group: release-prepare
   cancel-in-progress: false
 
 jobs:
@@ -32,12 +34,16 @@ jobs:
       - id: version
         name: Compute next version
         env:
-          SERIES: ${{ github.event.inputs.major_minor }}
+          SERIES: ${{ github.event.inputs.series }}
         run: |
           set -euo pipefail
 
-          if [[ ! "$SERIES" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "invalid format, expected 1.7" >&2
+          if [[ -z "$SERIES" ]]; then
+            SERIES="$(date -u +%-y.%-m)"
+          fi
+
+          if [[ ! "$SERIES" =~ ^[0-9]{2,}\.([1-9]|1[0-2])$ ]]; then
+            echo "invalid CalVer series '$SERIES', expected YY.M without leading zero in month (e.g. 26.11)" >&2
             exit 1
           fi
 

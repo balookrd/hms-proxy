@@ -2,11 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project uses [CalVer](https://calver.org/) `vYY.M.PATCH` without a leading zero in the month (starting with the `v26.11.0` series; historical releases `v1.0.0` … `v1.3.0` adhered to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)).
 
 For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
+
+### Changed (Releases and Versioning)
+
+- **Switch to CalVer (`vYY.M.PATCH`) while keeping `jgitver`**:
+  - `.mvn/jgitver.config.xml`: replaced the hardcoded `1.0.` series in `versionPattern` with `${v}` (`${v}-${meta.COMMIT_DISTANCE}-${meta.GIT_SHA1_8}`) and set `<autoIncrementPatch>false</autoIncrementPatch>` so branch build versions track the latest base tag (`v1.3.0`, then `vYY.M.PATCH`).
+  - `.github/workflows/release.yml`, `tag-release.yml`, `_release-build.yml`, and `.github/scripts/gen-release-notes.sh`: the `Release` workflow accepts an optional `series` input (`YY.M`, defaulting to the current UTC month) with no leading zero in the month; `Tag Release`, `nightly`, and `gen-release-notes.sh` match release tags strictly as `vX.Y.Z` (`v1.x.y` + CalVer `vYY.M.PATCH`), keeping a continuous compare history from `v1.3.0`.
+  - Synchronized `README.md`, `README.en.md`, `CHANGELOG.md`, `CHANGELOG.en.md`, and `AGENTS.md` for CalVer.
 
 ### Fixed (Backend, Thrift Bridge, and Front-Door Compatibility)
 

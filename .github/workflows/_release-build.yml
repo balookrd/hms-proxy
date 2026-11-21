@@ -73,7 +73,7 @@ jobs:
           maven_args=""
           if [[ "$ROLLING_TAG" == "true" ]]; then
             git fetch origin '+refs/tags/*:refs/tags/*' --force
-            version_tag="$(git tag --merged HEAD -l 'v[0-9]*' --sort=-v:refname | head -n1)"
+            version_tag="$(git tag --merged HEAD -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
             if [[ -z "$version_tag" ]]; then
               echo "No reachable release tag found for rolling build version" >&2
               exit 1

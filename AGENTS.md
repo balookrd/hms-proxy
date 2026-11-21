@@ -174,7 +174,7 @@ scripts/run-real-installation-smoke-simple.sh --env-file smoke-stand/env/simple.
 
 ## Операционные предосторожности
 
-- Runnable artifact - `target/hms-proxy-<version>-fat.jar`; версия вычисляется через Maven и может включать git-derived metadata.
+- Runnable artifact - `target/hms-proxy-<version>-fat.jar`; версия вычисляется через `jgitver` (релизные теги используют CalVer `vYY.M.PATCH` без ведущего нуля в месяце, branch-сборки — `<base-version>-<distance>-<short-sha>`) и может переопределяться через `-Djgitver.use-version=...`.
 - Java 17 вместе со старыми Hadoop Kerberos libraries может требовать документированные JVM flags `--add-opens` и `--add-exports`.
 - Process-wide Kerberos state (`UserGroupInformation.setConfiguration`, `UserGroupInformation.loginUserFromKeytab`) меняется только через `security/ProcessKerberosConfiguration`: front door ставит полную конфигурацию при старте, остальные пути лишь дополняют её один раз и никогда не перезаписывают. Инвариант закреплён тестом `ProcessWideUgiStateTest`.
 - Impersonation-сессия под Kerberos владеет delegation token'ом бэкенда: `BackendRuntime` отзывает его только после закрытия сессии, в фоновом потоке `hms-proxy-token-cancel-<catalog>` (не в потоке, закрывающем сессию, — это часто клиентский запрос с мёртвой сессией), а `close()` дорабатывает очередь отзывов до того, как пометит runtime закрытым. Idle TTL impersonation-пула (дефолты 10 и 30 минут) применяет фоновый `hms-proxy-impersonation-sweep-<catalog>`. Закрывать сессии под блокировкой пула пользователя нельзя: закрытие ставит в очередь сетевой вызов.
