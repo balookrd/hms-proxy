@@ -244,4 +244,61 @@ public class GroupDiskCacheTest {
       Assert.assertEquals(Optional.of(List.of("engineers", "sales")), cache.get("alice"));
     }
   }
+
+  @Test
+  public void rejectsOversizedOrUnsupportedVersionDiskFileAndEnforcesPrivatePermissions()
+      throws Exception {
+    File futureVersionFile = new File(temp.getRoot(), "future-version.json");
+    MAPPER.writeValue(futureVersionFile, new DiskCachePayload(99, 1_000L, Map.of(
+        "alice", new CachedUserGroups(List.of("devs"), 1_000L))));
+    GroupDiskCacheConfig versionConfig = new GroupDiskCacheConfig(
+        true, futureVersionFile.getAbsolutePath(), 3600L, 0L, false);
+    try (GroupDiskCache cache = new GroupDiskCache(versionConfig, new PrometheusMetrics(), () -> 1_000L)) {
+      Assert.assertEquals(0, cache.size());
+    }
+
+    File oversizedFile = new File(temp.getRoot(), "oversized.json");
+    MAPPER.writeValue(oversizedFile, new DiskCachePayload(1, 1_000L, Map.of(
+        "alice", new CachedUserGroups(List.of("devs", "admins"), 1_000L))));
+    GroupDiskCacheConfig oversizedConfig = new GroupDiskCacheConfig(
+        true, oversizedFile.getAbsolutePath(), 3600L, 0L, false);
+    try (GroupDiskCache cache = new GroupDiskCache(oversizedConfig, new PrometheusMetrics(), () -> 1_000L, 16L)) {
+      Assert.assertEquals(0, cache.size());
+    }
+
+    File privateFile = new File(temp.getRoot(), "private-dir/cache.json");
+    GroupDiskCacheConfig privateConfig = new GroupDiskCacheConfig(
+        true, privateFile.getAbsolutePath(), 3600L, 0L, false);
+    try (GroupDiskCache cache = new GroupDiskCache(privateConfig, new PrometheusMetrics(), () -> 1_000L)) {
+      cache.put("alice", List.of("devs"));
+      Assert.assertTrue(cache.isDirty());
+      Assert.assertTrue(cache.persistToDisk());
+      Assert.assertFalse(cache.isDirty());
+    }
+    if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+      Assert.assertEquals(
+          java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+          Files.getPosixFilePermissions(privateFile.toPath()));
+      Assert.assertEquals(
+          java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"),
+          Files.getPosixFilePermissions(privateFile.getParentFile().toPath()));
+    }
+  }
+
+  @Test
+  public void cleansUpTempFilesOnPersistFailure() throws Exception {
+    File cacheDirTarget = new File(temp.getRoot(), "non-empty-dir-target");
+    Assert.assertTrue(cacheDirTarget.mkdir());
+    Files.writeString(new File(cacheDirTarget, "blocker").toPath(), "x");
+
+    GroupDiskCacheConfig config = new GroupDiskCacheConfig(
+        true, cacheDirTarget.getAbsolutePath(), 3600L, 0L, false);
+    try (GroupDiskCache cache = new GroupDiskCache(config, new PrometheusMetrics(), () -> 1_000L)) {
+      cache.put("alice", List.of("devs"));
+      Assert.assertFalse(cache.persistToDisk());
+      Assert.assertTrue("Failed persist must keep cache dirty", cache.isDirty());
+    }
+    String[] leftovers = temp.getRoot().list((dir, name) -> name.contains(".tmp."));
+    Assert.assertEquals(0, leftovers == null ? 0 : leftovers.length);
+  }
 }

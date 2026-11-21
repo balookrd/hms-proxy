@@ -820,6 +820,35 @@ public final class CatalogRouter implements AutoCloseable {
     this.negativeResolutionCache.clear();
   }
 
+  synchronized void invalidateDatabaseRoutingCache(String catalogName, String dbName) {
+    if (catalogName == null || dbName == null || dbName.isBlank()) {
+      return;
+    }
+    String lower = dbName.toLowerCase(Locale.ROOT);
+    negativeResolutionCache.remove(lower);
+    if (isMergeWithDefaultCatalog(catalogName)) {
+      dynamicMergedDatabases.remove(lower, catalogName);
+    }
+  }
+
+  synchronized void invalidateCatalogRoutingCaches(String catalogName) {
+    if (catalogName == null) {
+      return;
+    }
+    if (catalogName.equals(config.defaultCatalog())) {
+      replaceDefaultCatalogDatabases(Set.of());
+    } else {
+      dynamicMergedDatabases.entrySet().removeIf(entry -> catalogName.equals(entry.getValue()));
+    }
+    negativeResolutionCache.clear();
+  }
+
+  synchronized void invalidateAllRoutingCaches() {
+    dynamicMergedDatabases.clear();
+    replaceDefaultCatalogDatabases(Set.of());
+    negativeResolutionCache.clear();
+  }
+
   public Map<String, String> unprefixedDatabases() {
     return unprefixedDatabases;
   }

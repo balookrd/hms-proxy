@@ -8,6 +8,26 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed & Changed (Stability, Security, Lifecycle, and Metrics — Wave 3A)
+
+- **`RangerMetadataAuthorizer` and `GroupDiskCache` hardening**:
+  - `RangerMetadataAuthorizer` now loads XML files from `ranger.config-dir` **before** applying properties from `hms-proxy.properties`, and only falls back to `"http://localhost:6080"` when neither XML nor properties specify a policy REST URL.
+  - Wired `ranger.audit.enabled`: when `true`, configures `RangerDefaultAuditHandler` and emits a single audit record for the final decision of the fallback chain (`select` → `read` → `use`/`show`) instead of spamming intermediate `DENY` events.
+  - Updated DN group `CN=` extraction to RFC 4514 (`extractFirstCn`, supporting escaped commas `\,` and multi-valued RDNs `+`), added rollback cleanup when N-th catalog plugin init fails, and made `close()` idempotent under a `ReentrantReadWriteLock`.
+  - `GroupDiskCache` replaces `dirty` with monotonic `mutationGeneration`/`persistedGeneration` counters (preventing lost dirty marks during concurrent `put()`), sets POSIX permissions `0700`/`0600` on newly created cache directories and files, deletes orphaned `.tmp` files in `finally`, and skips disk cache files exceeding `64 MiB` or mismatched `payload.version()`.
+- **DNS-free IP/CIDR matching and startup/reload lifecycle**:
+  - Replaced `InetAddress.getByName` in `ClientAddressMatcher` with a strict numeric IPv4/IPv6 literal parser (zero DNS lookups) supporting IPv4-mapped IPv6 CIDRs such as `::ffff:10.0.0.0/104` without affecting regular IPv6 CIDRs like `::/64`.
+  - `ConfigReloadManager` rolls back applied listeners and keeps the previous `ProxyConfig` if any listener throws, reacts to decreased `mtime` (`!fileTime.equals(...)`) and newly appearing config files, and restores the previous `SIGHUP` handler on `close()`.
+  - `HmsProxyApplication` and `RoutingPipelineFactory` enforce nested LIFO shutdown ordering (closing `managementServer` and `configReloadManager` before `handler` and `router`) and roll back already-created resources on partial pipeline assembly failure.
+- **Configuration validation, log redaction, and Prometheus metrics**:
+  - `PropertyReader` and `AdaptiveTimeoutConfig` reject `NaN`/`Infinity`; `LatencyRoutingConfigParser` enforces `min-ms <= initial-ms <= max-ms` for adaptive timeouts and validates `routing.refresh-privileges.mode` (`BACKEND`, `PASSTHROUGH`, `SYNTHETIC_SUCCESS`).
+  - `ProxyConfigLogger` additionally masks keys containing `passwd`, `pwd`, `passphrase`, `access.key`/`access_key`/`accesskey` and inline URI credentials (`scheme://user:pass@host`); `DebugLogUtil` redacts (`<redacted>`) arguments and results of delegation-token and master-key RPCs in `DEBUG` logs.
+  - Registered the 3 `hms_proxy_cache_invalidation_*` metrics in `PrometheusMetrics.exposedMetrics` and sampled `sample.count()` once per histogram series (`Math.max(cumulativeCount, count)`) to preserve `bucket{le="+Inf"} == _count`.
+- **ZooKeeper invalidation bus, rate limiting, and `CompatibilityHandler`**:
+  - `ZooKeeperCacheInvalidator` normalizes root `znode="/"` to `"/events"`, flushes local caches on `ConnectionState.RECONNECTED`, propagates invalidations to `CatalogRouter` and `IcebergTablePointerGuard`, cleans up resources if constructor init fails, and publishes events asynchronously via a bounded (`1024`) single-thread executor.
+  - Added `rate-limit.max-buckets` (default `50000`, `0` disables) capping `RequestRateLimiter.TokenBucketGroup` via expired-entry pruning followed by oldest-seen eviction.
+  - `CompatibilityHandler` no longer caches synthetic fallback DB UUIDs permanently when the backend fails during `get_metastore_db_uuid`, and restricts `flushCache()` under `security.mode=KERBEROS` to same-realm service principals and `GSSAPI` admins in `security.token-store-admin-principals`.
+
 ### Changed (Thrift/SASL DoS Guards, Management HTTP, Iceberg REST Hardening, and Dependency Cleanup)
 
 - **Thrift/SASL DoS limits and `SIMPLE`-mode `remoteAddress` (`H2`)**:

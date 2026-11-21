@@ -70,6 +70,24 @@ public class DebugLogUtilTest {
     Assert.assertTrue(rendered, rendered.startsWith("<debug-format-error value IllegalStateException"));
   }
 
+  @Test
+  public void redactsDelegationTokenAndMasterKeyRpcArgsAndResults() {
+    Assert.assertEquals("<redacted>",
+        DebugLogUtil.formatArgs("renew_delegation_token", new Object[]{"secret-token-str"}));
+    Assert.assertEquals("<redacted>",
+        DebugLogUtil.formatValue("get_delegation_token", "issued-secret-token"));
+    Assert.assertEquals("<redacted>",
+        DebugLogUtil.formatArgs("add_master_key", new Object[]{"master-key-material"}));
+    Assert.assertEquals("<redacted>",
+        DebugLogUtil.formatValue("get_master_keys", List.of("k1", "k2")));
+    Assert.assertEquals("[]",
+        DebugLogUtil.formatArgs("get_delegation_token", new Object[0]));
+    Assert.assertEquals("null",
+        DebugLogUtil.formatValue("get_delegation_token", null));
+    Assert.assertEquals("[db1, tbl1]",
+        DebugLogUtil.formatArgs("get_table", new Object[]{"db1", "tbl1"}));
+  }
+
   private static Object countingValue(AtomicInteger counter, int length) {
     return new Object() {
       @Override

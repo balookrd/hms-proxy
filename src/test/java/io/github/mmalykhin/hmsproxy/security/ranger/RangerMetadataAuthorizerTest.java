@@ -353,5 +353,108 @@ public class RangerMetadataAuthorizerTest {
       }
     };
     Assert.assertNotNull(authorizer);
+    authorizer.close();
+  }
+
+  @Test
+  public void testPropertiesOverrideXmlConfigAndFallbackRestUrl() throws Exception {
+    java.nio.file.Path configDir = java.nio.file.Files.createTempDirectory("ranger-cfg-test");
+    try {
+      java.nio.file.Files.writeString(configDir.resolve("ranger-hive-security.xml"), """
+          <configuration>
+            <property>
+              <name>ranger.plugin.hive.policy.rest.url</name>
+              <value>http://xml-ranger:6080</value>
+            </property>
+          </configuration>
+          """);
+      CatalogRangerConfig inheritedXmlConfig = new CatalogRangerConfig(
+          true, null, "xml_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null,
+          configDir.toString(), false, false);
+      RangerConfig inheritedGlobal = new RangerConfig(true, inheritedXmlConfig, Map.of("cat1", inheritedXmlConfig));
+      try (RangerMetadataAuthorizer authorizer =
+          new RangerMetadataAuthorizer(inheritedGlobal, Map.of("cat1", testCatalogConfig(inheritedXmlConfig))) {
+            @Override
+            protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+              RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+              Assert.assertEquals("http://xml-ranger:6080",
+                  plugin.getConfig().get("ranger.plugin.hive.policy.rest.url"));
+              return plugin;
+            }
+          }) {
+        Assert.assertNotNull(authorizer);
+      }
+
+      CatalogRangerConfig overrideConfig = new CatalogRangerConfig(
+          true, "http://props-ranger:6180", "props_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000,
+          null, null, configDir.toString(), false, false);
+      RangerConfig overrideGlobal = new RangerConfig(true, overrideConfig, Map.of("cat1", overrideConfig));
+      try (RangerMetadataAuthorizer authorizer =
+          new RangerMetadataAuthorizer(overrideGlobal, Map.of("cat1", testCatalogConfig(overrideConfig))) {
+            @Override
+            protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+              RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+              Assert.assertEquals("http://props-ranger:6180",
+                  plugin.getConfig().get("ranger.plugin.hive.policy.rest.url"));
+              return plugin;
+            }
+          }) {
+        Assert.assertNotNull(authorizer);
+      }
+    } finally {
+      java.nio.file.Files.deleteIfExists(configDir.resolve("ranger-hive-security.xml"));
+      java.nio.file.Files.deleteIfExists(configDir);
+    }
+  }
+
+  @Test
+  public void testAuditEnabledAuditsFinalResultOnceAndExtractsRfc4514Cn() {
+    CatalogRangerConfig rangerConfig = new CatalogRangerConfig(
+        true, null, "audit_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null,
+        true, false);
+    RangerConfig globalRanger = new RangerConfig(true, rangerConfig, Map.of("cat1", rangerConfig));
+    CatalogConfig catConfig = testCatalogConfig(rangerConfig);
+
+    java.util.List<String> auditedTypes = new java.util.ArrayList<>();
+    try (RangerMetadataAuthorizer authorizer =
+        new RangerMetadataAuthorizer(globalRanger, Map.of("cat1", catConfig)) {
+          @Override
+          protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+            RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+            Assert.assertNotNull("auditEnabled=true should configure a result processor",
+                plugin.getResultProcessor());
+            plugin.setResultProcessor(new org.apache.ranger.plugin.policyengine.RangerAccessResultProcessor() {
+              @Override
+              public void processResult(RangerAccessResult result) {
+                auditedTypes.add(result.getAccessRequest().getAccessType() + ":" + result.getIsAllowed());
+              }
+
+              @Override
+              public void processResults(java.util.Collection<RangerAccessResult> results) {}
+            });
+            return plugin;
+          }
+
+          @Override
+          protected RangerAccessResult evaluateAccess(RangerBasePlugin plugin, RangerAccessRequest request) {
+            RangerAccessResult res = new RangerAccessResult(0, "audit_svc", null, request);
+            res.setIsAllowed("read".equals(request.getAccessType()));
+            return res;
+          }
+        }) {
+      Assert.assertTrue(authorizer.isDatabaseAllowed("cat1", "sales",
+          new ImpersonationContext("alice", List.of())));
+      Assert.assertEquals("Fallback select->read must emit only one final audit event",
+          List.of("read:true"), auditedTypes);
+      // Idempotent close
+      authorizer.close();
+      authorizer.close();
+    }
+
+    Assert.assertEquals("Sales, EMEA",
+        RangerMetadataAuthorizer.extractFirstCn("  cn = Sales\\, EMEA , OU=Groups "));
+    Assert.assertEquals("team",
+        RangerMetadataAuthorizer.extractFirstCn("CN=team+gid=42,OU=Groups"));
+    Assert.assertNull(RangerMetadataAuthorizer.extractFirstCn("OU=Groups,CN=analysts"));
   }
 }

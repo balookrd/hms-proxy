@@ -142,7 +142,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       RequestContext.REQUEST_OBSERVATION.set(observation);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} incoming method={} args={}",
-            requestId, name, DebugLogUtil.formatArgs(args));
+            requestId, name, DebugLogUtil.formatArgs(name, args));
       }
       if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
         LOG.info("requestId={} trace stage=client-request method={} summary={}",
@@ -151,7 +151,7 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
       Object result = chain.invoke(proxy, method, args);
       if (LOG.isDebugEnabled()) {
         LOG.debug("requestId={} client-response method={} elapsedMs={} result={}",
-            requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(result));
+            requestId, name, elapsedMillis(startedAt), DebugLogUtil.formatValue(name, result));
       }
       if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(name)) {
         LOG.info("requestId={} trace stage=client-response method={} elapsedMs={} summary={}",

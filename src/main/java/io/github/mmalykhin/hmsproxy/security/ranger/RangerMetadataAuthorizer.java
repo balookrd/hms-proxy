@@ -16,11 +16,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.ranger.authorization.hadoop.config.RangerPluginConfig;
+import org.apache.ranger.plugin.audit.RangerDefaultAuditHandler;
 import org.apache.ranger.plugin.policyengine.RangerAccessRequest;
 import org.apache.ranger.plugin.policyengine.RangerAccessRequestImpl;
 import org.apache.ranger.plugin.policyengine.RangerAccessResourceImpl;
 import org.apache.ranger.plugin.policyengine.RangerAccessResult;
+import org.apache.ranger.plugin.policyengine.RangerAccessResultProcessor;
 import org.apache.ranger.plugin.service.RangerBasePlugin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,9 +33,13 @@ import org.slf4j.LoggerFactory;
 public class RangerMetadataAuthorizer implements MetadataAuthorizer {
   private static final Logger LOG = LoggerFactory.getLogger(RangerMetadataAuthorizer.class);
   private static final int MAX_CME_RETRIES = 2;
+  private static final String DEFAULT_POLICY_REST_URL = "http://localhost:6080";
 
   private final Map<String, RangerBasePlugin> pluginsByCatalog;
+  private final Map<String, Boolean> auditEnabledByCatalog;
   private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
+  private final AtomicBoolean closedFlag = new AtomicBoolean(false);
+  private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
   private volatile boolean closed;
 
   public RangerMetadataAuthorizer(RangerConfig config, Map<String, CatalogConfig> catalogs) {
@@ -44,35 +53,51 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
   ) {
     this.metrics = metrics;
     Map<String, RangerBasePlugin> initialized = new LinkedHashMap<>();
+    Map<String, Boolean> auditFlags = new LinkedHashMap<>();
     if (catalogs != null) {
-      for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
-        String catalogName = entry.getKey();
-        CatalogConfig catConfig = entry.getValue();
-        CatalogRangerConfig rangerConfig = catConfig.ranger() != null && catConfig.ranger().enabled()
-            ? catConfig.ranger()
-            : config.forCatalog(catalogName);
+      try {
+        for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
+          String catalogName = entry.getKey();
+          CatalogConfig catConfig = entry.getValue();
+          CatalogRangerConfig rangerConfig = catConfig.ranger() != null && catConfig.ranger().enabled()
+              ? catConfig.ranger()
+              : config.forCatalog(catalogName);
 
-        if (rangerConfig.enabled()) {
-          try {
-            RangerBasePlugin plugin = createPlugin(catalogName, rangerConfig);
-            initialized.put(catalogName, plugin);
-            if (metrics != null) {
-              metrics.setRangerPluginInfo(
-                  catalogName,
-                  plugin.getServiceName(),
-                  plugin.getServiceType(),
-                  plugin.getAppId());
+          if (rangerConfig.enabled()) {
+            try {
+              RangerBasePlugin plugin = createPlugin(catalogName, rangerConfig);
+              initialized.put(catalogName, plugin);
+              auditFlags.put(catalogName, rangerConfig.auditEnabled());
+              if (metrics != null) {
+                metrics.setRangerPluginInfo(
+                    catalogName,
+                    plugin.getServiceName(),
+                    plugin.getServiceType(),
+                    plugin.getAppId());
+              }
+              LOG.info("Initialized RangerBasePlugin for catalog '{}' (serviceName={}, serviceType={}, restUrl={}, audit={})",
+                  catalogName, rangerConfig.serviceName(), rangerConfig.serviceType(),
+                  rangerConfig.policyRestUrl(), rangerConfig.auditEnabled());
+            } catch (Exception e) {
+              LOG.error("Failed to initialize RangerBasePlugin for catalog '{}'", catalogName, e);
+              throw new RuntimeException(
+                  "Failed to initialize RangerBasePlugin for catalog '" + catalogName + "': " + e.getMessage(), e);
             }
-            LOG.info("Initialized RangerBasePlugin for catalog '{}' (serviceName={}, serviceType={}, restUrl={})",
-                catalogName, rangerConfig.serviceName(), rangerConfig.serviceType(), rangerConfig.policyRestUrl());
-          } catch (Exception e) {
-            LOG.error("Failed to initialize RangerBasePlugin for catalog '{}'", catalogName, e);
-            throw new RuntimeException("Failed to initialize RangerBasePlugin for catalog '" + catalogName + "': " + e.getMessage(), e);
           }
         }
+      } catch (RuntimeException e) {
+        for (RangerBasePlugin created : initialized.values()) {
+          try {
+            created.cleanup();
+          } catch (Exception cleanupError) {
+            e.addSuppressed(cleanupError);
+          }
+        }
+        throw e;
       }
     }
     this.pluginsByCatalog = Map.copyOf(initialized);
+    this.auditEnabledByCatalog = Map.copyOf(auditFlags);
   }
 
   protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
@@ -82,27 +107,7 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     RangerBasePlugin plugin = new RangerBasePlugin(config.serviceType(), serviceName, config.appId());
     RangerPluginConfig pluginConfig = plugin.getConfig();
 
-    String restUrl = config.policyRestUrl() != null && !config.policyRestUrl().isBlank()
-        ? config.policyRestUrl()
-        : "http://localhost:6080";
-    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.rest.url", restUrl);
-    if (config.policyCacheDir() != null && !config.policyCacheDir().isBlank()) {
-      pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.cache.dir", config.policyCacheDir());
-    }
-    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.pollIntervalMs",
-        String.valueOf(config.policyPollIntervalMs()));
-    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.rest.client.connection.timeoutMs",
-        String.valueOf(config.connectionTimeoutMs()));
-    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.rest.client.read.timeoutMs",
-        String.valueOf(config.readTimeoutMs()));
-    pluginConfig.set("ranger.plugin." + config.serviceType() + ".service.name", serviceName);
-
-    if (config.sslTruststoreFile() != null && !config.sslTruststoreFile().isBlank()) {
-      pluginConfig.set("ranger.plugin." + config.serviceType() + ".ssl.truststore.file", config.sslTruststoreFile());
-    }
-    if (config.sslTruststorePassword() != null && !config.sslTruststorePassword().isBlank()) {
-      pluginConfig.set("ranger.plugin." + config.serviceType() + ".ssl.truststore.password", config.sslTruststorePassword());
-    }
+    // Load XML files first so explicit properties in hms-proxy.properties take precedence.
     if (config.configDir() != null && !config.configDir().isBlank()) {
       File dir = new File(config.configDir());
       if (dir.isDirectory()) {
@@ -121,12 +126,42 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       }
     }
 
+    String restUrlKey = "ranger.plugin." + config.serviceType() + ".policy.rest.url";
+    if (config.policyRestUrl() != null && !config.policyRestUrl().isBlank()) {
+      pluginConfig.set(restUrlKey, config.policyRestUrl());
+    } else {
+      String xmlRestUrl = pluginConfig.get(restUrlKey);
+      if (xmlRestUrl == null || xmlRestUrl.isBlank()) {
+        pluginConfig.set(restUrlKey, DEFAULT_POLICY_REST_URL);
+      }
+    }
+    if (config.policyCacheDir() != null && !config.policyCacheDir().isBlank()) {
+      pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.cache.dir", config.policyCacheDir());
+    }
+    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.pollIntervalMs",
+        String.valueOf(config.policyPollIntervalMs()));
+    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.rest.client.connection.timeoutMs",
+        String.valueOf(config.connectionTimeoutMs()));
+    pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.rest.client.read.timeoutMs",
+        String.valueOf(config.readTimeoutMs()));
+    pluginConfig.set("ranger.plugin." + config.serviceType() + ".service.name", serviceName);
+
+    if (config.sslTruststoreFile() != null && !config.sslTruststoreFile().isBlank()) {
+      pluginConfig.set("ranger.plugin." + config.serviceType() + ".ssl.truststore.file", config.sslTruststoreFile());
+    }
+    if (config.sslTruststorePassword() != null && !config.sslTruststorePassword().isBlank()) {
+      pluginConfig.set("ranger.plugin." + config.serviceType() + ".ssl.truststore.password", config.sslTruststorePassword());
+    }
+
     if (!config.rolesEnabled()) {
       pluginConfig.set("ranger.plugin." + config.serviceType() + ".policy.source.impl",
           NoOpRolesRangerAdminClient.class.getName());
     }
 
     plugin.init();
+    if (config.auditEnabled() && plugin.getResultProcessor() == null) {
+      plugin.setResultProcessor(new RangerDefaultAuditHandler(pluginConfig));
+    }
     return plugin;
   }
 
@@ -139,6 +174,24 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (plugin == null) {
       return true;
     }
+    Lock readLock = lifecycleLock.readLock();
+    readLock.lock();
+    try {
+      if (closed) {
+        return false;
+      }
+      return isDatabaseAllowedWithPlugin(catalogName, plugin, backendDbName, impersonation);
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  private boolean isDatabaseAllowedWithPlugin(
+      String catalogName,
+      RangerBasePlugin plugin,
+      String backendDbName,
+      ImpersonationContext impersonation
+  ) {
     if (backendDbName == null || backendDbName.isBlank()) {
       return false;
     }
@@ -156,26 +209,35 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     resource.setValue("database", backendDbName);
 
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
-    RangerAccessResult result = evaluateAccessWithRetry(plugin, request);
-    if (result != null && result.getIsAllowed()) {
+    RangerAccessResult finalResult = evaluateAccessWithRetry(plugin, request);
+    if (finalResult != null && finalResult.getIsAllowed()) {
       allowed = true;
     } else {
       // Try fallback access types "read" and "use"
       request = createAccessRequest(resource, impersonation, "read");
-      result = evaluateAccessWithRetry(plugin, request);
-      if (result != null && result.getIsAllowed()) {
+      RangerAccessResult readResult = evaluateAccessWithRetry(plugin, request);
+      if (readResult != null) {
+        finalResult = readResult;
+      }
+      if (readResult != null && readResult.getIsAllowed()) {
         accessTypeUsed = "read";
         allowed = true;
       } else {
         request = createAccessRequest(resource, impersonation, "use");
-        result = evaluateAccessWithRetry(plugin, request);
-        if (result != null && result.getIsAllowed()) {
+        RangerAccessResult useResult = evaluateAccessWithRetry(plugin, request);
+        if (useResult != null) {
+          finalResult = useResult;
+        }
+        if (useResult != null && useResult.getIsAllowed()) {
           accessTypeUsed = "use";
           allowed = true;
         }
       }
     }
 
+    if (Boolean.TRUE.equals(auditEnabledByCatalog.get(catalogName))) {
+      auditFinalResult(plugin, finalResult);
+    }
     if (metrics != null) {
       double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
       metrics.recordRangerEvaluation(
@@ -200,27 +262,36 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (plugin == null) {
       return new ArrayList<>(backendDbNames);
     }
-    if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
-      LOG.warn("Filtering out all {} database(s) for catalog '{}' because impersonation context is missing",
-          backendDbNames.size(), catalogName);
-      if (metrics != null) {
-        metrics.recordRangerFilteredObjects(catalogName, "database", backendDbNames.size());
+    Lock readLock = lifecycleLock.readLock();
+    readLock.lock();
+    try {
+      if (closed) {
+        return List.of();
       }
-      return List.of();
-    }
-    List<String> visible = new ArrayList<>(backendDbNames.size());
-    int filtered = 0;
-    for (String dbName : backendDbNames) {
-      if (isDatabaseAllowed(catalogName, dbName, impersonation)) {
-        visible.add(dbName);
-      } else {
-        filtered++;
+      if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+        LOG.warn("Filtering out all {} database(s) for catalog '{}' because impersonation context is missing",
+            backendDbNames.size(), catalogName);
+        if (metrics != null) {
+          metrics.recordRangerFilteredObjects(catalogName, "database", backendDbNames.size());
+        }
+        return List.of();
       }
+      List<String> visible = new ArrayList<>(backendDbNames.size());
+      int filtered = 0;
+      for (String dbName : backendDbNames) {
+        if (isDatabaseAllowedWithPlugin(catalogName, plugin, dbName, impersonation)) {
+          visible.add(dbName);
+        } else {
+          filtered++;
+        }
+      }
+      if (metrics != null && filtered > 0) {
+        metrics.recordRangerFilteredObjects(catalogName, "database", filtered);
+      }
+      return visible;
+    } finally {
+      readLock.unlock();
     }
-    if (metrics != null && filtered > 0) {
-      metrics.recordRangerFilteredObjects(catalogName, "database", filtered);
-    }
-    return visible;
   }
 
   @Override
@@ -232,6 +303,25 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (plugin == null) {
       return true;
     }
+    Lock readLock = lifecycleLock.readLock();
+    readLock.lock();
+    try {
+      if (closed) {
+        return false;
+      }
+      return isTableAllowedWithPlugin(catalogName, plugin, backendDbName, tableName, impersonation);
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  private boolean isTableAllowedWithPlugin(
+      String catalogName,
+      RangerBasePlugin plugin,
+      String backendDbName,
+      String tableName,
+      ImpersonationContext impersonation
+  ) {
     if (backendDbName == null || backendDbName.isBlank() || tableName == null || tableName.isBlank()) {
       return false;
     }
@@ -250,26 +340,35 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     resource.setValue("table", tableName);
 
     RangerAccessRequestImpl request = createAccessRequest(resource, impersonation, "select");
-    RangerAccessResult result = evaluateAccessWithRetry(plugin, request);
-    if (result != null && result.getIsAllowed()) {
+    RangerAccessResult finalResult = evaluateAccessWithRetry(plugin, request);
+    if (finalResult != null && finalResult.getIsAllowed()) {
       allowed = true;
     } else {
       // Try fallback access types "read" and "show"
       request = createAccessRequest(resource, impersonation, "read");
-      result = evaluateAccessWithRetry(plugin, request);
-      if (result != null && result.getIsAllowed()) {
+      RangerAccessResult readResult = evaluateAccessWithRetry(plugin, request);
+      if (readResult != null) {
+        finalResult = readResult;
+      }
+      if (readResult != null && readResult.getIsAllowed()) {
         accessTypeUsed = "read";
         allowed = true;
       } else {
         request = createAccessRequest(resource, impersonation, "show");
-        result = evaluateAccessWithRetry(plugin, request);
-        if (result != null && result.getIsAllowed()) {
+        RangerAccessResult showResult = evaluateAccessWithRetry(plugin, request);
+        if (showResult != null) {
+          finalResult = showResult;
+        }
+        if (showResult != null && showResult.getIsAllowed()) {
           accessTypeUsed = "show";
           allowed = true;
         }
       }
     }
 
+    if (Boolean.TRUE.equals(auditEnabledByCatalog.get(catalogName))) {
+      auditFinalResult(plugin, finalResult);
+    }
     if (metrics != null) {
       double durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
       metrics.recordRangerEvaluation(
@@ -294,27 +393,52 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (plugin == null) {
       return new ArrayList<>(tableNames);
     }
-    if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
-      LOG.warn("Filtering out all {} table(s) for catalog '{}' db='{}' because impersonation context is missing",
-          tableNames.size(), catalogName, backendDbName);
-      if (metrics != null) {
-        metrics.recordRangerFilteredObjects(catalogName, "table", tableNames.size());
+    Lock readLock = lifecycleLock.readLock();
+    readLock.lock();
+    try {
+      if (closed) {
+        return List.of();
       }
-      return List.of();
-    }
-    List<String> visible = new ArrayList<>(tableNames.size());
-    int filtered = 0;
-    for (String tableName : tableNames) {
-      if (isTableAllowed(catalogName, backendDbName, tableName, impersonation)) {
-        visible.add(tableName);
-      } else {
-        filtered++;
+      if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+        LOG.warn("Filtering out all {} table(s) for catalog '{}' db='{}' because impersonation context is missing",
+            tableNames.size(), catalogName, backendDbName);
+        if (metrics != null) {
+          metrics.recordRangerFilteredObjects(catalogName, "table", tableNames.size());
+        }
+        return List.of();
       }
+      List<String> visible = new ArrayList<>(tableNames.size());
+      int filtered = 0;
+      for (String tableName : tableNames) {
+        if (isTableAllowedWithPlugin(catalogName, plugin, backendDbName, tableName, impersonation)) {
+          visible.add(tableName);
+        } else {
+          filtered++;
+        }
+      }
+      if (metrics != null && filtered > 0) {
+        metrics.recordRangerFilteredObjects(catalogName, "table", filtered);
+      }
+      return visible;
+    } finally {
+      readLock.unlock();
     }
-    if (metrics != null && filtered > 0) {
-      metrics.recordRangerFilteredObjects(catalogName, "table", filtered);
+  }
+
+  private static void auditFinalResult(RangerBasePlugin plugin, RangerAccessResult finalResult) {
+    if (finalResult == null) {
+      return;
     }
-    return visible;
+    RangerAccessResultProcessor processor = plugin.getResultProcessor();
+    if (processor == null) {
+      return;
+    }
+    try {
+      processor.processResult(finalResult);
+    } catch (Exception e) {
+      LOG.warn("Failed to record Ranger audit result for service '{}': {}",
+          plugin.getServiceName(), e.getMessage());
+    }
   }
 
   protected RangerAccessResult evaluateAccess(RangerBasePlugin plugin, RangerAccessRequest request) {
@@ -355,13 +479,22 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
 
   @Override
   public void close() {
+    if (!closedFlag.compareAndSet(false, true)) {
+      return;
+    }
     closed = true;
-    for (RangerBasePlugin plugin : pluginsByCatalog.values()) {
-      try {
-        plugin.cleanup();
-      } catch (Exception e) {
-        LOG.warn("Error cleaning up RangerBasePlugin for service '{}'", plugin.getServiceName(), e);
+    Lock writeLock = lifecycleLock.writeLock();
+    writeLock.lock();
+    try {
+      for (RangerBasePlugin plugin : pluginsByCatalog.values()) {
+        try {
+          plugin.cleanup();
+        } catch (Exception e) {
+          LOG.warn("Error cleaning up RangerBasePlugin for service '{}'", plugin.getServiceName(), e);
+        }
       }
+    } finally {
+      writeLock.unlock();
     }
   }
 
@@ -379,13 +512,10 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
         if (g != null && !g.isBlank()) {
           userGroups.add(g);
           userGroups.add(g.toLowerCase(Locale.ROOT));
-          if (g.regionMatches(true, 0, "cn=", 0, 3)) {
-            int comma = g.indexOf(',');
-            String cn = comma > 3 ? g.substring(3, comma) : g.substring(3);
-            if (!cn.isBlank()) {
-              userGroups.add(cn);
-              userGroups.add(cn.toLowerCase(Locale.ROOT));
-            }
+          String cn = extractFirstCn(g);
+          if (cn != null) {
+            userGroups.add(cn);
+            userGroups.add(cn.toLowerCase(Locale.ROOT));
           }
         }
       }
@@ -397,5 +527,62 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     request.setResourceMatchingScope(
         org.apache.ranger.plugin.policyengine.RangerAccessRequest.ResourceMatchingScope.SELF_OR_DESCENDANTS);
     return request;
+  }
+
+  static String extractFirstCn(String group) {
+    if (group == null) {
+      return null;
+    }
+    String trimmed = group.strip();
+    int len = trimmed.length();
+    if (len < 3 || !trimmed.regionMatches(true, 0, "cn", 0, 2)) {
+      return null;
+    }
+    int idx = 2;
+    while (idx < len && trimmed.charAt(idx) == ' ') {
+      idx++;
+    }
+    if (idx >= len || trimmed.charAt(idx) != '=') {
+      return null;
+    }
+    idx++;
+    while (idx < len && trimmed.charAt(idx) == ' ') {
+      idx++;
+    }
+    StringBuilder cn = new StringBuilder();
+    int trailingSpaces = 0;
+    boolean escaped = false;
+    while (idx < len) {
+      char ch = trimmed.charAt(idx++);
+      if (escaped) {
+        while (trailingSpaces > 0) {
+          cn.append(' ');
+          trailingSpaces--;
+        }
+        cn.append(ch);
+        escaped = false;
+      } else if (ch == '\\') {
+        while (trailingSpaces > 0) {
+          cn.append(' ');
+          trailingSpaces--;
+        }
+        escaped = true;
+      } else if (ch == ',' || ch == '+') {
+        break;
+      } else if (ch == ' ') {
+        trailingSpaces++;
+      } else {
+        while (trailingSpaces > 0) {
+          cn.append(' ');
+          trailingSpaces--;
+        }
+        cn.append(ch);
+      }
+    }
+    if (escaped) {
+      cn.append('\\');
+    }
+    String extracted = cn.toString();
+    return extracted.isBlank() ? null : extracted;
   }
 }

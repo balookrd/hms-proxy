@@ -22,8 +22,8 @@ public record AdaptiveTimeoutConfig(
     if (initialTimeoutMs > maxTimeoutMs) {
       initialTimeoutMs = maxTimeoutMs;
     }
-    multiplier = multiplier <= 1.0d ? 4.0d : multiplier;
-    alpha = alpha <= 0.0d || alpha > 1.0d ? 0.2d : alpha;
+    multiplier = !Double.isFinite(multiplier) || multiplier <= 1.0d ? 4.0d : multiplier;
+    alpha = !Double.isFinite(alpha) || alpha <= 0.0d || alpha > 1.0d ? 0.2d : alpha;
     reconnectCooldownMs = reconnectCooldownMs < 0 ? 30_000L : reconnectCooldownMs;
   }
 

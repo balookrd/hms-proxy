@@ -4,14 +4,47 @@ import java.lang.reflect.Array;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 
 public final class DebugLogUtil {
   private static final int MAX_ELEMENTS = 10;
   private static final int MAX_CHARS = 4_000;
   private static final int MAX_DEPTH = 3;
   private static final String TRUNCATED = "...<truncated>";
+  private static final String REDACTED = "<redacted>";
+  private static final Set<String> SENSITIVE_RPC_METHODS = Set.of(
+      "get_delegation_token",
+      "renew_delegation_token",
+      "cancel_delegation_token",
+      "add_token",
+      "remove_token",
+      "get_token",
+      "get_all_token_identifiers",
+      "add_master_key",
+      "update_master_key",
+      "remove_master_key",
+      "get_master_keys"
+  );
 
   private DebugLogUtil() {
+  }
+
+  public static boolean isSensitiveRpcMethod(String methodName) {
+    return methodName != null && SENSITIVE_RPC_METHODS.contains(methodName);
+  }
+
+  public static String formatArgs(String methodName, Object[] args) {
+    if (isSensitiveRpcMethod(methodName)) {
+      return args == null || args.length == 0 ? "[]" : REDACTED;
+    }
+    return formatArgs(args);
+  }
+
+  public static String formatValue(String methodName, Object value) {
+    if (isSensitiveRpcMethod(methodName)) {
+      return value == null ? "null" : REDACTED;
+    }
+    return formatValue(value);
   }
 
   public static String formatArgs(Object[] args) {

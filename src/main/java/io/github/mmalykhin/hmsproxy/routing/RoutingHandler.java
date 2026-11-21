@@ -190,6 +190,11 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
         databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache,
         metadataAuthorizer, cacheInvalidator);
     this.icebergTablePointerGuard = new IcebergTablePointerGuard(support);
+    if (cacheInvalidator instanceof LocalCacheInvalidator local) {
+      local.attachIcebergTablePointerGuard(this.icebergTablePointerGuard);
+    } else if (cacheInvalidator instanceof ZooKeeperCacheInvalidator zk) {
+      zk.attachIcebergTablePointerGuard(this.icebergTablePointerGuard);
+    }
     this.dropTableHandler = new DropTableHandler(support, this, externalTableDropPurger, icebergTablePointerGuard);
     this.specialCaseHandlers = buildSpecialCaseHandlers(dropTableHandler);
   }

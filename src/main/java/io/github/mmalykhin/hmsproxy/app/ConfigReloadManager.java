@@ -10,12 +10,14 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,12 @@ public final class ConfigReloadManager implements AutoCloseable {
   private final List<Consumer<ProxyConfig>> listeners = new CopyOnWriteArrayList<>();
   private final ScheduledExecutorService scheduler;
   private final ExecutorService reloadExecutor;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
+  private Class<?> signalClass;
+  private Class<?> signalHandlerClass;
+  private Object sighupSignal;
+  private Object registeredSighupHandler;
+  private Object previousSighupHandler;
 
   public ConfigReloadManager(Path configPath, ProxyConfig initialConfig) {
     this.configPath = configPath;
@@ -85,17 +93,34 @@ public final class ConfigReloadManager implements AutoCloseable {
         LOG.error(msg);
         return new ReloadResult(false, msg);
       }
+      ProxyConfig previousConfig = this.currentConfig;
       ProxyConfig newConfig = ProxyConfigLoader.load(configPath);
-      this.currentConfig = newConfig;
       rememberModificationTime();
 
-      for (Consumer<ProxyConfig> listener : listeners) {
-        try {
+      List<Consumer<ProxyConfig>> appliedListeners = new ArrayList<>(listeners.size());
+      try {
+        for (Consumer<ProxyConfig> listener : listeners) {
           listener.accept(newConfig);
-        } catch (Throwable t) {
-          LOG.error("Error notifying listener of config reload", t);
+          appliedListeners.add(listener);
         }
+      } catch (Throwable t) {
+        LOG.error("Error notifying listener of config reload; rolling back {} listener(s)",
+            appliedListeners.size(), t);
+        if (previousConfig != null) {
+          for (int i = appliedListeners.size() - 1; i >= 0; i--) {
+            try {
+              appliedListeners.get(i).accept(previousConfig);
+            } catch (Throwable rollbackError) {
+              t.addSuppressed(rollbackError);
+              LOG.error("Failed to roll back config reload listener", rollbackError);
+            }
+          }
+        }
+        this.currentConfig = previousConfig;
+        return new ReloadResult(false, "Failed to apply reloaded configuration: " + t.getMessage());
       }
+
+      this.currentConfig = newConfig;
 
       List<String> notApplied = startupConfig == null
           ? List.of()
@@ -130,9 +155,13 @@ public final class ConfigReloadManager implements AutoCloseable {
     try {
       if (Files.exists(configPath)) {
         FileTime fileTime = Files.getLastModifiedTime(configPath);
-        if (lastModifiedTime != null && fileTime.compareTo(lastModifiedTime) > 0) {
-          LOG.info("Detected change in config file {} (modified: {}), initiating reload...",
-              configPath, fileTime);
+        FileTime previousTime = this.lastModifiedTime;
+        if (previousTime == null) {
+          LOG.info("Config file {} appeared (modified: {}), initiating reload...", configPath, fileTime);
+          reload();
+        } else if (!fileTime.equals(previousTime)) {
+          LOG.info("Detected change in config file {} (modified: {} -> {}), initiating reload...",
+              configPath, previousTime, fileTime);
           reload();
         }
       }
@@ -142,7 +171,9 @@ public final class ConfigReloadManager implements AutoCloseable {
   }
 
   public void triggerReloadAsync() {
-    reloadExecutor.submit(this::reload);
+    if (!closed.get()) {
+      reloadExecutor.submit(this::reload);
+    }
   }
 
   public ProxyConfig currentConfig() {
@@ -159,17 +190,17 @@ public final class ConfigReloadManager implements AutoCloseable {
 
   private void registerSignalHandler() {
     try {
-      Class<?> signalClass = Class.forName("sun.misc.Signal");
-      Class<?> signalHandlerClass = Class.forName("sun.misc.SignalHandler");
-      Object signal = signalClass.getConstructor(String.class).newInstance("HUP");
+      Class<?> sigClass = Class.forName("sun.misc.Signal");
+      Class<?> handlerClass = Class.forName("sun.misc.SignalHandler");
+      Object signal = sigClass.getConstructor(String.class).newInstance("HUP");
 
       Object handler = Proxy.newProxyInstance(
-          signalHandlerClass.getClassLoader(),
-          new Class<?>[] {signalHandlerClass},
+          handlerClass.getClassLoader(),
+          new Class<?>[] {handlerClass},
           new InvocationHandler() {
             @Override
             public Object invoke(Object proxy, Method method, Object[] args) {
-              if ("handle".equals(method.getName())) {
+              if ("handle".equals(method.getName()) && !closed.get()) {
                 LOG.info("Received SIGHUP signal, triggering configuration reload");
                 triggerReloadAsync();
               }
@@ -177,16 +208,45 @@ public final class ConfigReloadManager implements AutoCloseable {
             }
           });
 
-      Method handleMethod = signalClass.getMethod("handle", signalClass, signalHandlerClass);
-      handleMethod.invoke(null, signal, handler);
+      Method handleMethod = sigClass.getMethod("handle", sigClass, handlerClass);
+      Object previous = handleMethod.invoke(null, signal, handler);
+      this.signalClass = sigClass;
+      this.signalHandlerClass = handlerClass;
+      this.sighupSignal = signal;
+      this.registeredSighupHandler = handler;
+      this.previousSighupHandler = previous;
       LOG.info("SIGHUP signal handler successfully registered for configuration reload");
     } catch (Throwable t) {
       LOG.debug("SIGHUP signal handler not registered: {}", t.getMessage());
     }
   }
 
+  private void unregisterSignalHandler() {
+    if (signalClass == null || signalHandlerClass == null
+        || sighupSignal == null || previousSighupHandler == null) {
+      return;
+    }
+    try {
+      Method handleMethod = signalClass.getMethod("handle", signalClass, signalHandlerClass);
+      Object current = handleMethod.invoke(null, sighupSignal, previousSighupHandler);
+      if (current != null && current != registeredSighupHandler) {
+        // Another instance installed a newer SIGHUP handler after us — restore it back.
+        handleMethod.invoke(null, sighupSignal, current);
+      }
+    } catch (Throwable t) {
+      LOG.debug("Failed to restore previous SIGHUP handler: {}", t.getMessage());
+    } finally {
+      registeredSighupHandler = null;
+      previousSighupHandler = null;
+    }
+  }
+
   @Override
   public void close() {
+    if (!closed.compareAndSet(false, true)) {
+      return;
+    }
+    unregisterSignalHandler();
     scheduler.shutdownNow();
     reloadExecutor.shutdownNow();
     try {

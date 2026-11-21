@@ -23,6 +23,18 @@ public final class LatencyRoutingConfigParser {
     long adaptiveTimeoutInitialMs = reader.getPositiveLong("routing.adaptive-timeout.initial-ms", 5_000L);
     long adaptiveTimeoutMinMs = reader.getPositiveLong("routing.adaptive-timeout.min-ms", 1_000L);
     long adaptiveTimeoutMaxMs = reader.getPositiveLong("routing.adaptive-timeout.max-ms", 60_000L);
+    if (adaptiveTimeoutMinMs > adaptiveTimeoutMaxMs) {
+      throw new IllegalArgumentException(
+          "routing.adaptive-timeout.min-ms (" + adaptiveTimeoutMinMs
+              + ") must be <= routing.adaptive-timeout.max-ms (" + adaptiveTimeoutMaxMs + ")");
+    }
+    if (adaptiveTimeoutInitialMs < adaptiveTimeoutMinMs
+        || adaptiveTimeoutInitialMs > adaptiveTimeoutMaxMs) {
+      throw new IllegalArgumentException(
+          "routing.adaptive-timeout.initial-ms (" + adaptiveTimeoutInitialMs
+              + ") must be between routing.adaptive-timeout.min-ms (" + adaptiveTimeoutMinMs
+              + ") and routing.adaptive-timeout.max-ms (" + adaptiveTimeoutMaxMs + ")");
+    }
     double adaptiveTimeoutMultiplier = reader.getPositiveDouble("routing.adaptive-timeout.multiplier", 4.0d);
     double adaptiveTimeoutAlpha = reader.getBoundedDouble("routing.adaptive-timeout.alpha", 0.2d, 0.0d, 1.0d);
     long adaptiveTimeoutReconnectCooldownMs =
@@ -119,7 +131,7 @@ public final class LatencyRoutingConfigParser {
 
     boolean refreshPrivilegesSyntheticSuccess =
         reader.getBoolean("routing.refresh-privileges.synthetic-success", false)
-        || "SYNTHETIC_SUCCESS".equalsIgnoreCase(reader.getOrNull("routing.refresh-privileges.mode"));
+            || parseRefreshPrivilegesMode(reader.getOrNull("routing.refresh-privileges.mode"));
     long configValueCacheTtlMs = reader.getNonNegativeLong(
         "routing.config-value-cache.ttl-ms",
         reader.getNonNegativeLong("routing.config-value-cache.ttl-seconds", ConfigValueCacheConfig.DEFAULT_TTL_MS / 1000L) * 1000L);
@@ -270,5 +282,20 @@ public final class LatencyRoutingConfigParser {
       return DatabaseCacheBackgroundRefreshConfig.disabled();
     }
     return new DatabaseCacheBackgroundRefreshConfig(enabled, intervalMs, activityWindowMs);
+  }
+
+  private static boolean parseRefreshPrivilegesMode(String rawMode) {
+    if (rawMode == null) {
+      return false;
+    }
+    if ("SYNTHETIC_SUCCESS".equalsIgnoreCase(rawMode)) {
+      return true;
+    }
+    if ("BACKEND".equalsIgnoreCase(rawMode) || "PASSTHROUGH".equalsIgnoreCase(rawMode)) {
+      return false;
+    }
+    throw new IllegalArgumentException(
+        "Unsupported routing.refresh-privileges.mode: '" + rawMode
+            + "' (expected BACKEND, PASSTHROUGH, or SYNTHETIC_SUCCESS)");
   }
 }

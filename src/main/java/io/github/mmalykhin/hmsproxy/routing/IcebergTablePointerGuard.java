@@ -535,6 +535,24 @@ final class IcebergTablePointerGuard {
     }
   }
 
+  void invalidateDatabase(String catalog, String backendDbName) {
+    if (catalog == null || backendDbName == null) {
+      return;
+    }
+    String normalizedCatalog = catalog.toLowerCase(Locale.ROOT);
+    String normalizedDb = backendDbName.toLowerCase(Locale.ROOT);
+    notIcebergUntilNanos.keySet().removeIf(
+        key -> normalizedCatalog.equals(key.catalog()) && normalizedDb.equals(key.backendDbName()));
+  }
+
+  void invalidateCatalog(String catalog) {
+    if (catalog == null) {
+      return;
+    }
+    String normalizedCatalog = catalog.toLowerCase(Locale.ROOT);
+    notIcebergUntilNanos.keySet().removeIf(key -> normalizedCatalog.equals(key.catalog()));
+  }
+
   void invalidateAll() {
     notIcebergUntilNanos.clear();
   }

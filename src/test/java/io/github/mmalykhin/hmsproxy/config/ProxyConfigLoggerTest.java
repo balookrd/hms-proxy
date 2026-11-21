@@ -91,10 +91,16 @@ public class ProxyConfigLoggerTest {
   @Test
   public void maskSensitiveUtilityMethod() {
     Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("db.password", "my_pass"));
+    Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("db.passwd", "my_pass"));
+    Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("auth.pwd", "my_pass"));
+    Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("ssl.key.passphrase", "phrase123"));
+    Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("fs.s3a.access.key", "AKIA123456"));
     Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("aws.secret.key", "my_secret"));
     Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("auth.token", "token123"));
     Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("private.key", "pem_data"));
     Assert.assertEquals("******", ProxyConfigLogger.maskSensitive("user.credentials", "creds"));
+    Assert.assertEquals("http://admin:******@ranger:6080",
+        ProxyConfigLogger.maskSensitive("ranger.url", "http://admin:s3cr3t@ranger:6080"));
     Assert.assertEquals("thrift://localhost:9083", ProxyConfigLogger.maskSensitive("hive.metastore.uris", "thrift://localhost:9083"));
     Assert.assertNull(ProxyConfigLogger.maskSensitive("db.password", null));
   }

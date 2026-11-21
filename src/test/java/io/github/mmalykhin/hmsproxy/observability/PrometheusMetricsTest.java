@@ -360,6 +360,17 @@ public class PrometheusMetricsTest {
         "hms_proxy_ranger_filtered_objects_total{catalog=\"hdp\",resource_type=\"table\"} 8"));
     Assert.assertTrue(rendered.contains(
         "hms_proxy_ranger_plugin_info{catalog=\"hdp\",service_name=\"hive_service\",service_type=\"hive\",app_id=\"hms-proxy\"} 1.0"));
+
+    metrics.recordDistributedCacheInvalidationPublished("table");
+    metrics.recordDistributedCacheInvalidationReceived("database");
+    metrics.recordDistributedCacheInvalidationError("publish_queue_full");
+    String renderedAfterBus = metrics.render();
+    Assert.assertTrue(renderedAfterBus.contains(
+        "hms_proxy_cache_invalidation_events_published_total{type=\"table\"} 1"));
+    Assert.assertTrue(renderedAfterBus.contains(
+        "hms_proxy_cache_invalidation_events_received_total{type=\"database\"} 1"));
+    Assert.assertTrue(renderedAfterBus.contains(
+        "hms_proxy_cache_invalidation_errors_total{operation=\"publish_queue_full\"} 1"));
   }
 
   @Test

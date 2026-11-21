@@ -2638,4 +2638,45 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(keytab);
     }
   }
+
+  @Test
+  public void rejectsNonFiniteAdaptiveTimeoutInvalidRangesInvalidRefreshModeAndNegativeMaxBuckets()
+      throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      String base = """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """;
+      for (String badLine : new String[] {
+          "routing.adaptive-timeout.multiplier=NaN\n",
+          "routing.adaptive-timeout.alpha=Infinity\n",
+          "routing.adaptive-timeout.min-ms=10000\nrouting.adaptive-timeout.max-ms=5000\n",
+          "routing.adaptive-timeout.min-ms=5000\nrouting.adaptive-timeout.max-ms=10000\nrouting.adaptive-timeout.initial-ms=1000\n",
+          "routing.refresh-privileges.mode=UNKNOWN_MODE\n",
+          "rate-limit.max-buckets=-1\n"
+      }) {
+        Files.writeString(file, base + badLine);
+        Assert.assertThrows("Expected failure for:\n" + badLine,
+            IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+      }
+
+      Files.writeString(file, base
+          + "config.strict-validation=true\n"
+          + "routing.refresh-privileges.mode=PASSTHROUGH\n"
+          + "rate-limit.max-buckets=0\n");
+      ProxyConfig passthrough = ProxyConfigLoader.load(file);
+      Assert.assertFalse(passthrough.latencyRouting().refreshPrivilegesSyntheticSuccess());
+      Assert.assertEquals(0, passthrough.rateLimit().maxBuckets());
+
+      Files.writeString(file, base + "routing.refresh-privileges.mode=BACKEND\n");
+      Assert.assertFalse(ProxyConfigLoader.load(file).latencyRouting().refreshPrivilegesSyntheticSuccess());
+
+      Files.writeString(file, base + "routing.refresh-privileges.mode=SYNTHETIC_SUCCESS\n");
+      Assert.assertTrue(ProxyConfigLoader.load(file).latencyRouting().refreshPrivilegesSyntheticSuccess());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

@@ -6,11 +6,14 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
 import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
+import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -70,12 +73,13 @@ final class RequestRateLimiter {
     this.metrics = Objects.requireNonNull(metrics, "metrics");
     this.clockNanos = Objects.requireNonNull(clockNanos, "clockNanos");
     long startNanos = this.clockNanos.getAsLong();
-    this.principalLimits = new TokenBucketGroup("principal", "default", config.principal(), startNanos);
-    this.sourceLimits = new TokenBucketGroup("source", "default", config.source(), startNanos);
-    this.sourceCidrLimits = buildSourceCidrLimits(config.sourceCidrs(), startNanos);
-    this.methodFamilyLimits = buildGroups("method_family", config.methodFamilies(), startNanos);
-    this.catalogLimits = buildGroups("catalog", config.catalogs(), startNanos);
-    this.rpcClassLimits = buildGroups("rpc_class", config.rpcClasses(), startNanos);
+    int maxBuckets = config.maxBuckets();
+    this.principalLimits = new TokenBucketGroup("principal", "default", config.principal(), startNanos, maxBuckets);
+    this.sourceLimits = new TokenBucketGroup("source", "default", config.source(), startNanos, maxBuckets);
+    this.sourceCidrLimits = buildSourceCidrLimits(config.sourceCidrs(), startNanos, maxBuckets);
+    this.methodFamilyLimits = buildGroups("method_family", config.methodFamilies(), startNanos, maxBuckets);
+    this.catalogLimits = buildGroups("catalog", config.catalogs(), startNanos, maxBuckets);
+    this.rpcClassLimits = buildGroups("rpc_class", config.rpcClasses(), startNanos, maxBuckets);
   }
 
   boolean enabled() {
@@ -201,20 +205,22 @@ final class RequestRateLimiter {
   private static Map<String, TokenBucketGroup> buildGroups(
       String dimension,
       Map<String, RateLimitPolicyConfig> policies,
-      long startNanos
+      long startNanos,
+      int maxBuckets
   ) {
     if (policies.isEmpty()) {
       return Map.of();
     }
     ConcurrentHashMap<String, TokenBucketGroup> groups = new ConcurrentHashMap<>();
     policies.forEach(
-        (scope, policy) -> groups.put(scope, new TokenBucketGroup(dimension, scope, policy, startNanos)));
+        (scope, policy) -> groups.put(scope, new TokenBucketGroup(dimension, scope, policy, startNanos, maxBuckets)));
     return Map.copyOf(groups);
   }
 
   private static List<SourceCidrLimit> buildSourceCidrLimits(
       Map<String, SourceCidrRateLimitConfig> sourceCidrs,
-      long startNanos
+      long startNanos,
+      int maxBuckets
   ) {
     if (sourceCidrs.isEmpty()) {
       return List.of();
@@ -226,7 +232,7 @@ final class RequestRateLimiter {
             name,
             config.cidrRules(),
             ClientAddressMatcher.parseAll(config.cidrRules()),
-            new TokenBucketGroup("source_cidr", name, config.policy(), startNanos)));
+            new TokenBucketGroup("source_cidr", name, config.policy(), startNanos, maxBuckets)));
       }
     });
     return List.copyOf(limits);
@@ -314,12 +320,21 @@ final class RequestRateLimiter {
     private final RateLimitPolicyConfig policy;
     private final long intervalNanos;
     private final long burstWindowNanos;
+    private final int maxBuckets;
+    private final Object evictionLock = new Object();
     private final ConcurrentMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final AtomicLong nextCleanupNanos;
 
-    private TokenBucketGroup(String dimension, String scope, RateLimitPolicyConfig policy, long startNanos) {
+    private TokenBucketGroup(
+        String dimension,
+        String scope,
+        RateLimitPolicyConfig policy,
+        long startNanos,
+        int maxBuckets
+    ) {
       this.dimension = dimension;
       this.scope = scope;
+      this.maxBuckets = maxBuckets;
       this.nextCleanupNanos = new AtomicLong(startNanos + BUCKET_CLEANUP_INTERVAL_NANOS);
       this.policy = policy == null ? RateLimitPolicyConfig.disabled() : policy;
       if (this.policy.enabled()) {
@@ -352,6 +367,13 @@ final class RequestRateLimiter {
         return true;
       }
       cleanupIfNeeded(nowNanos);
+      TokenBucket existing = buckets.get(bucketKey);
+      if (existing != null) {
+        return existing.tryAcquire(nowNanos);
+      }
+      if (maxBuckets > 0 && buckets.size() >= maxBuckets) {
+        evictForCapacity(nowNanos);
+      }
       return buckets.computeIfAbsent(bucketKey, ignored -> new TokenBucket(intervalNanos, burstWindowNanos, nowNanos))
           .tryAcquire(nowNanos);
     }
@@ -371,8 +393,42 @@ final class RequestRateLimiter {
       if (!nextCleanupNanos.compareAndSet(due, nowNanos + BUCKET_CLEANUP_INTERVAL_NANOS)) {
         return;
       }
+      cleanupExpired(nowNanos);
+    }
+
+    private void cleanupExpired(long nowNanos) {
       for (Map.Entry<String, TokenBucket> entry : buckets.entrySet()) {
         if (entry.getValue().idle(nowNanos, BUCKET_IDLE_TTL_NANOS)) {
+          buckets.remove(entry.getKey(), entry.getValue());
+        }
+      }
+    }
+
+    private void evictForCapacity(long nowNanos) {
+      synchronized (evictionLock) {
+        if (buckets.size() < maxBuckets) {
+          return;
+        }
+        cleanupExpired(nowNanos);
+        if (buckets.size() < maxBuckets) {
+          return;
+        }
+        int excess = buckets.size() - maxBuckets + 1;
+        int headroom = Math.max(0, Math.min(63, maxBuckets / 16));
+        int toEvict = Math.min(buckets.size(), excess + headroom);
+        PriorityQueue<Map.Entry<Map.Entry<String, TokenBucket>, Long>> oldestMaxHeap =
+            new PriorityQueue<>(toEvict + 1, (a, b) -> Long.compare(b.getValue(), a.getValue()));
+        for (Map.Entry<String, TokenBucket> entry : buckets.entrySet()) {
+          long seen = entry.getValue().lastSeenNanos();
+          if (oldestMaxHeap.size() < toEvict) {
+            oldestMaxHeap.offer(new AbstractMap.SimpleImmutableEntry<>(entry, seen));
+          } else if (oldestMaxHeap.peek() != null && seen < oldestMaxHeap.peek().getValue()) {
+            oldestMaxHeap.poll();
+            oldestMaxHeap.offer(new AbstractMap.SimpleImmutableEntry<>(entry, seen));
+          }
+        }
+        for (Map.Entry<Map.Entry<String, TokenBucket>, Long> victim : oldestMaxHeap) {
+          Map.Entry<String, TokenBucket> entry = victim.getKey();
           buckets.remove(entry.getKey(), entry.getValue());
         }
       }
@@ -408,6 +464,10 @@ final class RequestRateLimiter {
           return true;
         }
       }
+    }
+
+    private long lastSeenNanos() {
+      return lastSeenNanos.getOpaque();
     }
 
     private boolean idle(long nowNanos, long idleTtlNanos) {

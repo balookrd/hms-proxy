@@ -333,7 +333,7 @@ final class BackendCallDispatcher {
           backend.name(),
           methodName,
           impersonation == null ? "-" : impersonation.userName(),
-          DebugLogUtil.formatArgs(args));
+          DebugLogUtil.formatArgs(methodName, args));
     }
     if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(methodName)) {
       LOG.info("requestId={} trace stage=backend-request catalog={} method={} impersonationUser={} summary={}",
@@ -354,7 +354,7 @@ final class BackendCallDispatcher {
   ) {
     if (LOG.isDebugEnabled()) {
       LOG.debug("requestId={} proxy-response catalog={} method={} elapsedMs={} result={}",
-          requestId, backend.name(), methodName, elapsedMs, DebugLogUtil.formatValue(result));
+          requestId, backend.name(), methodName, elapsedMs, DebugLogUtil.formatValue(methodName, result));
     }
     if (LOG.isInfoEnabled() && WriteTraceUtil.shouldTrace(methodName)) {
       LOG.info("requestId={} trace stage=backend-response catalog={} method={} elapsedMs={} summary={}",

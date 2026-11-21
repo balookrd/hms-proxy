@@ -9,10 +9,16 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
@@ -40,6 +46,7 @@ import org.slf4j.LoggerFactory;
  */
 final class ZooKeeperCacheInvalidator implements CacheInvalidator {
   private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperCacheInvalidator.class);
+  private static final int PUBLISH_QUEUE_CAPACITY = 1024;
 
   private final CuratorFramework client;
   private final boolean ownsClient;
@@ -49,10 +56,11 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
   private final LocalCacheInvalidator localInvalidator;
   private final PrometheusMetrics metrics;
   private final LongSupplier clock;
-  private final PathChildrenCache pathChildrenCache;
-  private final PathChildrenCacheListener cacheListener;
-  private final ConnectionStateListener connectionStateListener;
-  private final ScheduledExecutorService cleanupExecutor;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
+  private final ExecutorService publishExecutor;
+  private PathChildrenCache pathChildrenCache;
+  private ConnectionStateListener connectionStateListener;
+  private ScheduledExecutorService cleanupExecutor;
 
   ZooKeeperCacheInvalidator(
       ProxyConfig config,
@@ -71,31 +79,25 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
     this.ownsClient = true;
     this.instanceId = UUID.randomUUID().toString();
     this.eventRetentionMs = zk.eventRetentionMs();
-    this.eventsRootPath = normalizedZnode(zk.znode()) + "/events";
+    this.eventsRootPath = buildEventsRootPath(zk.znode());
     this.localInvalidator = localInvalidator;
     this.metrics = metrics;
     this.clock = System::currentTimeMillis;
+    this.publishExecutor = startPublishExecutor();
 
-    client.start();
-    if (!client.blockUntilConnected(zk.connectionTimeoutMs(), TimeUnit.MILLISECONDS)) {
-      client.close();
-      throw new IOException("Timed out connecting to ZooKeeper distributed cache invalidation bus at "
-          + zk.connectString());
+    try {
+      client.start();
+      if (!client.blockUntilConnected(zk.connectionTimeoutMs(), TimeUnit.MILLISECONDS)) {
+        throw new IOException("Timed out connecting to ZooKeeper distributed cache invalidation bus at "
+            + zk.connectString());
+      }
+      initBus();
+      LOG.info("ZooKeeper distributed cache invalidation bus started with instanceId='{}', eventsRootPath='{}'",
+          instanceId, eventsRootPath);
+    } catch (Exception e) {
+      cleanupResourcesQuietly(e);
+      throw e;
     }
-
-    createPathIfMissing(eventsRootPath);
-
-    this.connectionStateListener = (c, state) -> handleConnectionState(state);
-    client.getConnectionStateListenable().addListener(connectionStateListener);
-
-    this.pathChildrenCache = new PathChildrenCache(client, eventsRootPath, true);
-    this.cacheListener = (c, event) -> handleCacheEvent(event);
-    pathChildrenCache.getListenable().addListener(cacheListener);
-    pathChildrenCache.start(PathChildrenCache.StartMode.BUILD_INITIAL_CACHE);
-
-    this.cleanupExecutor = startCleanupExecutor();
-    LOG.info("ZooKeeper distributed cache invalidation bus started with instanceId='{}', eventsRootPath='{}'",
-        instanceId, eventsRootPath);
   }
 
   /** Package-private constructor for unit/integration tests with an existing Curator client. */
@@ -112,26 +114,59 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
     this.ownsClient = false;
     this.instanceId = instanceId != null ? instanceId : UUID.randomUUID().toString();
     this.eventRetentionMs = eventRetentionMs > 0 ? eventRetentionMs : DistributedCacheInvalidationZooKeeperConfig.DEFAULT_EVENT_RETENTION_MS;
-    this.eventsRootPath = normalizedZnode(rootZnode) + "/events";
+    this.eventsRootPath = buildEventsRootPath(rootZnode);
     this.localInvalidator = localInvalidator;
     this.metrics = metrics;
     this.clock = clock != null ? clock : System::currentTimeMillis;
+    this.publishExecutor = startPublishExecutor();
 
+    try {
+      initBus();
+    } catch (Exception e) {
+      cleanupResourcesQuietly(e);
+      throw e;
+    }
+  }
+
+  private void initBus() throws Exception {
     createPathIfMissing(eventsRootPath);
-
     this.connectionStateListener = (c, state) -> handleConnectionState(state);
     client.getConnectionStateListenable().addListener(connectionStateListener);
 
     this.pathChildrenCache = new PathChildrenCache(client, eventsRootPath, true);
-    this.cacheListener = (c, event) -> handleCacheEvent(event);
-    pathChildrenCache.getListenable().addListener(cacheListener);
-    pathChildrenCache.start(PathChildrenCache.StartMode.BUILD_INITIAL_CACHE);
+    this.pathChildrenCache.getListenable().addListener((c, event) -> handleCacheEvent(event));
+    this.pathChildrenCache.start(PathChildrenCache.StartMode.BUILD_INITIAL_CACHE);
 
     this.cleanupExecutor = startCleanupExecutor();
   }
 
+  void attachIcebergTablePointerGuard(IcebergTablePointerGuard guard) {
+    localInvalidator.attachIcebergTablePointerGuard(guard);
+  }
+
+  String eventsRootPath() {
+    return eventsRootPath;
+  }
+
   String instanceId() {
     return instanceId;
+  }
+
+  boolean awaitPendingPublications(long timeoutMs) {
+    if (closed.get()) {
+      return false;
+    }
+    CompletableFuture<Void> barrier = new CompletableFuture<>();
+    try {
+      publishExecutor.execute(() -> barrier.complete(null));
+      barrier.get(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
+      return true;
+    } catch (Exception e) {
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      return false;
+    }
   }
 
   @Override
@@ -187,6 +222,22 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
   }
 
   private void publishEvent(CacheInvalidationEvent event) {
+    if (closed.get()) {
+      return;
+    }
+    try {
+      publishExecutor.execute(() -> sendEvent(event));
+    } catch (RejectedExecutionException e) {
+      if (!closed.get()) {
+        LOG.warn("Dropped distributed cache invalidation event {} because publish queue is full", event);
+        if (metrics != null) {
+          metrics.recordDistributedCacheInvalidationError("publish_queue_full");
+        }
+      }
+    }
+  }
+
+  private void sendEvent(CacheInvalidationEvent event) {
     try {
       client.create()
           .creatingParentContainersIfNeeded()
@@ -196,9 +247,11 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
         metrics.recordDistributedCacheInvalidationPublished(event.type().name().toLowerCase(Locale.ROOT));
       }
     } catch (Exception e) {
-      LOG.warn("Failed to publish distributed cache invalidation event {} to ZooKeeper", event, e);
-      if (metrics != null) {
-        metrics.recordDistributedCacheInvalidationError("publish");
+      if (!closed.get()) {
+        LOG.warn("Failed to publish distributed cache invalidation event {} to ZooKeeper", event, e);
+        if (metrics != null) {
+          metrics.recordDistributedCacheInvalidationError("publish");
+        }
       }
     }
   }
@@ -220,7 +273,7 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
         return; // Stale event
       }
       switch (payload.type()) {
-        case TABLE -> localInvalidator.invalidateTable(payload.catalogName(), payload.backendDbName(), payload.tableName());
+        case TABLE -> localInvalidator.invalidateTableFromRemote(payload.catalogName(), payload.backendDbName(), payload.tableName());
         case DATABASE -> localInvalidator.invalidateDatabase(payload.catalogName(), payload.backendDbName());
         case CATALOG -> localInvalidator.invalidateCatalog(payload.catalogName());
         case ALL -> localInvalidator.invalidateAll();
@@ -238,10 +291,12 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
   }
 
   private void handleConnectionState(ConnectionState newState) {
-    if (newState == ConnectionState.LOST || newState == ConnectionState.SUSPENDED) {
+    if (newState == ConnectionState.LOST
+        || newState == ConnectionState.SUSPENDED
+        || newState == ConnectionState.RECONNECTED) {
       LOG.warn("ZooKeeper cache invalidation connection state changed to '{}', flushing local metadata caches", newState);
       localInvalidator.invalidateAll();
-      if (metrics != null) {
+      if (metrics != null && newState != ConnectionState.RECONNECTED) {
         metrics.recordDistributedCacheInvalidationError("connection_" + newState.name().toLowerCase(Locale.ROOT));
       }
     }
@@ -270,6 +325,19 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
     }
   }
 
+  private static ExecutorService startPublishExecutor() {
+    ThreadFactory threadFactory = r -> {
+      Thread t = new Thread(r, "hms-proxy-zk-invalidation-pub");
+      t.setDaemon(true);
+      return t;
+    };
+    return new ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(PUBLISH_QUEUE_CAPACITY),
+        threadFactory,
+        new ThreadPoolExecutor.AbortPolicy());
+  }
+
   private ScheduledExecutorService startCleanupExecutor() {
     ThreadFactory threadFactory = r -> {
       Thread t = new Thread(r, "hms-proxy-zk-cache-invalidation-cleaner");
@@ -290,6 +358,11 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
     } catch (KeeperException.NodeExistsException ignored) {
       // Created concurrently by another instance
     }
+  }
+
+  private static String buildEventsRootPath(String znode) {
+    String normalized = normalizedZnode(znode);
+    return "/".equals(normalized) ? "/events" : normalized + "/events";
   }
 
   private static String normalizedZnode(String znode) {
@@ -316,10 +389,32 @@ final class ZooKeeperCacheInvalidator implements CacheInvalidator {
         principal);
   }
 
+  private void cleanupResourcesQuietly(Throwable failure) {
+    try {
+      close();
+    } catch (Exception closeError) {
+      failure.addSuppressed(closeError);
+    }
+  }
+
   @Override
   public void close() throws Exception {
+    if (!closed.compareAndSet(false, true)) {
+      return;
+    }
     if (cleanupExecutor != null) {
       cleanupExecutor.shutdownNow();
+    }
+    if (publishExecutor != null) {
+      publishExecutor.shutdown();
+      try {
+        if (!publishExecutor.awaitTermination(1L, TimeUnit.SECONDS)) {
+          publishExecutor.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        publishExecutor.shutdownNow();
+        Thread.currentThread().interrupt();
+      }
     }
     if (client != null && connectionStateListener != null) {
       client.getConnectionStateListenable().removeListener(connectionStateListener);

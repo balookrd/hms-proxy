@@ -195,4 +195,64 @@ public class ConfigReloadManagerTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void rollsBackListenersWhenReloadListenerFails() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-test", ".properties");
+    try {
+      Files.writeString(file, BASE_CONFIG);
+      ProxyConfig initialConfig = ProxyConfigLoader.load(file);
+      try (ConfigReloadManager reloadManager = new ConfigReloadManager(file, initialConfig)) {
+        AtomicReference<ProxyConfig> firstListenerConfig = new AtomicReference<>(initialConfig);
+        reloadManager.addListener(firstListenerConfig::set);
+        reloadManager.addListener(cfg -> {
+          if (!cfg.catalogs().get("c2").unprefixedDatabases().isEmpty()) {
+            throw new IllegalStateException("simulated listener failure");
+          }
+        });
+
+        Files.writeString(file, BASE_CONFIG + "catalog.c2.unprefixed-databases=rolled_back\n");
+        ConfigReloadManager.ReloadResult result = reloadManager.reload();
+
+        Assert.assertFalse(result.success());
+        Assert.assertSame(initialConfig, reloadManager.currentConfig());
+        Assert.assertSame("First listener must be rolled back to previousConfig",
+            initialConfig, firstListenerConfig.get());
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void detectsDecreasedMtimeAndInitializesMissingFile() throws Exception {
+    Path dir = Files.createTempDirectory("hms-proxy-reload-missing");
+    Path file = dir.resolve("proxy.properties");
+    try {
+      ProxyConfig initialConfig = ProxyConfigLoader.load(Files.writeString(
+          Files.createTempFile("seed", ".properties"), BASE_CONFIG));
+      try (ConfigReloadManager reloadManager = new ConfigReloadManager(file, initialConfig)) {
+        Assert.assertNull(reloadManager.lastModifiedTime());
+
+        // File appears after startup
+        Files.writeString(file, BASE_CONFIG + "catalog.c2.unprefixed-databases=appeared_db\n");
+        FileTime newer = FileTime.fromMillis(System.currentTimeMillis() + 10_000L);
+        Files.setLastModifiedTime(file, newer);
+        reloadManager.checkFileModified();
+        Assert.assertEquals(List.of("appeared_db"),
+            reloadManager.currentConfig().catalogs().get("c2").unprefixedDatabases());
+
+        // Mtime goes backwards (e.g. symlink / cp -p rollback)
+        Files.writeString(file, BASE_CONFIG + "catalog.c2.unprefixed-databases=older_mtime_db\n");
+        FileTime older = FileTime.fromMillis(newer.toMillis() - 60_000L);
+        Files.setLastModifiedTime(file, older);
+        reloadManager.checkFileModified();
+        Assert.assertEquals(List.of("older_mtime_db"),
+            reloadManager.currentConfig().catalogs().get("c2").unprefixedDatabases());
+      }
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(dir);
+    }
+  }
 }

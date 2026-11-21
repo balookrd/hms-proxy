@@ -359,6 +359,7 @@ public final class ProxyConfigLoader {
       "rate-limit.principal.burst",
       "rate-limit.source.requests-per-second",
       "rate-limit.source.burst",
+      "rate-limit.max-buckets",
       "routing.iceberg-pointer-guard.enabled",
       "routing.iceberg-pointer-guard.table-cache-ttl-ms",
       "routing.iceberg-pointer-guard.table-cache-max-entries",

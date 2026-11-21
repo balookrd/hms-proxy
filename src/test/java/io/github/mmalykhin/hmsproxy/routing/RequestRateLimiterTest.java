@@ -158,6 +158,31 @@ public class RequestRateLimiterTest {
     Assert.assertEquals(2, limiter.trackedBucketCount());
   }
 
+  @Test
+  public void capsBucketsAtConfiguredMaxBucketsByEvictingOldest() throws Exception {
+    AtomicLong nowNanos = new AtomicLong(1_000L);
+    RequestRateLimiter limiter = new RequestRateLimiter(
+        new RateLimitConfig(
+            new RateLimitPolicyConfig(1000, 1000),
+            RateLimitPolicyConfig.disabled(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            Map.of(),
+            3),
+        new PrometheusMetrics(),
+        nowNanos::get);
+
+    for (int i = 0; i < 20; i++) {
+      nowNanos.addAndGet(100L);
+      String user = "flood" + i + "@EXAMPLE.COM";
+      withClientContext(null, user, () -> limiter.enforceRequest("get_table"));
+    }
+
+    Assert.assertTrue("Bucket count must stay bounded by maxBuckets=3, got " + limiter.trackedBucketCount(),
+        limiter.trackedBucketCount() <= 3);
+  }
+
   private static void withClientContext(String remoteAddress, String remoteUser, CheckedRunnable runnable) throws Exception {
     String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddress);
     String previousRemoteUser = ClientRequestContext.setRemoteUser(remoteUser);

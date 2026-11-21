@@ -165,6 +165,8 @@ public class ZooKeeperCacheInvalidatorTest {
         try (ZooKeeperCacheInvalidator inv = new ZooKeeperCacheInvalidator(client, znode, retentionMs, "inst-1", local, null, clock::get)) {
           // Publish an event
           inv.invalidateTable("default", "db1", "tbl1");
+          Assert.assertTrue("Async publication should complete in time",
+              inv.awaitPendingPublications(5_000L));
 
           String eventsPath = znode + "/events";
           List<String> children = client.getChildren().forPath(eventsPath);
@@ -178,6 +180,38 @@ public class ZooKeeperCacheInvalidatorTest {
           // Check that expired event node was deleted
           List<String> remaining = client.getChildren().forPath(eventsPath);
           Assert.assertEquals(0, remaining.size());
+        }
+      }
+    } finally {
+      server.close();
+    }
+  }
+
+  @Test
+  public void rootZnodeNormalizesEventsPathAndReconnectedFlushesLocalCaches() throws Throwable {
+    TestingServer server = RoutingMetaStoreProxyTestSupport.startTestingServerOrSkip();
+    try {
+      try (CuratorFramework client = createClient(server)) {
+        TableMetadataCache tableCache = new TableMetadataCache(
+            new TableMetadataCacheConfig(60_000L, 100, true));
+        ImpersonationContext user = new ImpersonationContext("user1", List.of("group1"));
+        tableCache.get("default", "db1", "tbl1", user, () -> {
+          Table t = new Table();
+          t.setDbName("db1");
+          t.setTableName("tbl1");
+          return t;
+        });
+        Assert.assertEquals(1, tableCache.size());
+
+        LocalCacheInvalidator local = new LocalCacheInvalidator(null, null, tableCache, null);
+        try (ZooKeeperCacheInvalidator inv = new ZooKeeperCacheInvalidator(
+            client, "/", 300_000L, "inst-root", local, null, System::currentTimeMillis)) {
+          Assert.assertEquals("/events", inv.eventsRootPath());
+          java.lang.reflect.Method onState = ZooKeeperCacheInvalidator.class.getDeclaredMethod(
+              "handleConnectionState", org.apache.curator.framework.state.ConnectionState.class);
+          onState.setAccessible(true);
+          onState.invoke(inv, org.apache.curator.framework.state.ConnectionState.RECONNECTED);
+          Assert.assertEquals("RECONNECTED must flush local caches", 0, tableCache.size());
         }
       }
     } finally {

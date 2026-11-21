@@ -8,6 +8,8 @@ final class LocalCacheInvalidator implements CacheInvalidator {
   private final DatabaseMetadataCache databaseMetadataCache;
   private final TableMetadataCache tableMetadataCache;
   private final PartitionMetadataCache partitionMetadataCache;
+  private final CatalogRouter router;
+  private volatile IcebergTablePointerGuard icebergTablePointerGuard;
 
   LocalCacheInvalidator(
       DatabaseListCache databaseListCache,
@@ -15,10 +17,25 @@ final class LocalCacheInvalidator implements CacheInvalidator {
       TableMetadataCache tableMetadataCache,
       PartitionMetadataCache partitionMetadataCache
   ) {
+    this(databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache, null);
+  }
+
+  LocalCacheInvalidator(
+      DatabaseListCache databaseListCache,
+      DatabaseMetadataCache databaseMetadataCache,
+      TableMetadataCache tableMetadataCache,
+      PartitionMetadataCache partitionMetadataCache,
+      CatalogRouter router
+  ) {
     this.databaseListCache = databaseListCache;
     this.databaseMetadataCache = databaseMetadataCache;
     this.tableMetadataCache = tableMetadataCache;
     this.partitionMetadataCache = partitionMetadataCache;
+    this.router = router;
+  }
+
+  void attachIcebergTablePointerGuard(IcebergTablePointerGuard guard) {
+    this.icebergTablePointerGuard = guard;
   }
 
   @Override
@@ -28,6 +45,14 @@ final class LocalCacheInvalidator implements CacheInvalidator {
     }
     if (partitionMetadataCache != null) {
       partitionMetadataCache.invalidateTable(catalogName, backendDbName, tableName);
+    }
+  }
+
+  void invalidateTableFromRemote(String catalogName, String backendDbName, String tableName) {
+    invalidateTable(catalogName, backendDbName, tableName);
+    IcebergTablePointerGuard guard = this.icebergTablePointerGuard;
+    if (guard != null) {
+      guard.invalidate(catalogName, backendDbName, tableName);
     }
   }
 
@@ -45,6 +70,13 @@ final class LocalCacheInvalidator implements CacheInvalidator {
     if (partitionMetadataCache != null) {
       partitionMetadataCache.invalidateDatabase(catalogName, backendDbName);
     }
+    if (router != null) {
+      router.invalidateDatabaseRoutingCache(catalogName, backendDbName);
+    }
+    IcebergTablePointerGuard guard = this.icebergTablePointerGuard;
+    if (guard != null) {
+      guard.invalidateDatabase(catalogName, backendDbName);
+    }
   }
 
   @Override
@@ -61,6 +93,13 @@ final class LocalCacheInvalidator implements CacheInvalidator {
     if (partitionMetadataCache != null) {
       partitionMetadataCache.invalidateCatalog(catalogName);
     }
+    if (router != null) {
+      router.invalidateCatalogRoutingCaches(catalogName);
+    }
+    IcebergTablePointerGuard guard = this.icebergTablePointerGuard;
+    if (guard != null) {
+      guard.invalidateCatalog(catalogName);
+    }
   }
 
   @Override
@@ -76,6 +115,13 @@ final class LocalCacheInvalidator implements CacheInvalidator {
     }
     if (partitionMetadataCache != null) {
       partitionMetadataCache.clear();
+    }
+    if (router != null) {
+      router.invalidateAllRoutingCaches();
+    }
+    IcebergTablePointerGuard guard = this.icebergTablePointerGuard;
+    if (guard != null) {
+      guard.invalidateAll();
     }
   }
 }

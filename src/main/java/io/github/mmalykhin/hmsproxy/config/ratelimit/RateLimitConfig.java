@@ -10,8 +10,11 @@ public record RateLimitConfig(
     Map<String, SourceCidrRateLimitConfig> sourceCidrs,
     Map<String, RateLimitPolicyConfig> methodFamilies,
     Map<String, RateLimitPolicyConfig> catalogs,
-    Map<String, RateLimitPolicyConfig> rpcClasses
+    Map<String, RateLimitPolicyConfig> rpcClasses,
+    int maxBuckets
 ) {
+  public static final int DEFAULT_MAX_BUCKETS = 50_000;
+
   public RateLimitConfig {
     principal = principal == null ? RateLimitPolicyConfig.disabled() : principal;
     source = source == null ? RateLimitPolicyConfig.disabled() : source;
@@ -19,6 +22,20 @@ public record RateLimitConfig(
     methodFamilies = copyPolicies(methodFamilies);
     catalogs = copyPolicies(catalogs);
     rpcClasses = copyPolicies(rpcClasses);
+    if (maxBuckets < 0) {
+      throw new IllegalArgumentException("rate-limit.max-buckets must be >= 0, got: " + maxBuckets);
+    }
+  }
+
+  public RateLimitConfig(
+      RateLimitPolicyConfig principal,
+      RateLimitPolicyConfig source,
+      Map<String, SourceCidrRateLimitConfig> sourceCidrs,
+      Map<String, RateLimitPolicyConfig> methodFamilies,
+      Map<String, RateLimitPolicyConfig> catalogs,
+      Map<String, RateLimitPolicyConfig> rpcClasses
+  ) {
+    this(principal, source, sourceCidrs, methodFamilies, catalogs, rpcClasses, DEFAULT_MAX_BUCKETS);
   }
 
   public static RateLimitConfig disabled() {
@@ -28,7 +45,8 @@ public record RateLimitConfig(
         Map.of(),
         Map.of(),
         Map.of(),
-        Map.of());
+        Map.of(),
+        DEFAULT_MAX_BUCKETS);
   }
 
   public boolean enabled() {

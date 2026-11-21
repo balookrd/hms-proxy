@@ -30,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.test.TestingServer;
@@ -589,5 +590,125 @@ public class RoutingMetaStoreProxyCompatibilityTest {
     Assert.assertEquals(0, backendCalls.get());
   }
 
+  @Test
+  public void getMetastoreDbUuidDoesNotCacheFallbackAndRecoversRealUuid() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicBoolean backendUnavailable = new AtomicBoolean(true);
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("get_metastore_db_uuid".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        if (backendUnavailable.get()) {
+          throw new TTransportException("backend temporarily unavailable");
+        }
+        return "uuid-recovered";
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_metastore_db_uuid");
+
+    Object fallback = handler.invoke(null, method, new Object[0]);
+    Assert.assertNotNull(fallback);
+    Assert.assertNotEquals("uuid-recovered", fallback);
+    int callsDuringOutage = backendCalls.get();
+    Assert.assertTrue(callsDuringOutage >= 1);
+
+    backendUnavailable.set(false);
+    Object recovered = handler.invoke(null, method, new Object[0]);
+    Assert.assertEquals("uuid-recovered", recovered);
+    int callsAfterRecovery = backendCalls.get();
+    Assert.assertEquals(callsDuringOutage + 1, callsAfterRecovery);
+
+    // Now the genuine UUID is cached
+    Assert.assertEquals("uuid-recovered", handler.invoke(null, method, new Object[0]));
+    Assert.assertEquals(callsAfterRecovery, backendCalls.get());
+  }
+
+  @Test
+  public void flushCacheRequiresAdminOrServicePrincipalUnderKerberos() throws Throwable {
+    SecurityConfig security = new SecurityConfig(
+        io.github.mmalykhin.hmsproxy.config.security.SecurityMode.KERBEROS,
+        "hive/proxy@EXAMPLE.COM",
+        "hive/proxy@EXAMPLE.COM",
+        "/tmp/unused.keytab",
+        "/tmp/unused.keytab",
+        false,
+        Map.of(),
+        null,
+        java.util.Set.of("admin@EXAMPLE.COM"),
+        10_000);
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(security)
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      if ("flushCache".equals(method.getName())) {
+        backendCalls.incrementAndGet();
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("flushCache");
+
+    String prevMech = ClientRequestContext.setAuthMechanism("GSSAPI");
+    String prevAuthUser = ClientRequestContext.setAuthenticatedUser("bob@EXAMPLE.COM");
+    try {
+      try {
+        handler.invoke(null, method, new Object[0]);
+        Assert.fail("Regular user must be denied flushCache under KERBEROS");
+      } catch (MetaException expected) {
+        Assert.assertTrue(expected.getMessage().contains("Access denied"));
+      }
+
+      ClientRequestContext.setAuthMechanism("DIGEST-MD5");
+      ClientRequestContext.setAuthenticatedUser("admin@EXAMPLE.COM");
+      try {
+        handler.invoke(null, method, new Object[0]);
+        Assert.fail("DIGEST token user must not invoke flushCache under KERBEROS");
+      } catch (MetaException expected) {
+        Assert.assertTrue(expected.getMessage().contains("Access denied"));
+      }
+
+      ClientRequestContext.setAuthMechanism("GSSAPI");
+      ClientRequestContext.setAuthenticatedUser("admin@EXAMPLE.COM");
+      handler.invoke(null, method, new Object[0]);
+      Assert.assertEquals(1, backendCalls.get());
+
+      ClientRequestContext.setAuthenticatedUser("hive/proxy@EXAMPLE.COM");
+      handler.invoke(null, method, new Object[0]);
+      Assert.assertEquals(2, backendCalls.get());
+    } finally {
+      ClientRequestContext.restoreAuthMechanism(prevMech);
+      ClientRequestContext.restoreAuthenticatedUser(prevAuthUser);
+    }
+  }
 }
 

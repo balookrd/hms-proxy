@@ -201,7 +201,7 @@ When enabled, the proxy can:
 - optionally cache database-name fanout results (`SHOW DATABASES` / `get_all_databases` / `get_databases`) with `routing.database-list-cache.ttl-ms` (or `ttl-seconds`)
 - optionally cache database metadata objects (`get_database`) with `routing.database-metadata-cache.ttl-ms` (or `ttl-seconds`) to accelerate HiveServer2 / Ranger authorization loops
 - proactively refresh database caches in the background (`routing.database-cache.background-refresh.*`), keeping them hot while clients are active (e.g. within 1 hour with a 1-minute interval) without blocking callers on backend RPCs
-- answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
+- answer `refresh_privileges` with synthetic success via `routing.refresh-privileges.synthetic-success=true` (or `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`; valid modes: `BACKEND`, `PASSTHROUGH`, `SYNTHETIC_SUCCESS`) to eliminate tight loops and PrivilegeSynchronizer overhead
 - cache metastore configuration values (`get_config_value`) in memory with `routing.config-value-cache.ttl-ms` (or `ttl-seconds`, default 1 hour) with single-flight deduplication and negative caching for unknown keys
 - cache table metadata (`get_table`) via `routing.cache.table-metadata.*` and partition metadata (`get_partition*`, `get_part_specs*`) via `routing.cache.partition-metadata.*` with single-flight deduplication, LRU eviction, and automatic local & distributed ZooKeeper DDL invalidation (`routing.cache.distributed-invalidation.*`) on `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - serve stale table and partition metadata during remote backend outages via `routing.cache.serve-stale-on-error=true` for up to `routing.cache.stale-grace-period-ms` (default 5 minutes)
@@ -571,9 +571,9 @@ Current Prometheus metrics:
 - `hms_proxy_cache_entries{cache,catalog}`
 - `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
 - `hms_proxy_cache_refreshes_total{cache,status}`
-- `hms_proxy_cache_invalidation_events_published_total{target}`
-- `hms_proxy_cache_invalidation_events_received_total{target}`
-- `hms_proxy_cache_invalidation_errors_total{action}`
+- `hms_proxy_cache_invalidation_events_published_total{type}`
+- `hms_proxy_cache_invalidation_events_received_total{type}`
+- `hms_proxy_cache_invalidation_errors_total{operation}`
 - `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
@@ -865,10 +865,15 @@ Limit behavior:
 - per-catalog limits are enforced when the request actually resolves or touches a catalog/backend; fanout reads can therefore consume more than one catalog bucket
 - one RPC can match several classes at once, for example a lock/txn write can count toward `write`, `txn`, and `lock`
 - when a limit is exceeded the client receives a `MetaException` and the request is recorded with `status="throttled"`
+- the number of tracked dynamic buckets (per `principal`, `source` IP, etc.) is bounded by `rate-limit.max-buckets` (default `50000`, `0` disables the cap): expired buckets are pruned first, followed by oldest-seen eviction
+- under Kerberos, `flushCache()` is restricted to same-realm service principals and `GSSAPI` admins listed in `security.token-store-admin-principals` (`NONE`/`SIMPLE` unchanged)
 
 Example:
 
 ```properties
+# Hard cap on tracked per-principal / per-IP token buckets (0 disables cap)
+rate-limit.max-buckets=50000
+
 # Per authenticated principal
 rate-limit.principal.requests-per-second=60
 rate-limit.principal.burst=120
@@ -2012,13 +2017,13 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 
 - Publish/subscribe: The replica executing a DDL mutation invalidates its local cache and publishes a compact binary invalidation event to `/hms-proxy-cache-invalidation`. All other replicas watching the znode via Apache Curator `PathChildrenCache` receive the notification and invalidate cached entries for the affected table, partition, or database.
 - Echo suppression: Events include the publishing node's `instance-id`, so the originating replica ignores its own echoed events.
-- Behavior on split-brain / ZooKeeper outage: If the ZooKeeper connection is interrupted (`LOST` or `SUSPENDED`), the proxy defensively flushes all local metadata caches to avoid serving divergent metadata while isolated.
+- Behavior on split-brain / ZooKeeper outage: If the ZooKeeper connection enters `LOST`, `SUSPENDED`, or `RECONNECTED`, the proxy defensively flushes all local metadata caches to avoid serving divergent metadata.
 - Event retention sweep: A background cleaner periodically purges event znodes older than `event-retention-ms` (default 5 minutes).
 - Fallback connection string: If `connect-string` is omitted in the invalidation config, it automatically falls back to `synthetic-read-lock.store.zookeeper.connect-string`.
 - Prometheus metrics:
-  - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
-  - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
-  - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
+  - `hms_proxy_cache_invalidation_events_published_total{type="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_events_received_total{type="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_errors_total{operation="publish|publish_queue_full|receive|cleanup|connection_lost|connection_suspended"}`
 
 ### Apache Ranger authorization and global shared metadata cache
 

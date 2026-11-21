@@ -8,6 +8,8 @@ import io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer;
 import io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer;
 import io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer;
 import java.lang.reflect.InvocationHandler;
+import java.util.ArrayList;
+import java.util.List;
 
 final class RoutingPipelineFactory {
 
@@ -30,93 +32,113 @@ final class RoutingPipelineFactory {
       ProxyObservability observability,
       ExternalTableDropPurger externalTableDropPurger
   ) {
-    CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
-    TransactionalTableMutationGuard transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
-    SyntheticReadLockManager syntheticReadLockManager = new SyntheticReadLockManager(config, observability.metrics());
-    RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
-    BackendRoutingController backendRoutingController = new BackendRoutingController(config, router, observability);
-    AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
-    FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
-    DatabaseListCache databaseListCache =
-        new DatabaseListCache(
-            config.latencyRouting().databaseListCache(),
-            config.latencyRouting().cacheServeStaleOnError(),
-            config.latencyRouting().cacheStaleGracePeriodMs(),
-            observability.metrics());
-    DatabaseMetadataCache databaseMetadataCache =
-        new DatabaseMetadataCache(
-            config.latencyRouting().databaseMetadataCache(),
-            databaseListCache,
-            config.latencyRouting().cacheServeStaleOnError(),
-            config.latencyRouting().cacheStaleGracePeriodMs(),
-            observability.metrics());
-    TableMetadataCache tableMetadataCache =
-        new TableMetadataCache(
-            config.latencyRouting().tableMetadataCache(),
-            config.latencyRouting().cacheServeStaleOnError(),
-            config.latencyRouting().cacheStaleGracePeriodMs(),
-            observability.metrics());
-    PartitionMetadataCache partitionMetadataCache =
-        new PartitionMetadataCache(
-            config.latencyRouting().partitionMetadataCache(),
-            config.latencyRouting().cacheServeStaleOnError(),
-            config.latencyRouting().cacheStaleGracePeriodMs(),
-            observability.metrics());
-    DatabaseCacheRefresher databaseCacheRefresher = new DatabaseCacheRefresher(
-        databaseListCache,
-        databaseMetadataCache,
-        config.latencyRouting().databaseListCache().backgroundRefresh(),
-        config.latencyRouting().databaseMetadataCache().backgroundRefresh());
-    BackendCallDispatcher dispatcher = new BackendCallDispatcher(
-        compatibilityLayer, admissionGate, observability, fanoutExecutor, router);
-    long aliveSince = System.currentTimeMillis() / 1000L;
-    io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache groupDiskCache =
-        new io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache(
-            config.security().groupDiskCache(), observability.metrics());
-    io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver =
-        new io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver(groupDiskCache);
-    ImpersonationResolver impersonationResolver = new ImpersonationResolver(config, userGroupResolver);
-    MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
-        ? new io.github.mmalykhin.hmsproxy.security.ranger.RangerMetadataAuthorizer(config.ranger(), config.catalogs(), observability.metrics())
-        : io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE;
-    LocalCacheInvalidator localCacheInvalidator = new LocalCacheInvalidator(
-        databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache);
-    CacheInvalidator cacheInvalidator;
-    if (config != null
-        && config.latencyRouting() != null
-        && config.latencyRouting().distributedCacheInvalidation() != null
-        && config.latencyRouting().distributedCacheInvalidation().isZooKeeper()) {
-      try {
-        cacheInvalidator = new ZooKeeperCacheInvalidator(config, localCacheInvalidator, observability.metrics());
-      } catch (Exception e) {
-        observability.metrics().recordDistributedCacheInvalidationError("init");
-        throw new IllegalStateException("Failed to initialize ZooKeeper distributed cache invalidator", e);
+    List<AutoCloseable> cleanup = new ArrayList<>();
+    try {
+      CompatibilityLayer compatibilityLayer = new CompatibilityLayer(config, frontDoorSecurity);
+      TransactionalTableMutationGuard transactionalTableMutationGuard = new TransactionalTableMutationGuard(config);
+      SyntheticReadLockManager syntheticReadLockManager =
+          track(cleanup, new SyntheticReadLockManager(config, observability.metrics()));
+      RequestRateLimiter requestRateLimiter = new RequestRateLimiter(config, observability.metrics());
+      BackendRoutingController backendRoutingController =
+          track(cleanup, new BackendRoutingController(config, router, observability));
+      AdmissionGate admissionGate = new AdmissionGate(backendRoutingController, requestRateLimiter);
+      FanoutExecutor fanoutExecutor = new FanoutExecutor(backendRoutingController, router, admissionGate);
+      DatabaseListCache databaseListCache =
+          new DatabaseListCache(
+              config.latencyRouting().databaseListCache(),
+              config.latencyRouting().cacheServeStaleOnError(),
+              config.latencyRouting().cacheStaleGracePeriodMs(),
+              observability.metrics());
+      DatabaseMetadataCache databaseMetadataCache =
+          new DatabaseMetadataCache(
+              config.latencyRouting().databaseMetadataCache(),
+              databaseListCache,
+              config.latencyRouting().cacheServeStaleOnError(),
+              config.latencyRouting().cacheStaleGracePeriodMs(),
+              observability.metrics());
+      TableMetadataCache tableMetadataCache =
+          new TableMetadataCache(
+              config.latencyRouting().tableMetadataCache(),
+              config.latencyRouting().cacheServeStaleOnError(),
+              config.latencyRouting().cacheStaleGracePeriodMs(),
+              observability.metrics());
+      PartitionMetadataCache partitionMetadataCache =
+          new PartitionMetadataCache(
+              config.latencyRouting().partitionMetadataCache(),
+              config.latencyRouting().cacheServeStaleOnError(),
+              config.latencyRouting().cacheStaleGracePeriodMs(),
+              observability.metrics());
+      DatabaseCacheRefresher databaseCacheRefresher = track(cleanup, new DatabaseCacheRefresher(
+          databaseListCache,
+          databaseMetadataCache,
+          config.latencyRouting().databaseListCache().backgroundRefresh(),
+          config.latencyRouting().databaseMetadataCache().backgroundRefresh()));
+      BackendCallDispatcher dispatcher = new BackendCallDispatcher(
+          compatibilityLayer, admissionGate, observability, fanoutExecutor, router);
+      long aliveSince = System.currentTimeMillis() / 1000L;
+      io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache groupDiskCache =
+          track(cleanup, new io.github.mmalykhin.hmsproxy.security.groups.GroupDiskCache(
+              config.security().groupDiskCache(), observability.metrics()));
+      io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver userGroupResolver =
+          new io.github.mmalykhin.hmsproxy.security.groups.UserGroupResolver(groupDiskCache);
+      ImpersonationResolver impersonationResolver = new ImpersonationResolver(config, userGroupResolver);
+      MetadataAuthorizer metadataAuthorizer = config.ranger() != null && config.ranger().enabled()
+          ? track(cleanup, new RangerMetadataAuthorizer(config.ranger(), config.catalogs(), observability.metrics()))
+          : NoOpMetadataAuthorizer.INSTANCE;
+      LocalCacheInvalidator localCacheInvalidator = new LocalCacheInvalidator(
+          databaseListCache, databaseMetadataCache, tableMetadataCache, partitionMetadataCache, router);
+      CacheInvalidator cacheInvalidator;
+      if (config != null
+          && config.latencyRouting() != null
+          && config.latencyRouting().distributedCacheInvalidation() != null
+          && config.latencyRouting().distributedCacheInvalidation().isZooKeeper()) {
+        try {
+          cacheInvalidator = track(cleanup, new ZooKeeperCacheInvalidator(
+              config, localCacheInvalidator, observability.metrics()));
+        } catch (Exception e) {
+          observability.metrics().recordDistributedCacheInvalidationError("init");
+          throw new IllegalStateException("Failed to initialize ZooKeeper distributed cache invalidator", e);
+        }
+      } else {
+        cacheInvalidator = localCacheInvalidator;
       }
-    } else {
-      cacheInvalidator = localCacheInvalidator;
-    }
 
-    RoutingHandler routingHandler = new RoutingHandler(
-        config,
-        router,
-        federationLayer,
-        compatibilityLayer,
-        observability,
-        dispatcher,
-        impersonationResolver,
-        databaseListCache,
-        databaseMetadataCache,
-        tableMetadataCache,
-        partitionMetadataCache,
-        externalTableDropPurger,
-        metadataAuthorizer,
-        cacheInvalidator);
-    CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
-        config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
-        routingHandler);
-    LockHandler lockHandler = new LockHandler(
-        routingHandler::currentConfig, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
-    InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
-    return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, userGroupResolver, chain);
+      RoutingHandler routingHandler = new RoutingHandler(
+          config,
+          router,
+          federationLayer,
+          compatibilityLayer,
+          observability,
+          dispatcher,
+          impersonationResolver,
+          databaseListCache,
+          databaseMetadataCache,
+          tableMetadataCache,
+          partitionMetadataCache,
+          externalTableDropPurger,
+          metadataAuthorizer,
+          cacheInvalidator);
+      CompatibilityHandler compatibilityHandler = new CompatibilityHandler(
+          config, compatibilityLayer, router, observability, dispatcher, impersonationResolver, aliveSince,
+          routingHandler);
+      LockHandler lockHandler = new LockHandler(
+          routingHandler::currentConfig, syntheticReadLockManager, admissionGate, router, federationLayer, observability, compatibilityHandler);
+      InvocationHandler chain = new RateLimitingHandler(requestRateLimiter, transactionalTableMutationGuard, lockHandler);
+      return new Pipeline(syntheticReadLockManager, backendRoutingController, databaseCacheRefresher, routingHandler, userGroupResolver, chain);
+    } catch (Throwable t) {
+      for (int i = cleanup.size() - 1; i >= 0; i--) {
+        try {
+          cleanup.get(i).close();
+        } catch (Throwable closeError) {
+          t.addSuppressed(closeError);
+        }
+      }
+      throw t;
+    }
+  }
+
+  private static <T extends AutoCloseable> T track(List<AutoCloseable> cleanup, T resource) {
+    cleanup.add(resource);
+    return resource;
   }
 }

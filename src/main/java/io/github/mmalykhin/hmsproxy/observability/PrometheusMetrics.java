@@ -652,6 +652,9 @@ public final class PrometheusMetrics {
       cacheEntries,
       cacheInvalidationsTotal,
       cacheRefreshesTotal,
+      distributedCacheInvalidationPublishedTotal,
+      distributedCacheInvalidationReceivedTotal,
+      distributedCacheInvalidationErrorsTotal,
       rangerEvaluationsTotal,
       rangerEvaluationDurationSeconds,
       rangerFilteredObjectsTotal,
@@ -964,15 +967,16 @@ public final class PrometheusMetrics {
           appendLabels(builder, labelNames(), entry.getKey(), "le", bucketLabels[index]);
           builder.append(' ').append(cumulativeCount).append('\n');
         }
+        long totalCount = Math.max(cumulativeCount, sample.count());
         builder.append(name()).append("_bucket");
         appendLabels(builder, labelNames(), entry.getKey(), "le", POSITIVE_INFINITY_LABEL);
-        builder.append(' ').append(sample.count()).append('\n');
+        builder.append(' ').append(totalCount).append('\n');
         builder.append(name()).append("_sum");
         appendLabels(builder, labelNames(), entry.getKey());
         builder.append(' ').append(sample.sum()).append('\n');
         builder.append(name()).append("_count");
         appendLabels(builder, labelNames(), entry.getKey());
-        builder.append(' ').append(sample.count()).append('\n');
+        builder.append(' ').append(totalCount).append('\n');
       }
     }
   }

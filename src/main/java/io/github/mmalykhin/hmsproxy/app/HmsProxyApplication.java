@@ -50,30 +50,20 @@ public final class HmsProxyApplication {
       ProxyConfig config = ProxyConfigLoader.load(configPath);
       ProxyConfigLogger.logConfiguration(config, configPath);
       ProxyObservability observability = new ProxyObservability(config);
-      FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
-      CatalogRouter router = CatalogRouter.open(config, observability.metrics());
-      FederationLayer federationLayer = new FederationLayer(config, router);
-      RoutingMetaStoreProxy handler =
-          new RoutingMetaStoreProxy(config, router, federationLayer, frontDoorSecurity, observability);
-      ConfigReloadManager configReloadManager = new ConfigReloadManager(configPath, config);
-      configReloadManager.addListener(newConfig -> {
-        ProxyConfigLogger.logConfiguration(newConfig, configPath);
-        router.reconfigure(newConfig);
-        federationLayer.reconfigure(newConfig);
-        handler.reconfigure(newConfig);
-      });
-      ManagementHttpServer managementServer =
-          ManagementHttpServer.open(config, router, observability);
-      try (frontDoorSecurity;
-           router;
-           configReloadManager;
-           managementServer;
-           handler) {
-        ThriftHiveMetastore.Iface proxy =
-            RoutingMetaStoreProxy.newProxy(
-                ThriftHiveMetastore.Iface.class,
-                handler,
-                HortonworksFrontendExtension.class);
+      try (FrontDoorSecurity frontDoorSecurity = FrontDoorSecurity.open(config);
+           CatalogRouter router = CatalogRouter.open(config, observability.metrics())) {
+        FederationLayer federationLayer = new FederationLayer(config, router);
+        try (RoutingMetaStoreProxy handler =
+                 new RoutingMetaStoreProxy(config, router, federationLayer, frontDoorSecurity, observability);
+             ConfigReloadManager configReloadManager =
+                 createReloadManager(configPath, config, router, federationLayer, handler);
+             ManagementHttpServer managementServer =
+                 ManagementHttpServer.open(config, router, observability)) {
+          ThriftHiveMetastore.Iface proxy =
+              RoutingMetaStoreProxy.newProxy(
+                  ThriftHiveMetastore.Iface.class,
+                  handler,
+                  HortonworksFrontendExtension.class);
         // The Iceberg REST write gate needs to know which catalog a namespace actually belongs
         // to, not just which URL prefix a request arrived under (see WriteRouteGate). router is
         // already open at this point purely for routing, so resolveDatabase(...) here is a pure,
@@ -131,6 +121,7 @@ public final class HmsProxyApplication {
               catalogName, router.externalDatabaseName(catalogName, "default"));
         }
         server.serve();
+          }
         }
       }
     } catch (Exception e) {
@@ -141,6 +132,23 @@ public final class HmsProxyApplication {
       // management listener, router backends, front-door security) has been closed in order.
       teardownComplete.countDown();
     }
+  }
+
+  private static ConfigReloadManager createReloadManager(
+      Path configPath,
+      ProxyConfig config,
+      CatalogRouter router,
+      FederationLayer federationLayer,
+      RoutingMetaStoreProxy handler
+  ) {
+    ConfigReloadManager manager = new ConfigReloadManager(configPath, config);
+    manager.addListener(newConfig -> {
+      ProxyConfigLogger.logConfiguration(newConfig, configPath);
+      router.reconfigure(newConfig);
+      federationLayer.reconfigure(newConfig);
+      handler.reconfigure(newConfig);
+    });
+    return manager;
   }
 
   private static void installShutdownHook(

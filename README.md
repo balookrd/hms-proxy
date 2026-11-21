@@ -180,7 +180,7 @@ metastore. Этот слой по умолчанию выключен, поэт�
 - опционально кэшировать fanout-ответы со списками баз (`SHOW DATABASES` / `get_all_databases` / `get_databases`) через `routing.database-list-cache.ttl-ms` (или `ttl-seconds`)
 - опционально кэшировать объекты метаданных баз данных (`get_database`) через `routing.database-metadata-cache.ttl-ms` (или `ttl-seconds`) для ускорения проверок прав в HiveServer2 / Ranger
 - упреждающе обновлять оба кэша баз данных в фоне (`routing.database-cache.background-refresh.*`), поддерживая их горячими в пределах окна активности клиентов (например, 1 час с интервалом 1 минута) без блокировок на бэкенд-опросы
-- отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
+- отвечать synthetic success на вызовы `refresh_privileges` через `routing.refresh-privileges.synthetic-success=true` (или `routing.refresh-privileges.mode=SYNTHETIC_SUCCESS`; допустимые режимы: `BACKEND`, `PASSTHROUGH`, `SYNTHETIC_SUCCESS`) для устранения нагрузки PrivilegeSynchronizer в HiveServer2
 - кэшировать конфигурационные параметры метастора (`get_config_value`) в памяти через `routing.config-value-cache.ttl-ms` (или `ttl-seconds`, по умолчанию 1 час) с single-flight дедупликацией и negative caching для отсутствующих ключей
 - кэшировать метаданные таблиц (`get_table`) через `routing.cache.table-metadata.*` и разделов (`get_partition*`, `get_part_specs*`) через `routing.cache.partition-metadata.*` с single-flight дедупликацией, LRU-вытеснением, автоматической локальной и распределенной ZooKeeper DDL-инвалидацией (`routing.cache.distributed-invalidation.*`) при `alter_table*`, `drop_table*`, `truncate_table*`, `drop_database`
 - отдавать устаревшие метаданные таблиц и разделов при авариях и разрывах связи с удаленным бэкендом через `routing.cache.serve-stale-on-error=true` в течение `routing.cache.stale-grace-period-ms` (по умолчанию 5 минут)
@@ -540,9 +540,9 @@ state, а `probeAgeMs` показывает, насколько устарели
 - `hms_proxy_cache_entries{cache,catalog}`
 - `hms_proxy_cache_invalidations_total{cache,catalog,reason}`
 - `hms_proxy_cache_refreshes_total{cache,status}`
-- `hms_proxy_cache_invalidation_events_published_total{target}`
-- `hms_proxy_cache_invalidation_events_received_total{target}`
-- `hms_proxy_cache_invalidation_errors_total{action}`
+- `hms_proxy_cache_invalidation_events_published_total{type}`
+- `hms_proxy_cache_invalidation_events_received_total{type}`
+- `hms_proxy_cache_invalidation_errors_total{operation}`
 - `hms_proxy_ranger_evaluations_total{catalog,resource_type,access_type,result}`
 - `hms_proxy_ranger_evaluation_duration_seconds{catalog,resource_type}`
 - `hms_proxy_ranger_filtered_objects_total{catalog,resource_type}`
@@ -836,10 +836,15 @@ Proxy также умеет отсеивать bursts до того, как он
 - per-catalog лимиты срабатывают в момент, когда запрос реально resolve'ится или касается конкретного catalog/backend; значит fanout read может расходовать несколько catalog bucket
 - один RPC может одновременно попасть в несколько classes, например lock/txn write может считаться сразу в `write`, `txn` и `lock`
 - при превышении лимита клиент получает `MetaException`, а запрос записывается со `status="throttled"`
+- число отслеживаемых динамических бакетов (на `principal`, `source` IP и т.д.) ограничено через `rate-limit.max-buckets` (по умолчанию `50000`, `0` — без лимита): при достижении порога сначала вычищаются просроченные бакеты, затем вытесняются самые давно не использовавшиеся
+- под Kerberos `flushCache()` разрешён только сервисным принципалам того же realm и админам `GSSAPI` из `security.token-store-admin-principals` (`NONE`/`SIMPLE` без изменений)
 
 Пример:
 
 ```properties
+# Hard cap on tracked per-principal / per-IP token buckets (0 disables cap)
+rate-limit.max-buckets=50000
+
 # Per authenticated principal
 rate-limit.principal.requests-per-second=60
 rate-limit.principal.burst=120
@@ -1889,13 +1894,13 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 
 - Публикация и подписка: экземпляр, применивший DDL-изменение, публикует компактное бинарное событие в znode `/hms-proxy-cache-invalidation`. Все остальные ноды через Apache Curator `PathChildrenCache` немедленно получают нотификацию и сбрасывают кэш затронутой сущности (таблицы, раздела, базы данных).
 - Подавление эха: события содержат идентификатор `instance-id` ноды-источника, что исключает повторную обработку собственных событий.
-- Поведение при сетевом расщеплении (split-brain): при переходе соединения с ZooKeeper в состояние `LOST` или `SUSPENDED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
+- Поведение при сетевом расщеплении (split-brain): при переходе соединения с ZooKeeper в состояние `LOST`, `SUSPENDED` или `RECONNECTED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
 - Сборка мусора (Retention Sweep): фоновый поток периодически удаляет znode событий старше `event-retention-ms` (по умолчанию 5 минут).
 - Фоллбэк на строку подключения блокировок: при отсутствии `connect-string` в секции инвалидации используется адрес `synthetic-read-lock.store.zookeeper.connect-string`.
 - Prometheus-метрики:
-  - `hms_proxy_cache_invalidation_events_published_total{target="table|database|catalog|all"}`
-  - `hms_proxy_cache_invalidation_events_received_total{target="table|database|catalog|all"}`
-  - `hms_proxy_cache_invalidation_errors_total{action="publish|receive|purge"}`
+  - `hms_proxy_cache_invalidation_events_published_total{type="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_events_received_total{type="table|database|catalog|all"}`
+  - `hms_proxy_cache_invalidation_errors_total{operation="publish|publish_queue_full|receive|cleanup|connection_lost|connection_suspended"}`
 
 ### Авторизация через Apache Ranger и общий глобальный кэш метаданных
 

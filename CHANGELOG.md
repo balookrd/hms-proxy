@@ -8,6 +8,26 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Исправлено (Стабильность, Безопасность и Эксплуатация — Волна 3A)
+
+- **Hardening `RangerMetadataAuthorizer` и `GroupDiskCache`**:
+  - В `RangerMetadataAuthorizer` XML-файлы из `ranger.config-dir` теперь загружаются **до** применения явных свойств из `hms-proxy.properties` (properties больше не затираются дефолтами XML, а `"http://localhost:6080"` ставится только при отсутствии URL в обоих источниках).
+  - Оживлена опция `ranger.audit.enabled`: при `true` подключается `RangerDefaultAuditHandler` и аудируется ровно один финальный результат fallback-цепочки проверок (`select` → `read` → `use`/`show`), исключая спам промежуточных `DENY`.
+  - Разбор `CN=` из LDAP DN групп переведён на RFC 4514 (`extractFirstCn`, поддержка экранированных запятых `\,` и multi-valued RDN `+`); добавлена очистка ранее созданных плагинов при сбое конструктора и идемпотентный `close()` с `ReentrantReadWriteLock` против гонки с `plugin.cleanup()`.
+  - В `GroupDiskCache` флаг `dirty` заменён на монотонные поколения `mutationGeneration`/`persistedGeneration` (устраняет потерю обновлений при параллельном `put()`), создаваемые каталог/файл защищаются POSIX-правами `0700`/`0600`, временные `.tmp`-файлы гарантированно удаляются в `finally`, а `loadFromDisk()` отклоняет файлы больше `64 MiB` и неподдерживаемые `payload.version()`.
+- **Без-DNS IP/CIDR-матчинг и жизненный цикл старта/reload**:
+  - `ClientAddressMatcher` переведён на строгий парсер числовых IPv4/IPv6-литералов без блокирующих DNS-запросов и с корректной симметричной поддержкой IPv4-mapped IPv6 CIDR (например, `::ffff:10.0.0.0/104`) без влияния на обычные IPv6 CIDR вроде `::/64`.
+  - `ConfigReloadManager`: откат уже обновлённых listener'ов при сбое реконфигурации, отслеживание отката `mtime` (`!fileTime.equals(...)`) и появления отсутствовавшего файла, идемпотентное восстановление предыдущего `SIGHUP`-обработчика в `close()`.
+  - `HmsProxyApplication` и `RoutingPipelineFactory`: вложенное открытие и правильный LIFO-порядок остановки ресурсов (`managementServer` и `configReloadManager` закрываются до `handler` и `router`), а также откат уже созданных пулов/ресурсов при частичном сбое сборки пайплайна.
+- **Валидация конфигурации, секреты в логах и метрики**:
+  - `PropertyReader` и `AdaptiveTimeoutConfig` отклоняют `NaN`/`Infinity`; `LatencyRoutingConfigParser` валидирует `min-ms <= initial-ms <= max-ms` для adaptive timeout и допустимые значения `routing.refresh-privileges.mode` (`BACKEND`, `PASSTHROUGH`, `SYNTHETIC_SUCCESS`).
+  - `ProxyConfigLogger` дополнительно маскирует ключи с `passwd`, `pwd`, `passphrase`, `access.key`/`access_key`/`accesskey` и inline-пароли в URI (`scheme://user:pass@host`); `DebugLogUtil` редактирует (`<redacted>`) аргументы и результаты delegation-token и master-key RPC в `DEBUG`-логах.
+  - В `PrometheusMetrics` в `exposedMetrics` добавлены 3 метрики `hms_proxy_cache_invalidation_{events_published_total,events_received_total,errors_total}`, а рендер гистограмм снимает `sample.count()` однократно (`Math.max(cumulativeCount, count)`), сохраняя инвариант `le="+Inf" == _count`.
+- **Распределённая ZK-инвалидация, Rate Limiting и `CompatibilityHandler`**:
+  - `ZooKeeperCacheInvalidator`: исправлен путь `"/events"` при `znode="/"`, добавлен превентивный сброс кэшей при `ConnectionState.RECONNECTED`, распространена инвалидация на `CatalogRouter` и `IcebergTablePointerGuard` через `LocalCacheInvalidator`, закрываются ресурсы при сбое конструкторов, а публикация событий вынесена в асинхронный 1-поточный executor с ограниченной очередью (`1024`).
+  - Добавлен параметр `rate-limit.max-buckets` (по умолчанию `50000`, `0` — без лимита) для защиты `RequestRateLimiter.TokenBucketGroup` от неограниченного роста числа бакетов с очисткой просроченных и вытеснением самых старых по `lastSeenNanos`.
+  - `CompatibilityHandler`: `get_metastore_db_uuid` больше не кэширует синтетический fallback UUID навсегда при временном сбое бэкенда; `flushCache()` в режиме `security.mode=KERBEROS` разрешается только сервисным принципалам того же realm и `GSSAPI`-админам из `security.token-store-admin-principals`.
+
 ### Изменено (Thrift/SASL DoS-защита, Management HTTP, Iceberg REST Hardening и очистка зависимостей)
 
 - **Thrift/SASL DoS-лимиты и `remoteAddress` в `SIMPLE`-режиме (`H2`)**:

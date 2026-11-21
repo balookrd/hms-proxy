@@ -20,11 +20,14 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class ProxyConfigLogger {
   private static final Logger LOG = LoggerFactory.getLogger(ProxyConfigLogger.class);
+  private static final Pattern URI_CREDENTIALS_PATTERN =
+      Pattern.compile("([a-zA-Z0-9+.-]+://[^/@\\s:]+:)([^/@\\s]+)(@)");
 
   private ProxyConfigLogger() {
   }
@@ -147,7 +150,8 @@ public final class ProxyConfigLogger {
         .append(", preserveOriginalText=").append(config.federation().preserveOriginalViewText()).append("\n");
     sb.append("  External Table Location Rewrite: mode=").append(config.federation().externalTableLocationRewriteMode());
     if (config.federation().externalTableLocationRewriteSourceDefaultFs() != null) {
-      sb.append(", sourceDefaultFs=").append(config.federation().externalTableLocationRewriteSourceDefaultFs());
+      sb.append(", sourceDefaultFs=")
+          .append(redactUriCredentials(config.federation().externalTableLocationRewriteSourceDefaultFs()));
     }
     sb.append("\n");
     sb.append("  External Table Drop Purge Mode: ").append(config.federation().externalTableDropPurgeMode()).append("\n");
@@ -158,7 +162,7 @@ public final class ProxyConfigLogger {
     for (CatalogConfig cat : config.catalogs().values()) {
       sb.append("  * Catalog '").append(cat.name()).append("':\n");
       sb.append("      Description: ").append(cat.description()).append("\n");
-      sb.append("      Location URI: ").append(cat.locationUri()).append("\n");
+      sb.append("      Location URI: ").append(redactUriCredentials(cat.locationUri())).append("\n");
       sb.append("      Access Mode: ").append(cat.accessMode());
       if (!cat.writeDbWhitelist().isEmpty()) {
         sb.append(" (writeDbWhitelist: ").append(cat.writeDbWhitelist()).append(")");
@@ -318,7 +322,7 @@ public final class ProxyConfigLogger {
     sb.append("  Distributed Cache Invalidation: mode=").append(dci.mode());
     if (dci.isZooKeeper() && dci.zooKeeper() != null) {
       sb.append(", znode=").append(dci.zooKeeper().znode())
-          .append(", connectString=").append(dci.zooKeeper().connectString())
+          .append(", connectString=").append(redactUriCredentials(dci.zooKeeper().connectString()))
           .append(", retention=").append(dci.zooKeeper().eventRetentionMs()).append("ms");
     }
     sb.append("\n");
@@ -326,6 +330,8 @@ public final class ProxyConfigLogger {
 
   private static void appendRateLimit(StringBuilder sb, RateLimitConfig rl) {
     sb.append("[Rate Limiting]\n");
+    sb.append("  Max Buckets: ")
+        .append(rl.maxBuckets() == 0 ? "unlimited" : rl.maxBuckets()).append("\n");
     sb.append("  Principal: ").append(formatPolicy(rl.principal())).append("\n");
     sb.append("  Source IP: ").append(formatPolicy(rl.source())).append("\n");
     if (!rl.sourceCidrs().isEmpty()) {
@@ -359,7 +365,7 @@ public final class ProxyConfigLogger {
     if (ranger.enabled() || !ranger.catalogConfigs().isEmpty()) {
       CatalogRangerConfig def = ranger.defaults();
       sb.append("  Defaults: serviceName=").append(def.serviceName())
-          .append(", restUrl=").append(def.policyRestUrl())
+          .append(", restUrl=").append(redactUriCredentials(def.policyRestUrl()))
           .append(", auditEnabled=").append(def.auditEnabled()).append("\n");
       if (!ranger.catalogConfigs().isEmpty()) {
         sb.append("  Per-Catalog Configurations (").append(ranger.catalogConfigs().size()).append("):\n");
@@ -396,7 +402,8 @@ public final class ProxyConfigLogger {
     sb.append(", maxActiveLocks=").append(maxActiveLocks == 0 ? "unlimited" : maxActiveLocks).append("\n");
     if (config.syntheticReadLockStore().zooKeeper() != null
         && config.syntheticReadLockStore().zooKeeper().connectString() != null) {
-      sb.append("  ZooKeeper Connect: ").append(config.syntheticReadLockStore().zooKeeper().connectString())
+      sb.append("  ZooKeeper Connect: ")
+          .append(redactUriCredentials(config.syntheticReadLockStore().zooKeeper().connectString()))
           .append(", znode=").append(config.syntheticReadLockStore().zooKeeper().znode()).append("\n");
     }
   }
@@ -405,15 +412,29 @@ public final class ProxyConfigLogger {
     if (value == null) {
       return null;
     }
-    String lower = key.toLowerCase(Locale.ROOT);
-    if (lower.contains("password")
-        || lower.contains("secret")
-        || lower.contains("credential")
-        || lower.contains("token")
-        || lower.contains("private")
-        || lower.contains("keytab-password")) {
-      return "******";
+    if (key != null) {
+      String lower = key.toLowerCase(Locale.ROOT);
+      if (lower.contains("password")
+          || lower.contains("passwd")
+          || lower.contains("pwd")
+          || lower.contains("secret")
+          || lower.contains("credential")
+          || lower.contains("token")
+          || lower.contains("private")
+          || lower.contains("passphrase")
+          || lower.contains("access.key")
+          || lower.contains("access_key")
+          || lower.contains("accesskey")) {
+        return "******";
+      }
     }
-    return value;
+    return redactUriCredentials(value);
+  }
+
+  static String redactUriCredentials(String value) {
+    if (value == null || value.indexOf('@') < 0) {
+      return value;
+    }
+    return URI_CREDENTIALS_PATTERN.matcher(value).replaceAll("$1******$3");
   }
 }

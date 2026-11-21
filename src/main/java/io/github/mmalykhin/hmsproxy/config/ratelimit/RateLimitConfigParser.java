@@ -40,13 +40,16 @@ public final class RateLimitConfigParser {
     }
     Map<String, RateLimitPolicyConfig> rpcClassRateLimits =
         parsePolicies(reader, "rate-limit.rpc-class.", SUPPORTED_RPC_CLASSES, true);
+    int maxBuckets = reader.getNonNegativeInt(
+        "rate-limit.max-buckets", RateLimitConfig.DEFAULT_MAX_BUCKETS);
     return new RateLimitConfig(
         principalRateLimit,
         sourceRateLimit,
         sourceCidrRateLimits,
         methodFamilyRateLimits,
         catalogRateLimits,
-        rpcClassRateLimits);
+        rpcClassRateLimits,
+        maxBuckets);
   }
 
   private static Map<String, SourceCidrRateLimitConfig> parseSourceCidrRateLimits(PropertyReader reader) {

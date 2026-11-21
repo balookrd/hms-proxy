@@ -5,21 +5,26 @@ import io.github.mmalykhin.hmsproxy.config.security.GroupDiskCacheConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,12 +36,21 @@ import org.slf4j.LoggerFactory;
 public final class GroupDiskCache implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(GroupDiskCache.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
+  static final long DEFAULT_MAX_CACHE_FILE_BYTES = 64L * 1024L * 1024L;
+  private static final boolean POSIX_SUPPORTED =
+      FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+  private static final Set<PosixFilePermission> PRIVATE_DIR_PERMS =
+      PosixFilePermissions.fromString("rwx------");
+  private static final Set<PosixFilePermission> PRIVATE_FILE_PERMS =
+      PosixFilePermissions.fromString("rw-------");
 
   private final GroupDiskCacheConfig config;
   private final PrometheusMetrics metrics;
   private final LongSupplier clock;
+  private final long maxCacheFileBytes;
   private final ConcurrentHashMap<String, CachedUserGroups> cache = new ConcurrentHashMap<>();
-  private final AtomicBoolean dirty = new AtomicBoolean(false);
+  private final AtomicLong mutationGeneration = new AtomicLong(0L);
+  private final AtomicLong persistedGeneration = new AtomicLong(0L);
   private final ScheduledExecutorService scheduler;
 
   public GroupDiskCache(GroupDiskCacheConfig config, PrometheusMetrics metrics) {
@@ -44,9 +58,19 @@ public final class GroupDiskCache implements AutoCloseable {
   }
 
   public GroupDiskCache(GroupDiskCacheConfig config, PrometheusMetrics metrics, LongSupplier clock) {
+    this(config, metrics, clock, DEFAULT_MAX_CACHE_FILE_BYTES);
+  }
+
+  GroupDiskCache(
+      GroupDiskCacheConfig config,
+      PrometheusMetrics metrics,
+      LongSupplier clock,
+      long maxCacheFileBytes
+  ) {
     this.config = config != null ? config : GroupDiskCacheConfig.disabled();
     this.metrics = metrics;
     this.clock = clock != null ? clock : System::currentTimeMillis;
+    this.maxCacheFileBytes = maxCacheFileBytes > 0L ? maxCacheFileBytes : DEFAULT_MAX_CACHE_FILE_BYTES;
 
     if (this.config.enabled()) {
       loadFromDisk();
@@ -120,7 +144,7 @@ public final class GroupDiskCache implements AutoCloseable {
       // Refresh the expiration timestamp even when group membership did not change so the entry
       // does not stay permanently expired after its first TTL window.
       cache.put(userName, new CachedUserGroups(normalizedGroups, now));
-      dirty.set(true);
+      mutationGeneration.incrementAndGet();
       return;
     }
 
@@ -128,7 +152,7 @@ public final class GroupDiskCache implements AutoCloseable {
       makeRoomForNewUser();
     }
     cache.put(userName, new CachedUserGroups(normalizedGroups, now));
-    dirty.set(true);
+    mutationGeneration.incrementAndGet();
     updateEntriesMetric();
   }
 
@@ -164,12 +188,14 @@ public final class GroupDiskCache implements AutoCloseable {
     }
     Path targetPath = Path.of(config.path());
     Path parentDir = targetPath.getParent();
+    Path tempPath = null;
 
     try {
       if (parentDir != null && !Files.exists(parentDir)) {
-        Files.createDirectories(parentDir);
+        createPrivateDirectories(parentDir);
       }
 
+      long targetGeneration = mutationGeneration.get();
       long now = clock.getAsLong();
       DiskCachePayload payload = new DiskCachePayload(
           DiskCachePayload.CURRENT_VERSION,
@@ -179,17 +205,18 @@ public final class GroupDiskCache implements AutoCloseable {
 
       byte[] bytes = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsBytes(payload);
       String tempFileName = targetPath.getFileName().toString() + ".tmp." + UUID.randomUUID();
-      Path tempPath = parentDir != null ? parentDir.resolve(tempFileName) : Path.of(tempFileName);
+      tempPath = parentDir != null ? parentDir.resolve(tempFileName) : Path.of(tempFileName);
 
-      Files.write(tempPath, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+      writePrivateFile(tempPath, bytes);
 
       try {
         Files.move(tempPath, targetPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       } catch (AtomicMoveNotSupportedException e) {
         Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING);
       }
+      tempPath = null;
 
-      dirty.set(false);
+      persistedGeneration.accumulateAndGet(targetGeneration, Math::max);
       if (metrics != null) {
         metrics.recordCacheRefresh("group_disk", "global", "success");
       }
@@ -201,11 +228,24 @@ public final class GroupDiskCache implements AutoCloseable {
       }
       LOG.warn("Failed to persist group disk cache to '{}': {}", targetPath, e.getMessage());
       return false;
+    } finally {
+      if (tempPath != null) {
+        try {
+          Files.deleteIfExists(tempPath);
+        } catch (IOException cleanupError) {
+          LOG.debug("Failed to clean up temporary group disk cache file '{}': {}",
+              tempPath, cleanupError.getMessage());
+        }
+      }
     }
   }
 
+  boolean isDirty() {
+    return mutationGeneration.get() > persistedGeneration.get();
+  }
+
   private void persistIfDirty() {
-    if (dirty.get()) {
+    if (isDirty()) {
       persistToDisk();
     }
   }
@@ -218,12 +258,26 @@ public final class GroupDiskCache implements AutoCloseable {
     }
 
     try {
+      long fileSize = Files.size(targetPath);
+      if (fileSize > maxCacheFileBytes) {
+        LOG.warn("Group disk cache file '{}' size ({} bytes) exceeds limit ({} bytes); ignoring cache file",
+            targetPath, fileSize, maxCacheFileBytes);
+        return;
+      }
       byte[] bytes = Files.readAllBytes(targetPath);
       if (bytes.length == 0) {
         return;
       }
       DiskCachePayload payload = MAPPER.readValue(bytes, DiskCachePayload.class);
-      if (payload == null || payload.entries() == null) {
+      if (payload == null) {
+        return;
+      }
+      if (payload.version() != DiskCachePayload.CURRENT_VERSION) {
+        LOG.warn("Unsupported group disk cache version {} in '{}' (expected {}); ignoring cache file",
+            payload.version(), targetPath, DiskCachePayload.CURRENT_VERSION);
+        return;
+      }
+      if (payload.entries() == null) {
         return;
       }
 
@@ -259,6 +313,34 @@ public final class GroupDiskCache implements AutoCloseable {
     }
   }
 
+  private static void createPrivateDirectories(Path dir) throws IOException {
+    if (POSIX_SUPPORTED) {
+      Files.createDirectories(dir, PosixFilePermissions.asFileAttribute(PRIVATE_DIR_PERMS));
+      try {
+        Files.setPosixFilePermissions(dir, PRIVATE_DIR_PERMS);
+      } catch (UnsupportedOperationException | IOException ignored) {
+        // Non-POSIX underlying store; best effort.
+      }
+    } else {
+      Files.createDirectories(dir);
+    }
+  }
+
+  private static void writePrivateFile(Path file, byte[] bytes) throws IOException {
+    if (POSIX_SUPPORTED) {
+      try {
+        FileAttribute<Set<PosixFilePermission>> attrs =
+            PosixFilePermissions.asFileAttribute(PRIVATE_FILE_PERMS);
+        Files.createFile(file, attrs);
+        Files.write(file, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        return;
+      } catch (UnsupportedOperationException ignored) {
+        // Fall through to standard write when store rejects POSIX attributes.
+      }
+    }
+    Files.write(file, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+  }
+
   private void recordMetric(String result) {
     if (metrics != null) {
       metrics.recordCacheRequest("group_disk", "global", result);
@@ -284,7 +366,7 @@ public final class GroupDiskCache implements AutoCloseable {
       }
     }
 
-    if (config.enabled() && config.persistOnShutdown() && dirty.get()) {
+    if (config.enabled() && config.persistOnShutdown() && isDirty()) {
       persistToDisk();
     }
   }

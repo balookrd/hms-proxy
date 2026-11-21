@@ -162,7 +162,12 @@ public final class PropertyReader {
       return defaultValue;
     }
     try {
-      return Double.parseDouble(value);
+      double parsed = Double.parseDouble(value);
+      if (!Double.isFinite(parsed)) {
+        throw new IllegalArgumentException(
+            "Non-finite floating point value for property " + key + ": " + value);
+      }
+      return parsed;
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("Invalid floating point value for property " + key + ": " + value, e);
     }

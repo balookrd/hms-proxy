@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -195,14 +196,28 @@ final class CompatibilityHandler implements InvocationHandler {
       LOG.warn("requestId={} failed to query metastore db uuid from default backend: {}",
           RequestContext.currentRequestId(), t.getMessage());
     }
-    if (uuid == null || uuid.isEmpty()) {
-      uuid = UUID.nameUUIDFromBytes(config.server().name().getBytes(StandardCharsets.UTF_8)).toString();
+    if (uuid != null && !uuid.isEmpty()) {
+      cachedDbUuid.compareAndSet(null, uuid);
+      return uuid;
     }
-    cachedDbUuid.set(uuid);
-    return uuid;
+    return UUID.nameUUIDFromBytes(config.server().name().getBytes(StandardCharsets.UTF_8)).toString();
   }
 
-  private Object handleFlushCache(Method method, Object[] args) {
+  private Object handleFlushCache(Method method, Object[] args) throws MetaException {
+    if (config.security() != null && config.security().kerberosEnabled()) {
+      String authMech = ClientRequestContext.authMechanism().orElse(null);
+      String authUser = ClientRequestContext.authenticatedUser().orElse(null);
+      boolean allowed = "GSSAPI".equalsIgnoreCase(authMech)
+          && authUser != null
+          && (config.security().tokenStoreAdminPrincipals().contains(authUser)
+              || RoutingMetaStoreProxy.isServicePrincipal(authUser, config.security()));
+      if (!allowed) {
+        LOG.warn("requestId={} denied flushCache for user='{}' authMechanism={}",
+            RequestContext.currentRequestId(), authUser, authMech);
+        throw new MetaException(
+            "Access denied: flushCache requires an admin or service Kerberos principal");
+      }
+    }
     configValueCache.invalidateAll();
     if (next instanceof RoutingHandler rh) {
       rh.flushCaches();
