@@ -322,6 +322,10 @@ listener ограничивает жизненный цикл сокета:
 | `server.tcp-keepalive-idle-seconds` | `120` | Простой до первой keepalive-пробы |
 | `server.tcp-keepalive-interval-seconds` | `30` | Интервал между keepalive-пробами |
 | `server.tcp-keepalive-count` | `4` | Сколько проб должно провалиться, прежде чем соединение будет закрыто |
+| `server.thrift.max-string-length-bytes` | `67108864` | Максимальный размер одной Thrift-строки/binary поля (64 MiB; `0` отключает лимит) |
+| `server.thrift.max-container-length` | `1000000` | Максимум элементов в одном Thrift list/set/map (`0` отключает лимит) |
+| `server.sasl-handshake-timeout-ms` | `10000` | Короткий `SO_TIMEOUT` на фазе SASL-рукопожатия (`0` использует `client-socket-timeout-ms`) |
+| `server.sasl-max-frame-bytes` | `1048576` | Максимум байт в одном pre-auth SASL-фрейме (1 MiB, проверяется до аллокации; `0` — лимит libthrift 100 MiB) |
 | `server.shutdown-timeout-seconds` | `30` | Ограничение на упорядоченную остановку после SIGTERM |
 
 `client-socket-timeout-ms` — именно read timeout: он ограничивает, сколько worker ждёт
@@ -399,7 +403,8 @@ Proxy может поднимать HTTP listener для health checks, readines
 метрик. По умолчанию listener выключен и автоматически включается, если задан `management.port`:
 
 ```properties
-management.bind-host=0.0.0.0
+# По умолчанию привязывается к 127.0.0.1; для внешнего опроса укажите интерфейс мониторинга или 0.0.0.0
+management.bind-host=127.0.0.1
 management.port=19083
 ```
 
@@ -407,15 +412,19 @@ management.port=19083
 
 ```properties
 management.enabled=true
-# Необязательно; по умолчанию берётся server.bind-host
-management.bind-host=0.0.0.0
+# Необязательно; по умолчанию 127.0.0.1 (loopback-only)
+management.bind-host=127.0.0.1
 # Необязательно; по умолчанию server.port + 1000
 management.port=19083
+# Необязательно; список разрешённых IP/CIDR (иначе 403 Forbidden)
+management.allowed-client-ips=127.0.0.1/32,10.0.0.0/8
 # Необязательно; число handler-потоков management listener, по умолчанию 4
 management.threads=4
 # Необязательно; сколько мс переиспользуются результаты readiness probe;
 # по умолчанию 2000, значение 0 отключает кэш
 management.readiness-cache-ms=2000
+# Необязательно; показывать ли в /readyz Kerberos principal и lastError бэкендов (по умолчанию false)
+management.readyz.include-details=false
 ```
 
 Быстрые проверки:
@@ -426,14 +435,9 @@ curl -s http://127.0.0.1:19083/readyz
 curl -s http://127.0.0.1:19083/metrics
 ```
 
-Listener обслуживает запросы из небольшого выделенного пула потоков (`management.threads`), поэтому
-медленный `/readyz` не блокирует `/healthz` и `/metrics`. Держи как минимум два потока.
+Listener обслуживает только `GET` и `HEAD` (прочие методы получают `405 Method Not Allowed` с `Allow: GET, HEAD`) из выделенного пула потоков (`management.threads`) с ограниченной очередью (32 запроса) и системными таймаутами HTTP-сервера (`maxReqTime`/`maxRspTime`/`maxConnections`), поэтому медленный `/readyz` не блокирует `/healthz` и `/metrics`, а на холодном старте при незавершённой первой пробе `/readyz` быстро отвечает `503 {"status":"NOT_READY","reason":"initializing"}`. Держи как минимум два потока.
 
-**Внимание:** у management endpoints нет ни аутентификации, ни авторизации. `/readyz` отдаёт
-Kerberos-принципалы и per-backend `lastError`, в котором обычно видны внутренние hostname. Привязывай
-`management.bind-host` к интерфейсу, доступному только из сети мониторинга и оркестрации, либо
-ограничивай порт firewall-правилами или network policy. Не публикуй его рядом с клиентским
-Thrift-портом.
+**Безопасность:** у management endpoints нет встроенной аутентификации, поэтому по умолчанию listener слушает только `127.0.0.1`, а `/readyz` при `management.readyz.include-details=false` (по умолчанию) скрывает Kerberos-принципалы, детальные сообщения Kerberos и `lastError` бэкендов. При необходимости внешнего опроса ограничивай доступ через `management.allowed-client-ips` и firewall/network policy, и не публикуй порт рядом с клиентским Thrift-портом.
 
 ### Health и readiness endpoints
 
@@ -925,6 +929,10 @@ Primary listener живёт на `server.port` со своим `compatibility.fr
 | `additional-frontends.<name>.tcp-keepalive-idle-seconds` | нет | `server.tcp-keepalive-idle-seconds` |
 | `additional-frontends.<name>.tcp-keepalive-interval-seconds` | нет | `server.tcp-keepalive-interval-seconds` |
 | `additional-frontends.<name>.tcp-keepalive-count` | нет | `server.tcp-keepalive-count` |
+| `additional-frontends.<name>.thrift.max-string-length-bytes` | нет | `server.thrift.max-string-length-bytes` |
+| `additional-frontends.<name>.thrift.max-container-length` | нет | `server.thrift.max-container-length` |
+| `additional-frontends.<name>.sasl-handshake-timeout-ms` | нет | `server.sasl-handshake-timeout-ms` |
+| `additional-frontends.<name>.sasl-max-frame-bytes` | нет | `server.sasl-max-frame-bytes` |
 
 Все listener'ы используют один `RoutingMetaStoreProxy`, federation, security
 (`FrontDoorSecurity` включая SASL/Kerberos), audit и Prometheus метрики. Отличается
@@ -1227,22 +1235,32 @@ read-роутов, так что спецификация-совместимый
 ```properties
 rest-catalog.enabled=true
 rest-catalog.port=9183
-# Опционально, но рекомендуется для прода: SPNEGO. Требует security.mode=KERBEROS.
+# Обязательно при security.mode=KERBEROS (fail-closed), иначе прокси не стартует: SPNEGO.
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 # Опционально: ограничить то, что вправе удалить purge (см. раздел про purge ниже).
 rest-catalog.purge.mode=ALLOWLIST
 rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
+# Опционально: дополнительные URI-префиксы для Iceberg FileIO помимо fs.defaultFS каталога
+# (обязательно задайте для таблиц на S3 / стороннем HDFS).
+rest-catalog.file-io.allowed-prefixes=s3a://iceberg-bucket/warehouse
+# Опционально: лимит размера metadata/manifest-файла для чтения через FileIO (дефолт 64 MiB; 0 отключает).
+rest-catalog.max-metadata-file-bytes=67108864
 ```
 
 `rest-catalog.purge.allowed-prefixes` обязателен для `ALLOWLIST` и отвергается
 при двух других режимах; обе противоречивые комбинации роняют прокси на старте,
-а не игнорируются.
+а не игнорируются. При `security.mode=KERBEROS` и включённом `rest-catalog` наличие
+`rest-catalog.kerberos.principal` и `rest-catalog.kerberos.keytab` обязательно
+(fail-closed), а биндинг listener'а проверяется на конфликт портов со всеми прочими
+listener'ами (`server`, `management`, `additional-frontends`).
 
-Тело запроса разбирается в память целиком, по одному на рабочий поток, поэтому его размер
-ограничен `rest-catalog.max-request-body-bytes` (дефолт `16777216`, 16 MiB). Тело больше лимита
+Тело запроса разбирается в память целиком, по одному на рабочий поток, поэтому его размер (как на
+POST/PUT, так и при дренировании тела на `GET`/`HEAD`/`DELETE`) ограничен
+`rest-catalog.max-request-body-bytes` (дефолт `16777216`, 16 MiB). Тело больше лимита
 отклоняется с `413` до разбора JSON: по заголовку `Content-Length`, а при chunked-передаче — как
-только прочитано больше лимита.
+только прочитано больше лимита. Listener использует ограниченную очередь запросов (`max(64, maxWorkerThreads * 4)`)
+и системные таймауты `HttpServer` вместо `CallerRunsPolicy`, чтобы перегрузка не блокировала NIO `Dispatcher`.
 
 ### Как сохранить Iceberg-таблицу читаемой для Hive
 
@@ -1339,34 +1357,37 @@ purge — так же, как его обслуживает собственны
 другой каталог, отказывается тем же `403`, что и любой другой write, до того как
 будет тронут хоть один файл.
 
-Что именно purge вправе удалить внутри этого каталога, ограничивает
+Что именно purge и все runtime-операции каталога (`loadTable`, `registerTable`, `UPDATE_TABLE` с
+`write.metadata.delete-after-commit.enabled`, `dropTable`, `dropView`, `commitTransaction`) вправе
+читать, писать и удалять внутри этого каталога, ограничивается общим `GuardedFileIO` и
 `rest-catalog.purge.mode`:
+
+- До вызова `FileSystem.get(...)` проверяются синтаксис пути (`..`, `%2e`, `\0`, `user@host`) и
+  совместимость `(scheme, authority)` с `fs.defaultFS` каталога или с явным списком
+  `rest-catalog.file-io.allowed-prefixes` (для default-каталога операции чтения также принимают
+  `fs.defaultFS` остальных настроенных каталогов, за исключением `file:`, если сам default-каталог
+  работает не на `file:`; запись и удаление на чужих FS по-прежнему запрещены) — это исключает SSRF и чтение локальной ФС (`file:///etc/passwd`)
+  на HDFS-каталогах. При размещении таблиц на S3 или стороннем HDFS добавьте их префиксы в
+  `rest-catalog.file-io.allowed-prefixes`.
+- В режимах `REFUSE` / `ALLOWLIST` политике `rest-catalog.purge.mode` подчиняются не только
+  `DELETE .../tables/{tbl}?purgeRequested=true`, но и удаление metadata-файлов при `DROP VIEW` и
+  `UPDATE_TABLE` (`write.metadata.delete-after-commit.enabled`), а также проверка symlink-побегов и
+  запрет удаления самого корня allowlist; откат временных файлов в рамках текущего неудавшегося
+  коммита (например, при `409 Conflict`) остаётся разрешён.
 
 | Режим | Поведение |
 | --- | --- |
-| `ALLOW` (по умолчанию) | Удаляет всё, на что указывают метаданные и манифесты таблицы, — так же, как REST-каталоги Iceberg. Поведение прежних версий не меняется. |
-| `ALLOWLIST` | Purge разрешён только под префиксами `rest-catalog.purge.allowed-prefixes`. |
-| `REFUSE` | Отвечает `403` на любой purge; `DELETE` без `purgeRequested` по-прежнему дропает таблицу и оставляет её файлы. |
+| `ALLOW` (по умолчанию) | Удаляет всё внутри разрешённых схем/FS каталога (с проверкой прямых symlink'ов), на что указывают метаданные и манифесты таблицы. Поведение прежних версий не меняется. |
+| `ALLOWLIST` | Purge и runtime-удаления разрешены только строго внутри префиксов `rest-catalog.purge.allowed-prefixes`. |
+| `REFUSE` | Отвечает `403` на любой purge и `DROP VIEW` с файлами (и блокирует `delete-after-commit`); `DELETE` таблицы без `purgeRequested` по-прежнему дропает таблицу и оставляет её файлы. |
 
-Purge, который политика не разрешает, отклоняется до дропа таблицы, поэтому
-после отказа целы и таблица, и её файлы, а клиент может повторить запрос без
-`purgeRequested`.
-
-`ALLOWLIST` проверяет границу дважды. До дропа с префиксами сверяются location
-таблицы и её `metadata.json`; выход за границу любого из них даёт `403`. Во
-время удаления каждый путь, который Iceberg просит удалить — data-файлы,
-delete-файлы, манифесты, manifest list, metadata-файлы, — сверяется снова, и
-путь вне префиксов пропускается с WARN вместо удаления. Именно вторая проверка
-важна для недоверенных клиентов: в REST-протоколе манифесты пишет клиент,
-поэтому коммит может указать снапшот на файлы в чужом дереве, а эти пути
-становятся известны только при обходе манифестов — уже после того, как
-предварительная проверка прошла.
-
-Error-ответы несут смапленный HTTP-статус, `type` и `message`, но никогда —
-server stack trace, потому что этот listener может быть доступен без
-аутентификации. Тело запроса, которое не удаётся распарсить, отвечает 400
-(`BadRequestException`) вместо падения в 500; это касается любого роута,
-принимающего тело. `HEAD`-ответ никогда не пишет тело, как того требует RFC
+Error-ответы несут смапленный HTTP-статус, `type` и санитизированный `message`, но никогда —
+server stack trace или сырые внутренние ошибки парсинга файлов (`500` скрывает детали за
+`"Internal server error"`). Служебные маршруты тестового адаптера (`/v1/oauth/tokens`) отклоняются
+с `404`, разбор URL работает по `getRawPath()` (одиночный `%` и некорректный `pageSize` отдают
+`400`, а не `500`), а сбой второй и последующей таблицы после частичного коммита в
+`POST /v1/{prefix}/transactions/commit` честно возвращает `500` (`CommitStateUnknownException`)
+вместо вводящего в заблуждение `409`. Тело запроса, которое не удаётся распарсить или пустое, отвечает 400 (`BadRequestException`). `HEAD`-ответ никогда не пишет тело, как того требует RFC
 9110, — включая error-статусы, — так что exists-check на отсутствующий
 namespace, таблицу или view возвращает обычный 404 без тела, а не 404 с
 JSON-телом. Диспетчер запросов ловит `Throwable`, а не только `Exception`:

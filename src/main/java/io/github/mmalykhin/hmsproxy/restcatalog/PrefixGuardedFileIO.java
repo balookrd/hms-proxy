@@ -1,10 +1,12 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import io.github.mmalykhin.hmsproxy.util.PathPrefixAllowlist;
-import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -13,53 +15,68 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * FileIO decorator that refuses to delete a path outside the configured allowlist. It exists
- * because a purge deletes whatever the table's manifests reference, and in the REST protocol the
- * manifests are written by the client: a commit can point a snapshot at arbitrary paths, and the
- * proxy would otherwise delete them under its own credentials. Checking the table location up
- * front cannot catch that - those paths are only known while walking the manifests.
+ * FileIO decorator that refuses to delete a path outside the configured allowlist during
+ * {@code dropTable(..., purge=true)}.
  *
  * <p>A refused path is skipped and logged, never thrown on: by the time deletion runs the table
  * is already dropped in the metastore, so failing here would leave a half-purged table and a 500.
- *
- * <p>Only the delete methods are constrained; reads and writes delegate unchanged. Deliberately
- * not usable after serialization (it holds a Hadoop {@link Configuration}), which is fine because
- * this FileIO never leaves the proxy's JVM - Iceberg only serializes a FileIO for distributed
- * planning, which this front door does not do.
  */
 final class PrefixGuardedFileIO implements FileIO {
   private static final Logger LOG = LoggerFactory.getLogger(PrefixGuardedFileIO.class);
+  static final int MAX_RECORDED_SKIPPED_PATHS = 64;
 
   private final FileIO delegate;
   private final List<String> qualifiedPrefixes;
-  private final transient Configuration conf;
+  private final transient RestFileIoPathGuard pathGuard;
   private final String tableName;
-  private final List<String> skippedPaths = new CopyOnWriteArrayList<>();
+  private final AtomicInteger skippedCount = new AtomicInteger();
+  private final List<String> skippedPaths = Collections.synchronizedList(new ArrayList<>());
 
   PrefixGuardedFileIO(
       FileIO delegate, List<String> qualifiedPrefixes, Configuration conf, String tableName) {
-    this.delegate = delegate;
+    this(
+        delegate,
+        qualifiedPrefixes,
+        new RestFileIoPathGuard(Objects.requireNonNull(conf, "conf"), List.of()),
+        tableName);
+  }
+
+  PrefixGuardedFileIO(
+      FileIO delegate,
+      List<String> qualifiedPrefixes,
+      RestFileIoPathGuard pathGuard,
+      String tableName) {
+    this.delegate = Objects.requireNonNull(delegate, "delegate");
     this.qualifiedPrefixes = List.copyOf(qualifiedPrefixes);
-    this.conf = conf;
-    this.tableName = tableName;
+    this.pathGuard = Objects.requireNonNull(pathGuard, "pathGuard");
+    this.tableName = Objects.requireNonNull(tableName, "tableName");
   }
 
   List<String> skippedPaths() {
-    return List.copyOf(skippedPaths);
+    synchronized (skippedPaths) {
+      return List.copyOf(skippedPaths);
+    }
+  }
+
+  int skippedCount() {
+    return skippedCount.get();
   }
 
   @Override
   public InputFile newInputFile(String path) {
+    pathGuard.validateBeforeFsAccess(path);
     return delegate.newInputFile(path);
   }
 
   @Override
   public InputFile newInputFile(String path, long length) {
+    pathGuard.validateBeforeFsAccess(path);
     return delegate.newInputFile(path, length);
   }
 
   @Override
   public OutputFile newOutputFile(String path) {
+    pathGuard.validateBeforeFsAccess(path);
     return delegate.newOutputFile(path);
   }
 
@@ -99,22 +116,36 @@ final class PrefixGuardedFileIO implements FileIO {
   private boolean allowed(String path) {
     String qualified;
     try {
-      qualified = PurgePathQualifier.qualify(path, conf);
-    } catch (IOException | IllegalArgumentException e) {
-      // Fail closed: a path whose filesystem cannot even be resolved cannot be shown to be inside
-      // the allowlist, and this code deletes data.
-      skip(path, "its location could not be qualified: " + e.getMessage());
+      qualified = pathGuard.qualifySafely(path);
+    } catch (RuntimeException e) {
+      skip(path, "its location could not be validated or qualified: " + e.getMessage());
       return false;
     }
-    if (PathPrefixAllowlist.matches(qualified, qualifiedPrefixes)) {
-      return true;
+    if (!PathPrefixAllowlist.matchesStrictDescendant(qualified, qualifiedPrefixes)) {
+      skip(qualified, "it is not a strict descendant under rest-catalog.purge.allowed-prefixes");
+      return false;
     }
-    skip(qualified, "it is outside rest-catalog.purge.allowed-prefixes");
-    return false;
+    try {
+      pathGuard.verifyNoSymlinkEscape(qualified, qualifiedPrefixes);
+      return true;
+    } catch (RuntimeException e) {
+      skip(qualified, "symbolic-link containment check failed: " + e.getMessage());
+      return false;
+    }
   }
 
   private void skip(String path, String reason) {
-    skippedPaths.add(path);
-    LOG.warn("purge of table '{}' skipped deleting '{}' because {}", tableName, path, reason);
+    int count = skippedCount.incrementAndGet();
+    synchronized (skippedPaths) {
+      if (skippedPaths.size() < MAX_RECORDED_SKIPPED_PATHS) {
+        skippedPaths.add(path);
+      }
+    }
+    if (count <= MAX_RECORDED_SKIPPED_PATHS) {
+      LOG.warn("purge of table '{}' skipped deleting '{}' because {}", tableName, path, reason);
+    } else if (count == MAX_RECORDED_SKIPPED_PATHS + 1) {
+      LOG.warn("purge of table '{}' suppressing further skipped-path logs after {} entries",
+          tableName, MAX_RECORDED_SKIPPED_PATHS);
+    }
   }
 }

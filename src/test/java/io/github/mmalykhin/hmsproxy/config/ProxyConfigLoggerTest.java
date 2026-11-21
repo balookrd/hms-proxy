@@ -47,7 +47,7 @@ public class ProxyConfigLoggerTest {
       Assert.assertTrue(output.contains("[REST Catalog]"));
       Assert.assertTrue(output.contains("Listen: 0.0.0.0:9183"));
       Assert.assertTrue(output.contains("[Management HTTP]"));
-      Assert.assertTrue(output.contains("Listen: 0.0.0.0:19083"));
+      Assert.assertTrue(output.contains("Listen: 127.0.0.1:19083"));
       Assert.assertTrue(output.contains("[Resilience & Latency Routing]"));
       Assert.assertTrue(output.contains("[Iceberg Pointer Guard]"));
       Assert.assertTrue(output.contains("[Synthetic Read Lock Store]"));

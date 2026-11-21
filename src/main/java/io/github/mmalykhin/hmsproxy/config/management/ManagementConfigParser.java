@@ -3,6 +3,8 @@ package io.github.mmalykhin.hmsproxy.config.management;
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import java.util.Arrays;
+import java.util.List;
 
 public final class ManagementConfigParser {
   private ManagementConfigParser() {
@@ -16,13 +18,19 @@ public final class ManagementConfigParser {
       throw new IllegalArgumentException(
           "management.port must be between 1 and 65535, got: " + managementPort);
     }
-    String managementBindHost = reader.get("management.bind-host", server.bindHost());
+    String managementBindHost = reader.get("management.bind-host", ManagementConfig.DEFAULT_BIND_HOST);
     int managementThreads = reader.getPositiveInt(
         "management.threads", ManagementConfig.DEFAULT_THREADS);
     long readinessCacheMs = reader.getNonNegativeLong(
         "management.readiness-cache-ms", ManagementConfig.DEFAULT_READINESS_CACHE_MS);
     boolean requireAllCatalogs = reader.getBoolean(
         "management.readyz.require-all-catalogs", ManagementConfig.DEFAULT_REQUIRE_ALL_CATALOGS);
+    String rawAllowedClientIps = reader.getOrNull("management.allowed-client-ips");
+    List<String> allowedClientIps = rawAllowedClientIps == null
+        ? List.of()
+        : Arrays.asList(PropertyReader.splitCsv(rawAllowedClientIps));
+    boolean readyzIncludeDetails = reader.getBoolean(
+        "management.readyz.include-details", ManagementConfig.DEFAULT_READYZ_INCLUDE_DETAILS);
     if (managementEnabled
         && ConfigParsing.bindingsConflict(
             managementBindHost, managementPort, server.bindHost(), server.port())) {
@@ -32,6 +40,13 @@ public final class ManagementConfigParser {
               + ConfigParsing.describeBinding(server.bindHost(), server.port()));
     }
     return new ManagementConfig(
-        managementEnabled, managementBindHost, managementPort, managementThreads, readinessCacheMs, requireAllCatalogs);
+        managementEnabled,
+        managementBindHost,
+        managementPort,
+        managementThreads,
+        readinessCacheMs,
+        requireAllCatalogs,
+        allowedClientIps,
+        readyzIncludeDetails);
   }
 }

@@ -54,10 +54,20 @@ final class WriteRouteGate {
     return WRITE_ROUTES;
   }
 
+  private final String serviceCatalogName;
   private final String defaultCatalogName;
   private final Function<String, String> catalogForNamespace;
 
   WriteRouteGate(String defaultCatalogName, Function<String, String> catalogForNamespace) {
+    this(defaultCatalogName, defaultCatalogName, catalogForNamespace);
+  }
+
+  WriteRouteGate(
+      String serviceCatalogName,
+      String defaultCatalogName,
+      Function<String, String> catalogForNamespace
+  ) {
+    this.serviceCatalogName = Objects.requireNonNull(serviceCatalogName, "serviceCatalogName");
     this.defaultCatalogName = Objects.requireNonNull(defaultCatalogName, "defaultCatalogName");
     this.catalogForNamespace = Objects.requireNonNull(catalogForNamespace, "catalogForNamespace");
   }
@@ -69,6 +79,11 @@ final class WriteRouteGate {
   String check(Route route, Map<String, String> vars, Object body) {
     if (!WRITE_ROUTES.contains(route)) {
       return null;
+    }
+    if (!serviceCatalogName.equals(defaultCatalogName)) {
+      return "Writes are only supported in the default catalog '" + defaultCatalogName
+          + "'; catalog '" + serviceCatalogName
+          + "' is served by the synthetic lock shim and provides no writer isolation.";
     }
     if (route == Route.RENAME_TABLE || route == Route.RENAME_VIEW) {
       // Both routes carry the same RenameTableRequest {source, destination} body shape; either
@@ -86,6 +101,9 @@ final class WriteRouteGate {
       // or the whole request is refused - one federated table riding along with default-catalog
       // ones must not slip through.
       CommitTransactionRequest request = (CommitTransactionRequest) body;
+      if (request.tableChanges() == null || request.tableChanges().isEmpty()) {
+        return null;
+      }
       for (UpdateTableRequest tableChange : request.tableChanges()) {
         String refusal = refusalFor(externalDbName(tableChange.identifier()));
         if (refusal != null) {

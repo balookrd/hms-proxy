@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.app;
 
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -91,5 +92,36 @@ public class SingleFlightCacheTest {
     }
 
     Assert.assertEquals("v2", cache.get(() -> "v2"));
+  }
+
+  @Test
+  public void tryGetReturnsEmptyQuicklyWhenColdStartRefreshBlocks() throws Exception {
+    SingleFlightCache<String> cache = new SingleFlightCache<>(1_000L);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Thread initializer = new Thread(() -> cache.get(() -> {
+      started.countDown();
+      try {
+        release.await(5L, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return "ready";
+    }));
+    initializer.setDaemon(true);
+    initializer.start();
+    Assert.assertTrue(started.await(5L, TimeUnit.SECONDS));
+
+    long startNanos = System.nanoTime();
+    Optional<String> fast = cache.tryGet(() -> "unused", 40L);
+    long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+    Assert.assertTrue("cold-start tryGet must return empty while first probe is still running",
+        fast.isEmpty());
+    Assert.assertTrue("cold-start wait should remain bounded, took " + elapsedMs + "ms",
+        elapsedMs < 1_000L);
+
+    release.countDown();
+    initializer.join(5_000L);
+    Assert.assertEquals(Optional.of("ready"), cache.tryGet(() -> "unused", 40L));
   }
 }

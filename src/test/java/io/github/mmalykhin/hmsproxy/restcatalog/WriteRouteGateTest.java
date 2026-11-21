@@ -305,4 +305,15 @@ public class WriteRouteGateTest {
     Assert.assertNotNull(refusal);
     Assert.assertTrue(refusal, refusal.contains(OTHER_CATALOG));
   }
+
+  @Test
+  public void nonDefaultServiceRefusesCommitTransactionEvenWithoutTableChanges() {
+    WriteRouteGate nonDefaultGate = new WriteRouteGate(
+        OTHER_CATALOG, DEFAULT_CATALOG, WriteRouteGateTest::catalogForNamespace);
+    CommitTransactionRequest emptyOrDummy = new CommitTransactionRequest(
+        List.of(tableChange("default", "t1")));
+    String refusal = nonDefaultGate.check(Route.COMMIT_TRANSACTION, Map.of(), emptyOrDummy);
+    Assert.assertNotNull(refusal);
+    Assert.assertTrue(refusal, refusal.contains(OTHER_CATALOG));
+  }
 }

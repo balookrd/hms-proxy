@@ -168,6 +168,9 @@ public class IcebergRestEndpointIntegrationTest {
         get("/v1/" + CATALOG_NAME + "/namespaces/" + RecordingThriftIface.THROWS_ERROR_PROBE_DB);
     Assert.assertEquals("body: " + response.body(), 500, response.statusCode());
     Assert.assertTrue(response.body(), response.body().contains("\"type\":\"Error\""));
+    Assert.assertTrue(response.body(), response.body().contains("\"message\":\"Internal server error\""));
+    Assert.assertFalse("500 response must sanitize internal error details: " + response.body(),
+        response.body().contains("simulated classpath-mismatch failure"));
   }
 
   @Test
@@ -286,6 +289,13 @@ public class IcebergRestEndpointIntegrationTest {
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString("not json at all")).build(), HttpResponse.BodyHandlers.ofString());
       Assert.assertEquals("a body under the limit is parsed as before", 400, small400.statusCode());
+
+      URI getUri = URI.create("http://127.0.0.1:" + small.boundPort() + "/v1/catalog1/namespaces");
+      HttpResponse<String> oversizedGet = client.send(HttpRequest.newBuilder(getUri).timeout(HTTP_TIMEOUT)
+          .method("GET", HttpRequest.BodyPublishers.ofString("x".repeat(4096))).build(),
+          HttpResponse.BodyHandlers.ofString());
+      Assert.assertEquals("GET with oversized body must be refused with 413: " + oversizedGet.body(),
+          413, oversizedGet.statusCode());
     }
   }
 
@@ -754,6 +764,10 @@ public class IcebergRestEndpointIntegrationTest {
 
     // The refusal has to come from alter_table, not from a requirement check: otherwise every
     // assertion below would hold for the wrong reason.
+    Assert.assertEquals("second-table failure after committing first must report 500 CommitStateUnknownException: "
+            + response.body(),
+        500, response.statusCode());
+    Assert.assertTrue(response.body(), response.body().contains("CommitStateUnknownException"));
     Assert.assertTrue(delegate.calls.toString(),
         delegate.calls.contains("alter_table_injected_failure:default.txn_d"));
     Assert.assertNotEquals("the second table's commit was rejected by the metastore, so the"
@@ -864,6 +878,89 @@ public class IcebergRestEndpointIntegrationTest {
     services = IcebergRestServices.open(config, delegate.iface, catalogForExternalDb);
     server = RestCatalogServer.open(config, services, metrics);
     Assert.assertNotNull("server must restart", server);
+  }
+
+  @Test
+  public void rawPathHandlesBrokenPercentEncodingAndEncodedSlashInPrefixAs400() throws Exception {
+    Assert.assertTrue(rawHttpGet("/v1/cat%ZZ/config").startsWith("HTTP/1.1 400 "));
+    Assert.assertEquals(400, get("/v1/cat%2Fbad/namespaces").statusCode());
+    Assert.assertTrue(
+        rawHttpGet("/v1/catalog1/namespaces?parent=%ZZ").startsWith("HTTP/1.1 400 "));
+  }
+
+  private String rawHttpGet(String requestTarget) throws Exception {
+    try (java.net.Socket socket = new java.net.Socket("127.0.0.1", server.boundPort())) {
+      socket.setSoTimeout(5_000);
+      java.io.OutputStream out = socket.getOutputStream();
+      String req = "GET " + requestTarget + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+      out.write(req.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+      out.flush();
+      return new String(socket.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+  }
+
+  @Test
+  public void configIsCaseInsensitiveAndOAuthTokensEndpointIsRefused() throws Exception {
+    HttpResponse<String> upperRoot = get("/v1/CONFIG");
+    Assert.assertEquals("body: " + upperRoot.body(), 200, upperRoot.statusCode());
+    Assert.assertTrue(upperRoot.body().contains("\"prefix\":\"catalog1\""));
+
+    HttpResponse<String> upperPrefixed = get("/v1/" + CATALOG2_NAME + "/CONFIG");
+    Assert.assertEquals("body: " + upperPrefixed.body(), 200, upperPrefixed.statusCode());
+    Assert.assertTrue(upperPrefixed.body().contains("\"prefix\":\"catalog2\""));
+
+    HttpResponse<String> rootTokens = post("/v1/oauth/tokens",
+        "{\"grant_type\":\"client_credentials\",\"client_id\":\"evil\"}");
+    Assert.assertEquals(404, rootTokens.statusCode());
+
+    HttpResponse<String> prefixedTokens = post("/v1/" + CATALOG_NAME + "/oauth/tokens",
+        "{\"grant_type\":\"client_credentials\",\"client_id\":\"evil\"}");
+    Assert.assertEquals(404, prefixedTokens.statusCode());
+    Assert.assertFalse(prefixedTokens.body().contains("client-credentials-token"));
+  }
+
+  @Test
+  public void emptyOrNullPostBodyAndNonNumericPageSizeReturn400() throws Exception {
+    Assert.assertEquals(400, post("/v1/catalog1/namespaces", "").statusCode());
+    Assert.assertEquals(400, post("/v1/catalog1/namespaces", "null").statusCode());
+    Assert.assertEquals(400, get("/v1/catalog1/namespaces?pageSize=abc").statusCode());
+  }
+
+  @Test
+  public void emptyCommitTransactionUnderNonDefaultCatalogIsRefused() throws Exception {
+    int callsBefore = delegate.calls.size();
+    HttpResponse<String> response = post(
+        "/v1/" + CATALOG2_NAME + "/transactions/commit", "{\"table-changes\":[]}");
+    Assert.assertTrue("expected 400 or 403, got " + response.statusCode() + ": " + response.body(),
+        response.statusCode() == 400 || response.statusCode() == 403);
+    Assert.assertEquals("no backend HMS calls may occur on refused empty non-default commit",
+        callsBefore, delegate.calls.size());
+  }
+
+  @Test
+  public void updateTableDeleteAfterCommitRefusedUnderRefusePurgeMode() throws Exception {
+    registerTableWithCommittedDataFile(
+        "delete_after_commit_guard",
+        Map.of(
+            "write.metadata.delete-after-commit.enabled", "true",
+            "write.metadata.previous-versions-max", "0"));
+    String initialMetadata = delegate.tables.get("default.delete_after_commit_guard")
+        .getParameters().get("metadata_location");
+    File initialMetadataFile = initialMetadata.startsWith("file:")
+        ? new File(java.net.URI.create(initialMetadata))
+        : new File(initialMetadata);
+    Assert.assertTrue(initialMetadataFile.exists());
+
+    restartWithPurgePolicy(RestCatalogPurgeMode.REFUSE, List.of());
+    String uuid = tableUuid("delete_after_commit_guard");
+    String body = "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"" + uuid + "\"}],"
+        + "\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"probe\":\"v2\"}}]}";
+
+    post("/v1/" + CATALOG_NAME + "/namespaces/default/tables/delete_after_commit_guard", body);
+
+    Assert.assertTrue(
+        "metadata deletion via delete-after-commit must be blocked under REFUSE: " + initialMetadataFile,
+        initialMetadataFile.exists());
   }
 
   private String tableUuid(String tableName) throws Exception {

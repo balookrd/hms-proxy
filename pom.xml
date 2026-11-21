@@ -147,6 +147,18 @@
           <groupId>org.apache.hadoop</groupId>
           <artifactId>hadoop-hdfs</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>org.apache.derby</groupId>
+          <artifactId>derby</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.datanucleus</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>sqlline</groupId>
+          <artifactId>sqlline</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>
@@ -184,6 +196,14 @@
         <exclusion>
           <groupId>xml-apis</groupId>
           <artifactId>xml-apis</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.mortbay.jetty</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>tomcat</groupId>
+          <artifactId>jasper-runtime</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -223,6 +243,14 @@
         <exclusion>
           <groupId>org.apache.logging.log4j</groupId>
           <artifactId>log4j-1.2-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.ant</groupId>
+          <artifactId>*</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -436,6 +464,26 @@
         </exclusion>
         <exclusion>
           <groupId>org.elasticsearch.client</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.elasticsearch</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.elasticsearch.plugin</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.lucene</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>kafka-clients</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.amazonaws</groupId>
           <artifactId>*</artifactId>
         </exclusion>
         <exclusion>

@@ -60,8 +60,19 @@ public final class RestCatalogConfigParser {
     boolean hiveEngineDescriptor = reader.getBoolean("rest-catalog.hive-engine-descriptor", true);
     long maxRequestBodyBytes = reader.getPositiveLong(
         "rest-catalog.max-request-body-bytes", RestCatalogConfig.DEFAULT_MAX_REQUEST_BODY_BYTES);
+    List<String> fileIoAllowedPrefixes =
+        PathPrefixAllowlist.parse(reader.getOrNull("rest-catalog.file-io.allowed-prefixes"));
+    for (String prefix : fileIoAllowedPrefixes) {
+      if (PathPrefixAllowlist.containsUnsafePathSyntax(prefix)) {
+        throw new IllegalArgumentException(
+            "rest-catalog.file-io.allowed-prefixes contains unsafe path syntax: " + prefix);
+      }
+    }
+    long maxMetadataFileBytes = reader.getNonNegativeLong(
+        "rest-catalog.max-metadata-file-bytes", RestCatalogConfig.DEFAULT_MAX_METADATA_FILE_BYTES);
     return new RestCatalogConfig(
         enabled, bindHost, port, minWorkerThreads, maxWorkerThreads, principal, keytab,
-        purgeMode, purgeAllowedPrefixes, hiveEngineDescriptor, maxRequestBodyBytes);
+        purgeMode, purgeAllowedPrefixes, hiveEngineDescriptor, maxRequestBodyBytes,
+        fileIoAllowedPrefixes, maxMetadataFileBytes);
   }
 }

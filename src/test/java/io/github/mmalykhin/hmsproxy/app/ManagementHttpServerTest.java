@@ -14,6 +14,7 @@ import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadPoolExecutor;
 import org.junit.Assert;
@@ -102,6 +103,55 @@ public class ManagementHttpServerTest {
     }
   }
 
+  @Test
+  public void rejectsNonReadMethodsWith405AndAllowHeader() throws Exception {
+    int port = freePort();
+    ProxyConfig config = config(port, ManagementConfig.DEFAULT_READINESS_CACHE_MS);
+    try (CatalogRouter router = CatalogRouter.open(config);
+         ManagementHttpServer server = ManagementHttpServer.open(
+             config, router, new ProxyObservability(config))) {
+      Assert.assertNotNull(server);
+      for (String path : new String[] {"/healthz", "/metrics", "/readyz"}) {
+        for (String method : new String[] {"POST", "DELETE"}) {
+          HttpURLConnection connection =
+              (HttpURLConnection) URI.create("http://127.0.0.1:" + port + path).toURL().openConnection();
+          connection.setRequestMethod(method);
+          connection.setConnectTimeout(5_000);
+          connection.setReadTimeout(10_000);
+          try {
+            Assert.assertEquals(405, connection.getResponseCode());
+            Assert.assertEquals("GET, HEAD", connection.getHeaderField("Allow"));
+          } finally {
+            connection.disconnect();
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  public void enforcesAllowedClientIpsOnManagementEndpoints() throws Exception {
+    int allowedPort = freePort();
+    ProxyConfig allowLoopback = config(
+        allowedPort, ManagementConfig.DEFAULT_READINESS_CACHE_MS, List.of("127.0.0.1/32"));
+    try (CatalogRouter router = CatalogRouter.open(allowLoopback);
+         ManagementHttpServer server = ManagementHttpServer.open(
+             allowLoopback, router, new ProxyObservability(allowLoopback))) {
+      Assert.assertEquals(200, statusOf(allowedPort, "/healthz", "GET"));
+    }
+
+    int deniedPort = freePort();
+    ProxyConfig denyLoopback = config(
+        deniedPort, ManagementConfig.DEFAULT_READINESS_CACHE_MS, List.of("10.0.0.0/8"));
+    try (CatalogRouter router = CatalogRouter.open(denyLoopback);
+         ManagementHttpServer server = ManagementHttpServer.open(
+             denyLoopback, router, new ProxyObservability(denyLoopback))) {
+      for (String path : new String[] {"/healthz", "/metrics", "/readyz"}) {
+        Assert.assertEquals("expected 403 for " + path, 403, statusOf(deniedPort, path, "GET"));
+      }
+    }
+  }
+
   private static long probeAge(String readyz) {
     String field = "\"probeAgeMs\":";
     int start = readyz.indexOf(field);
@@ -142,14 +192,29 @@ public class ManagementHttpServerTest {
   }
 
   private static ProxyConfig config(int managementPort, long readinessCacheMs) {
+    return config(managementPort, readinessCacheMs, List.of());
+  }
+
+  private static ProxyConfig config(
+      int managementPort,
+      long readinessCacheMs,
+      List<String> allowedClientIps
+  ) {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
         .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
         .catalogDbSeparator("__")
         .defaultCatalog("catalog1")
         .catalogs(Map.of())
-        .management(new ManagementConfig(true, "127.0.0.1", managementPort,
-            ManagementConfig.DEFAULT_THREADS, readinessCacheMs))
+        .management(new ManagementConfig(
+            true,
+            "127.0.0.1",
+            managementPort,
+            ManagementConfig.DEFAULT_THREADS,
+            readinessCacheMs,
+            ManagementConfig.DEFAULT_REQUIRE_ALL_CATALOGS,
+            allowedClientIps,
+            false))
         .syntheticReadLockStore(
             new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null))
         .build();

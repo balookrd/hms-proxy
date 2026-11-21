@@ -7,6 +7,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.iceberg.ClientPool;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.io.FileIO;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -24,6 +25,12 @@ public class RoutingHiveCatalogTest {
     Assert.assertTrue(
         "Expected RoutingClientPool after initialize, got: " + activePool.getClass().getName(),
         activePool instanceof RoutingClientPool);
+
+    FileIO activeFileIO = catalog.activeFileIO();
+    Assert.assertTrue(
+        "Expected GuardedFileIO after initialize, got: "
+            + (activeFileIO == null ? "null" : activeFileIO.getClass().getName()),
+        activeFileIO instanceof GuardedFileIO);
   }
 
   @Test

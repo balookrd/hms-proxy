@@ -46,6 +46,14 @@ public final class ServerConfigParser {
         reader.getBoolean(scope + "tcp-keepalive", fallback.tcpKeepAlive()),
         reader.getPositiveInt(scope + "tcp-keepalive-idle-seconds", fallback.keepAliveIdleSeconds()),
         reader.getPositiveInt(scope + "tcp-keepalive-interval-seconds", fallback.keepAliveIntervalSeconds()),
-        reader.getPositiveInt(scope + "tcp-keepalive-count", fallback.keepAliveCount()));
+        reader.getPositiveInt(scope + "tcp-keepalive-count", fallback.keepAliveCount()),
+        reader.getNonNegativeLong(
+            scope + "thrift.max-string-length-bytes", fallback.thriftMaxStringLengthBytes()),
+        reader.getNonNegativeLong(
+            scope + "thrift.max-container-length", fallback.thriftMaxContainerLength()),
+        reader.getNonNegativeInt(
+            scope + "sasl-handshake-timeout-ms", fallback.saslHandshakeTimeoutMs()),
+        reader.getNonNegativeInt(
+            scope + "sasl-max-frame-bytes", fallback.saslMaxFrameBytes()));
   }
 }

@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.app;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
@@ -36,6 +37,38 @@ final class SingleFlightCache<T> {
     } else if (!refreshLock.tryLock()) {
       return snapshot.value();
     }
+    return refreshUnderLock(loader);
+  }
+
+  /**
+   * Non-blocking variant for management scrapes: waits at most {@code coldStartWaitMs} for the
+   * initial probe and returns {@link Optional#empty()} if initialization is still in flight, so a
+   * slow initial probe cannot exhaust the HTTP worker pool.
+   */
+  Optional<T> tryGet(Supplier<T> loader, long coldStartWaitMs) {
+    Entry<T> snapshot = current;
+    if (isFresh(snapshot)) {
+      return Optional.of(snapshot.value());
+    }
+    if (snapshot == null) {
+      boolean acquired;
+      try {
+        acquired = refreshLock.tryLock(Math.max(0L, coldStartWaitMs), TimeUnit.MILLISECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return Optional.empty();
+      }
+      if (!acquired) {
+        Entry<T> populated = current;
+        return populated == null ? Optional.empty() : Optional.of(populated.value());
+      }
+    } else if (!refreshLock.tryLock()) {
+      return Optional.of(snapshot.value());
+    }
+    return Optional.ofNullable(refreshUnderLock(loader));
+  }
+
+  private T refreshUnderLock(Supplier<T> loader) {
     try {
       Entry<T> latest = current;
       if (isFresh(latest)) {

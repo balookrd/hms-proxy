@@ -140,7 +140,7 @@ public class ProxyConfigLoaderTest {
       ProxyConfig config = ProxyConfigLoader.load(file);
 
       Assert.assertTrue(config.management().enabled());
-      Assert.assertEquals("127.0.0.2", config.management().bindHost());
+      Assert.assertEquals("127.0.0.1", config.management().bindHost());
       Assert.assertEquals(19083, config.management().port());
       Assert.assertEquals(ManagementConfig.DEFAULT_THREADS, config.management().threads());
       Assert.assertEquals(
@@ -2471,6 +2471,171 @@ public class ProxyConfigLoaderTest {
       Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
     } finally {
       Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsThriftAndSaslLimitsAndRejectsNegative() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.thrift.max-string-length-bytes=1048576
+          server.thrift.max-container-length=50000
+          server.sasl-handshake-timeout-ms=5000
+          server.sasl-max-frame-bytes=262144
+          """);
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals(1_048_576L, config.server().clientSocket().thriftMaxStringLengthBytes());
+      Assert.assertEquals(50_000L, config.server().clientSocket().thriftMaxContainerLength());
+      Assert.assertEquals(5_000, config.server().clientSocket().saslHandshakeTimeoutMs());
+      Assert.assertEquals(262_144, config.server().clientSocket().saslMaxFrameBytes());
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.thrift.max-string-length-bytes=0
+          server.thrift.max-container-length=0
+          server.sasl-handshake-timeout-ms=0
+          server.sasl-max-frame-bytes=0
+          """);
+      ProxyConfig disabled = ProxyConfigLoader.load(file);
+      Assert.assertEquals(0L, disabled.server().clientSocket().thriftMaxStringLengthBytes());
+      Assert.assertEquals(0L, disabled.server().clientSocket().thriftMaxContainerLength());
+      Assert.assertEquals(0, disabled.server().clientSocket().saslHandshakeTimeoutMs());
+      Assert.assertEquals(0, disabled.server().clientSocket().saslMaxFrameBytes());
+
+      for (String badKey : new String[] {
+          "server.thrift.max-string-length-bytes=-1",
+          "server.thrift.max-container-length=-1",
+          "server.sasl-handshake-timeout-ms=-1",
+          "server.sasl-max-frame-bytes=-1"
+      }) {
+        Files.writeString(file, """
+            synthetic-read-lock.store.mode=IN_MEMORY
+            catalogs=catalog1
+            catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+            """ + badKey + "\n");
+        Assert.assertThrows("Expected rejection for " + badKey,
+            IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void loadsExplicitManagementHardeningOptionsAndRejectsBadCidr() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          management.port=19083
+          management.bind-host=127.0.0.2
+          management.allowed-client-ips=127.0.0.1/32,10.0.0.0/8
+          management.readyz.include-details=true
+          """);
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals("127.0.0.2", config.management().bindHost());
+      Assert.assertEquals(List.of("127.0.0.1/32", "10.0.0.0/8"), config.management().allowedClientIps());
+      Assert.assertTrue(config.management().readyzIncludeDetails());
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          management.port=19083
+          management.allowed-client-ips=not-an-ip
+          """);
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void validatesRestCatalogKerberosPortConflictsAndFileIoOptions() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    Path keytab = Files.createTempFile("hms-proxy-test", ".keytab");
+    try {
+      // Fail closed: REST catalog enabled under security.mode=KERBEROS without SPNEGO credentials.
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          security.mode=KERBEROS
+          security.server-principal=hive/proxy@EXAMPLE.COM
+          security.keytab=%s
+          rest-catalog.enabled=true
+          rest-catalog.port=9183
+          """.formatted(keytab.toAbsolutePath()));
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+
+      // REST listener port conflicts with primary listener / management listener.
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.port=9083
+          rest-catalog.enabled=true
+          rest-catalog.port=9083
+          """);
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          server.bind-host=0.0.0.0
+          management.port=19083
+          rest-catalog.enabled=true
+          rest-catalog.bind-host=127.0.0.1
+          rest-catalog.port=19083
+          """);
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+
+      // Rejects traversal in rest-catalog.file-io.allowed-prefixes.
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          rest-catalog.enabled=true
+          rest-catalog.port=9183
+          rest-catalog.file-io.allowed-prefixes=s3a://bucket/../escape
+          """);
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+
+      // Valid full configuration under KERBEROS with SPNEGO and FileIO options.
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          security.mode=KERBEROS
+          security.server-principal=hive/proxy@EXAMPLE.COM
+          security.keytab=%s
+          rest-catalog.enabled=true
+          rest-catalog.port=9183
+          rest-catalog.kerberos.principal=HTTP/proxy@EXAMPLE.COM
+          rest-catalog.kerberos.keytab=%s
+          rest-catalog.file-io.allowed-prefixes=s3a://bucket/wh,hdfs://ns2/data
+          rest-catalog.max-metadata-file-bytes=33554432
+          """.formatted(keytab.toAbsolutePath(), keytab.toAbsolutePath()));
+      ProxyConfig valid = ProxyConfigLoader.load(file);
+      Assert.assertEquals(
+          List.of("s3a://bucket/wh", "hdfs://ns2/data"),
+          valid.restCatalog().fileIoAllowedPrefixes());
+      Assert.assertEquals(33_554_432L, valid.restCatalog().maxMetadataFileBytes());
+    } finally {
+      Files.deleteIfExists(file);
+      Files.deleteIfExists(keytab);
     }
   }
 }

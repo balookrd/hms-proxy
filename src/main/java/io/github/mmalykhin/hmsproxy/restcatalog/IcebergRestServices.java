@@ -2,10 +2,15 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import java.io.IOException;
+import java.net.URI;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.iceberg.hadoop.ConfigProperties;
 
@@ -48,13 +53,8 @@ public final class IcebergRestServices implements AutoCloseable {
   public static IcebergRestServices open(
       ProxyConfig config, ThriftHiveMetastore.Iface delegate, Function<String, String> catalogForExternalDb,
       Function<String, Configuration> hadoopConfForCatalog) {
-    Map<String, IcebergRestService> services = new LinkedHashMap<>();
-    IcebergPurgePolicy purgePolicy = new IcebergPurgePolicy(
-        config.restCatalog().purgeMode(), config.restCatalog().purgeAllowedPrefixes());
+    Map<String, Configuration> confByCatalog = new LinkedHashMap<>();
     for (String catalog : config.catalogNames()) {
-      CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
-          ? null
-          : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
       // A copy, never the backend's own Configuration: in production that object is
       // router.requireBackend(catalog).hiveConf(), shared with the Thrift path, and writing to it
       // would change behaviour far outside the REST front door.
@@ -66,11 +66,61 @@ public final class IcebergRestServices implements AutoCloseable {
           && catalogConf.get(ConfigProperties.ENGINE_HIVE_ENABLED) == null) {
         catalogConf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
       }
+      confByCatalog.put(catalog, catalogConf);
+    }
+    List<URI> defaultFederatedReadFsUris =
+        collectFederatedReadFsUris(config.defaultCatalog(), confByCatalog);
+    Map<String, IcebergRestService> services = new LinkedHashMap<>();
+    IcebergPurgePolicy purgePolicy = new IcebergPurgePolicy(
+        config.restCatalog().purgeMode(), config.restCatalog().purgeAllowedPrefixes());
+    for (String catalog : config.catalogNames()) {
+      CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
+          ? null
+          : new CatalogNameTranslation(catalog, config.catalogDbSeparator());
+      List<URI> federatedReadFsUris = catalog.equals(config.defaultCatalog())
+          ? defaultFederatedReadFsUris
+          : List.of();
       services.put(catalog,
-          new IcebergRestService(catalog, delegate, translation, config.defaultCatalog(), catalogForExternalDb,
-              catalogConf, purgePolicy));
+          new IcebergRestService(
+              catalog,
+              delegate,
+              translation,
+              config.defaultCatalog(),
+              catalogForExternalDb,
+              confByCatalog.get(catalog),
+              purgePolicy,
+              config.restCatalog().fileIoAllowedPrefixes(),
+              config.restCatalog().maxMetadataFileBytes(),
+              federatedReadFsUris));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
+  }
+
+  private static List<URI> collectFederatedReadFsUris(
+      String defaultCatalog, Map<String, Configuration> confByCatalog) {
+    Configuration defaultConf = confByCatalog.get(defaultCatalog);
+    if (defaultConf == null) {
+      return List.of();
+    }
+    URI defaultFsUri = FileSystem.getDefaultUri(defaultConf);
+    boolean defaultIsLocalFile = "file".equalsIgnoreCase(defaultFsUri.getScheme());
+    Set<URI> result = new LinkedHashSet<>();
+    for (Map.Entry<String, Configuration> entry : confByCatalog.entrySet()) {
+      if (entry.getKey().equals(defaultCatalog)) {
+        continue;
+      }
+      URI otherUri = FileSystem.getDefaultUri(entry.getValue());
+      if (otherUri == null || otherUri.getScheme() == null) {
+        continue;
+      }
+      // Never grant local file: read access on the default catalog just because another catalog
+      // had no fs.defaultFS configured when the default catalog itself runs on a remote filesystem.
+      if ("file".equalsIgnoreCase(otherUri.getScheme()) && !defaultIsLocalFile) {
+        continue;
+      }
+      result.add(otherUri);
+    }
+    return List.copyOf(result);
   }
 
   public IcebergRestService serviceFor(String prefix) {

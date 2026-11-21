@@ -129,11 +129,66 @@ public class ManagementHttpServerReadinessTest {
     }
   }
 
+  @Test
+  public void readyzRedactsBackendLastErrorByDefaultAndExposesWhenIncludeDetailsTrue() throws Exception {
+    int redactedPort = freePort();
+    ProxyConfig redactedConfig = buildConfig(
+        redactedPort, true, true, true, false, Map.of("metastore.thrift.sasl.enabled", "true"));
+    ProxyObservability redactedObs = new ProxyObservability(redactedConfig);
+    CatalogRouter redactedRouter = CatalogRouter.createForTest(redactedConfig, Collections.emptyMap());
+
+    try (ManagementHttpServer server =
+             ManagementHttpServer.open(redactedConfig, redactedRouter, redactedObs)) {
+      Assert.assertNotNull(server);
+      redactedObs.runtimeState().recordBackendSuccess("primary", 10L, redactedConfig.latencyRouting());
+      redactedObs.runtimeState().recordBackendFailure(
+          "secondary",
+          new org.apache.thrift.transport.TTransportException("Connection refused to secret-hms.internal:9083"),
+          500L,
+          redactedConfig.latencyRouting());
+
+      String body = get(redactedPort, "/readyz");
+      Assert.assertTrue(body, body.contains("\"lastError\":null"));
+      Assert.assertFalse(body, body.contains("secret-hms.internal"));
+      Assert.assertTrue(body, body.contains("\"backend\":{\"component\":\"backend\",\"enabled\":true"));
+    }
+
+    int detailedPort = freePort();
+    ProxyConfig detailedConfig = buildConfig(detailedPort, true, true, true, true, Map.of());
+    ProxyObservability detailedObs = new ProxyObservability(detailedConfig);
+    CatalogRouter detailedRouter = CatalogRouter.createForTest(detailedConfig, Collections.emptyMap());
+
+    try (ManagementHttpServer server =
+             ManagementHttpServer.open(detailedConfig, detailedRouter, detailedObs)) {
+      Assert.assertNotNull(server);
+      detailedObs.runtimeState().recordBackendSuccess("primary", 10L, detailedConfig.latencyRouting());
+      detailedObs.runtimeState().recordBackendFailure(
+          "secondary",
+          new org.apache.thrift.transport.TTransportException("Connection refused to secret-hms.internal:9083"),
+          500L,
+          detailedConfig.latencyRouting());
+
+      String body = get(detailedPort, "/readyz");
+      Assert.assertTrue(body, body.contains("secret-hms.internal"));
+    }
+  }
+
   private static ProxyConfig buildConfig(
       int managementPort,
       boolean primaryRequired,
       boolean secondaryRequired,
       boolean requireAllCatalogs
+  ) {
+    return buildConfig(managementPort, primaryRequired, secondaryRequired, requireAllCatalogs, false, Map.of());
+  }
+
+  private static ProxyConfig buildConfig(
+      int managementPort,
+      boolean primaryRequired,
+      boolean secondaryRequired,
+      boolean requireAllCatalogs,
+      boolean includeDetails,
+      Map<String, String> primaryHiveConf
   ) {
     CatalogConfig primaryConfig = new CatalogConfig(
         "primary",
@@ -147,7 +202,7 @@ public class ManagementHttpServerReadinessTest {
         Collections.emptyMap(),
         MetastoreRuntimeProfile.APACHE_3_1_3,
         null,
-        Collections.emptyMap(),
+        primaryHiveConf,
         0L,
         128,
         0L,
@@ -202,7 +257,14 @@ public class ManagementHttpServerReadinessTest {
         .defaultCatalog("primary")
         .catalogs(catalogs)
         .management(new ManagementConfig(
-            true, "127.0.0.1", managementPort, ManagementConfig.DEFAULT_THREADS, 0L, requireAllCatalogs))
+            true,
+            "127.0.0.1",
+            managementPort,
+            ManagementConfig.DEFAULT_THREADS,
+            0L,
+            requireAllCatalogs,
+            Collections.emptyList(),
+            includeDetails))
         .syntheticReadLockStore(
             new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null))
         .build();

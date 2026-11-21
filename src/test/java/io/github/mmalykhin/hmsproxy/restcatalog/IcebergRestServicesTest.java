@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.exceptions.ForbiddenException;
 import org.junit.Test;
 
 public class IcebergRestServicesTest {
@@ -59,36 +61,93 @@ public class IcebergRestServicesTest {
         backendConf.get("iceberg.engine.hive.enabled"));
   }
 
+  @Test
+  public void defaultCatalogAllowsFederatedReadFsUrisWhileRejectingForeignWritesAndLocalFile()
+      throws Exception {
+    RecordingThriftIface recording = new RecordingThriftIface();
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("hms-proxy-test", "127.0.0.1", 9083, 1, 4))
+        .catalogDbSeparator(".")
+        .defaultCatalog("hdp")
+        .catalogs(Map.of(
+            "hdp", catalogConfig("hdp", "thrift://hms-test:9083"),
+            "apache", catalogConfig("apache", "thrift://hms-test:9084"),
+            "unconfigured", catalogConfig("unconfigured", "thrift://hms-test:9085")))
+        .backend(new BackendConfig(Map.of()))
+        .restCatalog(new RestCatalogConfig(
+            true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    Map<String, Configuration> confs = Map.of(
+        "hdp", fsConf("hdfs://namenode-a:8020"),
+        "apache", fsConf("hdfs://namenode-b:8020"),
+        "unconfigured", new Configuration(false));
+
+    try (IcebergRestServices services = IcebergRestServices.open(
+        config, recording.iface, db -> "hdp", confs::get)) {
+      RestFileIoPathGuard defaultGuard = services.serviceFor("hdp").pathGuard();
+      String federatedPath = "hdfs://namenode-b:8020/warehouse/db/t/metadata/v1.metadata.json";
+      defaultGuard.validateBeforeReadAccess(federatedPath);
+      try {
+        defaultGuard.validateBeforeFsAccess(federatedPath);
+        fail("Default catalog must not allow writes/deletes on peer catalog FS");
+      } catch (ForbiddenException expected) {
+        // Expected.
+      }
+      for (String forbiddenRead : new String[] {
+          "file:///etc/passwd",
+          "hdfs://evil:8020/warehouse/db/t/metadata/v1.metadata.json"
+      }) {
+        try {
+          defaultGuard.validateBeforeReadAccess(forbiddenRead);
+          fail("Default catalog must reject read of " + forbiddenRead);
+        } catch (ForbiddenException expected) {
+          // Expected.
+        }
+      }
+
+      RestFileIoPathGuard peerGuard = services.serviceFor("apache").pathGuard();
+      try {
+        peerGuard.validateBeforeReadAccess(
+            "hdfs://namenode-a:8020/warehouse/db/t/metadata/v1.metadata.json");
+        fail("Non-default catalog must not inherit federated read trust");
+      } catch (ForbiddenException expected) {
+        // Expected.
+      }
+    }
+  }
+
+  private static Configuration fsConf(String defaultFs) {
+    Configuration conf = new Configuration(false);
+    conf.set("fs.defaultFS", defaultFs);
+    return conf;
+  }
+
   private static ProxyConfig buildTwoCatalogConfig() {
     return ProxyConfig.builder()
         .server(new ServerConfig("hms-proxy-test", "127.0.0.1", 9083, 1, 4))
         .catalogDbSeparator(".")
         .defaultCatalog("hdp")
         .catalogs(Map.of(
-            "hdp", new CatalogConfig(
-                "hdp",
-                null,
-                null,
-                false,
-                CatalogAccessMode.READ_WRITE,
-                List.of(),
-                null,
-                null,
-                Map.of("hive.metastore.uris", "thrift://hms-test:9083")),
-            "apache", new CatalogConfig(
-                "apache",
-                null,
-                null,
-                false,
-                CatalogAccessMode.READ_WRITE,
-                List.of(),
-                null,
-                null,
-                Map.of("hive.metastore.uris", "thrift://hms-test:9084"))))
+            "hdp", catalogConfig("hdp", "thrift://hms-test:9083"),
+            "apache", catalogConfig("apache", "thrift://hms-test:9084")))
         .backend(new BackendConfig(Map.of()))
         .restCatalog(new RestCatalogConfig(
             true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true))
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
+  }
+
+  private static CatalogConfig catalogConfig(String name, String metastoreUris) {
+    return new CatalogConfig(
+        name,
+        null,
+        null,
+        false,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        null,
+        null,
+        Map.of("hive.metastore.uris", metastoreUris));
   }
 }

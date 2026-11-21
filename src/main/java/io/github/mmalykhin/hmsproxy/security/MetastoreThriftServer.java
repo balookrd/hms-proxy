@@ -56,7 +56,10 @@ public final class MetastoreThriftServer {
 
     TTransportFactory transportFactory = new TTransportFactory();
     if (frontDoorSecurity != null) {
-      transportFactory = unwrappingSaslFactory(frontDoorSecurity.createTransportFactory());
+      transportFactory = unwrappingSaslFactory(
+          frontDoorSecurity.createTransportFactory(),
+          clientSocket.saslHandshakeTimeoutMs(),
+          clientSocket.saslMaxFrameBytes());
       processor = frontDoorSecurity.wrapProcessor(processor);
       LOG.info("Kerberos/SASL enabled with principal {}", config.security().serverPrincipal());
       LOG.info("Front door delegation-token DIGEST auth is enabled");
@@ -69,10 +72,14 @@ public final class MetastoreThriftServer {
       );
     }
 
+    long maxStringLength = clientSocket.thriftMaxStringLengthBytes() == 0L
+        ? -1L : clientSocket.thriftMaxStringLengthBytes();
+    long maxContainerLength = clientSocket.thriftMaxContainerLength() == 0L
+        ? -1L : clientSocket.thriftMaxContainerLength();
     TThreadPoolServer.Args args = new TThreadPoolServer.Args(serverSocket)
         .processor(processor)
         .transportFactory(transportFactory)
-        .protocolFactory(new TBinaryProtocol.Factory())
+        .protocolFactory(new TBinaryProtocol.Factory(false, true, maxStringLength, maxContainerLength))
         .minWorkerThreads(config.server().minWorkerThreads())
         .maxWorkerThreads(config.server().maxWorkerThreads());
     this.server = new TThreadPoolServer(args);
@@ -107,10 +114,18 @@ public final class MetastoreThriftServer {
    * logs RuntimeException at ERROR. The underlying cause (client connected without sending SASL
    * data, e.g. a TCP-level health probe) is benign and not worth alarming on.
    */
-  private static TTransportFactory unwrappingSaslFactory(TTransportFactory delegate) {
+  private static TTransportFactory unwrappingSaslFactory(
+      TTransportFactory delegate,
+      int saslHandshakeTimeoutMs,
+      int saslMaxFrameBytes
+  ) {
     return new TTransportFactory() {
       @Override
       public TTransport getTransport(TTransport base) {
+        FrontDoorServerSocket.TrackedSocket tracked =
+            base instanceof FrontDoorServerSocket.TrackedSocket s ? s : null;
+        boolean started = tracked != null
+            && tracked.beginSaslHandshake(saslHandshakeTimeoutMs, saslMaxFrameBytes);
         try {
           return delegate.getTransport(base);
         } catch (RuntimeException e) {
@@ -123,6 +138,10 @@ public final class MetastoreThriftServer {
             MetastoreThriftServer.<RuntimeException>sneakyThrow(e.getCause());
           }
           throw e;
+        } finally {
+          if (started) {
+            tracked.finishSaslHandshake();
+          }
         }
       }
     };

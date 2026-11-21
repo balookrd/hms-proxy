@@ -2,23 +2,24 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogPurgeMode;
 import io.github.mmalykhin.hmsproxy.util.PathPrefixAllowlist;
-import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.view.ViewMetadata;
 
 /**
- * The single place deciding what {@code DELETE ...?purgeRequested=true} may destroy. Kept apart
- * from {@link WriteRouteGate}, which answers the different question of which catalog a namespace
- * belongs to: the gate keeps a purge inside the default catalog, this policy bounds which paths
- * inside it may be deleted. Do not grow a second purge check anywhere else.
+ * The single place deciding what {@code DELETE ...?purgeRequested=true} and runtime {@link FileIO}
+ * deletions may destroy. Kept apart from {@link WriteRouteGate}, which answers the different
+ * question of which catalog a namespace belongs to: the gate keeps a purge inside the default
+ * catalog, this policy bounds which paths inside it may be deleted. Do not grow a second purge
+ * check anywhere else.
  *
- * <p>Two lines of enforcement, because neither is sufficient alone. The pre-flight check
- * ({@link #refusalFor}) answers loudly, before anything is dropped, for the ordinary case of a
- * table living in the wrong tree. The FileIO guard ({@link #guard}) covers what pre-flight cannot
- * see: the data and manifest paths only discovered while walking manifests the client wrote.
+ * <p>Three lines of enforcement: pre-flight {@link #refusalFor} / {@link #refusalForView} before any
+ * metastore drop, runtime {@link GuardedFileIO} enforcement via {@link #authorizeRuntimeDelete} on
+ * every catalog delete path (including {@code write.metadata.delete-after-commit.enabled}), and
+ * {@link PrefixGuardedFileIO} during {@code dropTable(..., purge=true)} manifest walks.
  */
 final class IcebergPurgePolicy {
   private final RestCatalogPurgeMode mode;
@@ -33,55 +34,128 @@ final class IcebergPurgePolicy {
     return mode == RestCatalogPurgeMode.ALLOW;
   }
 
-  /** Null when the purge may proceed; otherwise the message the client gets with the 403. */
-  String refusalFor(String tableName, TableMetadata metadata, Configuration conf) {
-    if (mode == RestCatalogPurgeMode.ALLOW) {
-      return null;
-    }
-    if (mode == RestCatalogPurgeMode.REFUSE) {
-      return "Purge is disabled on this proxy (rest-catalog.purge.mode=REFUSE); table '"
-          + tableName + "' was not dropped. Retry without purgeRequested to drop it and keep its"
-          + " files.";
-    }
-    if (metadata == null) {
-      // No metadata means nothing to walk and nothing to delete; the drop itself is not a purge.
-      return null;
-    }
-    List<String> qualifiedPrefixes = PurgePathQualifier.qualifyPrefixes(allowedPrefixes, conf);
-    String outside = firstPathOutside(
-        qualifiedPrefixes, conf, metadata.location(), metadata.metadataFileLocation());
-    if (outside == null) {
-      return null;
-    }
-    return "Purge is restricted to rest-catalog.purge.allowed-prefixes; table '" + tableName
-        + "' was not dropped because '" + outside + "' lies outside them.";
+  RestCatalogPurgeMode mode() {
+    return mode;
   }
 
-  /** The delegate itself in ALLOW, so the default path keeps today's FileIO untouched. */
+  /** Null when the purge may proceed; otherwise the message the client gets with the 403. */
+  String refusalFor(String tableName, TableMetadata metadata, Configuration conf) {
+    return refusalFor(tableName, metadata, new RestFileIoPathGuard(conf, List.of()));
+  }
+
+  String refusalFor(String tableName, TableMetadata metadata, RestFileIoPathGuard guard) {
+    return refusalForObject(
+        "table",
+        tableName,
+        metadata == null ? null : metadata.location(),
+        metadata == null ? null : metadata.metadataFileLocation(),
+        guard,
+        "Retry without purgeRequested to drop it and keep its files.");
+  }
+
+  String refusalForView(String viewName, ViewMetadata metadata, RestFileIoPathGuard guard) {
+    return refusalForObject(
+        "view",
+        viewName,
+        metadata == null ? null : metadata.location(),
+        metadata == null ? null : metadata.metadataFileLocation(),
+        guard,
+        "");
+  }
+
+  /**
+   * Authorizes a single runtime {@link FileIO#deleteFile} path (not originating from a current
+   * request's rollback). Returns {@code null} when allowed or a refusal reason when refused.
+   */
+  String authorizeRuntimeDelete(String qualifiedPath, RestFileIoPathGuard guard) {
+    if (mode == RestCatalogPurgeMode.REFUSE) {
+      return "File deletion is disabled on this proxy (rest-catalog.purge.mode=REFUSE)";
+    }
+    if (mode == RestCatalogPurgeMode.ALLOWLIST) {
+      List<String> qualifiedPrefixes = PurgePathQualifier.qualifyPrefixes(allowedPrefixes, guard.conf());
+      if (!PathPrefixAllowlist.matchesStrictDescendant(qualifiedPath, qualifiedPrefixes)) {
+        return "File deletion is restricted to strict descendants under "
+            + "rest-catalog.purge.allowed-prefixes";
+      }
+      guard.verifyNoSymlinkEscape(qualifiedPath, qualifiedPrefixes);
+      return null;
+    }
+    guard.verifyNoSymlinkEscape(qualifiedPath, null);
+    return null;
+  }
+
+  /** Wraps delegate FileIO for manifest-walked table purge deletes. */
   FileIO guard(FileIO io, Configuration conf, String tableName) {
+    return guard(io, new RestFileIoPathGuard(conf, List.of()), tableName);
+  }
+
+  FileIO guard(FileIO io, RestFileIoPathGuard guard, String tableName) {
     if (mode != RestCatalogPurgeMode.ALLOWLIST) {
       return io;
     }
     return new PrefixGuardedFileIO(
-        io, PurgePathQualifier.qualifyPrefixes(allowedPrefixes, conf), conf, tableName);
+        io, PurgePathQualifier.qualifyPrefixes(allowedPrefixes, guard.conf()), guard, tableName);
+  }
+
+  private String refusalForObject(
+      String kind,
+      String objectName,
+      String location,
+      String metadataFileLocation,
+      RestFileIoPathGuard guard,
+      String suffixHint
+  ) {
+    if (mode == RestCatalogPurgeMode.ALLOW) {
+      validateLocationsIfPresent(guard, location, metadataFileLocation);
+      return null;
+    }
+    if (mode == RestCatalogPurgeMode.REFUSE) {
+      StringBuilder msg = new StringBuilder()
+          .append("Purge is disabled on this proxy (rest-catalog.purge.mode=REFUSE); ")
+          .append(kind).append(" '").append(objectName).append("' was not dropped.");
+      if (suffixHint != null && !suffixHint.isEmpty()) {
+        msg.append(' ').append(suffixHint);
+      }
+      return msg.toString();
+    }
+    if (location == null && metadataFileLocation == null) {
+      return null;
+    }
+    List<String> qualifiedPrefixes = PurgePathQualifier.qualifyPrefixes(allowedPrefixes, guard.conf());
+    String outside = firstPathOutside(
+        qualifiedPrefixes, guard, location, metadataFileLocation);
+    if (outside == null) {
+      return null;
+    }
+    return "Purge is restricted to rest-catalog.purge.allowed-prefixes; " + kind + " '"
+        + objectName + "' was not dropped because '" + outside
+        + "' lies outside them.";
+  }
+
+  private static void validateLocationsIfPresent(
+      RestFileIoPathGuard guard, String... locations) {
+    for (String location : locations) {
+      if (location != null) {
+        guard.validateBeforeFsAccess(location);
+      }
+    }
   }
 
   private static String firstPathOutside(
-      List<String> qualifiedPrefixes, Configuration conf, String... locations) {
+      List<String> qualifiedPrefixes, RestFileIoPathGuard guard, String... locations) {
     for (String location : locations) {
       if (location == null) {
         continue;
       }
-      String qualified;
       try {
-        qualified = PurgePathQualifier.qualify(location, conf);
-      } catch (IOException | IllegalArgumentException e) {
-        // Fail closed, the same way the FileIO guard does: a location that cannot be qualified
-        // cannot be shown to be inside the allowlist.
+        String qualified = guard.qualifySafely(location);
+        if (!PathPrefixAllowlist.matches(qualified, qualifiedPrefixes)) {
+          return qualified;
+        }
+        guard.verifyNoSymlinkEscape(qualified, qualifiedPrefixes, false);
+      } catch (RuntimeException e) {
+        // Fail closed: any invalid/foreign/symlink-escaping location refuses the drop.
         return location;
-      }
-      if (!PathPrefixAllowlist.matches(qualified, qualifiedPrefixes)) {
-        return qualified;
       }
     }
     return null;

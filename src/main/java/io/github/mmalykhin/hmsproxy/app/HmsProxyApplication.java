@@ -13,6 +13,7 @@ import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
 import io.github.mmalykhin.hmsproxy.routing.RoutingMetaStoreProxy;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
+import io.github.mmalykhin.hmsproxy.util.HttpServerTimeouts;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +32,7 @@ public final class HmsProxyApplication {
 
   public static void main(String[] args) throws Exception {
     LoggingBootstrap.initialize();
+    HttpServerTimeouts.installDefaultsIfUnset();
 
     if (args.length != 1) {
       System.err.println("Usage: java -jar hms-proxy.jar <config.properties>");

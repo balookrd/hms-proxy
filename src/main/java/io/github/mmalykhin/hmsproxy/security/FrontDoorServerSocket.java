@@ -124,13 +124,84 @@ final class FrontDoorServerSocket extends TServerSocket {
     }
   }
 
-  /** Untracks the socket when the worker closes its transport. */
-  private final class TrackedSocket extends TSocket {
+  /**
+   * Untracks the socket when the worker closes its transport and optionally guards the pre-auth
+   * SASL handshake phase against slowloris timeouts and oversized negotiation frames before
+   * {@code TSaslTransport.receiveSaslMessage()} allocates a frame buffer.
+   */
+  final class TrackedSocket extends TSocket {
+    private static final int SASL_HEADER_BYTES = 5;
+
     private final Socket socket;
+    private volatile boolean saslHandshakeActive;
+    private boolean saslHandshakeCompleted;
+    private int saslMaxFrameBytes;
+    private final byte[] saslHeader = new byte[SASL_HEADER_BYTES];
+    private int saslHeaderPos;
+    private int saslPayloadRemaining;
 
     TrackedSocket(Socket socket) throws TTransportException {
       super(socket);
       this.socket = socket;
+    }
+
+    boolean beginSaslHandshake(int handshakeTimeoutMs, int maxFrameBytes) {
+      if (saslHandshakeCompleted || saslHandshakeActive) {
+        return false;
+      }
+      this.saslMaxFrameBytes = maxFrameBytes;
+      this.saslHeaderPos = 0;
+      this.saslPayloadRemaining = 0;
+      this.saslHandshakeActive = true;
+      if (handshakeTimeoutMs > 0 && !socket.isClosed()) {
+        setTimeout(handshakeTimeoutMs);
+      }
+      return true;
+    }
+
+    void finishSaslHandshake() {
+      saslHandshakeActive = false;
+      saslHandshakeCompleted = true;
+      if (!socket.isClosed()) {
+        setTimeout(socketConfig.clientTimeoutMs());
+      }
+    }
+
+    @Override
+    public int read(byte[] buf, int off, int len) throws TTransportException {
+      int read = super.read(buf, off, len);
+      if (read > 0 && saslHandshakeActive && saslMaxFrameBytes > 0) {
+        inspectSaslFrames(buf, off, read);
+      }
+      return read;
+    }
+
+    private void inspectSaslFrames(byte[] buf, int off, int count) throws TTransportException {
+      int end = off + count;
+      int pos = off;
+      while (pos < end) {
+        if (saslPayloadRemaining > 0) {
+          int skip = Math.min(saslPayloadRemaining, end - pos);
+          saslPayloadRemaining -= skip;
+          pos += skip;
+          continue;
+        }
+        saslHeader[saslHeaderPos++] = buf[pos++];
+        if (saslHeaderPos == SASL_HEADER_BYTES) {
+          saslHeaderPos = 0;
+          int frameLen = ((saslHeader[1] & 0xFF) << 24)
+              | ((saslHeader[2] & 0xFF) << 16)
+              | ((saslHeader[3] & 0xFF) << 8)
+              | (saslHeader[4] & 0xFF);
+          if (frameLen < 0 || frameLen > saslMaxFrameBytes) {
+            throw new TTransportException(
+                TTransportException.UNKNOWN,
+                "SASL handshake frame length " + frameLen
+                    + " exceeds configured limit " + saslMaxFrameBytes);
+          }
+          saslPayloadRemaining = frameLen;
+        }
+      }
     }
 
     @Override

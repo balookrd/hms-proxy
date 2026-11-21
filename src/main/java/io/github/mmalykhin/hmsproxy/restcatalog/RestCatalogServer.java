@@ -7,14 +7,15 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
+import io.github.mmalykhin.hmsproxy.util.HttpServerTimeouts;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,7 @@ public final class RestCatalogServer implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(RestCatalogServer.class);
   private static final String JSON_CONTENT_TYPE = "application/json; charset=utf-8";
   private static final int STOP_TIMEOUT_SECONDS = 5;
+  private static final long REJECTION_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60L);
 
   private final HttpServer server;
   private final ThreadPoolExecutor executor;
@@ -43,6 +45,14 @@ public final class RestCatalogServer implements AutoCloseable {
     if (!restConfig.enabled()) {
       return null;
     }
+    if (config.security() != null
+        && config.security().kerberosEnabled()
+        && !restConfig.kerberosEnabled()) {
+      throw new IllegalArgumentException(
+          "rest-catalog.kerberos.principal and rest-catalog.kerberos.keytab must be configured "
+              + "when security.mode=KERBEROS and rest-catalog.enabled=true");
+    }
+    HttpServerTimeouts.installDefaultsIfUnset();
 
     HttpServer server;
     try {
@@ -78,14 +88,25 @@ public final class RestCatalogServer implements AutoCloseable {
     }
     server.createContext("/", new NotFoundHandler());
 
+    int queueCapacity = Math.max(64, restConfig.maxWorkerThreads() * 4);
+    AtomicLong lastRejectedWarnNanos = new AtomicLong();
     ThreadPoolExecutor executor = new ThreadPoolExecutor(
         restConfig.minWorkerThreads(),
         restConfig.maxWorkerThreads(),
         60L,
         TimeUnit.SECONDS,
-        new SynchronousQueue<>(),
+        new ArrayBlockingQueue<>(queueCapacity),
         namedThreadFactory("hms-proxy-rest"),
-        new ThreadPoolExecutor.CallerRunsPolicy());
+        (runnable, pool) -> {
+          long now = System.nanoTime();
+          long prev = lastRejectedWarnNanos.get();
+          if (now - prev >= REJECTION_LOG_INTERVAL_NANOS
+              && lastRejectedWarnNanos.compareAndSet(prev, now)) {
+            LOG.warn("Iceberg REST request queue full (capacity={}); rejecting request",
+                queueCapacity);
+          }
+          throw new RejectedExecutionException("Iceberg REST request queue full");
+        });
     server.setExecutor(executor);
     server.start();
     metrics.setRestListenerInfo(restConfig.bindHost(), server.getAddress().getPort());

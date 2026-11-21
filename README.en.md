@@ -353,6 +353,10 @@ applies a bounded socket lifetime:
 | `server.tcp-keepalive-idle-seconds` | `120` | Idle time before the first keepalive probe |
 | `server.tcp-keepalive-interval-seconds` | `30` | Interval between keepalive probes |
 | `server.tcp-keepalive-count` | `4` | Failed probes before the connection is dropped |
+| `server.thrift.max-string-length-bytes` | `67108864` | Maximum serialized Thrift string/binary size (64 MiB; `0` disables) |
+| `server.thrift.max-container-length` | `1000000` | Maximum elements per Thrift list/set/map (`0` disables) |
+| `server.sasl-handshake-timeout-ms` | `10000` | Short `SO_TIMEOUT` during the pre-auth SASL handshake (`0` reuses `client-socket-timeout-ms`) |
+| `server.sasl-max-frame-bytes` | `1048576` | Max bytes per pre-auth SASL frame (1 MiB, enforced before allocation; `0` keeps libthrift 100 MiB) |
 | `server.shutdown-timeout-seconds` | `30` | Bound on the ordered teardown after SIGTERM |
 
 `client-socket-timeout-ms` is a read timeout: it bounds how long a worker waits for the next
@@ -430,7 +434,8 @@ metrics. The listener is disabled by default and turns on automatically when `ma
 is configured:
 
 ```properties
-management.bind-host=0.0.0.0
+# Binds to 127.0.0.1 by default; set to a monitoring interface or 0.0.0.0 for external scrapes
+management.bind-host=127.0.0.1
 management.port=19083
 ```
 
@@ -438,14 +443,18 @@ You can also enable it explicitly:
 
 ```properties
 management.enabled=true
-# Optional; defaults to server.bind-host
-management.bind-host=0.0.0.0
+# Optional; defaults to 127.0.0.1 (loopback-only)
+management.bind-host=127.0.0.1
 # Optional; defaults to server.port + 1000
 management.port=19083
+# Optional; comma-separated IP/CIDR allowlist for management endpoints (returns 403 otherwise)
+management.allowed-client-ips=127.0.0.1/32,10.0.0.0/8
 # Optional; handler threads for the management listener, defaults to 4
 management.threads=4
 # Optional; how long readiness probe results are reused, in ms; defaults to 2000, 0 disables caching
 management.readiness-cache-ms=2000
+# Optional; whether /readyz exposes Kerberos principals and backend lastError strings (default false)
+management.readyz.include-details=false
 ```
 
 Quick checks:
@@ -456,14 +465,9 @@ curl -s http://127.0.0.1:19083/readyz
 curl -s http://127.0.0.1:19083/metrics
 ```
 
-The listener serves requests from a small dedicated thread pool (`management.threads`), so a slow
-`/readyz` never blocks `/healthz` or `/metrics`. Keep at least two threads.
+The listener accepts only `GET` and `HEAD` (other methods receive `405 Method Not Allowed` with `Allow: GET, HEAD`) on a dedicated thread pool (`management.threads`) with a bounded queue (32 requests) and JDK HTTP server timeouts (`maxReqTime`/`maxRspTime`/`maxConnections`), so a slow `/readyz` never blocks `/healthz` or `/metrics`, and concurrent cold-start `/readyz` scrapes return `503 {"status":"NOT_READY","reason":"initializing"}` instead of piling up. Keep at least two threads.
 
-**Warning:** the management endpoints have no authentication or authorization. `/readyz` exposes Kerberos
-principals and per-backend `lastError` strings that usually contain internal hostnames. Bind
-`management.bind-host` to an interface reachable only from your monitoring and orchestration
-network, or otherwise restrict the port with firewall rules or a network policy. Do not publish it
-alongside the client-facing Thrift port.
+**Security:** the management endpoints have no built-in authentication, so the listener binds to `127.0.0.1` by default and `/readyz` redacts Kerberos principals, detailed Kerberos errors, and backend `lastError` strings unless `management.readyz.include-details=true` is set. When scraping remotely, restrict access via `management.allowed-client-ips` and firewall/network policies, and do not publish the port alongside the client-facing Thrift port.
 
 ### Health and readiness endpoints
 
@@ -956,6 +960,10 @@ Each `additional-frontends.<name>.*` block defines an independent listener:
 | `additional-frontends.<name>.tcp-keepalive-idle-seconds` | no | `server.tcp-keepalive-idle-seconds` |
 | `additional-frontends.<name>.tcp-keepalive-interval-seconds` | no | `server.tcp-keepalive-interval-seconds` |
 | `additional-frontends.<name>.tcp-keepalive-count` | no | `server.tcp-keepalive-count` |
+| `additional-frontends.<name>.thrift.max-string-length-bytes` | no | `server.thrift.max-string-length-bytes` |
+| `additional-frontends.<name>.thrift.max-container-length` | no | `server.thrift.max-container-length` |
+| `additional-frontends.<name>.sasl-handshake-timeout-ms` | no | `server.sasl-handshake-timeout-ms` |
+| `additional-frontends.<name>.sasl-max-frame-bytes` | no | `server.sasl-max-frame-bytes` |
 
 All listeners share the same `RoutingMetaStoreProxy`, federation, security (`FrontDoorSecurity`
 including SASL/Kerberos), audit and Prometheus metrics. Only the wire-level Thrift API
@@ -1275,22 +1283,32 @@ Enable it via:
 ```properties
 rest-catalog.enabled=true
 rest-catalog.port=9183
-# Optional but recommended for production: SPNEGO. Requires security.mode=KERBEROS.
+# Mandatory (fail-closed) when security.mode=KERBEROS: SPNEGO.
 rest-catalog.kerberos.principal=HTTP/_HOST@EXAMPLE.COM
 rest-catalog.kerberos.keytab=/etc/security/keytabs/spnego.service.keytab
 # Optional: bound what a purge may delete (see the purge section below).
 rest-catalog.purge.mode=ALLOWLIST
 rest-catalog.purge.allowed-prefixes=hdfs://ns-default/warehouse/tablespace/
+# Optional: additional URI prefixes allowed for Iceberg FileIO beyond each catalog's fs.defaultFS
+# (required when Iceberg tables reside on S3 or secondary HDFS namespaces).
+rest-catalog.file-io.allowed-prefixes=s3a://iceberg-bucket/warehouse
+# Optional: max metadata/manifest file size readable via FileIO (default 64 MiB; 0 disables).
+rest-catalog.max-metadata-file-bytes=67108864
 ```
 
 `rest-catalog.purge.allowed-prefixes` is required by `ALLOWLIST` and rejected
 with the other two modes; both contradictions fail the proxy at startup rather
-than being ignored.
+than being ignored. When `security.mode=KERBEROS` and `rest-catalog` is enabled,
+`rest-catalog.kerberos.principal` and `rest-catalog.kerberos.keytab` are mandatory
+(fail-closed), and listener bind conflicts are checked against `server`, `management`,
+and `additional-frontends`.
 
-A request body is parsed into memory whole, one per worker thread, so its size is capped by
-`rest-catalog.max-request-body-bytes` (default `16777216`, 16 MiB). A larger body is refused with
-`413` before any JSON parsing: from its `Content-Length` header, or, for a chunked upload, as soon
-as more than the limit has been read.
+A request body is parsed into memory whole, one per worker thread, so its size (including drained
+bodies on `GET`/`HEAD`/`DELETE`) is capped by `rest-catalog.max-request-body-bytes` (default
+`16777216`, 16 MiB). A larger body is refused with `413` before any JSON parsing: from its
+`Content-Length` header, or, for a chunked upload, as soon as more than the limit has been read.
+The listener uses a bounded queue (`max(64, maxWorkerThreads * 4)`) and JDK HTTP server timeouts
+instead of `CallerRunsPolicy` so saturation never blocks the NIO `Dispatcher`.
 
 ### Keeping an Iceberg table readable by Hive
 
@@ -1386,13 +1404,29 @@ write gate keeps it inside the default catalog: a purge whose namespace resolves
 elsewhere is refused with the same `403` as any other write, before any file is
 touched.
 
-What it may delete inside that catalog is bounded by `rest-catalog.purge.mode`:
+What a purge and any catalog FileIO operation (`loadTable`, `registerTable`, `UPDATE_TABLE` with
+`write.metadata.delete-after-commit.enabled`, `dropTable`, `dropView`, `commitTransaction`) may read,
+write, or delete inside that catalog is enforced uniformly by `GuardedFileIO` and
+`rest-catalog.purge.mode`:
+
+- Before touching `FileSystem.get(...)`, paths are checked lexically for unsafe syntax (`..`,
+  `%2e`, `\0`, `user@host`) and for `(scheme, authority)` compatibility with the catalog's
+  `fs.defaultFS` or `rest-catalog.file-io.allowed-prefixes` (for the default catalog, reads also
+  accept the configured `fs.defaultFS` of peer catalogs, excluding `file:` when the default catalog
+  itself is not on `file:`, while writes and deletes remain restricted to its own FS) — preventing SSRF and local file reads
+  (`file:///etc/passwd`) on HDFS-backed catalogs. Configure `rest-catalog.file-io.allowed-prefixes`
+  when Iceberg tables live on S3 or secondary HDFS namespaces.
+- Under `REFUSE` / `ALLOWLIST`, `rest-catalog.purge.mode` governs not only
+  `DELETE .../tables/{tbl}?purgeRequested=true`, but also `DROP VIEW` metadata deletion and
+  `UPDATE_TABLE` (`write.metadata.delete-after-commit.enabled`), rejecting symlink escapes and
+  allowlist-root deletion; same-request rollback cleanup of newly written metadata after a failed
+  commit (such as `409 Conflict`) stays permitted.
 
 | Mode | Behaviour |
 | --- | --- |
-| `ALLOW` (default) | Deletes whatever the table's metadata and manifests point at, the way Iceberg REST catalogs do. Unchanged from earlier versions. |
-| `ALLOWLIST` | Purges only under `rest-catalog.purge.allowed-prefixes`. |
-| `REFUSE` | Answers `403` to every purge; a `DELETE` without `purgeRequested` still drops the table and leaves its files. |
+| `ALLOW` (default) | Deletes whatever the table's metadata and manifests point at within allowed schemes/filesystems (with direct-symlink checks). Unchanged from earlier versions. |
+| `ALLOWLIST` | Purges and runtime deletions are allowed strictly as descendants under `rest-catalog.purge.allowed-prefixes`. |
+| `REFUSE` | Answers `403` to every purge, `DROP VIEW` with metadata files, and blocks `delete-after-commit`; a table `DELETE` without `purgeRequested` still drops the table and leaves its files. |
 
 A purge the policy does not permit is refused before the table is dropped,
 so a refusal leaves both the table and its files intact and the client can retry
@@ -1408,11 +1442,13 @@ REST protocol the client writes the manifests, so a commit can point a snapshot
 at files in another tree, and those paths only become known while walking the
 manifests — after the pre-flight check has already passed.
 
-Error responses carry the mapped HTTP status, `type` and `message` but never
-a server stack trace, since this listener can be reached without
-authentication. A request body that fails to parse answers 400
-(`BadRequestException`) instead of falling through to a 500; this applies to
-every route that takes a body. A `HEAD` response never writes a body, per RFC
+Error responses carry the mapped HTTP status, `type` and a sanitized `message`, never a
+server stack trace or raw local-file parse errors (`500` redacts details as `"Internal server error"`).
+Internal adapter test routes (`/v1/oauth/tokens`) are rejected with `404`, routing parses
+`getRawPath()` (malformed percent-encoding and non-numeric `pageSize` return `400` rather than `500`),
+and a failure on the second or subsequent table after a partial commit in
+`POST /v1/{prefix}/transactions/commit` returns `500` (`CommitStateUnknownException`) instead of a
+misleading `409`. A missing, null, or unparseable request body answers 400 (`BadRequestException`). A `HEAD` response never writes a body, per RFC
 9110 — including on an error status — so an exists-check against a missing
 namespace, table or view returns a plain 404 with no body, not a 404 with a
 JSON payload. The request dispatcher catches `Throwable`, not only

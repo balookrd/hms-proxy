@@ -4,6 +4,7 @@ import com.sun.net.httpserver.Authenticator;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpPrincipal;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Base64;
 import java.util.Objects;
@@ -35,6 +36,7 @@ final class SpnegoAuthenticator extends Authenticator {
   private final UserGroupInformation ugi;
   private final String realm;
   private final GSSCredential serverCredentials;
+  private final Object reloginLock = new Object();
 
   SpnegoAuthenticator(UserGroupInformation ugi, String principalName) throws Exception {
     this.ugi = Objects.requireNonNull(ugi, "ugi");
@@ -67,11 +69,22 @@ final class SpnegoAuthenticator extends Authenticator {
       return new Failure(400);
     }
 
+    reloginIfNeeded();
     try {
       return ugi.doAs((PrivilegedExceptionAction<Result>) () -> acceptToken(exchange, token));
     } catch (Exception e) {
       LOG.warn("SPNEGO authentication failed: {}", e.getMessage());
       return new Failure(401);
+    }
+  }
+
+  private void reloginIfNeeded() {
+    synchronized (reloginLock) {
+      try {
+        ugi.checkTGTAndReloginFromKeytab();
+      } catch (IOException e) {
+        LOG.warn("SPNEGO keytab ticket renewal check failed: {}", e.getMessage());
+      }
     }
   }
 

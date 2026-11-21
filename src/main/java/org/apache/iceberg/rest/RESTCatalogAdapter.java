@@ -574,8 +574,21 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
       }
     }
 
-    // only commit if validations passed previously
-    transactions.forEach(Transaction::commitTransaction);
+    // only commit if validations passed previously; once at least one table is committed,
+    // any failure on a subsequent table leaves the transaction partially applied and must be
+    // reported as 500 CommitStateUnknownException rather than 409 Conflict.
+    boolean committedAny = false;
+    for (Transaction transaction : transactions) {
+      try {
+        transaction.commitTransaction();
+        committedAny = true;
+      } catch (RuntimeException e) {
+        if (committedAny) {
+          throw new CommitStateUnknownException(e);
+        }
+        throw e;
+      }
+    }
   }
 
   @Override

@@ -229,6 +229,38 @@ public class AdditionalFrontendConfigParserTest {
     Assert.assertEquals(7, clientSocket.keepAliveCount());
   }
 
+  @Test
+  public void inheritsAndOverridesThriftAndSaslLimitsPerListener() throws Exception {
+    List<AdditionalFrontendConfig> inherited = load(BASE_PROPS
+        + "server.thrift.max-string-length-bytes=4096\n"
+        + "server.thrift.max-container-length=500\n"
+        + "server.sasl-handshake-timeout-ms=2500\n"
+        + "server.sasl-max-frame-bytes=65536\n"
+        + "additional-frontends=apache2\n"
+        + "additional-frontends.apache2.port=9084\n"
+        + "additional-frontends.apache2.frontend-profile=APACHE_3_1_3\n");
+    ClientSocketConfig inheritedSocket = inherited.get(0).clientSocket();
+    Assert.assertEquals(4096L, inheritedSocket.thriftMaxStringLengthBytes());
+    Assert.assertEquals(500L, inheritedSocket.thriftMaxContainerLength());
+    Assert.assertEquals(2500, inheritedSocket.saslHandshakeTimeoutMs());
+    Assert.assertEquals(65536, inheritedSocket.saslMaxFrameBytes());
+
+    List<AdditionalFrontendConfig> overridden = load(BASE_PROPS
+        + "server.thrift.max-string-length-bytes=4096\n"
+        + "additional-frontends=apache2\n"
+        + "additional-frontends.apache2.port=9084\n"
+        + "additional-frontends.apache2.frontend-profile=APACHE_3_1_3\n"
+        + "additional-frontends.apache2.thrift.max-string-length-bytes=8192\n"
+        + "additional-frontends.apache2.thrift.max-container-length=0\n"
+        + "additional-frontends.apache2.sasl-handshake-timeout-ms=1500\n"
+        + "additional-frontends.apache2.sasl-max-frame-bytes=32768\n");
+    ClientSocketConfig overriddenSocket = overridden.get(0).clientSocket();
+    Assert.assertEquals(8192L, overriddenSocket.thriftMaxStringLengthBytes());
+    Assert.assertEquals(0L, overriddenSocket.thriftMaxContainerLength());
+    Assert.assertEquals(1500, overriddenSocket.saslHandshakeTimeoutMs());
+    Assert.assertEquals(32768, overriddenSocket.saslMaxFrameBytes());
+  }
+
   private static List<AdditionalFrontendConfig> load(String body) throws Exception {
     Path file = Files.createTempFile("hms-proxy-extra-fe", ".properties");
     try {

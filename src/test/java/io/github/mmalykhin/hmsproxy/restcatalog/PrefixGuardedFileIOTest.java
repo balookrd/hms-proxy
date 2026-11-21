@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.hadoop.HadoopFileIO;
@@ -74,5 +75,35 @@ public class PrefixGuardedFileIOTest {
     // change how anything else behaves if it is ever reused.
     Assert.assertNotNull(io.newOutputFile("file:" + outside.getAbsolutePath() + "/d.parquet"));
     Assert.assertNotNull(io.newInputFile("file:" + outside.getAbsolutePath() + "/d.parquet"));
+  }
+
+  @Test
+  public void skipsAllowlistRootSymlinkEscapesAndBoundsRecordedSkippedPaths() throws Exception {
+    File allowRoot = tempFolder.newFolder("strict_root");
+    File outsideDir = tempFolder.newFolder("outside_strict");
+    File outsideFile = new File(outsideDir, "secret.parquet");
+    Files.write(outsideFile.toPath(), new byte[] {1});
+    Path linkDir = allowRoot.toPath().resolve("link");
+    Files.createSymbolicLink(linkDir, outsideDir.toPath());
+    File escaped = new File(linkDir.toFile(), "secret.parquet");
+
+    Configuration conf = new Configuration(false);
+    PrefixGuardedFileIO io = new PrefixGuardedFileIO(
+        new HadoopFileIO(conf),
+        PurgePathQualifier.qualifyPrefixes(
+            List.of("file:" + allowRoot.getAbsolutePath()), conf),
+        conf,
+        "default.t");
+
+    io.deleteFile("file:" + allowRoot.getAbsolutePath());
+    io.deleteFile("file:" + escaped.getAbsolutePath());
+    for (int i = 0; i < 80; i++) {
+      io.deleteFile("file:" + outsideDir.getAbsolutePath() + "/extra_" + i + ".parquet");
+    }
+
+    Assert.assertTrue("allowlist root itself must remain", allowRoot.exists());
+    Assert.assertTrue("symlink target must remain", outsideFile.exists());
+    Assert.assertEquals(PrefixGuardedFileIO.MAX_RECORDED_SKIPPED_PATHS, io.skippedPaths().size());
+    Assert.assertEquals(82, io.skippedCount());
   }
 }

@@ -21,6 +21,9 @@ import org.apache.hadoop.hive.metastore.utils.SecurityUtils;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.thrift.TProcessor;
+import org.apache.thrift.transport.TSaslServerTransport;
+import org.apache.thrift.transport.TSocket;
+import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -298,7 +301,11 @@ public final class FrontDoorSecurity implements AutoCloseable {
     TProcessor contextAware = (in, out) -> {
       org.apache.thrift.transport.TTransport transport = in != null ? in.getTransport() : null;
       org.apache.thrift.transport.TTransport previousTransport = ClientRequestContext.setCurrentTransport(transport);
-      String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddressSupplier.get());
+      String resolvedRemoteAddress = remoteAddressSupplier != null ? remoteAddressSupplier.get() : null;
+      if (resolvedRemoteAddress == null) {
+        resolvedRemoteAddress = extractRemoteAddress(transport);
+      }
+      String previousRemoteAddress = ClientRequestContext.setRemoteAddress(resolvedRemoteAddress);
       String authenticatedUser = remoteUserSupplier.get();
       String previousAuthenticatedUser = ClientRequestContext.setAuthenticatedUser(authenticatedUser);
       String authMechanism = authMechanismSupplier != null ? authMechanismSupplier.get() : null;
@@ -511,6 +518,23 @@ public final class FrontDoorSecurity implements AutoCloseable {
         .append(proxyUser)
         .append(".groups (or load the same core-site.xml into the proxy process).");
     return message.toString();
+  }
+
+  private static String extractRemoteAddress(TTransport transport) {
+    TTransport current = transport;
+    for (int depth = 0; depth < 8 && current != null; depth++) {
+      if (current instanceof TSocket tSocket) {
+        java.net.Socket socket = tSocket.getSocket();
+        InetAddress addr = socket != null ? socket.getInetAddress() : null;
+        return addr != null ? addr.getHostAddress() : null;
+      }
+      if (current instanceof TSaslServerTransport saslTransport) {
+        current = saslTransport.getUnderlyingTransport();
+        continue;
+      }
+      break;
+    }
+    return null;
   }
 
   private String remoteAddress() {

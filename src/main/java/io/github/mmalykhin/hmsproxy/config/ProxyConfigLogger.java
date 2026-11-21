@@ -73,6 +73,16 @@ public final class ProxyConfigLogger {
         .append(" (idle=").append(socket.keepAliveIdleSeconds()).append("s")
         .append(", interval=").append(socket.keepAliveIntervalSeconds()).append("s")
         .append(", count=").append(socket.keepAliveCount()).append(")\n");
+    sb.append("  Thrift Protocol Limits: maxStringLengthBytes=")
+        .append(socket.thriftMaxStringLengthBytes() == 0L ? "unlimited" : socket.thriftMaxStringLengthBytes())
+        .append(", maxContainerLength=")
+        .append(socket.thriftMaxContainerLength() == 0L ? "unlimited" : socket.thriftMaxContainerLength())
+        .append("\n");
+    sb.append("  SASL Handshake Guards: timeoutMs=")
+        .append(socket.saslHandshakeTimeoutMs() == 0 ? "inherit-client-timeout" : socket.saslHandshakeTimeoutMs())
+        .append(", maxFrameBytes=")
+        .append(socket.saslMaxFrameBytes() == 0 ? "libthrift-default" : socket.saslMaxFrameBytes())
+        .append("\n");
     sb.append("  Shutdown Timeout: ").append(server.shutdownTimeoutSeconds()).append("s\n");
   }
 
@@ -218,6 +228,15 @@ public final class ProxyConfigLogger {
       if (!config.restCatalog().purgeAllowedPrefixes().isEmpty()) {
         sb.append("  Purge Allowed Prefixes: ").append(config.restCatalog().purgeAllowedPrefixes()).append("\n");
       }
+      if (!config.restCatalog().fileIoAllowedPrefixes().isEmpty()) {
+        sb.append("  FileIO Allowed Prefixes: ").append(config.restCatalog().fileIoAllowedPrefixes()).append("\n");
+      }
+      sb.append("  Max Request Body Bytes: ").append(config.restCatalog().maxRequestBodyBytes()).append("\n");
+      sb.append("  Max Metadata File Bytes: ")
+          .append(config.restCatalog().maxMetadataFileBytes() == 0L
+              ? "unlimited"
+              : config.restCatalog().maxMetadataFileBytes())
+          .append("\n");
       sb.append("  Hive Engine Descriptor: ").append(config.restCatalog().hiveEngineDescriptor()).append("\n");
     }
   }
@@ -230,6 +249,10 @@ public final class ProxyConfigLogger {
       sb.append("  Handler Threads: ").append(config.management().threads()).append("\n");
       sb.append("  Readiness Cache: ").append(config.management().readinessCacheMs()).append(" ms\n");
       sb.append("  Require All Catalogs: ").append(config.management().requireAllCatalogs()).append("\n");
+      if (!config.management().allowedClientIps().isEmpty()) {
+        sb.append("  Allowed Client IPs: ").append(config.management().allowedClientIps()).append("\n");
+      }
+      sb.append("  Readyz Include Details: ").append(config.management().readyzIncludeDetails()).append("\n");
     }
   }
 

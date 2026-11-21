@@ -11,24 +11,31 @@ import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import io.github.mmalykhin.hmsproxy.routing.BackendProbeRunner;
 import io.github.mmalykhin.hmsproxy.routing.CatalogRouter;
+import io.github.mmalykhin.hmsproxy.util.ClientAddressMatcher;
 import io.github.mmalykhin.hmsproxy.util.HttpResponseWriter;
+import io.github.mmalykhin.hmsproxy.util.HttpServerTimeouts;
 import io.github.mmalykhin.hmsproxy.util.JsonEscapeUtil;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class ManagementHttpServer implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(ManagementHttpServer.class);
+  private static final int HTTP_QUEUE_CAPACITY = 32;
+  private static final long COLD_START_PROBE_WAIT_MS = 200L;
+  private static final long REJECTION_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60L);
 
   private final HttpServer server;
   private final ExecutorService httpExecutor;
@@ -60,6 +67,9 @@ public final class ManagementHttpServer implements AutoCloseable {
     if (!config.management().enabled()) {
       return null;
     }
+    HttpServerTimeouts.installDefaultsIfUnset();
+    List<ClientAddressMatcher> allowedClients =
+        ClientAddressMatcher.parseAll(config.management().allowedClientIps());
 
     HttpServer server;
     try {
@@ -70,12 +80,12 @@ public final class ManagementHttpServer implements AutoCloseable {
           config.management().bindHost(), config.management().port(), e.getMessage());
       throw e;
     }
-    server.createContext("/healthz", exchange -> {
+    server.createContext("/healthz", wrapHandler(allowedClients, exchange -> {
       String body = "{\"status\":\"ok\",\"alive\":true,\"uptimeSeconds\":"
           + (System.currentTimeMillis() / 1000L - observability.runtimeState().startedAtEpochSecond())
           + "}\n";
       respond(exchange, 200, "application/json; charset=utf-8", body);
-    });
+    }));
     ExecutorService readinessProbeExecutor = null;
     BackendProbeRunner readinessProbeRunner = null;
     if (!config.latencyRouting().backendStatePolling().enabled() && !router.backends().isEmpty()) {
@@ -92,24 +102,36 @@ public final class ManagementHttpServer implements AutoCloseable {
           new ThreadPoolExecutor.CallerRunsPolicy());
       readinessProbeRunner = new BackendProbeRunner(readinessProbeExecutor, backendProbe);
     }
-    server.createContext("/readyz", new ReadinessHandler(config, router, observability, readinessProbeRunner));
-    server.createContext("/metrics", exchange -> respond(
+    server.createContext("/readyz", wrapHandler(
+        allowedClients, new ReadinessHandler(config, router, observability, readinessProbeRunner)));
+    server.createContext("/metrics", wrapHandler(allowedClients, exchange -> respond(
         exchange,
         200,
         "text/plain; version=0.0.4; charset=utf-8",
-        observability.metrics().render()));
+        observability.metrics().render())));
     // Without an explicit executor the built-in HttpServer serves every context from its single
     // dispatcher thread, so one /readyz call blocked on an unreachable backend would also stall
     // liveness checks and metric scrapes. Readiness probing is single-flight (see ReadinessHandler),
     // so at most one of these threads can be parked on backend I/O at a time.
     int managementThreads = config.management().threads();
+    AtomicLong lastRejectedWarnNanos = new AtomicLong();
     ExecutorService httpExecutor = new ThreadPoolExecutor(
         managementThreads,
         managementThreads,
         0L,
         TimeUnit.MILLISECONDS,
-        new LinkedBlockingQueue<>(),
-        namedThreadFactory("hms-proxy-management"));
+        new ArrayBlockingQueue<>(HTTP_QUEUE_CAPACITY),
+        namedThreadFactory("hms-proxy-management"),
+        (runnable, executor) -> {
+          long now = System.nanoTime();
+          long prev = lastRejectedWarnNanos.get();
+          if (now - prev >= REJECTION_LOG_INTERVAL_NANOS
+              && lastRejectedWarnNanos.compareAndSet(prev, now)) {
+            LOG.warn("Management HTTP request queue full (capacity={}); rejecting request",
+                HTTP_QUEUE_CAPACITY);
+          }
+          throw new RejectedExecutionException("Management HTTP request queue full");
+        });
     server.setExecutor(httpExecutor);
     server.start();
     LOG.info("Management HTTP listener started on {}:{} with {} handler thread(s), "
@@ -153,6 +175,47 @@ public final class ManagementHttpServer implements AutoCloseable {
     };
   }
 
+  private static HttpHandler wrapHandler(
+      List<ClientAddressMatcher> allowedClients,
+      HttpHandler delegate
+  ) {
+    return exchange -> {
+      if (!isClientAllowed(exchange, allowedClients)) {
+        respond(exchange, 403, "text/plain; charset=utf-8", "Forbidden\n");
+        return;
+      }
+      String method = exchange.getRequestMethod();
+      if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+        exchange.getResponseHeaders().set("Allow", "GET, HEAD");
+        respond(exchange, 405, "text/plain; charset=utf-8", "Method Not Allowed\n");
+        return;
+      }
+      delegate.handle(exchange);
+    };
+  }
+
+  private static boolean isClientAllowed(
+      HttpExchange exchange,
+      List<ClientAddressMatcher> allowedClients
+  ) {
+    if (allowedClients.isEmpty()) {
+      return true;
+    }
+    InetSocketAddress remote = exchange.getRemoteAddress();
+    byte[] address = remote != null && remote.getAddress() != null
+        ? remote.getAddress().getAddress()
+        : null;
+    if (address == null) {
+      return false;
+    }
+    for (ClientAddressMatcher matcher : allowedClients) {
+      if (matcher.matches(address)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private static void respond(HttpExchange exchange, int status, String contentType, String body) throws IOException {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", contentType);
@@ -183,10 +246,20 @@ public final class ManagementHttpServer implements AutoCloseable {
       // Backend and Kerberos probes are the expensive part of readiness; they are refreshed at most
       // once per readiness-cache-ms so that frequent scrapes do not fan out network checks. The
       // backend status fields below are read fresh from in-memory runtime state on every request.
-      ProbeSnapshot probes = probeCache.get(this::refreshProbes);
+      Optional<ProbeSnapshot> probesOpt = probeCache.tryGet(this::refreshProbes, COLD_START_PROBE_WAIT_MS);
+      if (probesOpt.isEmpty()) {
+        respond(
+            exchange,
+            503,
+            "application/json; charset=utf-8",
+            "{\"status\":\"NOT_READY\",\"alive\":true,\"reason\":\"initializing\"}\n");
+        return;
+      }
+      ProbeSnapshot probes = probesOpt.get();
       long probeAgeMs = Math.max(0L, System.currentTimeMillis() - probes.probedAtEpochMs());
       KerberosHealthProbe.KerberosStatus frontDoorKerberos = probes.frontDoor();
       KerberosHealthProbe.KerberosStatus backendKerberos = probes.backend();
+      boolean includeDetails = config.management().readyzIncludeDetails();
       List<ProxyRuntimeState.BackendRuntimeStatus> statuses = observability.runtimeState().backendStatuses();
       boolean requireAll = config.management().requireAllCatalogs();
       boolean backendConnectivity = statuses.stream()
@@ -206,8 +279,8 @@ public final class ManagementHttpServer implements AutoCloseable {
           .append("\"probeAgeMs\":").append(probeAgeMs).append(',')
           .append("\"backendConnectivity\":").append(backendConnectivity).append(',')
           .append("\"kerberos\":{")
-          .append("\"frontDoor\":").append(renderKerberos(frontDoorKerberos)).append(',')
-          .append("\"backend\":").append(renderKerberos(backendKerberos)).append("},")
+          .append("\"frontDoor\":").append(renderKerberos(frontDoorKerberos, includeDetails)).append(',')
+          .append("\"backend\":").append(renderKerberos(backendKerberos, includeDetails)).append("},")
           .append("\"backends\":[");
       for (int index = 0; index < statuses.size(); index++) {
         ProxyRuntimeState.BackendRuntimeStatus status = statuses.get(index);
@@ -232,7 +305,7 @@ public final class ManagementHttpServer implements AutoCloseable {
             .append("\"consecutiveFailures\":").append(status.consecutiveFailures()).append(',')
             .append("\"circuitRetryAtEpochMs\":").append(status.circuitRetryAtEpochMs()).append(',')
             .append("\"lastError\":");
-        if (status.lastError() == null) {
+        if (!includeDetails || status.lastError() == null) {
           body.append("null");
         } else {
           body.append('"').append(escape(status.lastError())).append('"');
@@ -298,7 +371,9 @@ public final class ManagementHttpServer implements AutoCloseable {
 
     private KerberosHealthProbe.KerberosStatus backendKerberosStatus() {
       boolean backendKerberosEnabled = config.catalogs().values().stream()
-          .anyMatch(catalog -> Boolean.parseBoolean(catalog.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false")));
+          .anyMatch(catalog ->
+              Boolean.parseBoolean(catalog.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"))
+                  || Boolean.parseBoolean(catalog.hiveConf().getOrDefault("metastore.thrift.sasl.enabled", "false")));
       if (!backendKerberosEnabled) {
         return KerberosHealthProbe.disabled("backend");
       }
@@ -312,6 +387,12 @@ public final class ManagementHttpServer implements AutoCloseable {
   }
 
   static String renderKerberos(KerberosHealthProbe.KerberosStatus status) {
+    return renderKerberos(status, true);
+  }
+
+  static String renderKerberos(KerberosHealthProbe.KerberosStatus status, boolean includeDetails) {
+    String principal = includeDetails ? status.principal() : null;
+    String detail = includeDetails ? status.detail() : sanitizeKerberosDetail(status);
     StringBuilder builder = new StringBuilder(160);
     builder.append('{')
         .append("\"component\":\"").append(escape(status.component())).append("\",")
@@ -320,21 +401,34 @@ public final class ManagementHttpServer implements AutoCloseable {
         .append("\"loggedIn\":").append(status.loggedIn()).append(',')
         .append("\"healthy\":").append(status.healthy()).append(',')
         .append("\"principal\":");
-    if (status.principal() == null) {
+    if (principal == null) {
       builder.append("null");
     } else {
-      builder.append('"').append(escape(status.principal())).append('"');
+      builder.append('"').append(escape(principal)).append('"');
     }
     builder.append(",\"checkedAtEpochSecond\":").append(status.checkedAtEpochSecond() == null ? "null" : status.checkedAtEpochSecond())
         .append(",\"tgtExpiresAtEpochSecond\":").append(status.tgtExpiresAtEpochSecond() == null ? "null" : status.tgtExpiresAtEpochSecond())
         .append(",\"secondsUntilExpiry\":").append(status.secondsUntilExpiry() == null ? "null" : status.secondsUntilExpiry())
         .append(",\"detail\":");
-    if (status.detail() == null) {
+    if (detail == null) {
       builder.append("null");
     } else {
-      builder.append('"').append(escape(status.detail())).append('"');
+      builder.append('"').append(escape(detail)).append('"');
     }
     builder.append('}');
     return builder.toString();
+  }
+
+  private static String sanitizeKerberosDetail(KerberosHealthProbe.KerberosStatus status) {
+    if (!status.enabled() || status.detail() == null) {
+      return null;
+    }
+    return switch (status.state()) {
+      case ACTIVE -> "ok";
+      case PENDING -> "pending";
+      case STALE -> "stale";
+      case FAILED -> "unavailable";
+      case DISABLED -> null;
+    };
   }
 }

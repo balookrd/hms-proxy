@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
+import io.github.mmalykhin.hmsproxy.config.restcatalog.RestCatalogConfig;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +100,53 @@ public final class IcebergRestService implements AutoCloseable {
       Function<String, String> catalogForExternalDb,
       Configuration hadoopConf,
       IcebergPurgePolicy purgePolicy) {
+    this(
+        catalogName,
+        delegate,
+        translationOrNull,
+        defaultCatalogName,
+        catalogForExternalDb,
+        hadoopConf,
+        purgePolicy,
+        List.of(),
+        RestCatalogConfig.DEFAULT_MAX_METADATA_FILE_BYTES,
+        List.of());
+  }
+
+  IcebergRestService(
+      String catalogName,
+      ThriftHiveMetastore.Iface delegate,
+      CatalogNameTranslation translationOrNull,
+      String defaultCatalogName,
+      Function<String, String> catalogForExternalDb,
+      Configuration hadoopConf,
+      IcebergPurgePolicy purgePolicy,
+      List<String> fileIoAllowedPrefixes,
+      long maxMetadataFileBytes) {
+    this(
+        catalogName,
+        delegate,
+        translationOrNull,
+        defaultCatalogName,
+        catalogForExternalDb,
+        hadoopConf,
+        purgePolicy,
+        fileIoAllowedPrefixes,
+        maxMetadataFileBytes,
+        List.of());
+  }
+
+  IcebergRestService(
+      String catalogName,
+      ThriftHiveMetastore.Iface delegate,
+      CatalogNameTranslation translationOrNull,
+      String defaultCatalogName,
+      Function<String, String> catalogForExternalDb,
+      Configuration hadoopConf,
+      IcebergPurgePolicy purgePolicy,
+      List<String> fileIoAllowedPrefixes,
+      long maxMetadataFileBytes,
+      List<java.net.URI> federatedReadFsUris) {
     this.catalogName = Objects.requireNonNull(catalogName, "catalogName");
     Objects.requireNonNull(delegate, "delegate");
     Objects.requireNonNull(defaultCatalogName, "defaultCatalogName");
@@ -111,7 +159,9 @@ public final class IcebergRestService implements AutoCloseable {
     // A bare `new Configuration()` here writes to HDFS fine unauthenticated, but under Kerberos
     // HadoopFileIO fails with "Failed to specify server's Kerberos principal name" because the
     // namenode's service principal is only known through the catalog's own conf.
-    this.catalog = new RoutingHiveCatalog(client, hadoopConf, purgePolicy);
+    this.catalog = new RoutingHiveCatalog(
+        client, hadoopConf, purgePolicy, fileIoAllowedPrefixes, maxMetadataFileBytes,
+        federatedReadFsUris);
     this.catalog.initialize(catalogName, Map.of(CatalogProperties.URI, UNUSED_URI));
     this.adapter = new RESTCatalogAdapter(catalog);
     // A name-translated (non-default) service only ever exposes its own databases, so its own
@@ -123,7 +173,7 @@ public final class IcebergRestService implements AutoCloseable {
     Function<String, String> catalogForNamespace = translationOrNull == null
         ? catalogForExternalDb
         : localDb -> catalogForExternalDb.apply(translationOrNull.toExternal(localDb));
-    this.writeGate = new WriteRouteGate(defaultCatalogName, catalogForNamespace);
+    this.writeGate = new WriteRouteGate(catalogName, defaultCatalogName, catalogForNamespace);
     this.servedEndpoints = catalogName.equals(defaultCatalogName) ? DEFAULT_CATALOG_ENDPOINTS : READ_ENDPOINTS;
   }
 
@@ -133,6 +183,10 @@ public final class IcebergRestService implements AutoCloseable {
 
   WriteRouteGate writeGate() {
     return writeGate;
+  }
+
+  RestFileIoPathGuard pathGuard() {
+    return catalog.pathGuard();
   }
 
   /**

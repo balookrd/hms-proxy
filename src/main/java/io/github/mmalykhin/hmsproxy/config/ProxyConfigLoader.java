@@ -119,6 +119,7 @@ public final class ProxyConfigLoader {
     IcebergPointerGuardConfig icebergPointerGuard = IcebergPointerGuardConfigParser.parse(reader);
     List<AdditionalFrontendConfig> additionalFrontends =
         AdditionalFrontendConfigParser.parse(reader, server, management);
+    validateRestCatalogBindingsAndSecurity(restCatalog, security, server, management, additionalFrontends);
     long reloadPollIntervalSeconds = reader.getNonNegativeLong(
         "config.reload.poll-interval-seconds", ProxyConfig.DEFAULT_RELOAD_POLL_INTERVAL_SECONDS);
 
@@ -145,6 +146,48 @@ public final class ProxyConfigLoader {
         .ranger(ranger)
         .reloadPollIntervalSeconds(reloadPollIntervalSeconds)
         .build();
+  }
+
+  private static void validateRestCatalogBindingsAndSecurity(
+      RestCatalogConfig restCatalog,
+      SecurityConfig security,
+      ServerConfig server,
+      ManagementConfig management,
+      List<AdditionalFrontendConfig> additionalFrontends
+  ) {
+    if (!restCatalog.enabled()) {
+      return;
+    }
+    if (security.kerberosEnabled() && !restCatalog.kerberosEnabled()) {
+      throw new IllegalArgumentException(
+          "rest-catalog.kerberos.principal and rest-catalog.kerberos.keytab must be configured "
+              + "when security.mode=KERBEROS and rest-catalog.enabled=true");
+    }
+    checkRestCatalogConflict(restCatalog, server.bindHost(), server.port(), "the primary listener");
+    if (management.enabled()) {
+      checkRestCatalogConflict(
+          restCatalog, management.bindHost(), management.port(), "the management listener");
+    }
+    for (AdditionalFrontendConfig extra : additionalFrontends) {
+      checkRestCatalogConflict(
+          restCatalog, extra.bindHost(), extra.port(), "additional-frontends." + extra.name());
+    }
+  }
+
+  private static void checkRestCatalogConflict(
+      RestCatalogConfig restCatalog,
+      String otherBindHost,
+      int otherPort,
+      String otherDescription
+  ) {
+    if (ConfigParsing.bindingsConflict(
+        restCatalog.bindHost(), restCatalog.port(), otherBindHost, otherPort)) {
+      throw new IllegalArgumentException(
+          "rest-catalog listener binds "
+              + ConfigParsing.describeBinding(restCatalog.bindHost(), restCatalog.port())
+              + ", which conflicts with " + otherDescription + " on "
+              + ConfigParsing.describeBinding(otherBindHost, otherPort));
+    }
   }
 
   private static String loadCatalogDbSeparator(PropertyReader reader) {
@@ -263,6 +306,10 @@ public final class ProxyConfigLoader {
       "server.tcp-keepalive-idle-seconds",
       "server.tcp-keepalive-interval-seconds",
       "server.tcp-keepalive-count",
+      "server.thrift.max-string-length-bytes",
+      "server.thrift.max-container-length",
+      "server.sasl-handshake-timeout-ms",
+      "server.sasl-max-frame-bytes",
       "server.shutdown-timeout-seconds",
       "catalogs",
       "routing.default-catalog",
@@ -285,6 +332,8 @@ public final class ProxyConfigLoader {
       "management.threads",
       "management.readiness-cache-ms",
       "management.readyz.require-all-catalogs",
+      "management.allowed-client-ips",
+      "management.readyz.include-details",
       "rest-catalog.enabled",
       "rest-catalog.bind-host",
       "rest-catalog.port",
@@ -294,8 +343,10 @@ public final class ProxyConfigLoader {
       "rest-catalog.kerberos.keytab",
       "rest-catalog.purge.mode",
       "rest-catalog.purge.allowed-prefixes",
+      "rest-catalog.file-io.allowed-prefixes",
       "rest-catalog.hive-engine-descriptor",
       "rest-catalog.max-request-body-bytes",
+      "rest-catalog.max-metadata-file-bytes",
       "synthetic-read-lock.store.mode",
       "synthetic-read-lock.max-active-locks",
       "synthetic-read-lock.store.zookeeper.connect-string",
@@ -501,6 +552,10 @@ public final class ProxyConfigLoader {
       "tcp-keepalive",
       "tcp-keepalive-idle-seconds",
       "tcp-keepalive-interval-seconds",
-      "tcp-keepalive-count"
+      "tcp-keepalive-count",
+      "thrift.max-string-length-bytes",
+      "thrift.max-container-length",
+      "sasl-handshake-timeout-ms",
+      "sasl-max-frame-bytes"
   );
 }
