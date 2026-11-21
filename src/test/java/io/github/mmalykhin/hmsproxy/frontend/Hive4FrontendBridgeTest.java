@@ -900,6 +900,225 @@ public class Hive4FrontendBridgeTest {
         bridge.classLoader(), cause.getClass().getClassLoader());
   }
 
+  @Test
+  public void bridgeReturnsNullForNullStringAndListResults() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> null);
+
+    Hive4FrontendBridge.BridgeBundle bridge = Hive4FrontendBridge.createBridge(config(), apacheHandler);
+
+    Method getConfigValue = bridge.ifaceClass().getMethod("get_config_value", String.class, String.class);
+    Assert.assertNull(getConfigValue.invoke(bridge.handlerProxy(), "hive.metastore.uris", null));
+
+    Method getAllDatabases = bridge.ifaceClass().getMethod("get_all_databases");
+    Assert.assertNull(getAllDatabases.invoke(bridge.handlerProxy()));
+  }
+
+  @Test
+  public void bridgeConvertsConstraintsListAndQualifiesTableDbInCreateTableReqWithoutExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    AtomicReference<List<?>> capturedPrimaryKeys = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      if ("create_table_with_constraints".equals(method.getName())) {
+        capturedTable.set((Table) args[0]);
+        capturedPrimaryKeys.set((List<?>) args[1]);
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge = Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Class<?> pkClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SQLPrimaryKey");
+
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setCatName", String.class).invoke(table, "catalog2");
+    tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+
+    Object pk = pkClass.getConstructor(
+        String.class, String.class, String.class, int.class, String.class,
+        boolean.class, boolean.class, boolean.class)
+        .newInstance("catalog2__sales", "events", "id", 1, "pk_events", true, false, false);
+
+    Object request = requestClass.getConstructor(tableClass).newInstance(table);
+    requestClass.getMethod("setPrimaryKeys", List.class).invoke(request, List.of(pk));
+    Method method = bridge.ifaceClass().getMethod("create_table_req", requestClass);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("catalog2__sales", capturedTable.get().getDbName());
+    Assert.assertNotNull(capturedPrimaryKeys.get());
+    Assert.assertTrue(
+        capturedPrimaryKeys.get().get(0) instanceof org.apache.hadoop.hive.metastore.api.SQLPrimaryKey);
+    Assert.assertEquals("pk_events",
+        ((org.apache.hadoop.hive.metastore.api.SQLPrimaryKey) capturedPrimaryKeys.get().get(0)).getPk_name());
+  }
+
+  @Test
+  public void bridgePreservesRemoteCatalogAcrossHive4WrapperRequests() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedExprDb = new AtomicReference<>();
+    AtomicReference<String> capturedGetTableDb = new AtomicReference<>();
+    AtomicReference<Table> capturedAlterTable = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> switch (method.getName()) {
+      case "drop_table" -> {
+        capturedDb.set((String) args[0]);
+        yield null;
+      }
+      case "drop_partition_by_name" -> {
+        capturedDb.set((String) args[0]);
+        yield Boolean.TRUE;
+      }
+      case "append_partition" -> {
+        capturedDb.set((String) args[0]);
+        org.apache.hadoop.hive.metastore.api.Partition p = new org.apache.hadoop.hive.metastore.api.Partition();
+        p.setDbName((String) args[0]);
+        p.setTableName((String) args[1]);
+        yield p;
+      }
+      case "get_partition_names" -> {
+        capturedDb.set((String) args[0]);
+        yield List.of("ds=2026-01-01");
+      }
+      case "get_partitions_by_expr" -> {
+        org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest exprReq =
+            (org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest) args[0];
+        capturedExprDb.set(exprReq.getDbName());
+        org.apache.hadoop.hive.metastore.api.Partition p = new org.apache.hadoop.hive.metastore.api.Partition();
+        p.setDbName(exprReq.getDbName());
+        p.setTableName(exprReq.getTblName());
+        p.setValues(List.of("2026-01-01"));
+        yield new org.apache.hadoop.hive.metastore.api.PartitionsByExprResult(List.of(p), false);
+      }
+      case "get_table" -> {
+        capturedGetTableDb.set((String) args[0]);
+        Table t = new Table();
+        t.setDbName((String) args[0]);
+        t.setTableName((String) args[1]);
+        t.setPartitionKeys(List.of(new org.apache.hadoop.hive.metastore.api.FieldSchema("ds", "string", null)));
+        yield t;
+      }
+      case "get_fields" -> {
+        capturedDb.set((String) args[0]);
+        yield List.of(new org.apache.hadoop.hive.metastore.api.FieldSchema("id", "bigint", null));
+      }
+      case "delete_table_column_statistics" -> {
+        capturedDb.set((String) args[0]);
+        yield Boolean.TRUE;
+      }
+      case "alter_table" -> {
+        capturedDb.set((String) args[0]);
+        capturedAlterTable.set((Table) args[2]);
+        yield null;
+      }
+      default -> throw new UnsupportedOperationException(method.getName());
+    });
+
+    Hive4FrontendBridge.BridgeBundle bridge = Hive4FrontendBridge.createBridge(config(), apacheHandler);
+    ClassLoader cl = bridge.classLoader();
+
+    // 1. drop_table_req (catalogName) + default / hive / already-prefixed checks
+    Class<?> dropTblReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.DropTableRequest");
+    Method dropTblMethod = bridge.ifaceClass().getMethod("drop_table_req", dropTblReqClass);
+
+    Object dropRemote = dropTblReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    dropTblReqClass.getMethod("setCatalogName", String.class).invoke(dropRemote, "catalog2");
+    dropTblMethod.invoke(bridge.handlerProxy(), dropRemote);
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    Object dropHive = dropTblReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    dropTblReqClass.getMethod("setCatalogName", String.class).invoke(dropHive, "hive");
+    dropTblMethod.invoke(bridge.handlerProxy(), dropHive);
+    Assert.assertEquals("sales", capturedDb.get());
+
+    Object dropDefault = dropTblReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    dropTblReqClass.getMethod("setCatalogName", String.class).invoke(dropDefault, "catalog1");
+    dropTblMethod.invoke(bridge.handlerProxy(), dropDefault);
+    Assert.assertEquals("sales", capturedDb.get());
+
+    Object dropAlreadyPrefixed =
+        dropTblReqClass.getConstructor(String.class, String.class).newInstance("catalog2__sales", "events");
+    dropTblReqClass.getMethod("setCatalogName", String.class).invoke(dropAlreadyPrefixed, "catalog2");
+    dropTblMethod.invoke(bridge.handlerProxy(), dropAlreadyPrefixed);
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    // 2. drop_partition_req (catName)
+    Class<?> dropPartReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.DropPartitionRequest");
+    Object dropPartReq = dropPartReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    dropPartReqClass.getMethod("setCatName", String.class).invoke(dropPartReq, "catalog2");
+    dropPartReqClass.getMethod("setPartName", String.class).invoke(dropPartReq, "ds=2026-01-01");
+    Assert.assertEquals(Boolean.TRUE,
+        bridge.ifaceClass().getMethod("drop_partition_req", dropPartReqClass).invoke(bridge.handlerProxy(), dropPartReq));
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    // 3. append_partition_req (catalogName)
+    Class<?> appendPartReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.AppendPartitionsRequest");
+    Object appendPartReq = appendPartReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    appendPartReqClass.getMethod("setCatalogName", String.class).invoke(appendPartReq, "catalog2");
+    appendPartReqClass.getMethod("setPartVals", List.class).invoke(appendPartReq, List.of("2026-01-01"));
+    Object appended = bridge.ifaceClass().getMethod("append_partition_req", appendPartReqClass)
+        .invoke(bridge.handlerProxy(), appendPartReq);
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+    Assert.assertEquals("catalog2__sales", appended.getClass().getMethod("getDbName").invoke(appended));
+
+    // 4. get_partition_names_req without expr & with expr
+    Class<?> partNamesReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest");
+    Method partNamesMethod = bridge.ifaceClass().getMethod("get_partition_names_req", partNamesReqClass);
+    Object partNamesNoExpr = partNamesReqClass.getConstructor().newInstance();
+    partNamesReqClass.getMethod("setCatName", String.class).invoke(partNamesNoExpr, "catalog2");
+    partNamesReqClass.getMethod("setDbName", String.class).invoke(partNamesNoExpr, "sales");
+    partNamesReqClass.getMethod("setTblName", String.class).invoke(partNamesNoExpr, "events");
+    partNamesReqClass.getMethod("setExpr", byte[].class).invoke(partNamesNoExpr, new byte[0]);
+    Assert.assertEquals(List.of("ds=2026-01-01"), partNamesMethod.invoke(bridge.handlerProxy(), partNamesNoExpr));
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    Object partNamesWithExpr = partNamesReqClass.getConstructor().newInstance();
+    partNamesReqClass.getMethod("setCatName", String.class).invoke(partNamesWithExpr, "catalog2");
+    partNamesReqClass.getMethod("setDbName", String.class).invoke(partNamesWithExpr, "sales");
+    partNamesReqClass.getMethod("setTblName", String.class).invoke(partNamesWithExpr, "events");
+    partNamesReqClass.getMethod("setExpr", byte[].class).invoke(partNamesWithExpr, new byte[] {1, 2, 3});
+    Assert.assertEquals(List.of("ds=2026-01-01"), partNamesMethod.invoke(bridge.handlerProxy(), partNamesWithExpr));
+    Assert.assertEquals("catalog2__sales", capturedExprDb.get());
+    Assert.assertEquals("catalog2__sales", capturedGetTableDb.get());
+
+    // 5. get_fields_req (catName)
+    Class<?> getFieldsReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.GetFieldsRequest");
+    Object getFieldsReq = getFieldsReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    getFieldsReqClass.getMethod("setCatName", String.class).invoke(getFieldsReq, "catalog2");
+    bridge.ifaceClass().getMethod("get_fields_req", getFieldsReqClass).invoke(bridge.handlerProxy(), getFieldsReq);
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    // 6. delete_column_statistics_req (cat_name, extension == null)
+    Class<?> delStatsReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.DeleteColumnStatisticsRequest");
+    Object delStatsReq = delStatsReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    delStatsReqClass.getMethod("setCat_name", String.class).invoke(delStatsReq, "catalog2");
+    delStatsReqClass.getMethod("setTableLevel", boolean.class).invoke(delStatsReq, true);
+    delStatsReqClass.getMethod("setCol_names", List.class).invoke(delStatsReq, List.of("id"));
+    Assert.assertEquals(Boolean.TRUE,
+        bridge.ifaceClass().getMethod("delete_column_statistics_req", delStatsReqClass)
+            .invoke(bridge.handlerProxy(), delStatsReq));
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+
+    // 7. alter_table_req (catName)
+    Class<?> alterTblReqClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.AlterTableRequest");
+    Class<?> tableClass = cl.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Object alterTable = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(alterTable, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(alterTable, "events");
+    Object alterTblReq = alterTblReqClass.getConstructor(String.class, String.class, tableClass)
+        .newInstance("sales", "events", alterTable);
+    alterTblReqClass.getMethod("setCatName", String.class).invoke(alterTblReq, "catalog2");
+    bridge.ifaceClass().getMethod("alter_table_req", alterTblReqClass).invoke(bridge.handlerProxy(), alterTblReq);
+    Assert.assertEquals("catalog2__sales", capturedDb.get());
+    Assert.assertEquals("catalog2__sales", capturedAlterTable.get().getDbName());
+  }
+
   private static List<String> databaseNames(List<?> databases) throws Exception {
     List<String> names = new ArrayList<>(databases.size());
     for (Object database : databases) {

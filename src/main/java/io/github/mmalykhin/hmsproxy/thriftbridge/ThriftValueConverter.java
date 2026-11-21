@@ -16,10 +16,10 @@ import org.apache.thrift.protocol.TProtocolException;
 import org.apache.thrift.transport.TTransportException;
 
 public final class ThriftValueConverter {
+  private static final TBinaryProtocol.Factory BINARY_PROTOCOL_FACTORY = new TBinaryProtocol.Factory();
+  static final int MAX_RETAINED_SERIALIZER_BYTES = 64 * 1024;
   private static final ThreadLocal<TSerializer> SERIALIZER =
-      ThreadLocal.withInitial(() -> new TSerializer(new TBinaryProtocol.Factory()));
-  private static final ThreadLocal<TDeserializer> DESERIALIZER =
-      ThreadLocal.withInitial(() -> new TDeserializer(new TBinaryProtocol.Factory()));
+      ThreadLocal.withInitial(() -> new TSerializer(BINARY_PROTOCOL_FACTORY));
 
   private static final String TBASE_NAME = "org.apache.thrift.TBase";
 
@@ -158,11 +158,14 @@ public final class ThriftValueConverter {
 
     Throwable converted = (Throwable) convertTBase(throwable, targetClass);
     converted.setStackTrace(throwable.getStackTrace());
-    Throwable convertedCause = convertThrowable(throwable.getCause(), targetClassLoader);
-    if (convertedCause != null && converted.getCause() == null) {
-      try {
-        converted.initCause(convertedCause);
-      } catch (IllegalStateException ignored) {
+    Throwable cause = throwable.getCause();
+    if (cause != null && cause != throwable && converted.getCause() == null) {
+      Throwable convertedCause = convertThrowable(cause, targetClassLoader);
+      if (convertedCause != null) {
+        try {
+          converted.initCause(convertedCause);
+        } catch (IllegalStateException ignored) {
+        }
       }
     }
     return converted;
@@ -177,12 +180,21 @@ public final class ThriftValueConverter {
   }
 
   /**
+   * True for any thrift struct class, including one whose {@code TBase} interface lives in a foreign
+   * classloader.
+   */
+  public static boolean isThriftStructClass(Class<?> type) {
+    return type != null
+        && (TBase.class.isAssignableFrom(type) || implementsInterfaceNamed(type, TBASE_NAME));
+  }
+
+  /**
    * True for any thrift struct, including one whose {@code TBase} interface lives in a foreign
    * classloader (the Hive 4 backend runtime loads its own libthrift child-first, so a plain
    * {@code instanceof} against the parent's interface misses its structs entirely).
    */
   private static boolean isThriftStruct(Object value) {
-    return value instanceof TBase<?, ?> || implementsInterfaceNamed(value.getClass(), TBASE_NAME);
+    return value != null && isThriftStructClass(value.getClass());
   }
 
   private static boolean implementsInterfaceNamed(Class<?> type, String interfaceName) {
@@ -196,16 +208,40 @@ public final class ThriftValueConverter {
     return false;
   }
 
+  private static boolean hasSuperclassNamed(Class<?> type, String className) {
+    for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+      if (current.getName().equals(className)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static TSerializer currentThreadSerializerForTest() {
+    return SERIALIZER.get();
+  }
+
   private static byte[] serializeStruct(Object value) throws Exception {
     if (value instanceof TBase<?, ?> parentStruct) {
-      return SERIALIZER.get().serialize(parentStruct);
+      TSerializer serializer = SERIALIZER.get();
+      try {
+        byte[] bytes = serializer.serialize(parentStruct);
+        // Prevent ThreadLocal ByteArrayOutputStream from pinning peak large-response buffers forever.
+        if (bytes.length > MAX_RETAINED_SERIALIZER_BYTES) {
+          SERIALIZER.remove();
+        }
+        return bytes;
+      } catch (Throwable t) {
+        SERIALIZER.remove();
+        throw t;
+      }
     }
     return foreignCodec(value.getClass()).serialize(value);
   }
 
   private static void deserializeInto(Object target, byte[] bytes) throws Exception {
     if (target instanceof TBase<?, ?> parentStruct) {
-      DESERIALIZER.get().deserialize(parentStruct, bytes);
+      new TDeserializer(BINARY_PROTOCOL_FACTORY).deserialize(parentStruct, bytes);
       return;
     }
     foreignCodec(target.getClass()).deserialize(target, bytes);
@@ -220,32 +256,91 @@ public final class ThriftValueConverter {
    */
   private static Throwable convertForeignThriftInfrastructureException(
       Throwable throwable, ClassLoader targetClassLoader) throws Exception {
-    String className = throwable.getClass().getName();
-    if (!className.startsWith("org.apache.thrift.")) {
+    Class<?> cls = throwable.getClass();
+    if (!hasSuperclassNamed(cls, "org.apache.thrift.TException")) {
       return throwable;
     }
-    Class<?> targetClass = loadTargetClass(className, targetClassLoader);
-    if (targetClass == null || targetClass.isInstance(throwable)) {
+    Class<?> targetTException = loadTargetClass("org.apache.thrift.TException", targetClassLoader);
+    if (targetTException != null && targetTException.isInstance(throwable)) {
       return throwable;
     }
-    Throwable converted = switch (className) {
-      case "org.apache.thrift.TApplicationException" ->
-          new TApplicationException(reflectiveType(throwable), throwable.getMessage());
-      case "org.apache.thrift.transport.TTransportException" ->
-          new TTransportException(reflectiveType(throwable), throwable.getMessage());
-      case "org.apache.thrift.protocol.TProtocolException" ->
-          new TProtocolException(reflectiveType(throwable), throwable.getMessage());
-      default -> new TException(throwable.getMessage());
-    };
+    String message = throwable.getMessage();
+    Throwable converted;
+    if (hasSuperclassNamed(cls, "org.apache.thrift.TApplicationException")) {
+      int type = reflectiveType(throwable);
+      converted = newTargetInfrastructureException(
+          "org.apache.thrift.TApplicationException",
+          type,
+          message,
+          targetClassLoader,
+          true,
+          () -> new TApplicationException(type, message));
+    } else if (hasSuperclassNamed(cls, "org.apache.thrift.transport.TTransportException")) {
+      int type = reflectiveType(throwable);
+      converted = newTargetInfrastructureException(
+          "org.apache.thrift.transport.TTransportException",
+          type,
+          message,
+          targetClassLoader,
+          true,
+          () -> new TTransportException(type, message));
+    } else if (hasSuperclassNamed(cls, "org.apache.thrift.protocol.TProtocolException")) {
+      int type = reflectiveType(throwable);
+      converted = newTargetInfrastructureException(
+          "org.apache.thrift.protocol.TProtocolException",
+          type,
+          message,
+          targetClassLoader,
+          true,
+          () -> new TProtocolException(type, message));
+    } else {
+      converted = newTargetInfrastructureException(
+          "org.apache.thrift.TException",
+          0,
+          message,
+          targetClassLoader,
+          false,
+          () -> new TException(message));
+    }
     converted.setStackTrace(throwable.getStackTrace());
-    Throwable convertedCause = convertThrowable(throwable.getCause(), targetClassLoader);
-    if (convertedCause != null && converted.getCause() == null) {
-      try {
-        converted.initCause(convertedCause);
-      } catch (IllegalStateException ignored) {
+    Throwable cause = throwable.getCause();
+    if (cause != null && cause != throwable && converted.getCause() == null) {
+      Throwable convertedCause = convertThrowable(cause, targetClassLoader);
+      if (convertedCause != null) {
+        try {
+          converted.initCause(convertedCause);
+        } catch (IllegalStateException ignored) {
+        }
       }
     }
     return converted;
+  }
+
+  private static Throwable newTargetInfrastructureException(
+      String className,
+      int type,
+      String message,
+      ClassLoader targetClassLoader,
+      boolean withType,
+      java.util.function.Supplier<Throwable> parentFallback
+  ) {
+    if (targetClassLoader == null || targetClassLoader == ThriftValueConverter.class.getClassLoader()) {
+      return parentFallback.get();
+    }
+    Class<?> targetClass = loadTargetClass(className, targetClassLoader);
+    if (targetClass != null && targetClass.getClassLoader() == ThriftValueConverter.class.getClassLoader()) {
+      return parentFallback.get();
+    }
+    if (targetClass != null && Throwable.class.isAssignableFrom(targetClass)) {
+      try {
+        if (withType) {
+          return (Throwable) targetClass.getConstructor(int.class, String.class).newInstance(type, message);
+        }
+        return (Throwable) targetClass.getConstructor(String.class).newInstance(message);
+      } catch (ReflectiveOperationException ignored) {
+      }
+    }
+    return parentFallback.get();
   }
 
   private static int reflectiveType(Throwable throwable) {

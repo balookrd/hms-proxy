@@ -78,6 +78,10 @@ public class IsolatedMetastoreClientClassLoadingTest {
     Assert.assertNotSame(
         org.apache.hadoop.util.ReflectionUtils.class,
         Class.forName("org.apache.hadoop.util.ReflectionUtils", true, classLoader));
+    Assert.assertSame(
+        "ShutdownHookManager must remain parent-first so per-catalog loaders are never pinned by Runtime hooks",
+        org.apache.hadoop.util.ShutdownHookManager.class,
+        Class.forName("org.apache.hadoop.util.ShutdownHookManager", true, classLoader));
   }
 
   @Test

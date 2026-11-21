@@ -138,6 +138,48 @@ public class IsolatedInvocationBridgeTest {
   }
 
   @Test
+  public void invokeByNameConvertsChildThriftExceptionsToApacheTypesEvenWithChildTypedArgs() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_JAR));
+
+    BridgeBundle bundle = createBridge((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        throw (Throwable) bundleResponseClass(
+            proxy.getClass().getClassLoader(),
+            "org.apache.hadoop.hive.metastore.api.NoSuchObjectException")
+            .getConstructor(String.class)
+            .newInstance("missing table req");
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    ClassLoader foreignClientLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_JAR.toUri().toURL()},
+        IsolatedInvocationBridgeTest.class.getClassLoader());
+    try {
+      Class<?> foreignReqClass =
+          Class.forName("org.apache.hadoop.hive.metastore.api.GetTableRequest", true, foreignClientLoader);
+      Object foreignReq = foreignReqClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+
+      NoSuchObjectException error = Assert.assertThrows(
+          NoSuchObjectException.class,
+          () -> bundle.bridge.invokeByName(
+              "get_table_req",
+              new Class<?>[] {foreignReqClass},
+              new Object[] {foreignReq}));
+
+      Assert.assertSame(
+          "exceptions from invokeByName must use parent ClassLoader so callers and classifiers recognize them",
+          NoSuchObjectException.class.getClassLoader(),
+          error.getClass().getClassLoader());
+      Assert.assertEquals("missing table req", error.getMessage());
+    } finally {
+      if (foreignClientLoader instanceof AutoCloseable closeable) {
+        closeable.close();
+      }
+    }
+  }
+
+  @Test
   public void setUgiPassesSimpleArgumentsWithoutThriftConversion() throws Throwable {
     Assume.assumeTrue(Files.isReadable(HDP_JAR));
     AtomicReference<List<?>> capturedGroups = new AtomicReference<>();

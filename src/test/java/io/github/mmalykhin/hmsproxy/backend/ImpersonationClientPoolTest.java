@@ -12,6 +12,7 @@ import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreC
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -1102,6 +1103,177 @@ public class ImpersonationClientPoolTest {
     Assert.assertEquals(10_000L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(20_000L, 0L)));
     Assert.assertEquals("never tighter than the floor", 100L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(0L, 10L)));
     Assert.assertEquals("both TTLs off: no sweeper", 0L, CatalogBackend.idleSweepPeriodMs(ttlCatalogConfig(0L, 0L)));
+  }
+
+  @Test
+  public void groupMembershipChangeEvictsCachedImpersonationClientWhileReorderingDoesNot() throws Throwable {
+    AtomicInteger impersonationOpens = new AtomicInteger();
+    AtomicInteger closes = new AtomicInteger();
+    List<List<String>> seenGroups = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        impersonationOpens.incrementAndGet();
+        seenGroups.add(List.copyOf(groupNames));
+        BackendInvocationSession session = makeSession(null);
+        session.runAfterClose(closes::incrementAndGet);
+        return session;
+      }
+    };
+
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    CatalogConfig catalogConfig = catalogConfig(2);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig), catalogConfig, new HiveConf(), false, MetastoreRuntimeProfile.APACHE_3_1_3, factory, metrics);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics);
+    int baselineOpens = impersonationOpens.get();
+    try {
+      backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], new ImpersonationContext("alice", List.of("g1", "g2")));
+      Assert.assertEquals(1, impersonationOpens.get() - baselineOpens);
+
+      // Reordering (and duplicate elements in same set) should reuse cached client without eviction.
+      backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], new ImpersonationContext("alice", List.of("g2", "g1", "g1")));
+      Assert.assertEquals(1, impersonationOpens.get() - baselineOpens);
+      Assert.assertEquals(0, closes.get());
+
+      Object ugiBefore = backend.invokeRawByName("set_ugi", new Class<?>[] {String.class, List.class},
+          new Object[] {"alice", List.of("g2", "g1")}, new ImpersonationContext("alice", List.of("g2", "g1")));
+      Assert.assertEquals(List.of("g1", "g2"), ugiBefore);
+
+      // Actual group change must evict the old client, close its session and propagate new groups.
+      backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], new ImpersonationContext("alice", List.of("g1", "g3")));
+      Assert.assertEquals(2, impersonationOpens.get() - baselineOpens);
+      Assert.assertEquals(1, closes.get());
+
+      Object ugiAfter = backend.invokeRawByName("set_ugi", new Class<?>[] {String.class, List.class},
+          new Object[] {"alice", List.of("g1", "g3")}, new ImpersonationContext("alice", List.of("g1", "g3")));
+      Assert.assertEquals(List.of("g1", "g3"), ugiAfter);
+      Assert.assertTrue(metrics.render().contains("reason=\"groups_changed\""));
+      Assert.assertEquals(List.of(List.of("g1", "g2"), List.of("g1", "g3")), seenGroups);
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
+  public void concurrentEnsureSocketTimeoutAndProbeDoNotRaceAndSyncBothKeys() throws Throwable {
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        return makeSession(null);
+      }
+    };
+
+    CatalogConfig catalogConfig = catalogConfig(2);
+    HiveConf initialConf = new HiveConf();
+    initialConf.set("metastore.client.socket.timeout", "3s");
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig), catalogConfig, initialConf, false, MetastoreRuntimeProfile.APACHE_3_1_3, factory);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, null, initialConf);
+    try {
+      // Constructor must have recognized metastore.client.socket.timeout=3s (3000ms).
+      Assert.assertEquals(
+          CatalogBackend.AdaptiveTimeoutResult.UNCHANGED,
+          backend.ensureClientSocketTimeout(3_000L, 0L));
+
+      ExecutorService executor = Executors.newFixedThreadPool(4);
+      try {
+        List<Future<?>> futures = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+          final int idx = i;
+          futures.add(executor.submit(() -> {
+            for (int iter = 0; iter < 15; iter++) {
+              backend.ensureClientSocketTimeout(10_000L + ((idx + iter) % 3) * 5_000L, 0L);
+            }
+            return null;
+          }));
+          futures.add(executor.submit(() -> {
+            for (int iter = 0; iter < 15; iter++) {
+              try {
+                backend.probeConnectivity(4_000L);
+                for (Map.Entry<String, String> entry : backend.hiveConf()) {
+                  Assert.assertNotNull(entry.getKey());
+                }
+              } catch (Throwable t) {
+                throw new RuntimeException(t);
+              }
+            }
+            return null;
+          }));
+        }
+        for (Future<?> f : futures) {
+          f.get(15, TimeUnit.SECONDS);
+        }
+      } finally {
+        executor.shutdownNow();
+      }
+
+      HiveConf current = backend.hiveConf();
+      String legacy = current.get("hive.metastore.client.socket.timeout");
+      String hive4 = current.get("metastore.client.socket.timeout");
+      Assert.assertNotNull(legacy);
+      Assert.assertEquals(legacy, hive4);
+    } finally {
+      backend.close();
+    }
+  }
+
+  @Test
+  public void backendKerberosEnabledRecognizesMetastoreThriftSaslKey() {
+    CatalogConfig hive4Sasl = new CatalogConfig(
+        "catalog1", "c1", "file:///c1", true, CatalogAccessMode.READ_WRITE,
+        List.of(), CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(),
+        MetastoreRuntimeProfile.APACHE_4_1_0, null,
+        Map.of("metastore.thrift.sasl.enabled", "true"),
+        0L, 128, 0L, 1, 4, 0L);
+    Assert.assertTrue(CatalogBackend.backendKerberosEnabled(hive4Sasl));
+
+    CatalogConfig plain = new CatalogConfig(
+        "catalog1", "c1", "file:///c1", true, CatalogAccessMode.READ_WRITE,
+        List.of(), CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(),
+        MetastoreRuntimeProfile.APACHE_4_1_0, null,
+        Map.of(),
+        0L, 128, 0L, 1, 4, 0L);
+    Assert.assertFalse(CatalogBackend.backendKerberosEnabled(plain));
   }
 
   private record IdleRun(

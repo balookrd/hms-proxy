@@ -12,11 +12,15 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -34,6 +38,9 @@ import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 public final class CatalogBackend implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(CatalogBackend.class);
   private static final String SOCKET_TIMEOUT_KEY = "hive.metastore.client.socket.timeout";
+  private static final String METASTORE_SOCKET_TIMEOUT_KEY = "metastore.client.socket.timeout";
+  private static final String SASL_ENABLED_KEY = "hive.metastore.sasl.enabled";
+  private static final String METASTORE_SASL_ENABLED_KEY = "metastore.thrift.sasl.enabled";
   private static final long SOCKET_TIMEOUT_MIN_HYSTERESIS_MS = 2_000L;
   private static final double SOCKET_TIMEOUT_HYSTERESIS_FRACTION = 0.25d;
   private static final long MIN_IDLE_SWEEP_PERIOD_MS = 100L;
@@ -47,7 +54,7 @@ public final class CatalogBackend implements AutoCloseable {
 
   private final ProxyConfig proxyConfig;
   private final CatalogConfig config;
-  private final HiveConf hiveConf;
+  private volatile HiveConf hiveConf;
   private final Map<String, ImpersonationClient> impersonationClients = new LinkedHashMap<>(16, 0.75f, true);
   private final BackendAdapter adapter;
   private final BackendRuntime runtime;
@@ -83,7 +90,9 @@ public final class CatalogBackend implements AutoCloseable {
     this.runtime = runtime;
     this.catalog = catalog;
     this.metrics = metrics;
-    this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(hiveConf.get(SOCKET_TIMEOUT_KEY), 0L);
+    this.appliedClientTimeoutMs = TimeoutValueParser.parseDurationMs(
+        initialClientTimeoutRaw(config, hiveConf),
+        0L);
     this.concurrentCallsSemaphore = config.maxConcurrentCalls() > 0
         ? new Semaphore(config.maxConcurrentCalls(), true)
         : null;
@@ -256,8 +265,10 @@ public final class CatalogBackend implements AutoCloseable {
   }
 
   public void probeConnectivity(long timeoutMs) throws Throwable {
-    HiveConf probeConf = new HiveConf(hiveConf);
-    probeConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
+    HiveConf probeConf = new HiveConf(this.hiveConf);
+    String formatted = TimeoutValueParser.formatDurationMs(timeoutMs);
+    probeConf.set(SOCKET_TIMEOUT_KEY, formatted);
+    probeConf.set(METASTORE_SOCKET_TIMEOUT_KEY, formatted);
     try (BackendInvocationSession session = runtime.openEphemeralSession(probeConf, adapter.runtimeProfile())) {
       session.invokeByName("getStatus", new Class<?>[0], new Object[0]);
     }
@@ -288,18 +299,21 @@ public final class CatalogBackend implements AutoCloseable {
           return AdaptiveTimeoutResult.SKIPPED_COOLDOWN;
         }
       }
-      String previousTimeout = hiveConf.get(SOCKET_TIMEOUT_KEY);
-      hiveConf.set(SOCKET_TIMEOUT_KEY, TimeoutValueParser.formatDurationMs(timeoutMs));
+      // Copy-on-write snapshot so concurrent readers/openers iterating HiveConf never see ConcurrentModificationException.
+      HiveConf previousConf = this.hiveConf;
+      HiveConf updatedConf = new HiveConf(previousConf);
+      String formatted = TimeoutValueParser.formatDurationMs(timeoutMs);
+      updatedConf.set(SOCKET_TIMEOUT_KEY, formatted);
+      updatedConf.set(METASTORE_SOCKET_TIMEOUT_KEY, formatted);
+      this.hiveConf = updatedConf;
+      runtime.updateHiveConf(updatedConf);
       try {
         runtime.reconnectShared(adapter);
       } catch (Throwable t) {
         // Keep hiveConf in sync with the sessions that are actually live, and arm the cooldown so a
         // failing reconnect cannot quiesce the pool again on every subsequent call.
-        if (previousTimeout == null) {
-          hiveConf.unset(SOCKET_TIMEOUT_KEY);
-        } else {
-          hiveConf.set(SOCKET_TIMEOUT_KEY, previousTimeout);
-        }
+        this.hiveConf = previousConf;
+        runtime.updateHiveConf(previousConf);
         lastReconnectAtNanos = System.nanoTime();
         throw t;
       }
@@ -464,8 +478,32 @@ public final class CatalogBackend implements AutoCloseable {
     }
   }
 
-  private static boolean backendKerberosEnabled(CatalogConfig catalogConfig) {
-    return Boolean.parseBoolean(catalogConfig.hiveConf().getOrDefault("hive.metastore.sasl.enabled", "false"));
+  static boolean backendKerberosEnabled(CatalogConfig catalogConfig) {
+    String value = firstNonBlank(
+        catalogConfig.hiveConf().get(SASL_ENABLED_KEY),
+        catalogConfig.hiveConf().get(METASTORE_SASL_ENABLED_KEY));
+    return Boolean.parseBoolean(value == null ? "false" : value);
+  }
+
+  private static String initialClientTimeoutRaw(CatalogConfig config, HiveConf hiveConf) {
+    if (config != null && config.hiveConf() != null) {
+      String configured = firstNonBlank(
+          config.hiveConf().get(SOCKET_TIMEOUT_KEY),
+          config.hiveConf().get(METASTORE_SOCKET_TIMEOUT_KEY));
+      if (configured != null) {
+        return configured;
+      }
+    }
+    return hiveConf == null
+        ? null
+        : firstNonBlank(hiveConf.get(METASTORE_SOCKET_TIMEOUT_KEY), hiveConf.get(SOCKET_TIMEOUT_KEY));
+  }
+
+  private static String firstNonBlank(String primary, String fallback) {
+    if (primary != null && !primary.isBlank()) {
+      return primary;
+    }
+    return fallback != null && !fallback.isBlank() ? fallback : null;
   }
 
   private boolean exceedsHysteresis(long timeoutMs) {
@@ -501,6 +539,7 @@ public final class CatalogBackend implements AutoCloseable {
    */
   private ImpersonationClient impersonationClient(ImpersonationContext impersonation) throws MetaException {
     ImpersonationClient idleEvicted = null;
+    ImpersonationClient groupsChangedEvicted = null;
     List<ImpersonationClient> overflowEvicted = List.of();
     ImpersonationClient client;
     synchronized (this) {
@@ -513,6 +552,10 @@ public final class CatalogBackend implements AutoCloseable {
         if (ttlMs > 0 && System.currentTimeMillis() - client.lastUsedMs > ttlMs) {
           impersonationClients.remove(impersonation.userName());
           idleEvicted = client;
+          client = null;
+        } else if (!client.matchesGroups(impersonation.groupNames())) {
+          impersonationClients.remove(impersonation.userName());
+          groupsChangedEvicted = client;
           client = null;
         } else {
           return client;
@@ -528,6 +571,14 @@ public final class CatalogBackend implements AutoCloseable {
       LOG.info("Evicting idle impersonation client for user '{}' in catalog '{}'",
           impersonation.userName(), config.name());
       idleEvicted.evict();
+    }
+    if (groupsChangedEvicted != null) {
+      LOG.info("Evicting impersonation client for user '{}' in catalog '{}' because group membership changed",
+          impersonation.userName(), config.name());
+      groupsChangedEvicted.evict();
+      if (metrics != null) {
+        metrics.recordImpersonationSessionEviction(config.name(), "groups_changed");
+      }
     }
     for (ImpersonationClient evicted : overflowEvicted) {
       LOG.info("Evicting cached impersonation client for user '{}' in catalog '{}'",
@@ -572,6 +623,7 @@ public final class CatalogBackend implements AutoCloseable {
 
     private final String userName;
     private final List<String> groupNames;
+    private final Set<String> groupNameSet;
     private final int maxSize;
     private final long sessionIdleTtlMs;
     private final Semaphore permits;
@@ -585,9 +637,22 @@ public final class CatalogBackend implements AutoCloseable {
     private ImpersonationClient(String userName, List<String> groupNames) {
       this.userName = userName;
       this.groupNames = List.copyOf(groupNames);
+      this.groupNameSet = groupNames == null || groupNames.isEmpty()
+          ? Set.of()
+          : Collections.unmodifiableSet(new LinkedHashSet<>(groupNames));
       this.maxSize = config.impersonationPoolMaxSize();
       this.sessionIdleTtlMs = config.impersonationSessionIdleTtlMs();
       this.permits = new Semaphore(maxSize, true);
+    }
+
+    boolean matchesGroups(List<String> incomingGroups) {
+      if (incomingGroups == null || incomingGroups.isEmpty()) {
+        return groupNameSet.isEmpty();
+      }
+      if (groupNameSet.isEmpty()) {
+        return false;
+      }
+      return groupNameSet.equals(new HashSet<>(incomingGroups));
     }
 
     Object invoke(Method method, Object[] args) throws Throwable {

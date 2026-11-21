@@ -664,6 +664,73 @@ public class HortonworksFrontendBridgeTest {
     Assert.assertTrue(hortonworksOnlyMethods.containsAll(adaptedMethods));
   }
 
+  @Test
+  public void bridgeReturnsNullForNullStringAndListResults() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_78_JAR));
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> null);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, HDP_78_JAR),
+            apacheHandler);
+
+    Method getConfigValue = bridge.ifaceClass().getMethod("get_config_value", String.class, String.class);
+    Assert.assertNull(getConfigValue.invoke(bridge.handlerProxy(), "hive.metastore.uris", null));
+
+    Method getAllDatabases = bridge.ifaceClass().getMethod("get_all_databases");
+    Assert.assertNull(getAllDatabases.invoke(bridge.handlerProxy()));
+  }
+
+  @Test
+  public void bridgeConvertsConstraintsListInCreateTableReqWithoutExtension() throws Exception {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> invokedMethod = new AtomicReference<>();
+    AtomicReference<List<?>> capturedPrimaryKeys = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface apacheHandler = proxyHandler((proxy, method, args) -> {
+      invokedMethod.set(method.getName());
+      if ("create_table_with_constraints".equals(method.getName())) {
+        capturedPrimaryKeys.set((List<?>) args[1]);
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            apacheHandler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Class<?> pkClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.SQLPrimaryKey");
+
+    Object table = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(table, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(table, "events");
+
+    Object pk = pkClass.getConstructor(
+        String.class, String.class, String.class, int.class, String.class,
+        boolean.class, boolean.class, boolean.class)
+        .newInstance("sales", "events", "id", 1, "pk_events", true, false, false);
+
+    Object request = requestClass.getConstructor(tableClass).newInstance(table);
+    requestClass.getMethod("setPrimaryKeys", List.class).invoke(request, List.of(pk));
+    Method method = bridge.ifaceClass().getMethod("create_table_req", requestClass);
+
+    method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("create_table_with_constraints", invokedMethod.get());
+    Assert.assertNotNull(capturedPrimaryKeys.get());
+    Assert.assertEquals(1, capturedPrimaryKeys.get().size());
+    Assert.assertTrue(
+        "constraint elements must be converted to parent SQLPrimaryKey class",
+        capturedPrimaryKeys.get().get(0) instanceof org.apache.hadoop.hive.metastore.api.SQLPrimaryKey);
+    org.apache.hadoop.hive.metastore.api.SQLPrimaryKey parentPk =
+        (org.apache.hadoop.hive.metastore.api.SQLPrimaryKey) capturedPrimaryKeys.get().get(0);
+    Assert.assertEquals("pk_events", parentPk.getPk_name());
+    Assert.assertEquals("id", parentPk.getColumn_name());
+  }
+
   private static ProxyConfig config(FrontendProfile frontendProfile, Path jar) {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))

@@ -9,6 +9,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.conf.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,12 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
   private static final String HIVE_METASTORE_CLIENT_CLASS = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
   private static final String HIVE_METASTORE_URI_SELECTION_KEY = "hive.metastore.uri.selection";
   private static final String HIVE_METASTORE_URI_SELECTION_SEQUENTIAL = "SEQUENTIAL";
+  private static final ClassValue<AtomicBoolean> UGI_CONFIGURED = new ClassValue<>() {
+    @Override
+    protected AtomicBoolean computeValue(Class<?> type) {
+      return new AtomicBoolean(false);
+    }
+  };
 
   private final Object client;
   private final IsolatedInvocationBridge bridge;
@@ -213,8 +220,16 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     Class<?> childUgiClass = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, classLoader);
     Method set = childConfigurationClass.getMethod("set", String.class, String.class);
     set.invoke(isolatedConf, "hadoop.security.authentication", "kerberos");
-    Method setConfiguration = childUgiClass.getMethod("setConfiguration", childConfigurationClass);
-    setConfiguration.invoke(null, isolatedConf);
+    AtomicBoolean configured = UGI_CONFIGURED.get(childUgiClass);
+    if (!configured.get()) {
+      synchronized (configured) {
+        if (!configured.get()) {
+          Method setConfiguration = childUgiClass.getMethod("setConfiguration", childConfigurationClass);
+          setConfiguration.invoke(null, isolatedConf);
+          configured.set(true);
+        }
+      }
+    }
 
     if (delegationToken != null && !delegationToken.isBlank()) {
       Class<?> childTokenClass = Class.forName("org.apache.hadoop.security.token.Token", true, classLoader);

@@ -991,6 +991,170 @@ public class BackendRuntimeTest {
     return ctor.newInstance(null, thriftClient, null);
   }
 
+  @Test
+  public void closeDefersIsolatedClassLoaderCloseUntilImpersonationAndEphemeralSessionsClose() throws Exception {
+    Path hdpJar = Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
+        .toAbsolutePath();
+    Assume.assumeTrue(Files.isReadable(hdpJar));
+    CloseRecorder recorder = new CloseRecorder();
+    ControlledSessionFactory factory = new ControlledSessionFactory(
+        () -> isolatedSession(recorder, dummyStatusClient()),
+        true,
+        4);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        pooledCatalogConfig(1, 200L, hdpJar.toString()),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        factory);
+    MetastoreApiClassLoader classLoader = (MetastoreApiClassLoader) factory.isolatedClassLoaders.get(0);
+    Assert.assertNotNull(classLoader);
+
+    BackendInvocationSession impersonation = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, "alice", List.of("g1"));
+    BackendInvocationSession ephemeral = runtime.openEphemeralSession(
+        new HiveConf(), MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78);
+
+    runtime.close();
+
+    Assert.assertNotNull(
+        "classloader must stay open while impersonation & ephemeral sessions are still open",
+        classLoader.findResource("org/apache/hadoop/hive/metastore/api/Table.class"));
+
+    impersonation.close();
+    Assert.assertNotNull(
+        "classloader must stay open while ephemeral session is still open",
+        classLoader.findResource("org/apache/hadoop/hive/metastore/api/Table.class"));
+
+    ephemeral.close();
+    Assert.assertEquals(3, recorder.closes());
+    Assert.assertNull(
+        "classloader must close as soon as the last external session closes",
+        classLoader.findResource("org/apache/hadoop/hive/metastore/api/Database.class"));
+  }
+
+  @Test
+  public void reconnectSharedRacingWithCloseClosesFreshSessionAndIsolatedClassLoader() throws Exception {
+    Path hdpJar = Path.of("hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar")
+        .toAbsolutePath();
+    Assume.assumeTrue(Files.isReadable(hdpJar));
+    CloseRecorder initialRecorder = new CloseRecorder();
+    CloseRecorder freshRecorder = new CloseRecorder();
+    CountDownLatch reconnectEnteredOpen = new CountDownLatch(1);
+    CountDownLatch allowReconnectFinish = new CountDownLatch(1);
+    AtomicInteger opens = new AtomicInteger();
+
+    ControlledSessionFactory factory = new ControlledSessionFactory(
+        () -> {
+          if (opens.incrementAndGet() == 1) {
+            return isolatedSession(initialRecorder, dummyStatusClient());
+          }
+          reconnectEnteredOpen.countDown();
+          Assert.assertTrue(allowReconnectFinish.await(10, TimeUnit.SECONDS));
+          return isolatedSession(freshRecorder, dummyStatusClient());
+        },
+        true,
+        4);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        pooledCatalogConfig(1, 200L, hdpJar.toString()),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        factory);
+    MetastoreApiClassLoader classLoader = (MetastoreApiClassLoader) factory.isolatedClassLoaders.get(0);
+
+    AtomicReference<Throwable> reconnectError = new AtomicReference<>();
+    Thread reconnector = new Thread(() -> {
+      try {
+        runtime.reconnectShared(new HortonworksBackendAdapter(MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78));
+      } catch (Throwable t) {
+        reconnectError.set(t);
+      }
+    }, "reconnect-worker");
+    reconnector.start();
+    Assert.assertTrue(reconnectEnteredOpen.await(10, TimeUnit.SECONDS));
+
+    // Closing while reconnect is mid-open (all permits are held by reconnectShared):
+    // close() marks closed=true and may time out waiting on permits, so the reconnector thread
+    // must clean up the freshly opened session and retire the classloader on exit.
+    runtime.close();
+    allowReconnectFinish.countDown();
+    reconnector.join(TimeUnit.SECONDS.toMillis(10));
+
+    Assert.assertNotNull("reconnect finishing after close must report closed runtime", reconnectError.get());
+    Assert.assertEquals(1, initialRecorder.closes());
+    Assert.assertEquals(1, freshRecorder.closes());
+    Assert.assertFalse(runtime.hasActiveSession());
+    Assert.assertNull(
+        "classloader must be closed once reconnect finishes and releases leasedSessions",
+        classLoader.findResource("org/apache/hadoop/hive/metastore/api/Database.class"));
+  }
+
+  @Test
+  public void concurrentReleaseAndCloseNeverLeavesLeakedSessionsInPool() throws Throwable {
+    List<CloseRecorder> recorders = java.util.Collections.synchronizedList(new ArrayList<>());
+    ControlledSessionFactory factory = new ControlledSessionFactory(
+        () -> {
+          CloseRecorder r = new CloseRecorder();
+          recorders.add(r);
+          return isolatedSession(r, dummyStatusClient());
+        },
+        false,
+        32);
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        pooledCatalogConfig(4, 200L, null),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+
+    CountDownLatch start = new CountDownLatch(1);
+    List<Thread> workers = new ArrayList<>();
+    for (int i = 0; i < 6; i++) {
+      Thread worker = new Thread(() -> {
+        try {
+          start.await();
+          for (int iter = 0; iter < 40; iter++) {
+            try {
+              runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]);
+            } catch (MetaException closed) {
+              if (!closed.getMessage().contains("closed")) {
+                throw new AssertionError(closed);
+              }
+              return;
+            }
+          }
+        } catch (Throwable t) {
+          throw new RuntimeException(t);
+        }
+      }, "pool-worker-" + i);
+      workers.add(worker);
+      worker.start();
+    }
+
+    start.countDown();
+    Thread.sleep(5L);
+    runtime.close();
+    for (Thread worker : workers) {
+      worker.join(TimeUnit.SECONDS.toMillis(10));
+    }
+
+    Assert.assertFalse(runtime.hasActiveSession());
+    for (CloseRecorder r : recorders) {
+      Assert.assertEquals("every opened session must be closed cleanly once", 1, r.closes());
+    }
+  }
+
+  private static ThriftHiveMetastore.Iface dummyStatusClient() {
+    return (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[] {ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> null);
+  }
+
   private static void awaitUntil(java.util.function.BooleanSupplier condition) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
     while (!condition.getAsBoolean() && System.nanoTime() < deadline) {

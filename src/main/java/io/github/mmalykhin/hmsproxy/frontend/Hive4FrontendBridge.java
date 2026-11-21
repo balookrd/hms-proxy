@@ -356,35 +356,21 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleGetDatabaseReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getName");
-      String catName = null;
-      try {
-        catName = (String) invokeNoArgs(request, "getCatalogName");
-      } catch (ReflectiveOperationException ignored) {
-      }
-      if (catName != null && !catName.isBlank() && !catName.equalsIgnoreCase("hive")
-          && (config == null || !catName.equalsIgnoreCase(config.defaultCatalog()))) {
-        String separator = config == null ? "__" : config.catalogDbSeparator();
-        if (dbName != null && !dbName.startsWith(catName + separator)) {
-          dbName = catName + separator + dbName;
-        }
-      }
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getName"));
       Object database = apacheHandler.get_database(dbName);
       return convertResult(database, method.getReturnType());
     }
 
     private Object handleGetDatabasesReq(Method method, Object request) throws Throwable {
       String pattern = (String) invokeNoArgs(request, "getPattern");
-      String catName = null;
-      try {
-        catName = (String) invokeNoArgs(request, "getCatalogName");
-      } catch (ReflectiveOperationException ignored) {
-      }
+      String catName = readCatalogName(request);
       List<String> names;
       if (catName != null && !catName.isBlank() && !catName.equalsIgnoreCase("hive")
           && (config == null || !catName.equalsIgnoreCase(config.defaultCatalog()))) {
         String separator = config == null ? "__" : config.catalogDbSeparator();
-        String effectivePattern = catName + separator + (pattern == null || pattern.isEmpty() ? "*" : pattern);
+        String effectivePattern = (pattern != null && pattern.startsWith(catName + separator))
+            ? pattern
+            : catName + separator + (pattern == null || pattern.isEmpty() ? "*" : pattern);
         names = apacheHandler.get_databases(effectivePattern);
       } else {
         names = pattern == null || pattern.isEmpty()
@@ -407,6 +393,9 @@ public final class Hive4FrontendBridge {
         return extension.create_table_req(request);
       }
       Table table = (Table) ThriftValueConverter.convertTBase(invokeNoArgs(request, "getTable"), Table.class);
+      if (table != null) {
+        table.setDbName(qualifyDbName(table.getCatName(), table.getDbName()));
+      }
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvContext"), EnvironmentContext.class);
       @SuppressWarnings("unchecked")
@@ -446,7 +435,7 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleDropTableReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTableName");
       boolean deleteData = (boolean) invokeNoArgs(request, "isDeleteData");
       EnvironmentContext environmentContext =
@@ -460,9 +449,14 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleAlterTableReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String catName = readCatalogName(request);
+      String dbName = qualifyDbName(catName, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTableName");
       Table table = (Table) ThriftValueConverter.convertTBase(invokeNoArgs(request, "getTable"), Table.class);
+      if (table != null) {
+        String tableCat = (catName != null && !catName.isBlank()) ? catName : table.getCatName();
+        table.setDbName(qualifyDbName(tableCat, table.getDbName()));
+      }
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       if (environmentContext != null) {
@@ -476,7 +470,7 @@ public final class Hive4FrontendBridge {
     @SuppressWarnings("unchecked")
     private Object handleTruncateTableReq(Method method, Object request) throws Throwable {
       apacheHandler.truncate_table(
-          (String) invokeNoArgs(request, "getDbName"),
+          qualifyDbName(request, (String) invokeNoArgs(request, "getDbName")),
           (String) invokeNoArgs(request, "getTableName"),
           (List<String>) invokeNoArgs(request, "getPartNames"));
       return emptyResponse(method.getReturnType());
@@ -484,11 +478,20 @@ public final class Hive4FrontendBridge {
 
     @SuppressWarnings("unchecked")
     private Object handleAlterPartitionsReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String catName = readCatalogName(request);
+      String dbName = qualifyDbName(catName, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTableName");
       List<Partition> partitions =
           (List<Partition>) ThriftValueConverter.convertDynamicValue(invokeNoArgs(request, "getPartitions"),
               Hive4FrontendBridge.class.getClassLoader());
+      if (partitions != null) {
+        for (Partition partition : partitions) {
+          if (partition != null) {
+            String partCat = (catName != null && !catName.isBlank()) ? catName : partition.getCatName();
+            partition.setDbName(qualifyDbName(partCat, partition.getDbName()));
+          }
+        }
+      }
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvironmentContext"), EnvironmentContext.class);
       if (environmentContext != null) {
@@ -500,16 +503,23 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleRenamePartitionReq(Method method, Object request) throws Throwable {
+      String catName = readCatalogName(request);
+      String dbName = qualifyDbName(catName, (String) invokeNoArgs(request, "getDbName"));
+      Partition newPart = (Partition) ThriftValueConverter.convertTBase(invokeNoArgs(request, "getNewPart"), Partition.class);
+      if (newPart != null) {
+        String partCat = (catName != null && !catName.isBlank()) ? catName : newPart.getCatName();
+        newPart.setDbName(qualifyDbName(partCat, newPart.getDbName()));
+      }
       apacheHandler.rename_partition(
-          (String) invokeNoArgs(request, "getDbName"),
+          dbName,
           (String) invokeNoArgs(request, "getTableName"),
           stringList(invokeNoArgs(request, "getPartVals")),
-          (Partition) ThriftValueConverter.convertTBase(invokeNoArgs(request, "getNewPart"), Partition.class));
+          newPart);
       return emptyResponse(method.getReturnType());
     }
 
     private Object handleDropPartitionReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTblName");
       String partName = (String) invokeNoArgs(request, "getPartName");
       List<String> partVals = stringList(invokeNoArgs(request, "getPartVals"));
@@ -535,7 +545,7 @@ public final class Hive4FrontendBridge {
 
     private Object handleGetPartitionReq(Method method, Object request) throws Throwable {
       Partition partition = apacheHandler.get_partition(
-          (String) invokeNoArgs(request, "getDbName"),
+          qualifyDbName(request, (String) invokeNoArgs(request, "getDbName")),
           (String) invokeNoArgs(request, "getTblName"),
           stringList(invokeNoArgs(request, "getPartVals")));
       Object response = emptyResponse(method.getReturnType());
@@ -550,7 +560,7 @@ public final class Hive4FrontendBridge {
           ? (short) -1
           : ((Number) invokeNoArgs(request, "getMaxParts")).shortValue();
       List<Partition> partitions = apacheHandler.get_partitions(
-          (String) invokeNoArgs(request, "getDbName"),
+          qualifyDbName(request, (String) invokeNoArgs(request, "getDbName")),
           (String) invokeNoArgs(request, "getTblName"),
           maxParts);
       Object response = emptyResponse(method.getReturnType());
@@ -560,7 +570,7 @@ public final class Hive4FrontendBridge {
 
     private Object handleGetPartitionsByNamesReq(Method method, Object request) throws Throwable {
       List<Partition> partitions = apacheHandler.get_partitions_by_names(
-          (String) invokeNoArgs(request, "getDb_name"),
+          qualifyDbName(request, (String) invokeNoArgs(request, "getDb_name")),
           (String) invokeNoArgs(request, "getTbl_name"),
           stringList(invokeNoArgs(request, "getNames")));
       Object response = emptyResponse(method.getReturnType());
@@ -573,7 +583,7 @@ public final class Hive4FrontendBridge {
           ? (short) -1
           : ((Number) invokeNoArgs(request, "getMaxParts")).shortValue();
       List<Partition> partitions = apacheHandler.get_partitions_by_filter(
-          (String) invokeNoArgs(request, "getDbName"),
+          qualifyDbName(request, (String) invokeNoArgs(request, "getDbName")),
           (String) invokeNoArgs(request, "getTblName"),
           (String) invokeNoArgs(request, "getFilter"),
           maxParts);
@@ -585,7 +595,7 @@ public final class Hive4FrontendBridge {
       short maxParts = invokeNoArgs(request, "getMaxParts") == null
           ? (short) -1
           : ((Number) invokeNoArgs(request, "getMaxParts")).shortValue();
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTblName");
       byte[] expr = (byte[]) invokeNoArgs(request, "getExpr");
       // Hive 4 types this method as List<String>, not as a response wrapper.
@@ -595,8 +605,10 @@ public final class Hive4FrontendBridge {
       // Apache 3.1.3 has no name-only expression filter, so resolve the partitions by
       // expression (carrying expr, defaultPartitionName and maxParts) and rebuild the
       // names from the table partition keys.
-      PartitionsByExprResult filtered = apacheHandler.get_partitions_by_expr(
-          (PartitionsByExprRequest) ThriftValueConverter.convertTBase(request, PartitionsByExprRequest.class));
+      PartitionsByExprRequest exprRequest =
+          (PartitionsByExprRequest) ThriftValueConverter.convertTBase(request, PartitionsByExprRequest.class);
+      exprRequest.setDbName(dbName);
+      PartitionsByExprResult filtered = apacheHandler.get_partitions_by_expr(exprRequest);
       List<FieldSchema> partitionKeys = apacheHandler.get_table(dbName, tableName).getPartitionKeys();
       List<String> names = new ArrayList<>(filtered.getPartitionsSize());
       for (Partition partition : filtered.getPartitions()) {
@@ -606,7 +618,7 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleGetFieldsReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTblName");
       EnvironmentContext environmentContext =
           (EnvironmentContext) convertIfPresent(invokeNoArgs(request, "getEnvContext"), EnvironmentContext.class);
@@ -663,7 +675,7 @@ public final class Hive4FrontendBridge {
         Object result = extension.get_table_objects_by_name_req(request);
         return convertResult(result, method.getReturnType());
       }
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       @SuppressWarnings("unchecked")
       List<String> tblNames = stringList(invokeNoArgs(request, "getTblNames"));
       List<Table> tables = apacheHandler.get_table_objects_by_name(dbName, tblNames);
@@ -673,7 +685,7 @@ public final class Hive4FrontendBridge {
     }
 
     private Object handleAppendPartitionReq(Method method, Object request) throws Throwable {
-      String dbName = (String) invokeNoArgs(request, "getDbName");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDbName"));
       String tableName = (String) invokeNoArgs(request, "getTableName");
       String name = (String) invokeNoArgs(request, "getName");
       @SuppressWarnings("unchecked")
@@ -716,7 +728,7 @@ public final class Hive4FrontendBridge {
         Object result = extension.delete_column_statistics_req(request);
         return booleanResponse(method.getReturnType(), (Boolean) result);
       }
-      String dbName = (String) invokeNoArgs(request, "getDb_name");
+      String dbName = qualifyDbName(request, (String) invokeNoArgs(request, "getDb_name"));
       String tblName = (String) invokeNoArgs(request, "getTbl_name");
       Boolean tableLevel = (Boolean) invokeNoArgs(request, "isTableLevel");
       @SuppressWarnings("unchecked")
@@ -821,11 +833,13 @@ public final class Hive4FrontendBridge {
     }
 
     private Object convertResult(Object result, Class<?> returnType) throws Exception {
-      if (returnType == void.class) {
+      if (returnType == void.class || returnType == Void.class) {
         return null;
       }
       if (result == null) {
-        return emptyResponse(returnType);
+        return ThriftValueConverter.isThriftStructClass(returnType)
+            ? emptyResponse(returnType)
+            : null;
       }
       return ThriftValueConverter.convertValue(result, returnType, hive4ClassLoader);
     }
@@ -848,14 +862,68 @@ public final class Hive4FrontendBridge {
       return target.getClass().getMethod(methodName).invoke(target);
     }
 
+    private String qualifyDbName(Object request, String dbName) {
+      return qualifyDbName(readCatalogName(request), dbName);
+    }
+
+    private String qualifyDbName(String catName, String dbName) {
+      if (dbName == null || dbName.isBlank()) {
+        return dbName;
+      }
+      if (dbName.startsWith("@")) {
+        int hash = dbName.indexOf('#');
+        if (hash > 1 && hash + 1 < dbName.length()) {
+          String embeddedCat = dbName.substring(1, hash);
+          String remainder = dbName.substring(hash + 1);
+          if ("!".equals(remainder)) {
+            return "";
+          }
+          dbName = remainder;
+          if (catName == null || catName.isBlank()) {
+            catName = embeddedCat;
+          }
+        }
+      }
+      if (catName != null && !catName.isBlank() && !catName.equalsIgnoreCase("hive")
+          && (config == null || !catName.equalsIgnoreCase(config.defaultCatalog()))) {
+        String separator = config == null ? "__" : config.catalogDbSeparator();
+        if (!dbName.startsWith(catName + separator)) {
+          return catName + separator + dbName;
+        }
+      }
+      return dbName;
+    }
+
+    private String readCatalogName(Object request) {
+      if (request == null) {
+        return null;
+      }
+      for (String getter : List.of("getCatName", "getCatalogName", "getCat_name")) {
+        try {
+          Object value = invokeNoArgs(request, getter);
+          if (value instanceof String str && !str.isBlank()) {
+            return str;
+          }
+        } catch (ReflectiveOperationException ignored) {
+        }
+      }
+      return null;
+    }
+
     @SuppressWarnings("unchecked")
     private List<String> stringList(Object value) {
       return value == null ? List.of() : (List<String>) value;
     }
 
-    @SuppressWarnings("unchecked")
-    private <T> List<T> typedList(List<Object> value, Class<T> type) {
-      return value == null ? List.of() : (List<T>) value;
+    private <T> List<T> typedList(List<Object> value, Class<T> type) throws Exception {
+      if (value == null || value.isEmpty()) {
+        return List.of();
+      }
+      List<T> converted = new ArrayList<>(value.size());
+      for (Object item : value) {
+        converted.add(type.cast(ThriftValueConverter.convertTBase(item, type)));
+      }
+      return converted;
     }
 
     private boolean hasAny(List<?>... values) {

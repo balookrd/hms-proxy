@@ -25,6 +25,7 @@ import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 
 public final class BackendInvocationSession implements AutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(BackendInvocationSession.class);
+  private static final Runnable CLOSED = () -> {};
 
   private final HiveMetaStoreClient client;
   private final ThriftHiveMetastore.Iface thriftClient;
@@ -230,15 +231,36 @@ public final class BackendInvocationSession implements AutoCloseable {
   }
 
   void runAfterClose(Runnable action) {
-    afterClose.set(action);
+    if (action == null) {
+      return;
+    }
+    while (true) {
+      Runnable current = afterClose.get();
+      if (current == CLOSED) {
+        action.run();
+        return;
+      }
+      Runnable next = current == null
+          ? action
+          : () -> {
+              try {
+                current.run();
+              } finally {
+                action.run();
+              }
+            };
+      if (afterClose.compareAndSet(current, next)) {
+        return;
+      }
+    }
   }
 
   @Override
   public void close() {
     CatalogBackend.closeQuietly(client, "backend metastore client session");
     CatalogBackend.closeQuietly(isolatedClient, "isolated backend metastore client session");
-    Runnable action = afterClose.getAndSet(null);
-    if (action != null) {
+    Runnable action = afterClose.getAndSet(CLOSED);
+    if (action != null && action != CLOSED) {
       action.run();
     }
   }

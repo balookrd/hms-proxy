@@ -8,6 +8,21 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Исправлено (Backend, Thrift-мост и Front-door совместимость)
+
+- **Стабильность конвертации Thrift и изоляции `ClassLoader` (`H10`)**:
+  - `ThriftValueConverter`: удалён `ThreadLocal<TDeserializer>`, для `ThreadLocal<TSerializer>` введён потолок удержания буфера (`MAX_RETAINED_SERIALIZER_BYTES = 64 KiB` — крупные ответы сбрасывают увеличенный буфер `ByteArrayOutputStream`), добавлен `isThriftStructClass`, а `convertForeignThriftInfrastructureException` теперь проверяет всю иерархию суперклассов (`TApplicationException`, `TTransportException` включая `TEOFException`/`TSaslNegotiationException`, `TProtocolException`, `TException`) и защищён от циклического `cause`.
+  - `IsolatedInvocationBridge.invokeByName`: исключения всегда конвертируются в parent `ClassLoader` (`IsolatedInvocationBridge.class.getClassLoader()`), чтобы `ThriftFailureClassifier` и совместимость в маршрутизации корректно классифицировали сбои даже при аргументах из child `ClassLoader`.
+- **Управление сессиями бэкенда, групповая ревалидация impersonation и жизненный цикл `MetastoreApiClassLoader` (`H10`)**:
+  - `CatalogBackend`: при изменении состава `groupNames` для активного пользователя старый `ImpersonationClient` вытесняется (`groups_changed`, без лишнего вытеснения при перестановке порядка групп); `ensureClientSocketTimeout` и `probeConnectivity` используют copy-on-write snapshot `volatile HiveConf` вместо in-place мутации (устранён `ConcurrentModificationException`); распознаются оба семейства ключей конфигурации Hive 3/4 (`metastore.client.socket.timeout` и `metastore.thrift.sasl.enabled` наряду с `hive.metastore.*`).
+  - `BackendInvocationSession.runAfterClose`: поддерживает сцепление нескольких callback'ов через sentinel `CLOSED` (гарантируя выполнение и отмены delegation token, и освобождения слота внешней сессии).
+  - `BackendRuntime`: закрыта гонка `release()` / `borrow()` / `reconnectShared()` против `close()`, а `openImpersonationSession` и `openEphemeralSession` учитываются через `activeExternalSessions` при quiescing `isolatedClassLoader`.
+  - `IsolatedMetastoreClient`: `UserGroupInformation.setConfiguration` вызывается строго однократно на `ClassLoader` через `ClassValue<AtomicBoolean>`, исключая гонки с параллельными SASL-хендшейками.
+  - `MetastoreApiClassLoader`: `org.apache.hadoop.util.ShutdownHookManager` (и вложенные `$*`) оставлены parent-first, чтобы per-catalog загрузчики не удерживались навсегда JVM shutdown hook'ами и executor'ом.
+- **Исправления front-door мостов и проброса каталога в Hive 4 (`H10`, `C7`)**:
+  - `HortonworksFrontendBridge` и `Hive4FrontendBridge`: `convertResult(null, returnType)` возвращает пустой struct только для `TBase`-классов и честный `null` для `String`, `List`, `Map`, `Boolean` и т.д.; `typedList` конвертирует каждый элемент ограничений (`SQLPrimaryKey` и др.) через `ThriftValueConverter.convertTBase` при `extension == null`.
+  - `Hive4FrontendBridge` (`C7`): добавлены единые `readCatalogName` (`getCatName` / `getCatalogName` / `getCat_name`) и `qualifyDbName` во всех `handle*Req` методах (включая `drop_table_req`, `drop_partition_req`, `append_partition_req`, `get_partition_names_req` в том числе с `expr`, `get_fields_req`, `delete_column_statistics_req` и др.), не допуская потери каталога и двойного префиксирования.
+
 ### Исправлено (Кэши метаданных, Iceberg/DDL-гарды, fallback, view rewrite и fanout)
 
 - **Целостность кэшей метаданных, фонового обновления и инвалидации (`H8`)**:

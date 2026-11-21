@@ -8,6 +8,21 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed (Backend, Thrift Bridge, and Front-Door Compatibility)
+
+- **Thrift value conversion stability and `ClassLoader` isolation (`H10`)**:
+  - `ThriftValueConverter`: removed `ThreadLocal<TDeserializer>`, bounded `ThreadLocal<TSerializer>` buffer retention (`MAX_RETAINED_SERIALIZER_BYTES = 64 KiB` so oversized structs drop enlarged `ByteArrayOutputStream` buffers), added `isThriftStructClass`, and updated `convertForeignThriftInfrastructureException` to walk the superclass hierarchy (`TApplicationException`, `TTransportException` including `TEOFException`/`TSaslNegotiationException`, `TProtocolException`, `TException`) while guarding against self-referential `cause` cycles.
+  - `IsolatedInvocationBridge.invokeByName`: exceptions are now always converted into the parent `ClassLoader` (`IsolatedInvocationBridge.class.getClassLoader()`) so `ThriftFailureClassifier` and compatibility layers classify errors reliably even when request arguments come from a child `ClassLoader`.
+- **Backend session lifecycle, impersonation group revalidation, and `MetastoreApiClassLoader` leak fixes (`H10`)**:
+  - `CatalogBackend`: evicts cached `ImpersonationClient` entries when a caller's group membership changes (`groups_changed`, ignoring order-only changes); switched `ensureClientSocketTimeout` and `probeConnectivity` to copy-on-write snapshots of `volatile HiveConf` (eliminating `ConcurrentModificationException`); added support for Hive 3/4 keys `metastore.client.socket.timeout` and `metastore.thrift.sasl.enabled` alongside `hive.metastore.*`.
+  - `BackendInvocationSession.runAfterClose`: chains multiple callbacks safely using a `CLOSED` sentinel (preserving both delegation token cancellation and external session slot tracking).
+  - `BackendRuntime`: closed `release()` / `borrow()` / `reconnectShared()` vs `close()` races and tracked `openImpersonationSession` / `openEphemeralSession` via `activeExternalSessions` before quiescing `isolatedClassLoader`.
+  - `IsolatedMetastoreClient`: runs `UserGroupInformation.setConfiguration` once per isolated `ClassLoader` via `ClassValue<AtomicBoolean>`, preventing races against concurrent SASL handshakes.
+  - `MetastoreApiClassLoader`: keeps `org.apache.hadoop.util.ShutdownHookManager` (and inner `$*` classes) parent-first so per-catalog classloaders are not retained indefinitely by JVM shutdown hooks and their executor.
+- **Front-door bridge fixes and Hive 4 remote catalog qualification (`H10`, `C7`)**:
+  - `HortonworksFrontendBridge` and `Hive4FrontendBridge`: `convertResult(null, returnType)` returns an empty struct only for `TBase` return types and preserves `null` for non-struct types (`String`, `List`, `Map`, `Boolean`, etc.); `typedList` converts constraint elements (`SQLPrimaryKey`, etc.) via `ThriftValueConverter.convertTBase` when `extension == null`.
+  - `Hive4FrontendBridge` (`C7`): added unified `readCatalogName` (`getCatName` / `getCatalogName` / `getCat_name`) and `qualifyDbName` across all `handle*Req` handlers (including `drop_table_req`, `drop_partition_req`, `append_partition_req`, `get_partition_names_req` with and without `expr`, `get_fields_req`, `delete_column_statistics_req`, etc.), preserving remote catalogs without double-prefixing.
+
 ### Fixed (Metadata Caches, Iceberg/DDL Guards, Legacy Fallbacks, View Rewrite, and Fanout)
 
 - **Metadata cache consistency, background refresh, and invalidation (`H8`)**:

@@ -122,7 +122,14 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
     }
   }
 
+  private static final String SHUTDOWN_HOOK_MANAGER_CLASS = "org.apache.hadoop.util.ShutdownHookManager";
+
   private boolean isChildFirst(String name) {
+    // ShutdownHookManager registers a JVM shutdown hook in Runtime and starts a non-reclaimed
+    // hook executor; loading it per-catalog pins the entire MetastoreApiClassLoader in memory forever.
+    if (name.equals(SHUTDOWN_HOOK_MANAGER_CLASS) || name.startsWith(SHUTDOWN_HOOK_MANAGER_CLASS + "$")) {
+      return false;
+    }
     for (String prefix : childFirstPrefixes) {
       if (name.startsWith(prefix)) {
         return true;

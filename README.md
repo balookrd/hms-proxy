@@ -369,7 +369,7 @@ Enum-значения — все ключи режимов, профилей и 
 `access-mode=read_only` и `frontend-profile=apache_3_1_3` принимаются везде. При неизвестном
 значении сообщение содержит ключ и список допустимых констант.
 
-Длительности в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` соответствуют
+Длительности в HiveConf-ключах вроде `hive.metastore.client.socket.timeout` (и `metastore.client.socket.timeout`) соответствуют
 Hive: целое число с необязательным суффиксом `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`,
 `d`/`day` (длинные написания вроде `600sec`, `5min` тоже работают). Число без суффикса означает
 секунды. Значение, которое отверг бы и сам Hive (например `1.5s`), логируется как `WARN` с
@@ -1725,7 +1725,7 @@ catalog.catalog1.conf.hive.metastore.sasl.enabled=true
 catalog.catalog1.conf.hive.metastore.kerberos.principal=hive/_HOST@REALM.COM
 ```
 
-Когда для любого backend включён `hive.metastore.sasl.enabled=true`, proxy открывает outbound HMS
+Когда для любого backend включён `hive.metastore.sasl.enabled=true` (или `metastore.thrift.sasl.enabled=true` для Hive 3/4), proxy открывает outbound HMS
 соединения под `security.client-principal` и `security.client-keytab`.
 
 Для каждого каталога можно отдельно ограничить write RPC:

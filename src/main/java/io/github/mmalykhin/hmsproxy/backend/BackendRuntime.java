@@ -32,7 +32,7 @@ public final class BackendRuntime implements AutoCloseable {
 
   private final ProxyConfig proxyConfig;
   private final CatalogConfig catalogConfig;
-  private final HiveConf hiveConf;
+  private volatile HiveConf hiveConf;
   private final boolean backendKerberosEnabled;
   private final SessionFactory sessionFactory;
   private final MetastoreApiClassLoader isolatedClassLoader;
@@ -48,6 +48,7 @@ public final class BackendRuntime implements AutoCloseable {
   private volatile MetastoreRuntimeProfile activeProfile;
   private volatile boolean closed;
   private int leasedSessions;
+  private int activeExternalSessions;
   private boolean classLoaderClosed;
 
   private BackendRuntime(
@@ -171,6 +172,10 @@ public final class BackendRuntime implements AutoCloseable {
         runtimeProfile, initial, metrics);
   }
 
+  void updateHiveConf(HiveConf updatedConf) {
+    this.hiveConf = updatedConf;
+  }
+
   public boolean hasActiveSession() {
     synchronized (lifecycleLock) {
       return !closed && (!pool.isEmpty() || leasedSessions > 0);
@@ -220,13 +225,55 @@ public final class BackendRuntime implements AutoCloseable {
           "Timed out waiting to quiesce backend metastore pool for catalog " + catalogConfig.name()
               + " after " + timeoutMs + " ms");
     }
+    boolean openedLeased = false;
     try {
-      ensureOpen();
+      synchronized (lifecycleLock) {
+        ensureOpen();
+        leasedSessions++;
+        openedLeased = true;
+      }
       activeProfile = adapter.runtimeProfile();
       drainAndCloseLocked();
+      HiveConf currentConf = this.hiveConf;
       BackendInvocationSession fresh = sessionFactory.open(
-          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, activeProfile, isolatedClassLoader);
-      pool.offer(fresh);
+          proxyConfig, catalogConfig, currentConf, backendKerberosEnabled, activeProfile, isolatedClassLoader);
+      boolean offered = false;
+      boolean wasClosed;
+      synchronized (lifecycleLock) {
+        leasedSessions--;
+        openedLeased = false;
+        wasClosed = closed;
+        if (!wasClosed) {
+          offered = pool.offer(fresh);
+        }
+      }
+      if (wasClosed || !offered) {
+        CatalogBackend.closeQuietly(fresh, "shared backend metastore session (reconnect closed/rejected)");
+        closeClassLoaderIfQuiesced();
+        if (wasClosed) {
+          throw closedException();
+        }
+      }
+    } catch (Throwable t) {
+      if (openedLeased) {
+        synchronized (lifecycleLock) {
+          leasedSessions--;
+        }
+        closeClassLoaderIfQuiesced();
+      }
+      if (t instanceof MetaException me) {
+        throw me;
+      }
+      if (t instanceof RuntimeException re) {
+        throw re;
+      }
+      if (t instanceof Error err) {
+        throw err;
+      }
+      MetaException me = new MetaException(
+          "Unable to reconnect shared backend metastore session for catalog " + catalogConfig.name());
+      me.initCause(t);
+      throw me;
     } finally {
       permits.release(poolSize);
     }
@@ -245,35 +292,53 @@ public final class BackendRuntime implements AutoCloseable {
       String userName,
       List<String> groupNames
   ) throws MetaException {
-    ensureOpen();
-    String delegationToken = null;
-    if (backendKerberosEnabled) {
-      String renewer = KerberosPrincipalUtil.resolveForLocalHost(proxyConfig.security().outboundPrincipal());
-      try {
-        delegationToken = getDelegationToken(userName, renewer);
-        LOG.info("Acquired backend delegation token for user '{}' in catalog '{}'", userName, catalogConfig.name());
-      } catch (Throwable t) {
-        LOG.warn("Failed to acquire backend delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
-            userName, catalogConfig.name(), t);
+    acquireExternalSessionSlot();
+    boolean slotAttached = false;
+    try {
+      String delegationToken = null;
+      if (backendKerberosEnabled) {
+        String renewer = KerberosPrincipalUtil.resolveForLocalHost(proxyConfig.security().outboundPrincipal());
+        try {
+          delegationToken = getDelegationToken(userName, renewer);
+          LOG.info("Acquired backend delegation token for user '{}' in catalog '{}'", userName, catalogConfig.name());
+        } catch (Throwable t) {
+          LOG.warn("Failed to acquire backend delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
+              userName, catalogConfig.name(), t);
+        }
+      }
+      HiveConf currentConf = this.hiveConf;
+      if (delegationToken != null) {
+        String token = delegationToken;
+        try {
+          BackendInvocationSession session = sessionFactory.openImpersonating(
+              proxyConfig, catalogConfig, currentConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
+              isolatedClassLoader, token);
+          session.runAfterClose(() -> cancelDelegationTokenQuietly(userName, token));
+          slotAttached = true;
+          return attachExternalSession(
+              session,
+              "impersonation backend metastore session for user '" + userName + "' (runtime closed)");
+        } catch (Throwable t) {
+          if (slotAttached) {
+            throw t;
+          }
+          LOG.warn("Failed to open backend metastore session with delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
+              userName, catalogConfig.name(), t);
+          cancelDelegationTokenQuietly(userName, token);
+        }
+      }
+      BackendInvocationSession session = sessionFactory.openImpersonating(
+          proxyConfig, catalogConfig, currentConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
+          isolatedClassLoader, null);
+      slotAttached = true;
+      return attachExternalSession(
+          session,
+          "impersonation backend metastore session for user '" + userName + "' (runtime closed)");
+    } finally {
+      if (!slotAttached) {
+        releaseExternalSessionSlot();
       }
     }
-    if (delegationToken != null) {
-      String token = delegationToken;
-      try {
-        BackendInvocationSession session = sessionFactory.openImpersonating(
-            proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-            isolatedClassLoader, token);
-        session.runAfterClose(() -> cancelDelegationTokenQuietly(userName, token));
-        return session;
-      } catch (Throwable t) {
-        LOG.warn("Failed to open backend metastore session with delegation token for user '{}' in catalog '{}', falling back to direct Kerberos connection",
-            userName, catalogConfig.name(), t);
-        cancelDelegationTokenQuietly(userName, token);
-      }
-    }
-    return sessionFactory.openImpersonating(
-        proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, runtimeProfile, userName, groupNames,
-        isolatedClassLoader, null);
   }
 
   /**
@@ -321,9 +386,46 @@ public final class BackendRuntime implements AutoCloseable {
 
   public BackendInvocationSession openEphemeralSession(HiveConf conf, MetastoreRuntimeProfile runtimeProfile)
       throws MetaException {
-    ensureOpen();
-    return sessionFactory.open(
-        proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
+    acquireExternalSessionSlot();
+    boolean slotAttached = false;
+    try {
+      BackendInvocationSession session = sessionFactory.open(
+          proxyConfig, catalogConfig, conf, backendKerberosEnabled, runtimeProfile, isolatedClassLoader);
+      slotAttached = true;
+      return attachExternalSession(session, "ephemeral backend metastore session (runtime closed)");
+    } finally {
+      if (!slotAttached) {
+        releaseExternalSessionSlot();
+      }
+    }
+  }
+
+  private void acquireExternalSessionSlot() throws MetaException {
+    synchronized (lifecycleLock) {
+      ensureOpen();
+      activeExternalSessions++;
+    }
+  }
+
+  private void releaseExternalSessionSlot() {
+    synchronized (lifecycleLock) {
+      activeExternalSessions--;
+    }
+    closeClassLoaderIfQuiesced();
+  }
+
+  private BackendInvocationSession attachExternalSession(BackendInvocationSession session, String description)
+      throws MetaException {
+    session.runAfterClose(this::releaseExternalSessionSlot);
+    boolean wasClosed;
+    synchronized (lifecycleLock) {
+      wasClosed = closed;
+    }
+    if (wasClosed) {
+      CatalogBackend.closeQuietly(session, description);
+      throw closedException();
+    }
+    return session;
   }
 
   @Override
@@ -485,16 +587,24 @@ public final class BackendRuntime implements AutoCloseable {
     if (pooled != null) {
       return leaseOrReject(pooled);
     }
-    if (closed) {
-      permits.release();
-      throw closedException();
+    synchronized (lifecycleLock) {
+      if (closed) {
+        permits.release();
+        throw closedException();
+      }
+      leasedSessions++;
     }
     BackendInvocationSession fresh;
     try {
+      HiveConf currentConf = this.hiveConf;
       fresh = sessionFactory.open(
-          proxyConfig, catalogConfig, hiveConf, backendKerberosEnabled, activeProfile, isolatedClassLoader);
+          proxyConfig, catalogConfig, currentConf, backendKerberosEnabled, activeProfile, isolatedClassLoader);
     } catch (Throwable t) {
+      synchronized (lifecycleLock) {
+        leasedSessions--;
+      }
       permits.release();
+      closeClassLoaderIfQuiesced();
       if (t instanceof MetaException me) {
         throw me;
       }
@@ -503,7 +613,20 @@ public final class BackendRuntime implements AutoCloseable {
       me.initCause(t);
       throw me;
     }
-    return leaseOrReject(fresh);
+    boolean wasClosed;
+    synchronized (lifecycleLock) {
+      wasClosed = closed;
+      if (wasClosed) {
+        leasedSessions--;
+      }
+    }
+    if (wasClosed) {
+      CatalogBackend.closeQuietly(fresh, "shared backend metastore session (runtime closed)");
+      permits.release();
+      closeClassLoaderIfQuiesced();
+      throw closedException();
+    }
+    return fresh;
   }
 
   /**
@@ -571,13 +694,15 @@ public final class BackendRuntime implements AutoCloseable {
     boolean drop;
     synchronized (lifecycleLock) {
       leasedSessions--;
-      drop = closed;
+      if (closed) {
+        drop = true;
+      } else {
+        session.markUsed();
+        drop = !pool.offer(session);
+      }
     }
     if (drop) {
       CatalogBackend.closeQuietly(session, "shared backend metastore session (runtime closed)");
-    } else {
-      session.markUsed();
-      pool.offer(session);
     }
     permits.release();
     if (drop) {
@@ -609,7 +734,7 @@ public final class BackendRuntime implements AutoCloseable {
   private void closeClassLoaderIfQuiesced() {
     boolean close;
     synchronized (lifecycleLock) {
-      close = closed && leasedSessions == 0 && !classLoaderClosed;
+      close = closed && leasedSessions == 0 && activeExternalSessions == 0 && !classLoaderClosed;
       if (close) {
         classLoaderClosed = true;
       }

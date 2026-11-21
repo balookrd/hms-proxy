@@ -399,7 +399,7 @@ Enum values — every mode, profile and policy key — are case-insensitive, so
 `access-mode=read_only` and `frontend-profile=apache_3_1_3` are accepted everywhere. An unknown
 value reports the key and the accepted constants.
 
-Durations in HiveConf keys such as `hive.metastore.client.socket.timeout` follow Hive: an
+Durations in HiveConf keys such as `hive.metastore.client.socket.timeout` (and `metastore.client.socket.timeout`) follow Hive: an
 integer with an optional unit suffix `ns`, `us`, `ms`, `s`/`sec`, `m`/`min`, `h`/`hour`, `d`/`day`
 (long spellings such as `600sec`, `5min` work too). A bare number means seconds. A value Hive
 itself would reject, such as `1.5s`, is logged as a `WARN` naming the value and the applied
@@ -2126,7 +2126,7 @@ proxy is unprotected for at most one TTL - a `create_table` or an `alter_table` 
 pointer drops the remembered answer immediately. `hms_proxy_iceberg_pointer_guard_events_total`
 exposes both the repairs and the reads the cache saved.
 
-When `hive.metastore.sasl.enabled=true` is set for any catalog, the proxy opens outbound HMS
+When `hive.metastore.sasl.enabled=true` (or `metastore.thrift.sasl.enabled=true` for Hive 3/4) is set for any catalog, the proxy opens outbound HMS
 connections using `security.client-principal` and `security.client-keytab`. If those are omitted,
 it falls back to `security.server-principal` and `security.keytab`.
 

@@ -40,7 +40,7 @@ public final class IsolatedInvocationBridge {
       Object result = withContextClassLoader(() -> targetMethod.invoke(delegate, convertedArgs));
       return ThriftValueConverter.convertDynamicValue(result, returnClassLoader);
     } catch (InvocationTargetException e) {
-      throw ThriftValueConverter.convertThrowable(e.getCause(), returnClassLoader);
+      throw ThriftValueConverter.convertThrowable(e.getCause(), IsolatedInvocationBridge.class.getClassLoader());
     }
   }
 

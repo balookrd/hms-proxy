@@ -11,6 +11,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
@@ -395,11 +396,13 @@ public final class HortonworksFrontendBridge {
     }
 
     private Object convertResult(Object result, Class<?> returnType) throws Exception {
-      if (returnType == void.class) {
+      if (returnType == void.class || returnType == Void.class) {
         return null;
       }
       if (result == null) {
-        return emptyResponse(returnType);
+        return ThriftValueConverter.isThriftStructClass(returnType)
+            ? emptyResponse(returnType)
+            : null;
       }
       return ThriftValueConverter.convertValue(result, returnType, hdpClassLoader);
     }
@@ -427,9 +430,15 @@ public final class HortonworksFrontendBridge {
       return value == null ? List.of() : (List<String>) value;
     }
 
-    @SuppressWarnings("unchecked")
-    private <T> List<T> typedList(List<Object> value, Class<T> type) {
-      return value == null ? List.of() : (List<T>) value;
+    private <T> List<T> typedList(List<Object> value, Class<T> type) throws Exception {
+      if (value == null || value.isEmpty()) {
+        return List.of();
+      }
+      List<T> converted = new ArrayList<>(value.size());
+      for (Object item : value) {
+        converted.add(type.cast(ThriftValueConverter.convertTBase(item, type)));
+      }
+      return converted;
     }
 
     private boolean hasAny(List<?>... values) {
@@ -442,6 +451,9 @@ public final class HortonworksFrontendBridge {
     }
 
     private Object emptyResponse(Class<?> responseType) throws ReflectiveOperationException {
+      if (responseType == void.class || responseType == Void.class) {
+        return null;
+      }
       return responseType.getConstructor().newInstance();
     }
 
