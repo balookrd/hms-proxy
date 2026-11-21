@@ -215,6 +215,22 @@ public class SyntheticReadLockStoreTest {
     }
   }
 
+  @Test
+  public void zooKeeperSequenceDecodeHandlesSignedIntOverflowRoundTrip() {
+    long wrapStartSeq = ZooKeeperSyntheticReadLockStore.decodeZkSequence("-2147483648");
+    long maxUint32Seq = ZooKeeperSyntheticReadLockStore.decodeZkSequence("-000000001");
+
+    Assert.assertEquals(2_147_483_648L, wrapStartSeq);
+    Assert.assertEquals(4_294_967_295L, maxUint32Seq);
+    Assert.assertEquals("-2147483648", ZooKeeperSyntheticReadLockStore.encodeZkSequence(wrapStartSeq));
+    Assert.assertEquals("-000000001", ZooKeeperSyntheticReadLockStore.encodeZkSequence(maxUint32Seq));
+    Assert.assertEquals("0000000042", ZooKeeperSyntheticReadLockStore.encodeZkSequence(42L));
+
+    long wrappedLockId = SyntheticReadLockManager.lockIdForSequence(wrapStartSeq);
+    Assert.assertTrue(wrappedLockId > SyntheticReadLockManager.SYNTHETIC_LOCK_ID_FLOOR);
+    Assert.assertEquals(wrapStartSeq, SyntheticReadLockManager.sequenceForLockId(wrappedLockId));
+  }
+
   private static SyntheticReadLockManager.SyntheticLockState create(
       SyntheticReadLockStore store,
       long txnId,

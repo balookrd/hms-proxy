@@ -16,11 +16,13 @@ import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
 import java.lang.reflect.Constructor;
+import java.net.SocketTimeoutException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.thrift.TApplicationException;
 import org.apache.thrift.transport.TTransportException;
 import org.junit.Assert;
@@ -99,6 +101,87 @@ public class BackendRoutingControllerAdmissionTest {
         "transport failures must still open the circuit",
         ProxyRuntimeState.CircuitState.OPEN,
         state.backendStatus("catalog1").circuitState());
+  }
+
+  @Test
+  public void halfOpenAllowsOnlyOneProbeAtATimeAndPreservesProbeFlagAgainstStrayFailures() throws Exception {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(false, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(true, 1, 30L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyConfig config = latencyAwareConfig(
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        latencyRouting);
+    ProxyRuntimeState state = new ProxyObservability(config).runtimeState();
+
+    state.recordBackendFailure("catalog1", new TTransportException("backend down"), 5L, latencyRouting, false);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.OPEN, state.backendStatus("catalog1").circuitState());
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
+
+    // Stray application error while circuit is OPEN must not mark the backend as connected.
+    state.recordBackendFailure("catalog1", new NoSuchObjectException("missing table"), 5L, latencyRouting, false);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.OPEN, state.backendStatus("catalog1").circuitState());
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
+
+    Thread.sleep(50L);
+    ProxyRuntimeState.BackendCallAdmission firstProbe = state.admitBackendCall("catalog1", latencyRouting);
+    Assert.assertTrue(firstProbe.allowed());
+    Assert.assertTrue(firstProbe.halfOpen());
+    Assert.assertTrue(state.backendStatus("catalog1").halfOpenInFlight());
+
+    ProxyRuntimeState.BackendCallAdmission rejectedConcurrent = state.admitBackendCall("catalog1", latencyRouting);
+    Assert.assertFalse(rejectedConcurrent.allowed());
+    Assert.assertEquals("half_open_probe_in_flight", rejectedConcurrent.rejectionReason());
+
+    // A non-probe in-flight request failing with an application error must not clear the probe flag or raise connected=true.
+    state.recordBackendFailure("catalog1", new NoSuchObjectException("missing"), 5L, latencyRouting, false);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.HALF_OPEN, state.backendStatus("catalog1").circuitState());
+    Assert.assertTrue(state.backendStatus("catalog1").halfOpenInFlight());
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
+
+    // When the half-open probe itself fails with an application error, circuit stays HALF_OPEN,
+    // halfOpenInFlight clears, connected stays false, and only one next probe is admitted.
+    state.recordBackendFailure("catalog1", new NoSuchObjectException("missing"), 5L, latencyRouting, true);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.HALF_OPEN, state.backendStatus("catalog1").circuitState());
+    Assert.assertFalse(state.backendStatus("catalog1").halfOpenInFlight());
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
+
+    ProxyRuntimeState.BackendCallAdmission secondProbe = state.admitBackendCall("catalog1", latencyRouting);
+    Assert.assertTrue(secondProbe.allowed());
+    Assert.assertTrue(secondProbe.halfOpen());
+    ProxyRuntimeState.BackendCallAdmission concurrentAfterSecondProbe =
+        state.admitBackendCall("catalog1", latencyRouting);
+    Assert.assertFalse(concurrentAfterSecondProbe.allowed());
+    Assert.assertEquals("half_open_probe_in_flight", concurrentAfterSecondProbe.rejectionReason());
+  }
+
+  @Test
+  public void domainMetaExceptionTimedOutDoesNotOpenCircuitWhileTransportTimeoutDoes() {
+    LatencyRoutingConfig latencyRouting = new LatencyRoutingConfig(
+        new BackendStatePollingConfig(false, 10_000, 5_000L),
+        new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+        new CircuitBreakerConfig(true, 1, 60_000L),
+        new HedgedReadConfig(false, 1, 30_000L),
+        DegradedRoutingPolicy.STRICT);
+    ProxyConfig config = latencyAwareConfig(
+        Map.of("catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one"))),
+        latencyRouting);
+    ProxyRuntimeState state = new ProxyObservability(config).runtimeState();
+
+    state.recordBackendFailure("catalog1", new MetaException("Lock acquisition timed out"), 5L, latencyRouting, false);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.CLOSED, state.backendStatus("catalog1").circuitState());
+    Assert.assertTrue(state.backendStatus("catalog1").connected());
+
+    state.recordBackendFailure(
+        "catalog1",
+        new TTransportException(TTransportException.TIMED_OUT, new SocketTimeoutException("Read timed out")),
+        5L,
+        latencyRouting,
+        false);
+    Assert.assertEquals(ProxyRuntimeState.CircuitState.OPEN, state.backendStatus("catalog1").circuitState());
+    Assert.assertFalse(state.backendStatus("catalog1").connected());
   }
 
   private static BackendRuntime failingReconnectRuntime(

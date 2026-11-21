@@ -157,7 +157,7 @@ catalog.remote.merge-with-default=true
 
 - Без ручных списков: не требуется перечислять схемы вручную — они обнаруживаются автоматически.
 - Без вытеснения (shadowing): если база данных присутствует в каталоге по умолчанию (`routing.default-catalog`), она сохраняется в дефолтном каталоге и обслуживается им без префикса. Одноименная база удаленного каталога не скрывается, а остается доступна по явному префиксу (например, `remote__finance`).
-- Непрефиксированные схемы: схемы, существующие только в удаленном каталоге (которых нет в дефолтном), выставляются клиенту без префикса каталога и маршрутизируются в удаленный каталог (при этом канонический доступ с префиксом `remote__schema` также сохраняется).
+- Непрефиксированные схемы: схемы, существующие только в удаленном каталоге (которых нет в дефолтном), выставляются клиенту без префикса каталога и маршрутизируются в удаленный каталог (при этом канонический доступ с префиксом `remote__schema` также сохраняется). Таблица маршрутизации обновляется полной заменой снимка только на нефильтрованном wildcard-листинге (`get_all_databases` / `get_databases("*")` без пользовательской имперсонации); суженные паттерны и пользовательские листинги пополняют таблицу аддитивно и не стирают остальные базы `default`-каталога.
 - Создание схем (`create_database`): создание новых схем без явного префикса каталога при включенной фиче всегда направляется в дефолтный каталог. Для создания схемы в удаленном каталоге требуется явный префикс (`create_database("remote__new_db")`).
 - Ограничения: параметр нельзя указывать на `routing.default-catalog`, и его нельзя сочетать с `unprefixed-databases` на одном каталоге.
 - Поиск неизвестного имени: имя без префикса, которого прокси ещё не видел, проверяется через `get_database` сначала в дефолтном каталоге, затем в объединяемых. Параллельные запросы к одному имени делят одну такую проверку. Промах запоминается на `routing.merge-with-default.negative-cache-ttl-ms` (дефолт `5000`; `0` отключает запоминание), но только если каждый бэкенд ответил «базы нет» (`NoSuchObjectException`): ошибка или недоступность бэкенда промахом не считается, иначе имя на весь TTL уходило бы мимо каталога, где база на самом деле есть. Имена приходят от клиентов, поэтому кэш промахов ограничен `routing.merge-with-default.negative-cache-max-entries` (дефолт `10000`): сначала вытесняются истёкшие записи, а заполненный живыми промахами кэш перестаёт запоминать новые, пока старые не истекут.
@@ -1575,9 +1575,11 @@ coordinator.
 Write lock не ограничены по типу лока: при дефолтном `hive.txn.strict.locking.mode=true` Hive
 берёт на `INSERT` в non-ACID таблицу `EXCLUSIVE` lock, `SHARED_WRITE` — только при выключенном
 strict locking, а `INSERT OVERWRITE` всегда `EXCLUSIVE`. Компонент с `isTransactional=true`
-никогда не обслуживается синтетически: он относится к ACID-таблице, write id для которой умеет
-выдавать только TxnHandler default-каталога, поэтому запрос уходит в backend и падает там. ACID
-таблиц в non-default каталоге всё равно быть не может — proxy отклоняет `create_table` с
+(а также любой не подходящий под synthetic shim `lock` в non-default каталог) никогда не
+обслуживается синтетически и **не пересылается на non-default backend**: `check_lock`/`heartbeat`/
+`unlock` маршрутизируются на `default`-каталог по `lockId`, поэтому реальный `lock` на non-default
+бэкенде завис бы там или позволил бы `unlock` снять чужой лок default-каталога; такой запрос
+сразу отклоняется `MetaException` на прокси. ACID таблиц в non-default каталоге всё равно быть не может — proxy отклоняет `create_table` с
 `transactional=true` вне default-каталога и не пропускает `allocate_table_write_ids` /
 `get_valid_write_ids` для non-default каталогов.
 
@@ -1586,9 +1588,9 @@ strict locking, а `INSERT OVERWRITE` всегда `EXCLUSIVE`. Компонен
 non-default каталога не сериализуются друг относительно друга — как и клиенты, которые ходят в
 этот metastore мимо proxy. То есть non-default каталог не даёт ни ACID-гарантий, ни изоляции
 писателей; если нагрузке нужно взаимное исключение, держите её в `routing.default-catalog` или
-сериализуйте писателей сами. Access mode каталога при этом соблюдается: write lock для
-`READ_ONLY` каталога или для базы вне `catalog.<name>.write-db-whitelist` отклоняется
-`MetaException`, а не синтезируется.
+сериализуйте писателей сами. Access mode каталога проверяется по всем компонентам запроса
+(`SELECT` + `SHARED_READ` разрешён даже для `READ_ONLY`, а write/`EXCLUSIVE`/`SHARED_WRITE`/DDL
+блоки для `READ_ONLY` или баз вне `catalog.<name>.write-db-whitelist` отклоняются `MetaException`).
 
 Пригодность определяется по всем `LockComponent` запроса, а не только по первому. Вызов `lock`
 берётся, маршрутизируется и подтверждается целиком и возвращает один lock id, поэтому его нельзя
@@ -1629,6 +1631,7 @@ ZooKeeper-настройки были бы проигнорированы, а л
 
 ```properties
 synthetic-read-lock.store.mode=ZOOKEEPER
+# synthetic-read-lock.max-active-locks=50000
 synthetic-read-lock.store.zookeeper.connect-string=zk1:2181,zk2:2181,zk3:2181
 synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 # synthetic-read-lock.store.zookeeper.connection-timeout-ms=15000
@@ -1636,6 +1639,8 @@ synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 # synthetic-read-lock.store.zookeeper.base-sleep-ms=1000
 # synthetic-read-lock.store.zookeeper.max-retries=3
 ```
+
+Параметр `synthetic-read-lock.max-active-locks` (по умолчанию `50000`, `0` — без лимита) ограничивает максимальное число одновременно активных synthetic locks, защищая память прокси и дерево znode в ZooKeeper от переполнения. Сбой освобождения synthetic-локов в `finally` после уже закоммиченного `commit_txn`/`abort_txn` логируется как `WARN` и не перезаписывает успешный ответ транзакции.
 
 Если включён `security.mode=KERBEROS`, synthetic read-lock store по умолчанию использует те же
 `security.server-principal` и `security.keytab` для ZooKeeper SASL/Kerberos, что и front door,
@@ -1942,7 +1947,7 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - `get_database`, `get_table`, `get_table_req`: Доступ проверяется через `isDatabaseAllowed` / `isTableAllowed`. При отсутствии прав поведение определяется параметром `ranger.mask-unauthorized-as-not-found`: по умолчанию (`false`) выбрасывается `MetaException` с префиксом `Access denied: ...`, а при `true` — `NoSuchObjectException` (маскировка под отсутствие объекта).
 
 4. Разрешение групп Active Directory / LDAP и сопоставление с политиками:
-   - Серверный резолвинг групп: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах через Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
+   - Серверный резолвинг групп: При Kerberos-аутентификации (`remoteUser`) и при вызовах `set_ugi(user, [])` без указания групп прокси автоматически определяет членство пользователя в группах напрямую через Hadoop `Groups.getUserToGroupsMappingService().getGroups(userName)` (с single-flight дедупликацией параллельных запросов по одному пользователю, чтобы проброс `IOException` не терялся, а временные сбои AD/LDAP не затирали кэш пустым списком). Настройки маппинга групп (`hadoop.security.group.mapping`, например `org.apache.hadoop.security.LdapGroupsMapping`) и таймауты кэширования (`hadoop.security.groups.cache.secs`) передаются через `security.front-door-conf.*`.
    - Нормализация регистра и Distinguished Name (DN): Движок политик Apache Ranger чувствителен к регистру (case-sensitive) и обычно хранит имена групп в нижнем регистре (`sales`, `domain users`), тогда как службы каталогов Active Directory и LDAP могут возвращать группы в смешанном регистре (`Sales`, `Domain Users`) или в виде полного DN (`CN=Sales,OU=Groups,DC=example,DC=com`). Встроенный Ranger-плагин `hms-proxy` автоматически извлекает имя группы из атрибута CN и добавляет в запрос нормализованные варианты в нижнем регистре, поэтому правила в Ranger не нужно дублировать для разных регистров.
    - Дисковый кэш групп (`security.group-disk-cache.*`): чтобы на старте не ждать синхронных обращений к Active Directory/LDAP, прокси поддерживает дисковый кэш групп пользователей в формате JSON (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). На холодном старте кэш предзагружается с диска (время резолвинга 0 мс), периодически атомарно сбрасывается в фоновом потоке и при штатной остановке, а при временных сбоях или недоступности AD/LDAP отдаёт сохранённые группы в режиме serve-stale fallback:
 

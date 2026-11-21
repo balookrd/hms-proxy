@@ -83,25 +83,17 @@ final class GetDatabasesHandler implements SpecialCaseHandler {
           return result;
         });
 
+    String normalizedPattern = support.router.normalizeDatabasePattern(pattern);
+    boolean fullWildcard = "*".equals(normalizedPattern) || ".*".equals(normalizedPattern);
     if (support.router.hasMergeWithDefaultCatalogs()) {
-      for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
-        if (fanoutResult.backend().name().equals(support.router.defaultBackend().name())) {
-          support.router.updateDatabases(fanoutResult.backend().name(), fanoutResult.value());
-        }
-      }
-      for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
-        if (!fanoutResult.backend().name().equals(support.router.defaultBackend().name())) {
-          support.router.updateDatabases(fanoutResult.backend().name(), fanoutResult.value());
-        }
-      }
+      GetAllDatabasesHandler.updateMergedRoutingTable(support, fanoutResults, fullWildcard);
     }
 
     for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
       databases.addAll(support.exposedDatabaseNames(
           method.getName(), fanoutResult.backend().name(), fanoutResult.value()));
     }
-    String normalizedPattern = support.router.normalizeDatabasePattern(pattern);
-    if (!"*".equals(normalizedPattern) && !".*".equals(normalizedPattern)) {
+    if (!fullWildcard) {
       databases.removeIf(db -> !CatalogRouter.matchesHivePattern(db, normalizedPattern));
     }
     return databases;

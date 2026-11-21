@@ -34,6 +34,9 @@ public final class SyntheticReadLockStoreConfigParser {
     int sessionTimeoutMs = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.session-timeout-ms", 60_000);
     int baseSleepMs = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.base-sleep-ms", 1_000);
     int maxRetries = reader.getPositiveInt("synthetic-read-lock.store.zookeeper.max-retries", 3);
+    int maxActiveLocks = reader.getNonNegativeInt(
+        "synthetic-read-lock.max-active-locks",
+        SyntheticReadLockStoreConfig.DEFAULT_MAX_ACTIVE_LOCKS);
     SyntheticReadLockStoreZooKeeperConfig zk =
         new SyntheticReadLockStoreZooKeeperConfig(
             reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string"),
@@ -45,7 +48,7 @@ public final class SyntheticReadLockStoreConfigParser {
     if (mode == SyntheticReadLockStoreMode.ZOOKEEPER) {
       ConfigParsing.requireNonBlank(zk.connectString(), "synthetic-read-lock.store.zookeeper.connect-string");
     }
-    return new SyntheticReadLockStoreConfig(mode, zk);
+    return new SyntheticReadLockStoreConfig(mode, zk, maxActiveLocks);
   }
 
   private static SyntheticReadLockStoreMode parseMode(String value, boolean zooKeeperConfigured) {

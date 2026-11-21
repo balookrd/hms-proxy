@@ -297,6 +297,7 @@ public final class ProxyConfigLoader {
       "rest-catalog.hive-engine-descriptor",
       "rest-catalog.max-request-body-bytes",
       "synthetic-read-lock.store.mode",
+      "synthetic-read-lock.max-active-locks",
       "synthetic-read-lock.store.zookeeper.connect-string",
       "synthetic-read-lock.store.zookeeper.znode",
       "synthetic-read-lock.store.zookeeper.connection-timeout-ms",

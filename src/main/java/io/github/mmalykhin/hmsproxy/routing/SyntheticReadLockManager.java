@@ -40,6 +40,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
   private final SyntheticReadLockStore store;
   private final String storeMode;
   private final String instanceId;
+  private final int maxActiveLocks;
   private final AtomicLong activeLocks = new AtomicLong();
   private final ScheduledExecutorService sweepExecutor;
 
@@ -49,6 +50,7 @@ final class SyntheticReadLockManager implements AutoCloseable {
     this.metrics = metrics;
     this.storeMode = config.syntheticReadLockStore().mode().name().toLowerCase(Locale.ROOT);
     this.instanceId = UUID.randomUUID().toString();
+    this.maxActiveLocks = config.syntheticReadLockStore().maxActiveLocks();
     metrics.setSyntheticReadLockStoreMode(storeMode);
     metrics.setSyntheticReadLocksActive(storeMode, 0L);
     this.store = openStore(config);
@@ -80,21 +82,51 @@ final class SyntheticReadLockManager implements AutoCloseable {
       return null;
     }
 
+    boolean slotReserved = reserveActiveLockSlot(namespace.catalogName());
     long now = System.currentTimeMillis();
-    SyntheticLockState state = runWithStorage(
-        "create synthetic read lock",
-        "acquire",
-        namespace.catalogName(),
-        () -> store.create(
-            request.isSetTxnid() ? request.getTxnid() : 0L,
-            namespace.catalogName(),
-            namespace.backendDbName(),
-            namespace.externalDbName(),
-            instanceId,
-            now));
+    SyntheticLockState state;
+    try {
+      state = runWithStorage(
+          "create synthetic read lock",
+          "acquire",
+          namespace.catalogName(),
+          () -> store.create(
+              request.isSetTxnid() ? request.getTxnid() : 0L,
+              namespace.catalogName(),
+              namespace.backendDbName(),
+              namespace.externalDbName(),
+              instanceId,
+              now));
+    } catch (Throwable t) {
+      if (slotReserved) {
+        adjustActiveLockGauge(-1L);
+      }
+      throw t;
+    }
     metrics.recordSyntheticReadLockEvent("acquire", state.catalogName(), storeMode, "acquired");
-    adjustActiveLockGauge(1L);
+    if (slotReserved) {
+      metrics.setSyntheticReadLocksActive(storeMode, activeLocks.get());
+    } else {
+      adjustActiveLockGauge(1L);
+    }
     return state;
+  }
+
+  private boolean reserveActiveLockSlot(String catalogName) throws MetaException {
+    if (maxActiveLocks <= 0) {
+      return false;
+    }
+    while (true) {
+      long current = activeLocks.get();
+      if (current >= maxActiveLocks) {
+        metrics.recordSyntheticReadLockEvent("acquire", catalogName, storeMode, "rejected_limit");
+        throw new MetaException("Synthetic read-lock active limit reached ("
+            + maxActiveLocks + ") for store mode " + storeMode);
+      }
+      if (activeLocks.compareAndSet(current, current + 1L)) {
+        return true;
+      }
+    }
   }
 
   SyntheticLockState syntheticLockForCheck(CheckLockRequest request) throws MetaException, NoSuchLockException {
@@ -340,6 +372,27 @@ final class SyntheticReadLockManager implements AutoCloseable {
     return operationType == DataOperationType.INSERT
         || operationType == DataOperationType.UPDATE
         || operationType == DataOperationType.DELETE;
+  }
+
+  /**
+   * Package-private for lock handlers: determines whether a lock component represents a
+   * mutating or DDL write that requires catalog write-access validation. Read locks
+   * ({@code SELECT} or {@code NO_TXN}/{@code UNSET} with {@code SHARED_READ}) do not mutate data.
+   */
+  static boolean requiresWriteAccess(LockComponent component) {
+    if (component == null) {
+      return false;
+    }
+    if (component.isSetOperationType()) {
+      DataOperationType op = component.getOperationType();
+      if (isWriteOperation(op)) {
+        return true;
+      }
+      if (op == DataOperationType.SELECT) {
+        return component.isSetType() && component.getType() != LockType.SHARED_READ;
+      }
+    }
+    return !component.isSetType() || component.getType() != LockType.SHARED_READ;
   }
 
   /** Package-private so tests can drive one sweep without waiting for the scheduler. */

@@ -8,12 +8,15 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
@@ -25,11 +28,12 @@ public final class CatalogRouter implements AutoCloseable {
   private volatile List<CatalogPrefix> patternPrefixes;
   private volatile Map<String, String> unprefixedDatabases;
   private volatile Set<String> mergeWithDefaultCatalogs;
-  private final java.util.concurrent.ConcurrentHashMap<String, String> dynamicMergedDatabases = new java.util.concurrent.ConcurrentHashMap<>();
-  private final Set<String> defaultCatalogDatabases = java.util.concurrent.ConcurrentHashMap.newKeySet();
-  private final java.util.concurrent.ConcurrentHashMap<String, Long> negativeResolutionCache = new java.util.concurrent.ConcurrentHashMap<>();
-  private final java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<Optional<String>>>
-      onDemandLookups = new java.util.concurrent.ConcurrentHashMap<>();
+  private final Object defaultCatalogDatabasesLock = new Object();
+  private final ConcurrentHashMap<String, String> dynamicMergedDatabases = new ConcurrentHashMap<>();
+  private volatile Set<String> defaultCatalogDatabases = Set.of();
+  private final ConcurrentHashMap<String, Long> negativeResolutionCache = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, CompletableFuture<Optional<String>>>
+      onDemandLookups = new ConcurrentHashMap<>();
 
   CatalogRouter(ProxyConfig config, Map<String, CatalogBackend> backends) {
     this.config = config;
@@ -556,31 +560,37 @@ public final class CatalogRouter implements AutoCloseable {
       return;
     }
     if (catalogName.equals(config.defaultCatalog())) {
-      Set<String> newDefaultDbs = new java.util.HashSet<>();
-      for (String db : databases) {
-        if (db != null && !db.isBlank()) {
-          newDefaultDbs.add(db.toLowerCase(java.util.Locale.ROOT));
-        }
-      }
-      defaultCatalogDatabases.clear();
-      defaultCatalogDatabases.addAll(newDefaultDbs);
+      Set<String> newDefaultDbs = normalizeNonBlankLowercase(databases);
+      replaceDefaultCatalogDatabases(newDefaultDbs);
       for (String defDb : newDefaultDbs) {
         dynamicMergedDatabases.remove(defDb);
         negativeResolutionCache.remove(defDb);
       }
     } else if (isMergeWithDefaultCatalog(catalogName)) {
-      for (String db : databases) {
-        if (db == null || db.isBlank()) {
-          continue;
-        }
-        String lower = db.toLowerCase(java.util.Locale.ROOT);
-        negativeResolutionCache.remove(lower);
-        if (!defaultCatalogDatabases.contains(lower)) {
-          dynamicMergedDatabases.put(lower, catalogName);
-        } else {
-          dynamicMergedDatabases.remove(lower);
-        }
+      recordMergedRemoteDatabases(catalogName, databases);
+    }
+  }
+
+  /**
+   * Additively merges observed databases from a partial pattern query or user-scoped listing into
+   * the routing table without clearing known default-catalog databases that did not match.
+   */
+  public void mergeDatabases(String catalogName, Collection<String> databases) {
+    if (catalogName == null || databases == null) {
+      return;
+    }
+    if (catalogName.equals(config.defaultCatalog())) {
+      Set<String> observed = normalizeNonBlankLowercase(databases);
+      if (observed.isEmpty()) {
+        return;
       }
+      addDefaultCatalogDatabases(observed);
+      for (String defDb : observed) {
+        dynamicMergedDatabases.remove(defDb);
+        negativeResolutionCache.remove(defDb);
+      }
+    } else if (isMergeWithDefaultCatalog(catalogName)) {
+      recordMergedRemoteDatabases(catalogName, databases);
     }
   }
 
@@ -588,10 +598,10 @@ public final class CatalogRouter implements AutoCloseable {
     if (catalogName == null || dbName == null || dbName.isBlank()) {
       return;
     }
-    String lower = dbName.toLowerCase(java.util.Locale.ROOT);
+    String lower = dbName.toLowerCase(Locale.ROOT);
     negativeResolutionCache.remove(lower);
     if (catalogName.equals(config.defaultCatalog())) {
-      defaultCatalogDatabases.add(lower);
+      addDefaultCatalogDatabase(lower);
       dynamicMergedDatabases.remove(lower);
     } else if (isMergeWithDefaultCatalog(catalogName)) {
       if (!defaultCatalogDatabases.contains(lower)) {
@@ -604,12 +614,77 @@ public final class CatalogRouter implements AutoCloseable {
     if (catalogName == null || dbName == null || dbName.isBlank()) {
       return;
     }
-    String lower = dbName.toLowerCase(java.util.Locale.ROOT);
+    String lower = dbName.toLowerCase(Locale.ROOT);
     negativeResolutionCache.remove(lower);
     if (catalogName.equals(config.defaultCatalog())) {
-      defaultCatalogDatabases.remove(lower);
+      removeDefaultCatalogDatabase(lower);
     } else if (isMergeWithDefaultCatalog(catalogName)) {
       dynamicMergedDatabases.remove(lower);
+    }
+  }
+
+  private void recordMergedRemoteDatabases(String catalogName, Collection<String> databases) {
+    Set<String> defaultDbs = defaultCatalogDatabases;
+    for (String db : databases) {
+      if (db == null || db.isBlank()) {
+        continue;
+      }
+      String lower = db.toLowerCase(Locale.ROOT);
+      negativeResolutionCache.remove(lower);
+      if (!defaultDbs.contains(lower)) {
+        dynamicMergedDatabases.put(lower, catalogName);
+      } else {
+        dynamicMergedDatabases.remove(lower);
+      }
+    }
+  }
+
+  private static Set<String> normalizeNonBlankLowercase(Collection<String> databases) {
+    Set<String> normalized = new HashSet<>();
+    for (String db : databases) {
+      if (db != null && !db.isBlank()) {
+        normalized.add(db.toLowerCase(Locale.ROOT));
+      }
+    }
+    return normalized;
+  }
+
+  private void replaceDefaultCatalogDatabases(Set<String> newDefaultDbs) {
+    synchronized (defaultCatalogDatabasesLock) {
+      defaultCatalogDatabases = Set.copyOf(newDefaultDbs);
+    }
+  }
+
+  private void addDefaultCatalogDatabase(String lower) {
+    synchronized (defaultCatalogDatabasesLock) {
+      if (defaultCatalogDatabases.contains(lower)) {
+        return;
+      }
+      Set<String> next = new HashSet<>(defaultCatalogDatabases);
+      next.add(lower);
+      defaultCatalogDatabases = Set.copyOf(next);
+    }
+  }
+
+  private void addDefaultCatalogDatabases(Set<String> added) {
+    synchronized (defaultCatalogDatabasesLock) {
+      if (defaultCatalogDatabases.containsAll(added)) {
+        return;
+      }
+      Set<String> next = new HashSet<>(defaultCatalogDatabases);
+      next.addAll(added);
+      defaultCatalogDatabases = Set.copyOf(next);
+    }
+  }
+
+  private void removeDefaultCatalogDatabase(String lower) {
+    synchronized (defaultCatalogDatabasesLock) {
+      if (!defaultCatalogDatabases.contains(lower)) {
+        return;
+      }
+      Set<String> next = new HashSet<>(defaultCatalogDatabases);
+      next.remove(lower);
+      defaultCatalogDatabases = Set.copyOf(next);
     }
   }
 
@@ -650,7 +725,7 @@ public final class CatalogRouter implements AutoCloseable {
   private String probeDatabaseCatalog(String dbName, String lower) {
     DatabaseExistence onDefault = backendDatabaseExistence(defaultBackend(), dbName);
     if (onDefault == DatabaseExistence.PRESENT) {
-      defaultCatalogDatabases.add(lower);
+      addDefaultCatalogDatabase(lower);
       dynamicMergedDatabases.remove(lower);
       negativeResolutionCache.remove(lower);
       return config.defaultCatalog();
@@ -741,7 +816,7 @@ public final class CatalogRouter implements AutoCloseable {
     this.unprefixedDatabases = buildUnprefixedDatabases(newConfig);
     this.mergeWithDefaultCatalogs = buildMergeWithDefaultCatalogs(newConfig);
     this.dynamicMergedDatabases.clear();
-    this.defaultCatalogDatabases.clear();
+    replaceDefaultCatalogDatabases(Set.of());
     this.negativeResolutionCache.clear();
   }
 

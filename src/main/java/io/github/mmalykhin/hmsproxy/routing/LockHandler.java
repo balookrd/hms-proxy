@@ -154,7 +154,7 @@ final class LockHandler implements InvocationHandler {
     try {
       return next.invoke(proxy, method, args);
     } finally {
-      syntheticReadLockManager.releaseTxn(txnId);
+      releaseTxnBestEffort(txnId, method.getName());
     }
   }
 
@@ -163,7 +163,7 @@ final class LockHandler implements InvocationHandler {
     try {
       return next.invoke(proxy, method, args);
     } finally {
-      syntheticReadLockManager.releaseTxn(txnId);
+      releaseTxnBestEffort(txnId, method.getName());
     }
   }
 
@@ -174,9 +174,20 @@ final class LockHandler implements InvocationHandler {
     } finally {
       if (txnIds != null) {
         for (Long txnId : txnIds) {
-          syntheticReadLockManager.releaseTxn(txnId == null ? 0L : txnId);
+          releaseTxnBestEffort(txnId == null ? 0L : txnId, method.getName());
         }
       }
+    }
+  }
+
+  private void releaseTxnBestEffort(long txnId, String methodName) {
+    try {
+      syntheticReadLockManager.releaseTxn(txnId);
+    } catch (Exception e) {
+      // Do not overwrite an already completed commit_txn/abort_txn backend outcome; the sweep
+      // reclaims orphaned synthetic locks once expired.
+      LOG.warn("requestId={} failed to release synthetic read locks for txnId={} after {}: {}",
+          RequestContext.currentRequestId(), txnId, methodName, e.getMessage(), e);
     }
   }
 
@@ -209,7 +220,7 @@ final class LockHandler implements InvocationHandler {
       if (component.namespace() == null) {
         continue;
       }
-      if (SyntheticReadLockManager.isWriteOperation(component.component().getOperationType())) {
+      if (SyntheticReadLockManager.requiresWriteAccess(component.component())) {
         CatalogAccessModeGuard.validate(
             config.get().catalogs().get(component.namespace().catalogName()),
             methodName,

@@ -2,6 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,8 +42,16 @@ final class LockRoutingHandler implements SpecialCaseHandler {
 
     CatalogRouter.ResolvedNamespace primary = split.primary();
     RequestContext.currentObservation().recordNamespace(primary);
-    support.validateCatalogAccess(primary.backend(), METHOD_NAME, primary.backendDbName());
-    validateDroppedComponents(split);
+    validateComponentAccess(split);
+
+    // Follow-up check_lock, heartbeat, and unlock route strictly to defaultCatalog by lockId
+    // (AcidOps). Forwarding a real lock to a non-default backend strands the lock there and lets a
+    // colliding numeric lockId unlock an unrelated transaction in defaultCatalog.
+    if (!primary.catalogName().equals(support.config.defaultCatalog())) {
+      throw new MetaException("Backend lock request for non-default catalog '"
+          + primary.catalogName() + "' cannot be forwarded: only default catalog '"
+          + support.config.defaultCatalog() + "' owns real backend locks");
+    }
 
     LockRequest prepared = split.backendRequest(request, support.federationLayer);
     if (split.isSplit()) {
@@ -52,18 +61,20 @@ final class LockRoutingHandler implements SpecialCaseHandler {
   }
 
   /**
-   * A dropped component never reaches a backend, so its catalog's access mode has to be enforced
-   * here or not at all. Only write components are checked: {@code lock} counts as a mutating method
-   * by name, and validating every component would refuse a plain {@code SELECT} that happens to
-   * read a READ_ONLY catalog - the same rule the synthetic path applies.
+   * Validates catalog access mode across every component in the request, both routed and dropped.
+   * Checking every component enforces READ_WRITE_DB_WHITELIST on multi-DB requests and blocks
+   * NO_TXN/DDL EXCLUSIVE locks on READ_ONLY catalogs while allowing plain SELECT SHARED_READ locks.
    */
-  private void validateDroppedComponents(LockRequestSplit split) throws Exception {
-    for (LockRequestSplit.Component dropped : split.dropped()) {
-      if (SyntheticReadLockManager.isWriteOperation(dropped.component().getOperationType())) {
+  private void validateComponentAccess(LockRequestSplit split) throws Exception {
+    for (LockRequestSplit.Component component : split.components()) {
+      if (component.namespace() == null) {
+        continue;
+      }
+      if (SyntheticReadLockManager.requiresWriteAccess(component.component())) {
         CatalogAccessModeGuard.validate(
-            support.config.catalogs().get(dropped.namespace().catalogName()),
+            support.config.catalogs().get(component.namespace().catalogName()),
             METHOD_NAME,
-            dropped.namespace().backendDbName());
+            component.namespace().backendDbName());
       }
     }
   }

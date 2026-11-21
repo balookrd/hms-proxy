@@ -8,6 +8,20 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Исправлено (Целостность групп, маршрутизации БД, локов и Circuit Breaker)
+
+- **Стабильность резолва групп и `GroupDiskCache` (`H3`)**:
+  - `UserGroupResolver` теперь вызывает `Groups.getUserToGroupsMappingService().getGroups(userName)` с single-flight по имени пользователя вместо `UGI.createRemoteUser(...).getGroupNames()` (который глотал `IOException` и перезаписывал кэш пустым списком на весь TTL, делая ветку serve-stale недостижимой).
+  - `GroupDiskCache.put(...)` теперь обновляет метку времени `updatedAtEpochMs`, если существующая запись истекла по `entry-ttl-seconds`, даже при неизменном составе групп (устраняет вечный cache-miss после истечения первого TTL).
+- **Безопасное обновление таблицы маршрутизации `merge-with-default` (`H7`)**:
+  - `CatalogRouter` заменяет список БД `default`-каталога атомарным снимком без race-окна между `clear()` и `addAll()`, а `GetDatabasesHandler` / `GetAllDatabasesHandler` при суженном паттерне или активной пользовательской имперсонации пополняют таблицу аддитивно (`mergeDatabases`) без стирания остальных баз `default`-каталога.
+- **Защита локов и `SyntheticReadLockStore` (`C6`, `H12`)**:
+  - `LockRoutingHandler` отклоняет не-synthetic `lock`-запросы к non-default каталогам (`MetaException`), исключая зависшие локи и риск снятия чужих локов `default`-каталога при совпадении `lockId`; проверка `CatalogAccessModeGuard` охватывает все компоненты (разрешая `SELECT` + `SHARED_READ` на `READ_ONLY`, но блокируя обходы `READ_WRITE_DB_WHITELIST` и `NO_TXN` `EXCLUSIVE`/`SHARED_WRITE` DDL-локи на `READ_ONLY`).
+  - `LockHandler` больше не перезаписывает успешный `commit_txn`/`abort_txn` исключением из `finally` при сбое `releaseTxn`.
+  - В `InMemorySyntheticReadLockStore` устранена гонка `create` vs `removeTxnRef`; в `ZooKeeperSyntheticReadLockStore` корректно декодируется переполнение 32-bit signed `PERSISTENT_SEQUENTIAL`; добавлен лимит активных synthetic-локов `synthetic-read-lock.max-active-locks` (по умолчанию `50000`, `0` — без лимита).
+- **Исправление машины состояний Circuit Breaker (`H11`)**:
+  - `ProxyRuntimeState.admitBackendCall` удерживает `halfOpenInFlight = true` и пропускает в `HALF_OPEN` строго по одной пробе за раз; ошибки параллельных старых запросов не сбрасывают флаг чужой пробы и не выставляют ложное `connected = true` при состоянии `OPEN`/`HALF_OPEN`; текстовый fallback `"timed out"` в `isTimeoutFailure` ограничен транспортными и I/O-исключениями (`TTransportException`, `IOException`), чтобы доменный `MetaException("Lock acquisition timed out")` не размыкал контур бэкенда.
+
 ### Изменено (Security Hardening)
 
 - **Жёсткое приведение `set_ugi` и проверки сервисных принципалов к модели классического HMS**:

@@ -368,7 +368,9 @@ public final class ProxyConfigLogger {
 
   private static void appendSyntheticReadLockStore(StringBuilder sb, ProxyConfig config) {
     sb.append("[Synthetic Read Lock Store]\n");
-    sb.append("  Mode: ").append(config.syntheticReadLockStore().mode()).append("\n");
+    sb.append("  Mode: ").append(config.syntheticReadLockStore().mode());
+    int maxActiveLocks = config.syntheticReadLockStore().maxActiveLocks();
+    sb.append(", maxActiveLocks=").append(maxActiveLocks == 0 ? "unlimited" : maxActiveLocks).append("\n");
     if (config.syntheticReadLockStore().zooKeeper() != null
         && config.syntheticReadLockStore().zooKeeper().connectString() != null) {
       sb.append("  ZooKeeper Connect: ").append(config.syntheticReadLockStore().zooKeeper().connectString())

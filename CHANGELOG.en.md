@@ -8,6 +8,20 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed (Group Resolution, Merged-DB Routing, Locks, and Circuit Breaker)
+
+- **User group resolution and `GroupDiskCache` stability (`H3`)**:
+  - `UserGroupResolver` now calls `Groups.getUserToGroupsMappingService().getGroups(userName)` directly with per-user single-flight deduplication instead of `UGI.createRemoteUser(...).getGroupNames()` (which swallowed `IOException`, poisoned the cache with empty lists, and made serve-stale fallback unreachable).
+  - `GroupDiskCache.put(...)` now refreshes `updatedAtEpochMs` when an existing entry has expired past `entry-ttl-seconds` even if its group list is unchanged, preventing permanent cache misses after the first TTL window.
+- **Safe `merge-with-default` routing updates (`H7`)**:
+  - `CatalogRouter` replaces the default-catalog database snapshot atomically without a `clear()` + `addAll()` race window, and `GetDatabasesHandler` / `GetAllDatabasesHandler` use additive `mergeDatabases(...)` for narrowed patterns and user-scoped impersonated listings so unseen default-catalog databases are not evicted from routing.
+- **Lock routing safety and `SyntheticReadLockStore` hardening (`C6`, `H12`)**:
+  - `LockRoutingHandler` rejects non-synthetic `lock` requests targeting non-default catalogs with a `MetaException`, preventing stranded remote locks and accidental cross-catalog `unlock` on colliding numeric lock IDs; `CatalogAccessModeGuard` now validates every lock component (`SELECT` + `SHARED_READ` stays allowed on `READ_ONLY`, while multi-DB `READ_WRITE_DB_WHITELIST` bypasses and `NO_TXN` `EXCLUSIVE`/`SHARED_WRITE` DDL locks on `READ_ONLY` are rejected).
+  - `LockHandler` isolates `releaseTxn` failures inside `finally` (`LOG.warn`) so a synthetic-store outage never masks an already committed `commit_txn`/`abort_txn`.
+  - Fixed the `create` vs `removeTxnRef` race in `InMemorySyntheticReadLockStore`, added unsigned 32-bit `PERSISTENT_SEQUENTIAL` overflow decoding in `ZooKeeperSyntheticReadLockStore`, and added `synthetic-read-lock.max-active-locks` (default `50000`, `0` disables the cap).
+- **Circuit Breaker state machine fixes (`H11`)**:
+  - `ProxyRuntimeState.admitBackendCall` enforces single-probe admission (`halfOpenInFlight = true`) across repeated `HALF_OPEN` attempts; non-probe concurrent failures no longer clear another probe's `halfOpenInFlight` flag or mark `OPEN`/`HALF_OPEN` backends as `connected = true`; string `"timed out"` fallback in `isTimeoutFailure` is restricted to `TTransportException` and `IOException` so domain `MetaException` errors do not trip the backend circuit breaker.
+
 ### Changed (Security Hardening)
 
 - **Aligned `set_ugi` and service-principal verification with native Hive Metastore semantics**:

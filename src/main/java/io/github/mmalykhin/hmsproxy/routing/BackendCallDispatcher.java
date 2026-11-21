@@ -209,7 +209,7 @@ final class BackendCallDispatcher {
     } catch (Throwable cause) {
       long elapsedMs = elapsedMillis(startedAt);
       observability.metrics().recordBackendFailure(backend.name(), cause);
-      admissionGate.recordFailure(backend, cause, elapsedMs);
+      admissionGate.recordFailure(backend, cause, elapsedMs, admission.halfOpen());
       if (allowShadowFallback && shouldFallbackToShadow(backend, methodName) && isOutageFailure(cause)) {
         CatalogBackend fallbackBackend = router.resolveFallbackBackend(backend.name()).orElse(null);
         if (fallbackBackend != null) {

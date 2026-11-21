@@ -102,7 +102,7 @@ public final class BackendRoutingController implements AutoCloseable {
             config.latencyRouting().adaptiveTimeout().reconnectCooldownMs());
       } catch (Throwable cause) {
         observability.metrics().recordBackendFailure(backend.name(), cause);
-        recordFailure(backend, cause, 0L);
+        recordFailure(backend, cause, 0L, admission.halfOpen());
         throw cause;
       }
       switch (result) {
@@ -122,7 +122,12 @@ public final class BackendRoutingController implements AutoCloseable {
   }
 
   public void recordFailure(CatalogBackend backend, Throwable error, long latencyMs) {
-    observability.runtimeState().recordBackendFailure(backend.name(), error, latencyMs, config.latencyRouting());
+    recordFailure(backend, error, latencyMs, true);
+  }
+
+  public void recordFailure(CatalogBackend backend, Throwable error, long latencyMs, boolean halfOpenProbe) {
+    observability.runtimeState()
+        .recordBackendFailure(backend.name(), error, latencyMs, config.latencyRouting(), halfOpenProbe);
   }
 
   public boolean hedgedReadEnabled(String methodName) {

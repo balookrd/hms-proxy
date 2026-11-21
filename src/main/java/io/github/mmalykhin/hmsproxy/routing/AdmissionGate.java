@@ -34,6 +34,10 @@ final class AdmissionGate {
     backendRoutingController.recordFailure(backend, cause, elapsedMs);
   }
 
+  void recordFailure(CatalogBackend backend, Throwable cause, long elapsedMs, boolean halfOpenProbe) {
+    backendRoutingController.recordFailure(backend, cause, elapsedMs, halfOpenProbe);
+  }
+
   static MetaException unavailableException(
       CatalogBackend backend,
       String methodName,

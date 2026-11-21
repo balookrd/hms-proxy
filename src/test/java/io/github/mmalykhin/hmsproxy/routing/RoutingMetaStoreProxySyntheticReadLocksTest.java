@@ -1428,4 +1428,224 @@ public class RoutingMetaStoreProxySyntheticReadLocksTest {
     return new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
   }
 
+  @Test
+  public void selectSharedReadLockIsAllowedOnReadOnlyDefaultCatalog() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_ONLY, List.of(),
+                null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger defaultLockCalls = new AtomicInteger();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("lock".equals(method.getName())) {
+                defaultLockCalls.incrementAndGet();
+                return new LockResponse(19L, LockState.ACQUIRED);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", defaultBackend)));
+    try (RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null)) {
+      Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+      LockResponse response = (LockResponse) handler.invoke(
+          null,
+          lockMethod,
+          new Object[] {syntheticReadLockRequest("finance", "reports", 70L)});
+
+      Assert.assertEquals(19L, response.getLockid());
+      Assert.assertEquals(LockState.ACQUIRED, response.getState());
+      Assert.assertEquals(1, defaultLockCalls.get());
+    }
+  }
+
+  @Test
+  public void multiDbBackendLockEnforcesWriteWhitelistAcrossAllComponents() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", false, CatalogAccessMode.READ_WRITE_DB_WHITELIST, List.of("finance"),
+                null, null, Map.of("hive.metastore.uris", "thrift://one"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicInteger backendCalls = new AtomicInteger();
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              backendCalls.incrementAndGet();
+              return new LockResponse(1L, LockState.ACQUIRED);
+            })));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", defaultBackend)));
+    try (RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null)) {
+      Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+      MetaException error = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(
+              null,
+              lockMethod,
+              new Object[] {multiComponentLockRequest(
+                  71L,
+                  writeLockComponent(LockType.SHARED_WRITE, DataOperationType.INSERT, "finance", "ledger"),
+                  writeLockComponent(LockType.EXCLUSIVE, DataOperationType.INSERT, "sales", "orders"))}));
+
+      Assert.assertTrue(error.getMessage(), error.getMessage().contains("sales"));
+      Assert.assertEquals(0, backendCalls.get());
+    }
+  }
+
+  @Test
+  public void noTxnExclusiveLockIsRejectedForReadOnlyNonDefaultCatalog() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    RoutingMetaStoreProxy handler = writeLockShimHandler(CatalogAccessMode.READ_ONLY, List.of(), backendCalls);
+    try {
+      Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+      MetaException error = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(
+              null,
+              lockMethod,
+              new Object[] {multiComponentLockRequest(
+                  72L,
+                  noTxnLockComponent(LockType.EXCLUSIVE, "catalog2__sales", "events"))}));
+
+      Assert.assertTrue(error.getMessage(), error.getMessage().contains("READ_ONLY"));
+      Assert.assertEquals(0, backendCalls.get());
+    } finally {
+      handler.close();
+    }
+  }
+
+  @Test
+  public void syntheticReleaseTxnFailureAfterCommitTxnDoesNotMaskCommittedOutcome() throws Throwable {
+    try (TestingServer zooKeeper = startTestingServerOrSkip()) {
+      ProxyConfig config = ProxyConfig.builder()
+          .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+          .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+          .catalogDbSeparator("__")
+          .defaultCatalog("catalog1")
+          .catalogs(Map.of(
+              "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+              "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+          .syntheticReadLockStore(new SyntheticReadLockStoreConfig(
+              SyntheticReadLockStoreMode.ZOOKEEPER,
+              new SyntheticReadLockStoreZooKeeperConfig(
+                  zooKeeper.getConnectString(),
+                  "/hms-proxy-test-synthetic-read-locks",
+                  300,
+                  1_000,
+                  10,
+                  0),
+              SyntheticReadLockStoreConfig.DEFAULT_MAX_ACTIVE_LOCKS))
+          .build();
+
+      AtomicInteger commitCalls = new AtomicInteger();
+      CatalogBackend defaultBackend = newBackend(
+          config,
+          config.catalogs().get("catalog1"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(
+              config,
+              config.catalogs().get("catalog1"),
+              newSession((proxy, method, args) -> {
+                if ("commit_txn".equals(method.getName())) {
+                  commitCalls.incrementAndGet();
+                  return null;
+                }
+                throw new UnsupportedOperationException(method.getName());
+              })));
+      CatalogBackend nonDefaultBackend = newBackend(
+          config,
+          config.catalogs().get("catalog2"),
+          new ApacheBackendAdapter(),
+          newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+      LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+      backends.put("catalog1", defaultBackend);
+      backends.put("catalog2", nonDefaultBackend);
+      CatalogRouter router = new CatalogRouter(config, backends);
+      try (RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null)) {
+        Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+        LockResponse lock = (LockResponse) handler.invoke(
+            null,
+            lockMethod,
+            new Object[] {syntheticReadLockRequest("catalog2__sales", "events", 88L)});
+        Assert.assertEquals(LockState.ACQUIRED, lock.getState());
+
+        zooKeeper.stop();
+
+        Method commitMethod = ThriftHiveMetastore.Iface.class.getMethod("commit_txn", CommitTxnRequest.class);
+        handler.invoke(null, commitMethod, new Object[] {new CommitTxnRequest(88L)});
+        Assert.assertEquals(1, commitCalls.get());
+      }
+    }
+  }
+
+  @Test
+  public void syntheticReadLockMaxActiveLimitRejectsExcessUntilUnlocked() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(new SyntheticReadLockStoreConfig(SyntheticReadLockStoreMode.IN_MEMORY, null, 2))
+        .build();
+
+    CatalogBackend defaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession()));
+    CatalogBackend nonDefaultBackend = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", defaultBackend);
+    backends.put("catalog2", nonDefaultBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    try (RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null)) {
+      Method lockMethod = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+      LockResponse first = (LockResponse) handler.invoke(
+          null, lockMethod, new Object[] {syntheticReadLockRequest("catalog2__sales", "t1", 91L)});
+      handler.invoke(null, lockMethod, new Object[] {syntheticReadLockRequest("catalog2__sales", "t2", 92L)});
+
+      MetaException limitError = Assert.assertThrows(
+          MetaException.class,
+          () -> handler.invoke(
+              null, lockMethod, new Object[] {syntheticReadLockRequest("catalog2__sales", "t3", 93L)}));
+      Assert.assertTrue(limitError.getMessage(), limitError.getMessage().contains("limit reached (2)"));
+
+      Method unlockMethod = ThriftHiveMetastore.Iface.class.getMethod("unlock", UnlockRequest.class);
+      handler.invoke(null, unlockMethod, new Object[] {new UnlockRequest(first.getLockid())});
+
+      LockResponse third = (LockResponse) handler.invoke(
+          null, lockMethod, new Object[] {syntheticReadLockRequest("catalog2__sales", "t3", 93L)});
+      Assert.assertEquals(LockState.ACQUIRED, third.getState());
+    }
+  }
 }

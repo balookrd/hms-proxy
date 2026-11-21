@@ -2426,4 +2426,51 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsSyntheticReadLockMaxActiveLocksAndRejectsNegative() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      Assert.assertEquals(
+          io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig.DEFAULT_MAX_ACTIVE_LOCKS,
+          ProxyConfigLoader.load(file).syntheticReadLockStore().maxActiveLocks());
+
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          synthetic-read-lock.max-active-locks=0
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      Assert.assertEquals(0, ProxyConfigLoader.load(file).syntheticReadLockStore().maxActiveLocks());
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          synthetic-read-lock.max-active-locks=1234
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      Assert.assertEquals(1234, ProxyConfigLoader.load(file).syntheticReadLockStore().maxActiveLocks());
+
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          synthetic-read-lock.max-active-locks=-5
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          """);
+      Assert.assertThrows(IllegalArgumentException.class, () -> ProxyConfigLoader.load(file));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

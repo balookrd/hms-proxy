@@ -26,11 +26,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.security.PrivilegedExceptionAction;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -677,5 +679,193 @@ public class MergedDatabasesRoutingTest {
     backends.put("catalog1", backend1);
     backends.put("catalog2", backend2);
     return new ProbeRouter(new CatalogRouter(config, backends), remoteCalls);
+  }
+
+  @Test
+  public void narrowedGetDatabasesPatternDoesNotEraseOtherDefaultCatalogDatabases() throws Throwable {
+    ProxyConfig config = createConfig(true);
+    AtomicReference<String> cat1GetDbArg = new AtomicReference<>();
+    AtomicReference<String> cat2GetDbArg = new AtomicReference<>();
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("default", "finance", "local_only");
+              }
+              if ("get_databases".equals(method.getName())) {
+                return List.of("local_only");
+              }
+              if ("get_database".equals(method.getName())) {
+                String db = (String) args[0];
+                cat1GetDbArg.set(db);
+                if ("default".equals(db) || "finance".equals(db) || "local_only".equals(db)) {
+                  Database result = new Database();
+                  result.setName(db);
+                  result.setDescription("cat1-" + db);
+                  return result;
+                }
+                throw new NoSuchObjectException(db);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("finance", "remote_only");
+              }
+              if ("get_databases".equals(method.getName())) {
+                return List.of();
+              }
+              if ("get_database".equals(method.getName())) {
+                String db = (String) args[0];
+                cat2GetDbArg.set(db);
+                if ("finance".equals(db) || "remote_only".equals(db)) {
+                  Database result = new Database();
+                  result.setName(db);
+                  result.setDescription("cat2-" + db);
+                  return result;
+                }
+                throw new NoSuchObjectException(db);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, federationLayer, null, new ProxyObservability(config));
+
+    Method getAllDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+    handler.invoke(null, getAllDbsMethod, new Object[0]);
+
+    Method getDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_databases", String.class);
+    @SuppressWarnings("unchecked")
+    List<String> filtered = (List<String>) handler.invoke(null, getDbsMethod, new Object[] {"local*"});
+    Assert.assertEquals(List.of("local_only"), filtered);
+
+    Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+    Database financeDb = (Database) handler.invoke(null, getDbMethod, new Object[] {"finance"});
+    Assert.assertEquals("cat1-finance", financeDb.getDescription());
+    Assert.assertEquals("finance", cat1GetDbArg.get());
+    Assert.assertNull("narrowed get_databases must not reroute default-catalog finance to catalog2",
+        cat2GetDbArg.get());
+  }
+
+  @Test
+  public void userScopedGetAllDatabasesDoesNotEraseUnseenDefaultCatalogDatabases() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", new CatalogConfig(
+                "catalog1", "c1", "file:///c1", true, CatalogAccessMode.READ_WRITE, List.of(),
+                CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), false, null, null,
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", new CatalogConfig(
+                "catalog2", "c2", "file:///c2", true, CatalogAccessMode.READ_WRITE, List.of(),
+                CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    AtomicReference<String> cat1GetDbArg = new AtomicReference<>();
+    AtomicReference<String> cat2GetDbArg = new AtomicReference<>();
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog1"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("default");
+              }
+              if ("get_database".equals(method.getName())) {
+                String db = (String) args[0];
+                cat1GetDbArg.set(db);
+                if ("default".equals(db) || "finance".equals(db)) {
+                  Database result = new Database();
+                  result.setName(db);
+                  result.setDescription("cat1-" + db);
+                  return result;
+                }
+                throw new NoSuchObjectException(db);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            config.catalogs().get("catalog2"),
+            newSession((proxy, method, args) -> {
+              if ("get_all_databases".equals(method.getName())) {
+                return List.of("finance", "remote_only");
+              }
+              if ("get_database".equals(method.getName())) {
+                String db = (String) args[0];
+                cat2GetDbArg.set(db);
+                if ("finance".equals(db) || "remote_only".equals(db)) {
+                  Database result = new Database();
+                  result.setName(db);
+                  result.setDescription("cat2-" + db);
+                  return result;
+                }
+                throw new NoSuchObjectException(db);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    router.updateDatabases("catalog1", List.of("default", "finance"));
+    router.updateDatabases("catalog2", List.of("finance", "remote_only"));
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, federationLayer, null, new ProxyObservability(config));
+
+    UserGroupInformation alice = UserGroupInformation.createUserForTesting("alice", new String[] {"sales"});
+    alice.doAs((PrivilegedExceptionAction<Void>) () -> {
+      try {
+        Method getAllDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+        handler.invoke(null, getAllDbsMethod, new Object[0]);
+
+        Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+        Database financeDb = (Database) handler.invoke(null, getDbMethod, new Object[] {"finance"});
+        Assert.assertEquals("cat1-finance", financeDb.getDescription());
+        Assert.assertEquals("finance", cat1GetDbArg.get());
+        Assert.assertNull("user-scoped get_all_databases must not erase unseen default-catalog finance",
+            cat2GetDbArg.get());
+        return null;
+      } catch (Throwable t) {
+        if (t instanceof Exception e) {
+          throw e;
+        }
+        throw new RuntimeException(t);
+      }
+    });
   }
 }

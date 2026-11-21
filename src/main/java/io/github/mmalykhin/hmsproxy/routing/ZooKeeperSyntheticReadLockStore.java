@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.apache.curator.framework.CuratorFramework;
@@ -359,7 +360,7 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
     }
     try {
       return SyntheticReadLockManager.lockIdForSequence(
-          Long.parseLong(lockNodeName.substring("lock-".length())));
+          decodeZkSequence(lockNodeName.substring("lock-".length())));
     } catch (NumberFormatException ignored) {
       return -1L;
     }
@@ -406,12 +407,35 @@ final class ZooKeeperSyntheticReadLockStore implements SyntheticReadLockStore {
 
   private String lockPath(long lockId) {
     long sequence = SyntheticReadLockManager.sequenceForLockId(lockId);
-    return locksRootPath + "/lock-" + String.format("%010d", sequence);
+    return locksRootPath + "/lock-" + encodeZkSequence(sequence);
   }
 
   private long parseSequence(String path) {
     String nodeName = path.substring(path.lastIndexOf('/') + 1);
-    return Long.parseLong(nodeName.substring("lock-".length()));
+    return decodeZkSequence(nodeName.substring("lock-".length()));
+  }
+
+  /**
+   * Decodes ZooKeeper's signed 32-bit {@code PERSISTENT_SEQUENTIAL} node suffix into a non-negative
+   * sequence so lock IDs stay above {@link SyntheticReadLockManager#SYNTHETIC_LOCK_ID_FLOOR} even
+   * after the 32-bit counter wraps around {@link Integer#MAX_VALUE}.
+   */
+  static long decodeZkSequence(String suffix) {
+    long parsed = Long.parseLong(suffix);
+    if (parsed < 0L) {
+      if (parsed < Integer.MIN_VALUE) {
+        throw new NumberFormatException("Out-of-range ZooKeeper sequence suffix: " + suffix);
+      }
+      return Integer.toUnsignedLong((int) parsed);
+    }
+    return parsed;
+  }
+
+  static String encodeZkSequence(long sequence) {
+    if (sequence >= 0L && sequence <= 0xFFFF_FFFFL) {
+      return String.format(Locale.ROOT, "%010d", (int) sequence);
+    }
+    return String.format(Locale.ROOT, "%010d", sequence);
   }
 
   private String normalizedZnode(String znode) {

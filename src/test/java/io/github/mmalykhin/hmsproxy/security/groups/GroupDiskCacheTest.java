@@ -225,4 +225,23 @@ public class GroupDiskCacheTest {
       Assert.assertFalse(cache.get("oldest").isPresent());
     }
   }
+
+  @Test
+  public void refreshingExpiredEntryWithUnchangedGroupsRenewsTtl() throws Exception {
+    File cacheFile = temp.newFile("group-cache-renew-ttl.json");
+    AtomicLong clock = new AtomicLong(100_000L);
+    GroupDiskCacheConfig config = new GroupDiskCacheConfig(
+        true, cacheFile.getAbsolutePath(), 60L, 0L, true);
+    try (GroupDiskCache cache = new GroupDiskCache(config, new PrometheusMetrics(), clock::get)) {
+      cache.put("alice", List.of("engineers", "sales"));
+      Assert.assertEquals(Optional.of(List.of("engineers", "sales")), cache.get("alice"));
+
+      clock.addAndGet(61_000L);
+      Assert.assertEquals(Optional.empty(), cache.get("alice"));
+
+      cache.put("alice", List.of("engineers", "sales"));
+      Assert.assertEquals(1, cache.size());
+      Assert.assertEquals(Optional.of(List.of("engineers", "sales")), cache.get("alice"));
+    }
+  }
 }

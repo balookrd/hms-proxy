@@ -178,7 +178,7 @@ catalog.remote.merge-with-default=true
 
 - No manual lists: you do not need to enumerate database names manually — they are discovered dynamically.
 - No shadowing: if a database exists in the default catalog (`routing.default-catalog`), it remains in the default catalog and is served without a prefix. The identically named remote database is not hidden and remains accessible via its explicit prefix (e.g. `remote__finance`).
-- Unprefixed unique schemas: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work).
+- Unprefixed unique schemas: databases that exist only in the remote catalog (and not in the default catalog) are exposed to clients without a catalog prefix and route directly to the remote catalog (canonical access via the prefixed name `remote__schema` also continues to work). The routing table snapshot is replaced in full only on unfiltered wildcard listings (`get_all_databases` / `get_databases("*")` without user impersonation); narrowed patterns and user-scoped listings merge entries additively without clearing other default-catalog databases.
 - Database creation (`create_database`): creating a new database without an explicit prefix when this feature is enabled always routes to the default catalog. To create a database in the remote catalog, an explicit prefix must be supplied (`create_database("remote__new_db")`).
 - Constraints: cannot be set on `routing.default-catalog`, and cannot be combined with `unprefixed-databases` on the same catalog.
 - Looking up an unknown name: an unprefixed name the proxy has not seen yet is checked with `get_database` on the default catalog first, then on the merged catalogs. Concurrent requests for one name share a single such check. A miss is remembered for `routing.merge-with-default.negative-cache-ttl-ms` (default `5000`; `0` disables it), but only when every backend answered "no such database" (`NoSuchObjectException`): a backend error or outage is not a miss, otherwise the name would be routed away from the catalog that really holds it for the whole TTL. The names come from clients, so the miss cache is capped by `routing.merge-with-default.negative-cache-max-entries` (default `10000`): expired entries are dropped first, and a cache full of live misses stops remembering new ones until old ones expire.
@@ -1653,9 +1653,12 @@ the proxy into a distributed ACID coordinator.
 Write locks are not restricted by lock type: with Hive's default
 `hive.txn.strict.locking.mode=true` an `INSERT` into a non-ACID table takes an `EXCLUSIVE`
 lock, `SHARED_WRITE` only when strict locking is off, and `INSERT OVERWRITE` is always
-`EXCLUSIVE`. A component that declares `isTransactional=true` is never synthesized: it belongs
-to an ACID table, whose write ids only the default catalog's TxnHandler can allocate, so the
-request is left to the backend and fails there. ACID tables cannot exist in a non-default
+`EXCLUSIVE`. A component that declares `isTransactional=true` (as well as any non-synthetic
+`lock` targeting a non-default catalog) is never synthesized and is **not forwarded to the
+non-default backend**: follow-up `check_lock`/`heartbeat`/`unlock` calls route to the default
+catalog by `lockId`, so forwarding a real lock to another metastore would strand it or let an
+unrelated transaction in the default catalog be unlocked on numeric ID collision; instead, the
+proxy immediately rejects the request with a `MetaException`. ACID tables cannot exist in a non-default
 catalog anyway — the proxy rejects `create_table` with `transactional=true` outside the default
 catalog and refuses `allocate_table_write_ids` / `get_valid_write_ids` for non-default catalogs.
 
@@ -1664,10 +1667,11 @@ immediately and never inspects other live locks, so concurrent `INSERT`, `INSERT
 DDL statements against the same table of a non-default catalog are not serialized against each
 other, and neither are clients that reach that metastore without passing through the proxy. A
 non-default catalog therefore gives no ACID or writer-isolation guarantees; if a workload needs
-mutual exclusion, keep it in `routing.default-catalog` or serialize the writers yourself. The
-catalog access mode is still enforced: a write lock for a `READ_ONLY` catalog, or for a database
-outside `catalog.<name>.write-db-whitelist`, is rejected with a `MetaException` instead of being
-synthesized.
+mutual exclusion, keep it in `routing.default-catalog` or serialize the writers yourself. Catalog
+access modes are enforced across every component of the request: `SELECT` + `SHARED_READ` locks
+remain allowed on a `READ_ONLY` catalog, whereas write, `EXCLUSIVE`/`SHARED_WRITE`, or DDL locks
+for a `READ_ONLY` catalog or a database outside `catalog.<name>.write-db-whitelist` are rejected
+with a `MetaException`.
 
 Eligibility is decided over every `LockComponent` of the request, not only the first one. A
 `lock` call is acquired, routed, and acknowledged as a single unit and yields one lock id, so it
@@ -1711,6 +1715,7 @@ Example:
 
 ```properties
 synthetic-read-lock.store.mode=ZOOKEEPER
+# synthetic-read-lock.max-active-locks=50000
 synthetic-read-lock.store.zookeeper.connect-string=zk1:2181,zk2:2181,zk3:2181
 synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 # synthetic-read-lock.store.zookeeper.connection-timeout-ms=15000
@@ -1718,6 +1723,8 @@ synthetic-read-lock.store.zookeeper.znode=/hms-proxy-synthetic-read-locks
 # synthetic-read-lock.store.zookeeper.base-sleep-ms=1000
 # synthetic-read-lock.store.zookeeper.max-retries=3
 ```
+
+`synthetic-read-lock.max-active-locks` (default `50000`, `0` disables the cap) limits the number of concurrently active synthetic locks to protect proxy memory and the ZooKeeper znode tree. Failures when releasing synthetic locks in the `finally` cleanup after a committed `commit_txn`/`abort_txn` are logged at `WARN` and never overwrite the backend transaction outcome.
 
 When `security.mode=KERBEROS`, the synthetic read-lock store uses the same
 `security.server-principal` and `security.keytab` credentials for ZooKeeper SASL/Kerberos
@@ -2047,7 +2054,7 @@ catalog.catalog2.ranger.service-name=c2_hive_service
    - `get_database`, `get_table`, `get_table_req`: Access is checked via `isDatabaseAllowed` / `isTableAllowed`. Unauthorized access behavior is governed by `ranger.mask-unauthorized-as-not-found`: by default (`false`), an explicit `MetaException` prefixed with `Access denied: ...` is thrown; when set to `true`, `NoSuchObjectException` is thrown to mask unauthorized objects as non-existent.
 
 4. Active Directory / LDAP group resolution and policy matching:
-   - Server-side group resolution: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships via Hadoop UGI (`UserGroupInformation.createRemoteUser(userName).getGroupNames()`). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
+   - Server-side group resolution: For Kerberos authentication (`remoteUser`) and `set_ugi(user, [])` calls with empty groups, the proxy automatically resolves user group memberships directly through Hadoop `Groups.getUserToGroupsMappingService().getGroups(userName)` (with single-flight deduplication per user so `IOException` outages are preserved and directory errors do not poison the cache with empty lists). Group mapping configurations (`hadoop.security.group.mapping`, e.g. `org.apache.hadoop.security.LdapGroupsMapping`) and cache TTLs (`hadoop.security.groups.cache.secs`) are passed via `security.front-door-conf.*`.
    - Case and Distinguished Name (DN) normalization: The Apache Ranger policy engine is case-sensitive and typically expects group names in lowercase (`sales`, `domain users`), whereas Active Directory and LDAP directories often return mixed-case names (`Sales`, `Domain Users`) or full Distinguished Names (`CN=Sales,OU=Groups,DC=example,DC=com`). The embedded Ranger plugin in `hms-proxy` automatically extracts CN group names and adds lowercase variations to the authorization request, so Ranger rules do not need to be duplicated for different cases.
    - On-disk group cache (`security.group-disk-cache.*`): to avoid waiting on synchronous round-trips to Active Directory / LDAP domain controllers at startup, the proxy supports a persistent on-disk user group cache in JSON format (`security.group-disk-cache.enabled=true`, `path`, `entry-ttl-seconds`, `persist-interval-seconds`, `persist-on-shutdown`). On cold boot, the cache is preloaded from disk (0 ms resolution latency), periodically flushed atomically in the background and on graceful shutdown, and serves cached groups in a serve-stale fallback mode if AD/LDAP is temporarily unreachable:
 

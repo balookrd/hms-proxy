@@ -119,21 +119,36 @@ public class RoutingMetaStoreProxyBackendLocksTest {
     });
     CatalogBackend backend = newBackend(
         config,
-        config.catalogs().get("catalog2"),
+        config.catalogs().get("catalog1"),
         new ApacheBackendAdapter(),
-        newBackendRuntime(config, config.catalogs().get("catalog2"), session));
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
-    backends.put("catalog1", null);
-    backends.put("catalog2", backend);
+    backends.put("catalog1", backend);
+    backends.put("catalog2", null);
     CatalogRouter router = new CatalogRouter(config, backends);
     RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
 
-    Object result = handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")});
+    Object result = handler.invoke(null, method, new Object[] {lockRequest("catalog1__sales", "events")});
 
     Assert.assertTrue(result instanceof LockResponse);
     Assert.assertEquals("sales", capturedRequest.get().getComponent().get(0).getDbname());
     Assert.assertEquals("events", capturedRequest.get().getComponent().get(0).getTablename());
+  }
+
+  @Test
+  public void nonSyntheticLockForNonDefaultCatalogIsRejectedToPreventLockStranding() throws Throwable {
+    AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
+    RoutingMetaStoreProxy handler = lockCapturingHandler("catalog2", capturedRequest);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")}));
+
+    Assert.assertTrue(error.getMessage(), error.getMessage().contains("catalog2"));
+    Assert.assertTrue(error.getMessage(), error.getMessage().contains("default catalog"));
+    Assert.assertNull(capturedRequest.get());
   }
 
   @Test
@@ -439,21 +454,21 @@ public class RoutingMetaStoreProxyBackendLocksTest {
     };
     CatalogBackend backend = newBackend(
         config,
-        config.catalogs().get("catalog2"),
+        config.catalogs().get("catalog1"),
         failingAdapter,
-        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession()));
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession()));
     LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
-    backends.put("catalog1", null);
-    backends.put("catalog2", backend);
+    backends.put("catalog1", backend);
+    backends.put("catalog2", null);
     CatalogRouter router = new CatalogRouter(config, backends);
     RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
 
     MetaException error = Assert.assertThrows(
         MetaException.class,
-        () -> handler.invoke(null, method, new Object[] {lockRequest("catalog2__sales", "events")}));
+        () -> handler.invoke(null, method, new Object[] {lockRequest("catalog1__sales", "events")}));
 
-    Assert.assertTrue(error.getMessage().contains("catalog2"));
+    Assert.assertTrue(error.getMessage().contains("catalog1"));
     Assert.assertTrue(error.getMessage().contains("lock"));
     Assert.assertTrue(error.getMessage().contains("TApplicationException"));
     Assert.assertTrue(error.getMessage().contains("backend lock failed"));
@@ -461,25 +476,25 @@ public class RoutingMetaStoreProxyBackendLocksTest {
 
   /**
    * A transactional write component belongs to an ACID table, whose write ids can only be allocated
-   * by the default catalog's TxnHandler. The shim must not answer for it: the request goes to the
-   * backend and fails there instead of pretending the lock was taken.
+   * by the default catalog's TxnHandler. The shim must not answer for it, and the proxy must
+   * reject forwarding a real backend lock to a non-default catalog instead of stranding the lock id.
    */
   @Test
-  public void transactionalInsertLockForNonDefaultCatalogIsNotSubstitutedBySyntheticLock() throws Throwable {
+  public void transactionalInsertLockForNonDefaultCatalogIsRejectedAndNotSubstitutedBySyntheticLock() throws Throwable {
     AtomicReference<LockRequest> capturedRequest = new AtomicReference<>();
     RoutingMetaStoreProxy handler = lockCapturingHandler("catalog2", capturedRequest);
     Method method = ThriftHiveMetastore.Iface.class.getMethod("lock", LockRequest.class);
 
-    LockResponse lock = (LockResponse) handler.invoke(
-        null,
-        method,
-        new Object[] {transactionalWriteLockRequest(
-            "catalog2__sales", "events", 71L, LockType.SHARED_WRITE, DataOperationType.INSERT)});
+    MetaException error = Assert.assertThrows(
+        MetaException.class,
+        () -> handler.invoke(
+            null,
+            method,
+            new Object[] {transactionalWriteLockRequest(
+                "catalog2__sales", "events", 71L, LockType.SHARED_WRITE, DataOperationType.INSERT)}));
 
-    Assert.assertEquals(13L, lock.getLockid());
-    Assert.assertTrue(lock.getLockid() < Long.MAX_VALUE / 2);
-    Assert.assertNotNull(capturedRequest.get());
-    Assert.assertEquals("sales", capturedRequest.get().getComponent().get(0).getDbname());
+    Assert.assertTrue(error.getMessage(), error.getMessage().contains("catalog2"));
+    Assert.assertNull(capturedRequest.get());
   }
 
   @Test

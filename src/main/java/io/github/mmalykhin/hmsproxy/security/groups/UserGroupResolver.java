@@ -1,7 +1,12 @@
 package io.github.mmalykhin.hmsproxy.security.groups;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,16 +16,31 @@ import org.slf4j.LoggerFactory;
  * instant cold start, and fallback resilience against directory service outages.
  */
 public final class UserGroupResolver implements AutoCloseable {
+  @FunctionalInterface
+  interface GroupLookup {
+    List<String> lookup(String userName) throws IOException;
+  }
+
   private static final Logger LOG = LoggerFactory.getLogger(UserGroupResolver.class);
 
   private final GroupDiskCache diskCache;
+  private final GroupLookup groupLookup;
+  private final ConcurrentHashMap<String, CompletableFuture<List<String>>> inFlightLookups =
+      new ConcurrentHashMap<>();
 
   public UserGroupResolver() {
     this(null);
   }
 
   public UserGroupResolver(GroupDiskCache diskCache) {
+    this(diskCache, userName -> Groups.getUserToGroupsMappingService().getGroups(userName));
+  }
+
+  UserGroupResolver(GroupDiskCache diskCache, GroupLookup groupLookup) {
     this.diskCache = diskCache;
+    this.groupLookup = groupLookup != null
+        ? groupLookup
+        : userName -> Groups.getUserToGroupsMappingService().getGroups(userName);
   }
 
   public GroupDiskCache diskCache() {
@@ -34,7 +54,7 @@ public final class UserGroupResolver implements AutoCloseable {
    * <ol>
    *   <li>Thread-local / process UGI context (e.g. active {@code doAs} user or test harness)</li>
    *   <li>Persistent disk cache (instant cold start: 0 network round-trips)</li>
-   *   <li>Hadoop {@link UserGroupInformation#createRemoteUser(String)} group mapping service (AD / LDAP / OS)</li>
+   *   <li>Hadoop {@link Groups} mapping service (AD / LDAP / OS), throwing {@link IOException} on outages</li>
    *   <li>Stale cache fallback if directory service lookup fails</li>
    * </ol>
    *
@@ -72,29 +92,55 @@ public final class UserGroupResolver implements AutoCloseable {
     }
 
     // 3. Remote user group mapping query (Hadoop Groups -> LdapGroupsMapping or ShellBasedUnixGroupsMapping)
+    // Single-flight per user prevents concurrent cache misses from stampeding AD/LDAP.
+    CompletableFuture<List<String>> mine = new CompletableFuture<>();
+    CompletableFuture<List<String>> running = inFlightLookups.putIfAbsent(userName, mine);
+    if (running != null) {
+      try {
+        return running.get();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return staleOrEmpty(userName);
+      } catch (ExecutionException e) {
+        return staleOrEmpty(userName);
+      }
+    }
     try {
-      UserGroupInformation ugi = UserGroupInformation.createRemoteUser(userName);
-      String[] groupNames = ugi.getGroupNames();
-      List<String> groups = groupNames != null && groupNames.length > 0 ? List.of(groupNames) : List.of();
+      List<String> resolved = lookupAndCache(userName);
+      mine.complete(resolved);
+      return resolved;
+    } catch (Throwable t) {
+      mine.completeExceptionally(t);
+      throw t;
+    } finally {
+      inFlightLookups.remove(userName, mine);
+    }
+  }
+
+  private List<String> lookupAndCache(String userName) {
+    try {
+      List<String> rawGroups = groupLookup.lookup(userName);
+      List<String> groups = rawGroups != null && !rawGroups.isEmpty() ? List.copyOf(rawGroups) : List.of();
       if (diskCache != null && diskCache.isEnabled()) {
         diskCache.put(userName, groups);
       }
       return groups;
     } catch (Exception e) {
-      LOG.warn("Unable to resolve groups from Hadoop UGI for authenticated user '{}': {}",
+      LOG.warn("Unable to resolve groups from directory mapping service for authenticated user '{}': {}",
           userName, e.getMessage());
+      return staleOrEmpty(userName);
+    }
+  }
 
-      // 4. Fallback (serve-stale): if AD/LDAP is temporarily unreachable, serve last known groups from disk
-      if (diskCache != null && diskCache.isEnabled()) {
-        Optional<List<String>> stale = diskCache.getStale(userName);
-        if (stale.isPresent()) {
-          LOG.info("Serving stale cached groups for user '{}' due to directory lookup failure: {}",
-              userName, stale.get());
-          return stale.get();
-        }
+  private List<String> staleOrEmpty(String userName) {
+    if (diskCache != null && diskCache.isEnabled()) {
+      Optional<List<String>> stale = diskCache.getStale(userName);
+      if (stale.isPresent()) {
+        LOG.info("Serving stale cached groups for user '{}' due to directory lookup failure: {}",
+            userName, stale.get());
+        return stale.get();
       }
     }
-
     return List.of();
   }
 

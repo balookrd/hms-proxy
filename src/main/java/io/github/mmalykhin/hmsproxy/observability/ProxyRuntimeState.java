@@ -2,15 +2,17 @@ package io.github.mmalykhin.hmsproxy.observability;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
+import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
-import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.thrift.transport.TTransportException;
 import io.github.mmalykhin.hmsproxy.config.routing.AdaptiveTimeoutConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig;
@@ -78,14 +80,19 @@ public final class ProxyRuntimeState {
         return halfOpen;
       }
 
-      if (status.circuitState() == CircuitState.HALF_OPEN && status.halfOpenInFlight()) {
-        admissionRef.set(new BackendCallAdmission(
-            false,
-            false,
-            status.adaptiveTimeoutMs(),
-            "half_open_probe_in_flight",
-            status.circuitRetryAtEpochMs()));
-        return status;
+      if (status.circuitState() == CircuitState.HALF_OPEN) {
+        if (status.halfOpenInFlight()) {
+          admissionRef.set(new BackendCallAdmission(
+              false,
+              false,
+              status.adaptiveTimeoutMs(),
+              "half_open_probe_in_flight",
+              status.circuitRetryAtEpochMs()));
+          return status;
+        }
+        BackendRuntimeStatus halfOpen = status.toHalfOpen();
+        admissionRef.set(new BackendCallAdmission(true, true, halfOpen.adaptiveTimeoutMs(), null, 0L));
+        return halfOpen;
       }
 
       admissionRef.set(new BackendCallAdmission(true, false, status.adaptiveTimeoutMs(), null, 0L));
@@ -120,11 +127,21 @@ public final class ProxyRuntimeState {
       long latencyMs,
       LatencyRoutingConfig latencyRouting
   ) {
+    recordBackendFailure(backend, error, latencyMs, latencyRouting, true);
+  }
+
+  public void recordBackendFailure(
+      String backend,
+      Throwable error,
+      long latencyMs,
+      LatencyRoutingConfig latencyRouting,
+      boolean halfOpenProbe
+  ) {
     long nowEpochSecond = Instant.now().getEpochSecond();
     long nowMs = System.currentTimeMillis();
     backends.compute(backend, (ignored, current) ->
         statusOrDefault(backend, current, latencyRouting)
-            .onFailure(nowEpochSecond, nowMs, latencyMs, summarize(error), error, latencyRouting, false));
+            .onFailure(nowEpochSecond, nowMs, latencyMs, summarize(error), error, latencyRouting, false, halfOpenProbe));
   }
 
   public void recordBackendProbeFailure(
@@ -136,7 +153,7 @@ public final class ProxyRuntimeState {
     long nowMs = System.currentTimeMillis();
     backends.compute(backend, (ignored, current) ->
         statusOrDefault(backend, current, latencyRouting)
-            .onFailure(nowEpochSecond, nowMs, 0L, summarize(error), error, latencyRouting, true));
+            .onFailure(nowEpochSecond, nowMs, 0L, summarize(error), error, latencyRouting, true, false));
   }
 
   public BackendRuntimeStatus backendStatus(String backend) {
@@ -219,9 +236,11 @@ public final class ProxyRuntimeState {
           || current instanceof java.util.concurrent.TimeoutException) {
         return true;
       }
-      String message = current.getMessage();
-      if (message != null && message.toLowerCase().contains("timed out")) {
-        return true;
+      if (current instanceof TTransportException || current instanceof IOException) {
+        String message = current.getMessage();
+        if (message != null && message.toLowerCase(Locale.ROOT).contains("timed out")) {
+          return true;
+        }
       }
       current = current.getCause();
     }
@@ -316,7 +335,8 @@ public final class ProxyRuntimeState {
         String errorSummary,
         Throwable error,
         LatencyRoutingConfig latencyRouting,
-        boolean probe
+        boolean probe,
+        boolean halfOpenProbe
     ) {
       boolean connectivityFailure = isConnectivityFailure(error) || isTimeoutFailure(error);
       boolean circuitFailure = latencyRouting.circuitBreaker().enabled() && isCircuitFailure(error);
@@ -324,13 +344,16 @@ public final class ProxyRuntimeState {
           circuitFailure ? consecutiveFailures + 1 : consecutiveFailures;
       CircuitState nextCircuitState = circuitState;
       long nextRetryAtMs = circuitRetryAtEpochMs;
-      boolean nextHalfOpenInFlight = false;
       if (circuitFailure
           && (circuitState == CircuitState.HALF_OPEN
               || nextConsecutiveFailures >= latencyRouting.circuitBreaker().failureThreshold())) {
         nextCircuitState = CircuitState.OPEN;
         nextRetryAtMs = nowMs + latencyRouting.circuitBreaker().openStateMs();
       }
+      boolean nextHalfOpenInFlight =
+          nextCircuitState == CircuitState.HALF_OPEN && !halfOpenProbe && halfOpenInFlight;
+      boolean nextConnected =
+          !connectivityFailure && (nextCircuitState == CircuitState.CLOSED || connected);
       long nextAdaptiveTimeoutMs = adaptiveTimeoutMs;
       if (latencyRouting.adaptiveTimeout().enabled() && isTimeoutFailure(error)) {
         nextAdaptiveTimeoutMs = clamp(
@@ -340,7 +363,7 @@ public final class ProxyRuntimeState {
       }
       return new BackendRuntimeStatus(
           backend,
-          !connectivityFailure,
+          nextConnected,
           degraded || connectivityFailure || nextCircuitState != CircuitState.CLOSED,
           lastSuccessEpochSecond,
           nowEpochSecond,

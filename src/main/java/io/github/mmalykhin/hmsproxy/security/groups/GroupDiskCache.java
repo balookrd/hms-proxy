@@ -89,12 +89,9 @@ public final class GroupDiskCache implements AutoCloseable {
     }
 
     long now = clock.getAsLong();
-    if (config.entryTtlSeconds() > 0) {
-      long maxAgeMs = config.entryTtlSeconds() * 1000L;
-      if (now - entry.updatedAtEpochMs() > maxAgeMs) {
-        recordMetric("miss");
-        return Optional.empty();
-      }
+    if (isExpired(entry, now)) {
+      recordMetric("miss");
+      return Optional.empty();
     }
 
     recordMetric("hit");
@@ -114,17 +111,29 @@ public final class GroupDiskCache implements AutoCloseable {
       return;
     }
     List<String> normalizedGroups = groups == null ? List.of() : List.copyOf(groups);
+    long now = clock.getAsLong();
     CachedUserGroups existing = cache.get(userName);
     if (existing != null && existing.groups().equals(normalizedGroups)) {
+      if (!isExpired(existing, now)) {
+        return;
+      }
+      // Refresh the expiration timestamp even when group membership did not change so the entry
+      // does not stay permanently expired after its first TTL window.
+      cache.put(userName, new CachedUserGroups(normalizedGroups, now));
+      dirty.set(true);
       return;
     }
 
     if (existing == null) {
       makeRoomForNewUser();
     }
-    cache.put(userName, new CachedUserGroups(normalizedGroups, clock.getAsLong()));
+    cache.put(userName, new CachedUserGroups(normalizedGroups, now));
     dirty.set(true);
     updateEntriesMetric();
+  }
+
+  private boolean isExpired(CachedUserGroups entry, long nowMs) {
+    return config.entryTtlSeconds() > 0 && nowMs - entry.updatedAtEpochMs() > config.entryTtlSeconds() * 1000L;
   }
 
   /**

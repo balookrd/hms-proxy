@@ -30,7 +30,11 @@ final class InMemorySyntheticReadLockStore implements SyntheticReadLockStore {
         createdAtMs);
     locks.put(lockId, state);
     if (txnId > 0) {
-      txnLocks.computeIfAbsent(txnId, ignored -> ConcurrentHashMap.newKeySet()).add(lockId);
+      txnLocks.compute(txnId, (ignored, existing) -> {
+        Set<Long> lockIds = existing != null ? existing : ConcurrentHashMap.newKeySet();
+        lockIds.add(lockId);
+        return lockIds;
+      });
     }
     return state;
   }
