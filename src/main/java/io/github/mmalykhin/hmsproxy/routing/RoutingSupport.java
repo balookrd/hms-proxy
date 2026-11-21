@@ -289,6 +289,36 @@ final class RoutingSupport {
     }
   }
 
+  boolean isServicePrincipalBypass() {
+    return impersonationResolver != null && impersonationResolver.isAuthenticatedServicePrincipal();
+  }
+
+  ImpersonationContext resolveImpersonationOrThrowMeta(String methodName) throws MetaException {
+    if (impersonationResolver == null) {
+      return null;
+    }
+    try {
+      return impersonationResolver.resolve().orElse(null);
+    } catch (Exception e) {
+      LOG.warn("Failed to resolve impersonation context during {}: {}", methodName, e.getMessage());
+      throw new MetaException("Access denied: unable to resolve authenticated caller identity");
+    }
+  }
+
+  private ImpersonationContext resolveImpersonationOrThrow(Method method) throws TException {
+    if (impersonationResolver == null) {
+      return null;
+    }
+    try {
+      return impersonationResolver.resolve().orElse(null);
+    } catch (Exception e) {
+      LOG.warn("Failed to resolve impersonation context during {}: {}",
+          method != null ? method.getName() : "unknown", e.getMessage());
+      throwAccessDeniedException(method, "Access denied: unable to resolve authenticated caller identity");
+      return null;
+    }
+  }
+
   java.util.List<String> resolveGroups(String userName) {
     return impersonationResolver != null
         ? impersonationResolver.resolveGroups(userName)
@@ -300,10 +330,21 @@ final class RoutingSupport {
         || SparkPlaceholderNamespace.isSparkReservedDbName(namespace.backendDbName())) {
       return false;
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "database");
-      return false;
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation;
+      try {
+        impersonation = impersonationResolver != null ? impersonationResolver.resolve().orElse(null) : null;
+      } catch (Exception e) {
+        LOG.warn("Failed to resolve impersonation context during {} for catalog '{}' db='{}'; "
+                + "denying database access (fail-closed): {}",
+            methodName, namespace.catalogName(), namespace.backendDbName(), e.getMessage());
+        recordFilteredObject(methodName, namespace.catalogName(), "database");
+        return false;
+      }
+      if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "database");
+        return false;
+      }
     }
     if (!federationLayer.isDatabaseExposed(namespace)) {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
@@ -317,10 +358,21 @@ final class RoutingSupport {
         || SparkPlaceholderNamespace.isSparkReservedTable(namespace.backendDbName(), tableName)) {
       return false;
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "table");
-      return false;
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation;
+      try {
+        impersonation = impersonationResolver != null ? impersonationResolver.resolve().orElse(null) : null;
+      } catch (Exception e) {
+        LOG.warn("Failed to resolve impersonation context during {} for catalog '{}' db='{}' table='{}'; "
+                + "denying table access (fail-closed): {}",
+            methodName, namespace.catalogName(), namespace.backendDbName(), tableName, e.getMessage());
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        return false;
+      }
+      if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        return false;
+      }
     }
     if (!federationLayer.isTableExposed(namespace, tableName)) {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
@@ -346,17 +398,19 @@ final class RoutingSupport {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
       throw SparkPlaceholderNamespace.newNoSuchDatabaseException(namespace.externalDbName());
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "database");
-      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
-        throw new NoSuchObjectException(
-            "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation = resolveImpersonationOrThrowMeta(methodName);
+      if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "database");
+        if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+          throw new NoSuchObjectException(
+              "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+                  + namespace.catalogName() + "'");
+        }
+        throw new MetaException(
+            "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
                 + namespace.catalogName() + "'");
       }
-      throw new MetaException(
-          "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
-              + namespace.catalogName() + "'");
     }
     if (federationLayer.isDatabaseExposed(namespace)) {
       return;
@@ -378,17 +432,19 @@ final class RoutingSupport {
       recordFilteredObject(methodName, namespace.catalogName(), "database");
       throwAppropriateException(method, "Database " + namespace.externalDbName() + " not found");
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "database");
-      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
-        throwAppropriateException(method,
-            "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation = resolveImpersonationOrThrow(method);
+      if (!metadataAuthorizer.isDatabaseAllowed(namespace.catalogName(), namespace.backendDbName(), impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "database");
+        if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+          throwAppropriateException(method,
+              "Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
+                  + namespace.catalogName() + "'");
+        }
+        throwAccessDeniedException(method,
+            "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
                 + namespace.catalogName() + "'");
       }
-      throwAccessDeniedException(method,
-          "Access denied: Database '" + namespace.externalDbName() + "' is not accessible in proxy catalog '"
-              + namespace.catalogName() + "'");
     }
     if (federationLayer.isDatabaseExposed(namespace)) {
       return;
@@ -414,17 +470,19 @@ final class RoutingSupport {
       recordFilteredObject(methodName, namespace.catalogName(), "table");
       throw SparkPlaceholderNamespace.newNoSuchTableException(namespace.catalogName(), namespace.externalDbName(), tableName);
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "table");
-      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
-        throw new NoSuchObjectException(
-            "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation = resolveImpersonationOrThrowMeta(methodName);
+      if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+          throw new NoSuchObjectException(
+              "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+                  + namespace.catalogName() + "'");
+        }
+        throw new MetaException(
+            "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
                 + namespace.catalogName() + "'");
       }
-      throw new MetaException(
-          "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
-              + namespace.catalogName() + "'");
     }
     if (federationLayer.isTableExposed(namespace, tableName)) {
       return;
@@ -450,17 +508,19 @@ final class RoutingSupport {
       throwAppropriateException(method,
           namespace.catalogName() + "." + namespace.externalDbName() + "." + tableName + " table not found");
     }
-    ImpersonationContext impersonation = currentImpersonation();
-    if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
-      recordFilteredObject(methodName, namespace.catalogName(), "table");
-      if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
-        throwAppropriateException(method,
-            "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+    if (!isServicePrincipalBypass()) {
+      ImpersonationContext impersonation = resolveImpersonationOrThrow(method);
+      if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
+        recordFilteredObject(methodName, namespace.catalogName(), "table");
+        if (maskUnauthorizedAsNotFound(namespace.catalogName())) {
+          throwAppropriateException(method,
+              "Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
+                  + namespace.catalogName() + "'");
+        }
+        throwAccessDeniedException(method,
+            "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
                 + namespace.catalogName() + "'");
       }
-      throwAccessDeniedException(method,
-          "Access denied: Table '" + namespace.externalDbName() + "." + tableName + "' is not accessible in proxy catalog '"
-              + namespace.catalogName() + "'");
     }
     if (federationLayer.isTableExposed(namespace, tableName)) {
       return;
@@ -547,8 +607,21 @@ final class RoutingSupport {
   }
 
   List<String> exposedDatabaseNames(String methodName, String catalogName, List<String> backendDatabases) {
-    ImpersonationContext impersonation = currentImpersonation();
-    List<String> authorizedDatabases = metadataAuthorizer.filterDatabases(catalogName, backendDatabases, impersonation);
+    List<String> authorizedDatabases;
+    if (isServicePrincipalBypass()) {
+      authorizedDatabases = backendDatabases;
+    } else {
+      ImpersonationContext impersonation;
+      try {
+        impersonation = impersonationResolver != null ? impersonationResolver.resolve().orElse(null) : null;
+      } catch (Exception e) {
+        LOG.warn("Failed to resolve impersonation context during {} for catalog '{}'; "
+                + "returning empty database list (fail-closed): {}",
+            methodName, catalogName, e.getMessage());
+        return List.of();
+      }
+      authorizedDatabases = metadataAuthorizer.filterDatabases(catalogName, backendDatabases, impersonation);
+    }
     return filterExposed(
         methodName,
         catalogName,
@@ -581,17 +654,59 @@ final class RoutingSupport {
   }
 
   List<Object> filterTableObjectList(String methodName, CatalogRouter.ResolvedNamespace namespace, List<?> tables) {
-    ImpersonationContext impersonation = currentImpersonation();
-    List<Object> filtered = new ArrayList<>(tables.size());
-    for (Object candidate : tables) {
-      String tableName = extractTableName(candidate);
+    return filterAuthorizedTables(
+        methodName,
+        namespace.catalogName(),
+        namespace.backendDbName(),
+        new ArrayList<>(tables),
+        RoutingSupport::extractTableName);
+  }
+
+  List<String> filterTableNameList(String methodName, CatalogRouter.ResolvedNamespace namespace, List<?> names) {
+    List<String> candidateNames = new ArrayList<>(names.size());
+    for (Object candidate : names) {
+      if (candidate instanceof String tableName) {
+        candidateNames.add(tableName);
+      }
+    }
+    return filterAuthorizedTables(
+        methodName,
+        namespace.catalogName(),
+        namespace.backendDbName(),
+        candidateNames,
+        Function.identity());
+  }
+
+  private <T> List<T> filterAuthorizedTables(
+      String methodName,
+      String catalogName,
+      String backendDbName,
+      List<T> items,
+      Function<T, String> tableNameExtractor
+  ) {
+    boolean bypassAuthorizer = isServicePrincipalBypass();
+    ImpersonationContext impersonation = null;
+    if (!bypassAuthorizer) {
+      try {
+        impersonation = impersonationResolver != null ? impersonationResolver.resolve().orElse(null) : null;
+      } catch (Exception e) {
+        LOG.warn("Failed to resolve impersonation context during {} for catalog '{}' db='{}'; "
+                + "returning empty table list (fail-closed): {}",
+            methodName, catalogName, backendDbName, e.getMessage());
+        return List.of();
+      }
+    }
+    List<T> filtered = new ArrayList<>(items.size());
+    for (T candidate : items) {
+      String tableName = tableNameExtractor.apply(candidate);
       if (tableName != null) {
-        if (!metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
-          recordFilteredObject(methodName, namespace.catalogName(), "table");
+        if (!bypassAuthorizer && !metadataAuthorizer.isTableAllowed(
+            catalogName, backendDbName, tableName, impersonation)) {
+          recordFilteredObject(methodName, catalogName, "table");
           continue;
         }
-        if (!federationLayer.isTableExposed(namespace, tableName)) {
-          recordFilteredObject(methodName, namespace.catalogName(), "table");
+        if (!federationLayer.isTableExposed(catalogName, backendDbName, tableName)) {
+          recordFilteredObject(methodName, catalogName, "table");
           continue;
         }
       }

@@ -353,6 +353,88 @@ public class RoutingMetaStoreProxyDropPurgeTest {
     Assert.assertTrue(request.isEmpty());
   }
 
+  @Test
+  public void dropTableWithDeleteDataFalseDoesNotPrepareOrPurge() throws Throwable {
+    ProxyConfig config = dropPurgeConfig();
+    List<String> events = Collections.synchronizedList(new ArrayList<>());
+    RecordingExternalTableDropPurger purger = new RecordingExternalTableDropPurger(events);
+    purger.preparedRequest = Optional.of(new ExternalTableDropPurger.PurgeRequest("hdfs://ns-dev3/tmp/external/events"));
+
+    BackendInvocationSession session = newSession((proxy, method, args) -> {
+      events.add(method.getName());
+      if ("drop_table".equals(method.getName()) || "drop_table_with_environment_context".equals(method.getName())) {
+        return null;
+      }
+      throw new UnsupportedOperationException(method.getName());
+    });
+    CatalogBackend backend = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), session));
+    CatalogRouter router = new CatalogRouter(config, new LinkedHashMap<>(Map.of("catalog1", backend)));
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, new ProxyObservability(config), purger);
+
+    Method dropMethod = thriftMethod("drop_table");
+    handler.invoke(null, dropMethod, new Object[] {"catalog1__sales", "events", Boolean.FALSE});
+
+    Method dropWithCtx = thriftMethod("drop_table_with_environment_context");
+    handler.invoke(null, dropWithCtx, new Object[] {"catalog1__sales", "events", Boolean.FALSE, new EnvironmentContext()});
+    handler.close();
+
+    Assert.assertEquals(List.of("drop_table", "drop_table_with_environment_context"), events);
+    Assert.assertEquals(0, purger.purgeCalls.get());
+  }
+
+  @Test
+  public void prepareRejectsAllowlistRootTraversalWrongAuthorityAndSymlinkEscape() throws Exception {
+    assumeHadoopFileSystemUsable();
+    Path tempDir = Files.createTempDirectory("hms-proxy-drop-purge-guards");
+    try {
+      Path allowedRoot = Files.createDirectories(tempDir.resolve("allowed"));
+      Path outsideDir = Files.createDirectories(tempDir.resolve("outside"));
+      Files.writeString(outsideDir.resolve("keep.txt"), "important");
+      Path escapeLink = allowedRoot.resolve("symlink_table");
+      Files.createSymbolicLink(escapeLink, outsideDir);
+
+      ProxyConfig localConfig = dropPurgeConfigBuilder(Map.of(
+          "hive.metastore.uris", "thrift://one",
+          FileSystemExternalTableDropPurger.ALLOWED_PREFIXES_CONF_KEY, "file:" + allowedRoot + "/"))
+          .build();
+      FileSystemExternalTableDropPurger purger = new FileSystemExternalTableDropPurger(localConfig);
+      CatalogBackend backend = simpleBackend(localConfig);
+
+      // 1. Exact allowlist root must be refused.
+      Assert.assertTrue(purger.prepare(
+          backend, externalTable("sales", "root_tbl", "file:" + allowedRoot, true)).isEmpty());
+      Assert.assertTrue(purger.prepare(
+          backend, externalTable("sales", "root_slash_tbl", "file:" + allowedRoot + "/", true)).isEmpty());
+
+      // 2. Relative traversal must be refused.
+      Assert.assertTrue(purger.prepare(
+          backend, externalTable("sales", "trav_tbl", "file:" + allowedRoot + "/../outside", true)).isEmpty());
+
+      // 3. Wrong scheme / authority must be refused lexically without touching FileSystem.
+      Assert.assertTrue(purger.prepare(
+          backend, externalTable("sales", "evil_fs_tbl", "hdfs://evil-nn:9000/external/events", true)).isEmpty());
+
+      // 4. Symlink pointing outside the allowlist must be refused.
+      Assert.assertTrue(purger.prepare(
+          backend, externalTable("sales", "symlink_tbl", "file:" + escapeLink, true)).isEmpty());
+      Assert.assertTrue(Files.exists(outsideDir.resolve("keep.txt")));
+    } finally {
+      Files.walk(tempDir)
+          .sorted(java.util.Comparator.reverseOrder())
+          .forEach(p -> {
+            try {
+              Files.deleteIfExists(p);
+            } catch (Exception ignored) {
+            }
+          });
+    }
+  }
+
   private static RoutingMetaStoreProxy dropPurgeHandler(
       ProxyConfig config,
       List<String> events,

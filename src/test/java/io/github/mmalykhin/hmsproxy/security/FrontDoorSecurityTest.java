@@ -8,8 +8,12 @@ import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.security.DelegationTokenIdentifier;
 import org.apache.hadoop.hive.metastore.security.DelegationTokenStore;
+import org.apache.hadoop.hive.metastore.security.HadoopThriftAuthBridge;
+import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.MetastoreDelegationTokenManager;
+import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager.DelegationTokenInformation;
 import org.apache.thrift.TException;
 import org.apache.thrift.TProcessor;
 import org.junit.Assert;
@@ -238,6 +242,206 @@ public class FrontDoorSecurityTest {
         () -> security.cancelDelegationToken("tok"));
     Assert.assertFalse(cancelError.getMessage().contains("IOException"));
     Assert.assertSame(ioError, cancelError.getCause());
+  }
+
+  @Test
+  public void delegationTokenIssuanceAndRenewalRejectDigestMd5AndAllowGssapi() throws Exception {
+    MetastoreDelegationTokenManager manager = new MetastoreDelegationTokenManager() {
+      @Override
+      public String getDelegationToken(String owner, String renewer, String remoteAddr) {
+        return "issued-token";
+      }
+
+      @Override
+      public long renewDelegationToken(String tokenStrForm) {
+        return 12345L;
+      }
+
+      @Override
+      public void cancelDelegationToken(String tokenStrForm) {
+      }
+    };
+    FrontDoorSecurity security = new FrontDoorSecurity(
+        new Configuration(false),
+        null,
+        null,
+        manager,
+        null,
+        java.util.Set.of(),
+        SecurityConfig.DEFAULT_FRONT_DOOR_MAX_MEMORY_TOKENS,
+        "hive/proxy@EXAMPLE.COM");
+
+    String prevMechanism = ClientRequestContext.setAuthMechanism("DIGEST-MD5");
+    try {
+      MetaException issueErr = Assert.assertThrows(
+          MetaException.class, () -> security.issueDelegationToken("alice", "hive"));
+      Assert.assertTrue(issueErr.getMessage().contains("Kerberos (GSSAPI)"));
+
+      MetaException renewErr = Assert.assertThrows(
+          MetaException.class, () -> security.renewDelegationToken("issued-token"));
+      Assert.assertTrue(renewErr.getMessage().contains("Kerberos (GSSAPI)"));
+
+      // Cancel remains allowed even when authenticated with DIGEST-MD5.
+      security.cancelDelegationToken("issued-token");
+
+      ClientRequestContext.setAuthMechanism("GSSAPI");
+      Assert.assertEquals("issued-token", security.issueDelegationToken("alice", "hive"));
+      Assert.assertEquals(12345L, security.renewDelegationToken("issued-token"));
+    } finally {
+      ClientRequestContext.restoreAuthMechanism(prevMechanism);
+    }
+  }
+
+  @Test
+  public void issueDelegationTokenEnforcesMemoryTokenLimit() throws Exception {
+    MemoryTokenStore memoryStore = new MemoryTokenStore();
+    memoryStore.setConf(new Configuration(false));
+    memoryStore.init(null, HadoopThriftAuthBridge.Server.ServerMode.METASTORE);
+    LocalDelegationTokenStore localStore = new LocalDelegationTokenStore(memoryStore);
+    MetastoreDelegationTokenManager manager = new MetastoreDelegationTokenManager() {
+      @Override
+      public String getDelegationToken(String owner, String renewer, String remoteAddr) {
+        return "token-value";
+      }
+    };
+    FrontDoorSecurity security = new FrontDoorSecurity(
+        new Configuration(false),
+        null,
+        null,
+        manager,
+        localStore,
+        java.util.Set.of(),
+        2,
+        "hive/proxy@EXAMPLE.COM");
+
+    String prevMechanism = ClientRequestContext.setAuthMechanism("GSSAPI");
+    try {
+      Assert.assertEquals("token-value", security.issueDelegationToken("alice", "hive"));
+      memoryStore.addToken(
+          new DelegationTokenIdentifier(
+              new org.apache.hadoop.io.Text("alice"),
+              new org.apache.hadoop.io.Text("hive"),
+              new org.apache.hadoop.io.Text("alice")),
+          new DelegationTokenInformation(1000L, new byte[] {1}));
+      Assert.assertEquals("token-value", security.issueDelegationToken("bob", "hive"));
+      memoryStore.addToken(
+          new DelegationTokenIdentifier(
+              new org.apache.hadoop.io.Text("bob"),
+              new org.apache.hadoop.io.Text("hive"),
+              new org.apache.hadoop.io.Text("bob")),
+          new DelegationTokenInformation(1000L, new byte[] {2}));
+
+      MetaException limitErr = Assert.assertThrows(
+          MetaException.class, () -> security.issueDelegationToken("charlie", "hive"));
+      Assert.assertTrue(limitErr.getMessage().contains("limit (2) reached"));
+    } finally {
+      ClientRequestContext.restoreAuthMechanism(prevMechanism);
+      localStore.close();
+    }
+  }
+
+  @Test
+  public void tokenStoreAdminRpcsAreDeniedByDefaultAndRestrictedToConfiguredAdmins() throws Exception {
+    MemoryTokenStore memoryStore = new MemoryTokenStore();
+    memoryStore.setConf(new Configuration(false));
+    memoryStore.init(null, HadoopThriftAuthBridge.Server.ServerMode.METASTORE);
+    LocalDelegationTokenStore localStore = new LocalDelegationTokenStore(memoryStore);
+    MetastoreDelegationTokenManager dummyManager = new MetastoreDelegationTokenManager();
+
+    FrontDoorSecurity closedByDefault = new FrontDoorSecurity(
+        new Configuration(false), null, null, dummyManager, localStore,
+        java.util.Set.of(), 100, "hive/proxy@EXAMPLE.COM");
+    FrontDoorSecurity restricted = new FrontDoorSecurity(
+        new Configuration(false), null, null, dummyManager, localStore,
+        java.util.Set.of("admin/host1@EXAMPLE.COM", "ops"), 100, "hive/proxy@EXAMPLE.COM");
+
+    DelegationTokenIdentifier id = new DelegationTokenIdentifier(
+        new org.apache.hadoop.io.Text("alice"),
+        new org.apache.hadoop.io.Text("hive"),
+        new org.apache.hadoop.io.Text("alice"));
+    String encodedId = LocalDelegationTokenStore.encodeTokenIdentifier(id);
+    String encodedInfo = LocalDelegationTokenStore.encodeDelegationTokenInformation(
+        new DelegationTokenInformation(5000L, new byte[] {1, 2}));
+
+    String prevAuthUser = ClientRequestContext.authenticatedUser().orElse(null);
+    String prevRemoteUser = ClientRequestContext.remoteUser().orElse(null);
+    String prevMechanism = ClientRequestContext.authMechanism().orElse(null);
+    try {
+      ClientRequestContext.setAuthMechanism("GSSAPI");
+      ClientRequestContext.setAuthenticatedUser("admin/host1@EXAMPLE.COM");
+      assertAllTokenAdminRpcsDenied(closedByDefault, encodedId, encodedInfo);
+
+      // Non-admin user is denied.
+      ClientRequestContext.setAuthenticatedUser("eve@EXAMPLE.COM");
+      assertAllTokenAdminRpcsDenied(restricted, encodedId, encodedInfo);
+
+      // Cross-realm user matching short name 'ops' is denied.
+      ClientRequestContext.setAuthenticatedUser("ops@OTHER.REALM");
+      assertAllTokenAdminRpcsDenied(restricted, encodedId, encodedInfo);
+
+      // DIGEST-MD5 even with matching name is denied.
+      ClientRequestContext.setAuthMechanism("DIGEST-MD5");
+      ClientRequestContext.setAuthenticatedUser("admin/host1@EXAMPLE.COM");
+      assertAllTokenAdminRpcsDenied(restricted, encodedId, encodedInfo);
+
+      // Authorized full principal and same-realm short name with GSSAPI succeed on all 8 RPCs.
+      ClientRequestContext.setAuthMechanism("GSSAPI");
+      ClientRequestContext.setAuthenticatedUser("admin/host1@EXAMPLE.COM");
+      int seq = restricted.addMasterKey("secret-key");
+      restricted.updateMasterKey(seq, "secret-key-2");
+      Assert.assertFalse(restricted.getMasterKeys().isEmpty());
+      Assert.assertTrue(restricted.addToken(encodedId, encodedInfo));
+      Assert.assertEquals(encodedInfo, restricted.getToken(encodedId));
+      Assert.assertEquals(List.of(encodedId), restricted.getAllTokenIdentifiers());
+      Assert.assertTrue(restricted.removeToken(encodedId));
+      Assert.assertTrue(restricted.removeMasterKey(seq));
+
+      ClientRequestContext.setAuthenticatedUser("ops@EXAMPLE.COM");
+      Assert.assertEquals(List.of(), restricted.getAllTokenIdentifiers());
+    } finally {
+      ClientRequestContext.restoreAuthenticatedUser(prevAuthUser);
+      ClientRequestContext.restoreRemoteUser(prevRemoteUser);
+      ClientRequestContext.restoreAuthMechanism(prevMechanism);
+      restricted.close();
+    }
+  }
+
+  @Test
+  public void closeClosesLocalDelegationTokenStore() {
+    java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+    DelegationTokenStore store = new DelegationTokenStore() {
+      @Override public int addMasterKey(String s) { return 0; }
+      @Override public void updateMasterKey(int keySeq, String s) {}
+      @Override public boolean removeMasterKey(int keySeq) { return false; }
+      @Override public String[] getMasterKeys() { return new String[0]; }
+      @Override public boolean addToken(DelegationTokenIdentifier id, DelegationTokenInformation info) { return false; }
+      @Override public DelegationTokenInformation getToken(DelegationTokenIdentifier id) { return null; }
+      @Override public boolean removeToken(DelegationTokenIdentifier id) { return false; }
+      @Override public List<DelegationTokenIdentifier> getAllDelegationTokenIdentifiers() { return List.of(); }
+      @Override public void init(Object handler, HadoopThriftAuthBridge.Server.ServerMode serverMode) {}
+      @Override public void close() { closed.set(true); }
+      @Override public void setConf(Configuration conf) {}
+      @Override public Configuration getConf() { return new Configuration(false); }
+    };
+    FrontDoorSecurity security = new FrontDoorSecurity(
+        new Configuration(false), null, null, new MetastoreDelegationTokenManager(), new LocalDelegationTokenStore(store));
+    security.close();
+    Assert.assertTrue(closed.get());
+  }
+
+  private static void assertAllTokenAdminRpcsDenied(
+      FrontDoorSecurity security,
+      String encodedId,
+      String encodedInfo
+  ) {
+    Assert.assertThrows(MetaException.class, () -> security.addToken(encodedId, encodedInfo));
+    Assert.assertThrows(MetaException.class, () -> security.removeToken(encodedId));
+    Assert.assertThrows(MetaException.class, () -> security.getToken(encodedId));
+    Assert.assertThrows(MetaException.class, security::getAllTokenIdentifiers);
+    Assert.assertThrows(MetaException.class, () -> security.addMasterKey("k"));
+    Assert.assertThrows(MetaException.class, () -> security.updateMasterKey(0, "k"));
+    Assert.assertThrows(MetaException.class, () -> security.removeMasterKey(0));
+    Assert.assertThrows(MetaException.class, security::getMasterKeys);
   }
 
   /**

@@ -41,4 +41,40 @@ public class PathPrefixAllowlistTest {
     Assert.assertFalse(PathPrefixAllowlist.matches("hdfs://ns/a", List.of()));
     Assert.assertFalse(PathPrefixAllowlist.matches(null, List.of("hdfs://ns/a")));
   }
+
+  @Test
+  public void containsUnsafePathSyntaxRejectsTraversalAndControlCharacters() {
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax(null));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("   "));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/../secret"));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/.."));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/./t"));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/%2e%2e/secret"));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/%2f/t"));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external\\t"));
+    Assert.assertTrue(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/t\0"));
+    Assert.assertFalse(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/v1.0/part.parquet"));
+    Assert.assertFalse(PathPrefixAllowlist.containsUnsafePathSyntax("hdfs://ns/external/.staging/t"));
+  }
+
+  @Test
+  public void matchesStrictDescendantRefusesAllowlistRootAndUnsafePaths() {
+    List<String> prefixes = List.of("hdfs://ns/external/");
+    Assert.assertFalse("exact root without slash must be refused",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external", prefixes));
+    Assert.assertFalse("exact root with slash must be refused",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external/", prefixes));
+    Assert.assertFalse("traversal under prefix must be refused",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external/../secret", prefixes));
+    Assert.assertFalse("sibling directory must be refused",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external_other/t1", prefixes));
+    Assert.assertTrue("strict descendant must be allowed",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external/t1", prefixes));
+    Assert.assertTrue("strict descendant with trailing slash must be allowed",
+        PathPrefixAllowlist.matchesStrictDescendant("hdfs://ns/external/db/t1/", prefixes));
+    Assert.assertFalse("file root itself must be refused",
+        PathPrefixAllowlist.matchesStrictDescendant("file:///", List.of("file:/")));
+    Assert.assertTrue("descendant under file root must be allowed",
+        PathPrefixAllowlist.matchesStrictDescendant("file:///tmp/t1", List.of("file:/")));
+  }
 }

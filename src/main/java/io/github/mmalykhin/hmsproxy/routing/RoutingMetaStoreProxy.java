@@ -393,8 +393,15 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     fields.put("fanout", observation.fanout());
     fields.put("fallback", observation.fallback());
     fields.put("defaultCatalogRouted", observation.defaultCatalogRouted());
+    String authenticatedUser = ClientRequestContext.authenticatedUser()
+        .or(ClientRequestContext::remoteUser)
+        .orElse(null);
+    String effectiveUser = ClientRequestContext.remoteUser().orElse(null);
     fields.put("remoteAddress", ClientRequestContext.remoteAddress().orElse(null));
-    fields.put("authenticatedUser", ClientRequestContext.remoteUser().orElse(null));
+    fields.put("authenticatedUser", authenticatedUser);
+    if (effectiveUser != null && !effectiveUser.equals(authenticatedUser)) {
+      fields.put("effectiveUser", effectiveUser);
+    }
     AUDIT_LOG.info(AuditLogUtil.toJson(fields));
   }
 
@@ -434,11 +441,26 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     return DefaultBackendRoutingPolicy.routesToDefaultBackend(methodName);
   }
 
-  static boolean isServicePrincipalUser(String userName, SecurityConfig security) {
-    if (userName == null || security == null) {
+  static boolean isServicePrincipal(String rawPrincipal, SecurityConfig security) {
+    if (rawPrincipal == null || rawPrincipal.isBlank()
+        || security == null || security.serverPrincipal() == null || security.serverPrincipal().isBlank()) {
       return false;
     }
-    return userName.equals(PrincipalUtil.shortUserName(security.serverPrincipal()));
+    String expectedShort = PrincipalUtil.shortUserName(security.serverPrincipal());
+    String actualShort = PrincipalUtil.shortUserName(rawPrincipal);
+    if (expectedShort == null || !expectedShort.equals(actualShort)) {
+      return false;
+    }
+    String expectedRealm = PrincipalUtil.realm(security.serverPrincipal());
+    String actualRealm = PrincipalUtil.realm(rawPrincipal);
+    if (expectedRealm != null && actualRealm != null && !expectedRealm.equals(actualRealm)) {
+      return false;
+    }
+    return true;
+  }
+
+  static boolean isServicePrincipalUser(String userName, SecurityConfig security) {
+    return isServicePrincipal(userName, security);
   }
 
   static boolean shouldUseCompatibilityFallback(String methodName, Throwable cause) {

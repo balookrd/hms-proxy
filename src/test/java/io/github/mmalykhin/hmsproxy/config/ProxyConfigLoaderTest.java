@@ -2378,4 +2378,52 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void loadsTokenStoreAdminPrincipalsAndFrontDoorMaxMemoryTokensUnderStrictValidation() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          config.strict-validation=true
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          security.token-store-admin-principals=admin1@REALM, hive/hs2@REALM
+          security.front-door-max-memory-tokens=2500
+          """);
+
+      ProxyConfig config = ProxyConfigLoader.load(file);
+
+      Assert.assertEquals(
+          java.util.Set.of("admin1@REALM", "hive/hs2@REALM"),
+          config.security().tokenStoreAdminPrincipals());
+      Assert.assertEquals(2500, config.security().frontDoorMaxMemoryTokens());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  @Test
+  public void rejectsNegativeFrontDoorMaxMemoryTokens() throws Exception {
+    Path file = Files.createTempFile("hms-proxy", ".properties");
+    try {
+      Files.writeString(file, """
+          synthetic-read-lock.store.mode=IN_MEMORY
+          catalogs=catalog1
+          routing.default-catalog=catalog1
+          catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083
+          security.front-door-max-memory-tokens=-1
+          """);
+
+      try {
+        ProxyConfigLoader.load(file);
+        Assert.fail("Expected IllegalArgumentException for negative front-door-max-memory-tokens");
+      } catch (IllegalArgumentException expected) {
+        Assert.assertTrue(expected.getMessage().contains("front-door-max-memory-tokens"));
+      }
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

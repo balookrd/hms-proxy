@@ -10,11 +10,16 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.security.DelegationTokenIdentifier;
 import org.apache.hadoop.hive.metastore.security.DelegationTokenSecretManager;
 import org.apache.hadoop.hive.metastore.security.DelegationTokenStore;
+import org.apache.hadoop.hive.metastore.security.MemoryTokenStore;
 import org.apache.hadoop.hive.metastore.security.TokenStoreDelegationTokenSecretManager;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager.DelegationTokenInformation;
 import org.apache.hadoop.security.token.delegation.MetastoreDelegationTokenSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class LocalDelegationTokenStore {
+  private static final Logger LOG = LoggerFactory.getLogger(LocalDelegationTokenStore.class);
+
   private final DelegationTokenStore tokenStore;
 
   LocalDelegationTokenStore(DelegationTokenStore tokenStore) {
@@ -110,6 +115,30 @@ final class LocalDelegationTokenStore {
       return encoded;
     } catch (DelegationTokenStore.TokenStoreException | IOException e) {
       throw metaException("Unable to list delegation tokens", e);
+    }
+  }
+
+  boolean isMemoryTokenStore() {
+    return tokenStore instanceof MemoryTokenStore;
+  }
+
+  int currentTokenCount() throws MetaException {
+    try {
+      List<DelegationTokenIdentifier> identifiers = tokenStore.getAllDelegationTokenIdentifiers();
+      return identifiers != null ? identifiers.size() : 0;
+    } catch (DelegationTokenStore.TokenStoreException e) {
+      throw metaException("Unable to inspect delegation token count", e);
+    }
+  }
+
+  void close() {
+    if (tokenStore == null) {
+      return;
+    }
+    try {
+      tokenStore.close();
+    } catch (IOException e) {
+      LOG.warn("Failed to close delegation token store {}: {}", tokenStore.getClass().getName(), e.toString());
     }
   }
 

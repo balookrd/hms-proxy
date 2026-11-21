@@ -68,6 +68,11 @@ final class TableConstraintsHandler implements SpecialCaseHandler {
     support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, method.getName(), namespace.backendDbName());
+    support.validateExposedDatabaseAccess(method, namespace);
+    if (tblName != null && !tblName.isBlank()) {
+      support.validateExposedTableAccess(method, namespace, tblName);
+    }
+    validateForeignKeyTargets(method, request, catName);
 
     internalizeRequest(request, namespace);
 
@@ -88,6 +93,37 @@ final class TableConstraintsHandler implements SpecialCaseHandler {
 
     externalizeResponse(method.getName(), response, namespace);
     return response;
+  }
+
+  private void validateForeignKeyTargets(Method method, Object request, String fallbackCatName) throws Throwable {
+    String parentCat = ThriftReflectionCache.readString(request, "getParent_catName");
+    String parentDb = ThriftReflectionCache.readString(request, "getParent_db_name", "getParentDbName");
+    String parentTbl = ThriftReflectionCache.readString(request, "getParent_tbl_name", "getParentTblName");
+    validateConstraintTarget(method, parentCat != null && !parentCat.isBlank() ? parentCat : fallbackCatName,
+        parentDb, parentTbl);
+
+    String foreignCat = ThriftReflectionCache.readString(request, "getForeign_catName");
+    String foreignDb = ThriftReflectionCache.readString(request, "getForeign_db_name", "getForeignDbName");
+    String foreignTbl = ThriftReflectionCache.readString(request, "getForeign_tbl_name", "getForeignTblName");
+    validateConstraintTarget(method, foreignCat != null && !foreignCat.isBlank() ? foreignCat : fallbackCatName,
+        foreignDb, foreignTbl);
+  }
+
+  private void validateConstraintTarget(Method method, String catName, String dbName, String tblName) throws Throwable {
+    if (dbName == null || dbName.isBlank()) {
+      return;
+    }
+    if (HivePlaceholderNamespace.isPlaceholderDbName(dbName)
+        || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)
+        || HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)
+        || SparkPlaceholderNamespace.isSparkReservedTable(dbName, tblName)) {
+      return;
+    }
+    CatalogRouter.ResolvedNamespace targetNs = support.resolveRequestNamespace(catName, dbName);
+    support.validateExposedDatabaseAccess(method, targetNs);
+    if (tblName != null && !tblName.isBlank()) {
+      support.validateExposedTableAccess(method, targetNs, tblName);
+    }
   }
 
   private String extractDbName(Object request) {

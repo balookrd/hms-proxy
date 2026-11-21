@@ -1,11 +1,13 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.security.SecurityConfig;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import org.apache.hadoop.conf.Configuration;
@@ -44,6 +46,9 @@ public final class FrontDoorSecurity implements AutoCloseable {
   private final HadoopThriftAuthBridge.Server saslServer;
   private final MetastoreDelegationTokenManager delegationTokenManager;
   private final LocalDelegationTokenStore localTokenStore;
+  private final Set<String> tokenStoreAdminPrincipals;
+  private final int frontDoorMaxMemoryTokens;
+  private final String serverPrincipal;
 
   FrontDoorSecurity(
       Configuration securityConf,
@@ -52,11 +57,35 @@ public final class FrontDoorSecurity implements AutoCloseable {
       MetastoreDelegationTokenManager delegationTokenManager,
       LocalDelegationTokenStore localTokenStore
   ) {
+    this(
+        securityConf,
+        bridge,
+        saslServer,
+        delegationTokenManager,
+        localTokenStore,
+        Set.of(),
+        SecurityConfig.DEFAULT_FRONT_DOOR_MAX_MEMORY_TOKENS,
+        null);
+  }
+
+  FrontDoorSecurity(
+      Configuration securityConf,
+      HadoopThriftAuthBridge bridge,
+      HadoopThriftAuthBridge.Server saslServer,
+      MetastoreDelegationTokenManager delegationTokenManager,
+      LocalDelegationTokenStore localTokenStore,
+      Set<String> tokenStoreAdminPrincipals,
+      int frontDoorMaxMemoryTokens,
+      String serverPrincipal
+  ) {
     this.securityConf = securityConf;
     this.bridge = bridge;
     this.saslServer = saslServer;
     this.delegationTokenManager = delegationTokenManager;
     this.localTokenStore = localTokenStore;
+    this.tokenStoreAdminPrincipals = tokenStoreAdminPrincipals != null ? Set.copyOf(tokenStoreAdminPrincipals) : Set.of();
+    this.frontDoorMaxMemoryTokens = frontDoorMaxMemoryTokens;
+    this.serverPrincipal = serverPrincipal;
   }
 
   public static FrontDoorSecurity open(ProxyConfig config) throws Exception {
@@ -121,7 +150,15 @@ public final class FrontDoorSecurity implements AutoCloseable {
             + "directly in hms-proxy.properties.");
       }
     }
-    return new FrontDoorSecurity(securityConf, bridge, saslServer, delegationTokenManager, localTokenStore);
+    return new FrontDoorSecurity(
+        securityConf,
+        bridge,
+        saslServer,
+        delegationTokenManager,
+        localTokenStore,
+        config.security().tokenStoreAdminPrincipals(),
+        config.security().frontDoorMaxMemoryTokens(),
+        serverPrincipal);
   }
 
   private static void emitConfigurationDiagnostics(ProxyConfig config, HiveConf securityConf) {
@@ -225,7 +262,12 @@ public final class FrontDoorSecurity implements AutoCloseable {
 
   TProcessor wrapProcessor(TProcessor processor) {
     return wrapWithClientRequestContext(
-        processor, saslServer::wrapProcessor, this::remoteAddress, this::remoteUser);
+        processor,
+        saslServer::wrapProcessor,
+        this::remoteAddress,
+        this::remoteUser,
+        this::userAuthMechanism,
+        false);
   }
 
   /**
@@ -241,19 +283,39 @@ public final class FrontDoorSecurity implements AutoCloseable {
       Supplier<String> remoteAddressSupplier,
       Supplier<String> remoteUserSupplier
   ) {
+    return wrapWithClientRequestContext(
+        processor, saslWrapper, remoteAddressSupplier, remoteUserSupplier, () -> null, true);
+  }
+
+  public static TProcessor wrapWithClientRequestContext(
+      TProcessor processor,
+      UnaryOperator<TProcessor> saslWrapper,
+      Supplier<String> remoteAddressSupplier,
+      Supplier<String> remoteUserSupplier,
+      Supplier<String> authMechanismSupplier,
+      boolean allowConnectionUgiOverride
+  ) {
     TProcessor contextAware = (in, out) -> {
       org.apache.thrift.transport.TTransport transport = in != null ? in.getTransport() : null;
       org.apache.thrift.transport.TTransport previousTransport = ClientRequestContext.setCurrentTransport(transport);
       String previousRemoteAddress = ClientRequestContext.setRemoteAddress(remoteAddressSupplier.get());
-      String effectiveUser = ClientRequestContext.connectionUgi(transport)
-          .map(io.github.mmalykhin.hmsproxy.backend.ImpersonationContext::userName)
-          .orElseGet(remoteUserSupplier);
+      String authenticatedUser = remoteUserSupplier.get();
+      String previousAuthenticatedUser = ClientRequestContext.setAuthenticatedUser(authenticatedUser);
+      String authMechanism = authMechanismSupplier != null ? authMechanismSupplier.get() : null;
+      String previousAuthMechanism = ClientRequestContext.setAuthMechanism(authMechanism);
+      String effectiveUser = allowConnectionUgiOverride
+          ? ClientRequestContext.connectionUgi(transport)
+              .map(io.github.mmalykhin.hmsproxy.backend.ImpersonationContext::userName)
+              .orElse(authenticatedUser)
+          : authenticatedUser;
       String previousRemoteUser = ClientRequestContext.setRemoteUser(effectiveUser);
       try {
         return processor.process(in, out);
       } finally {
         ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
         ClientRequestContext.restoreRemoteUser(previousRemoteUser);
+        ClientRequestContext.restoreAuthMechanism(previousAuthMechanism);
+        ClientRequestContext.restoreAuthenticatedUser(previousAuthenticatedUser);
         ClientRequestContext.restoreCurrentTransport(previousTransport);
       }
     };
@@ -261,6 +323,17 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   public String issueDelegationToken(String owner, String renewer) throws MetaException {
+    requireKerberosGssapi("issuance");
+    if (frontDoorMaxMemoryTokens > 0 && localTokenStore != null && localTokenStore.isMemoryTokenStore()) {
+      int currentCount = localTokenStore.currentTokenCount();
+      if (currentCount >= frontDoorMaxMemoryTokens) {
+        LOG.warn("Refusing delegation token issuance for owner='{}' caller='{}': "
+                + "in-memory token store limit reached ({}/{})",
+            owner, authenticatedCaller(), currentCount, frontDoorMaxMemoryTokens);
+        throw new MetaException("Front-door in-memory delegation token store limit ("
+            + frontDoorMaxMemoryTokens + ") reached");
+      }
+    }
     try {
       return delegationTokenManager.getDelegationToken(owner, renewer, remoteAddress());
     } catch (AuthorizationException e) {
@@ -277,6 +350,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   public long renewDelegationToken(String token) throws MetaException {
+    requireKerberosGssapi("renewal");
     try {
       return delegationTokenManager.renewDelegationToken(token);
     } catch (DelegationTokenStore.TokenStoreException | IOException e) {
@@ -293,39 +367,117 @@ public final class FrontDoorSecurity implements AutoCloseable {
   }
 
   public boolean addToken(String tokenIdentifier, String token) throws MetaException {
+    requireTokenStoreAdmin("add_token");
     return localTokenStore.addToken(tokenIdentifier, token);
   }
 
   public boolean removeToken(String tokenIdentifier) throws MetaException {
+    requireTokenStoreAdmin("remove_token");
     return localTokenStore.removeToken(tokenIdentifier);
   }
 
   public String getToken(String tokenIdentifier) throws MetaException {
+    requireTokenStoreAdmin("get_token");
     return localTokenStore.getToken(tokenIdentifier);
   }
 
   public java.util.List<String> getAllTokenIdentifiers() throws MetaException {
+    requireTokenStoreAdmin("get_all_token_identifiers");
     return localTokenStore.getAllTokenIdentifiers();
   }
 
   public int addMasterKey(String key) throws MetaException {
+    requireTokenStoreAdmin("add_master_key");
     return localTokenStore.addMasterKey(key);
   }
 
   public void updateMasterKey(int keySeq, String key) throws MetaException {
+    requireTokenStoreAdmin("update_master_key");
     localTokenStore.updateMasterKey(keySeq, key);
   }
 
   public boolean removeMasterKey(int keySeq) throws MetaException {
+    requireTokenStoreAdmin("remove_master_key");
     return localTokenStore.removeMasterKey(keySeq);
   }
 
   public java.util.List<String> getMasterKeys() throws MetaException {
+    requireTokenStoreAdmin("get_master_keys");
     return localTokenStore.getMasterKeys();
   }
 
   String remoteUser() {
     return saslServer == null ? null : saslServer.getRemoteUser();
+  }
+
+  String userAuthMechanism() {
+    if (saslServer != null) {
+      return saslServer.getUserAuthMechanism();
+    }
+    return ClientRequestContext.authMechanism().orElse(null);
+  }
+
+  private String authenticatedCaller() {
+    if (saslServer != null) {
+      return trimToNull(saslServer.getRemoteUser());
+    }
+    return ClientRequestContext.authenticatedUser()
+        .or(ClientRequestContext::remoteUser)
+        .map(FrontDoorSecurity::trimToNull)
+        .orElse(null);
+  }
+
+  private void requireKerberosGssapi(String action) throws MetaException {
+    String mechanism = userAuthMechanism();
+    if (saslServer != null) {
+      if (!"GSSAPI".equalsIgnoreCase(mechanism)) {
+        throw new MetaException("Delegation token " + action
+            + " requires Kerberos (GSSAPI) authentication; current SASL mechanism is '"
+            + (mechanism != null ? mechanism : "<none>") + "'");
+      }
+      return;
+    }
+    // In unit tests with saslServer == null, fail only when a non-GSSAPI mechanism was explicitly recorded.
+    if (mechanism != null && !"GSSAPI".equalsIgnoreCase(mechanism)) {
+      throw new MetaException("Delegation token " + action
+          + " requires Kerberos (GSSAPI) authentication; current SASL mechanism is '" + mechanism + "'");
+    }
+  }
+
+  private void requireTokenStoreAdmin(String methodName) throws MetaException {
+    if (tokenStoreAdminPrincipals.isEmpty()) {
+      throw new MetaException("Access denied: token-store administrative RPC '" + methodName
+          + "' is disabled (configure security.token-store-admin-principals to allow specific principals)");
+    }
+    requireKerberosGssapi("store administration (" + methodName + ")");
+    String caller = authenticatedCaller();
+    if (!isAuthorizedTokenStoreAdmin(caller)) {
+      LOG.warn("Access denied for token-store RPC '{}': caller='{}' remoteAddress='{}'",
+          methodName, caller, remoteAddress());
+      throw new MetaException("Access denied: principal '" + (caller != null ? caller : "<unknown>")
+          + "' is not authorized for token-store RPC '" + methodName + "'");
+    }
+  }
+
+  private boolean isAuthorizedTokenStoreAdmin(String caller) {
+    if (caller == null) {
+      return false;
+    }
+    if (tokenStoreAdminPrincipals.contains(caller)) {
+      return true;
+    }
+    String callerShort = PrincipalUtil.shortUserName(caller);
+    String callerRealm = PrincipalUtil.realm(caller);
+    String expectedRealm = PrincipalUtil.realm(serverPrincipal);
+    if (expectedRealm != null && callerRealm != null && !expectedRealm.equals(callerRealm)) {
+      return false;
+    }
+    for (String entry : tokenStoreAdminPrincipals) {
+      if (entry != null && !entry.contains("@") && entry.equals(callerShort)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public static String delegationTokenAuthorizationMessage(
@@ -384,6 +536,9 @@ public final class FrontDoorSecurity implements AutoCloseable {
   public void close() {
     if (delegationTokenManager.getSecretManager() != null) {
       delegationTokenManager.getSecretManager().stopThreads();
+    }
+    if (localTokenStore != null) {
+      localTokenStore.close();
     }
   }
 }

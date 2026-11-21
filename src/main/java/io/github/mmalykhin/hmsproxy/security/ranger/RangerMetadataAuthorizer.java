@@ -27,9 +27,11 @@ import org.slf4j.LoggerFactory;
 
 public class RangerMetadataAuthorizer implements MetadataAuthorizer {
   private static final Logger LOG = LoggerFactory.getLogger(RangerMetadataAuthorizer.class);
+  private static final int MAX_CME_RETRIES = 2;
 
-  private final Map<String, RangerBasePlugin> pluginsByCatalog = new LinkedHashMap<>();
+  private final Map<String, RangerBasePlugin> pluginsByCatalog;
   private final io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics;
+  private volatile boolean closed;
 
   public RangerMetadataAuthorizer(RangerConfig config, Map<String, CatalogConfig> catalogs) {
     this(config, catalogs, null);
@@ -41,6 +43,7 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
       io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics metrics
   ) {
     this.metrics = metrics;
+    Map<String, RangerBasePlugin> initialized = new LinkedHashMap<>();
     if (catalogs != null) {
       for (Map.Entry<String, CatalogConfig> entry : catalogs.entrySet()) {
         String catalogName = entry.getKey();
@@ -52,7 +55,7 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
         if (rangerConfig.enabled()) {
           try {
             RangerBasePlugin plugin = createPlugin(catalogName, rangerConfig);
-            pluginsByCatalog.put(catalogName, plugin);
+            initialized.put(catalogName, plugin);
             if (metrics != null) {
               metrics.setRangerPluginInfo(
                   catalogName,
@@ -69,6 +72,7 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
         }
       }
     }
+    this.pluginsByCatalog = Map.copyOf(initialized);
   }
 
   protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
@@ -128,15 +132,20 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
 
   @Override
   public boolean isDatabaseAllowed(String catalogName, String backendDbName, ImpersonationContext impersonation) {
-    if (catalogName == null || backendDbName == null) {
-      return true;
+    if (closed || catalogName == null) {
+      return false;
     }
     RangerBasePlugin plugin = pluginsByCatalog.get(catalogName);
     if (plugin == null) {
       return true;
     }
+    if (backendDbName == null || backendDbName.isBlank()) {
+      return false;
+    }
     if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
-      return true;
+      LOG.warn("Denying Ranger database check for catalog '{}' db='{}' because impersonation context is missing",
+          catalogName, backendDbName);
+      return false;
     }
 
     long startNanos = System.nanoTime();
@@ -184,9 +193,20 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (backendDbNames == null || backendDbNames.isEmpty()) {
       return List.of();
     }
-    RangerBasePlugin plugin = catalogName == null ? null : pluginsByCatalog.get(catalogName);
-    if (plugin == null || impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+    if (closed || catalogName == null) {
+      return List.of();
+    }
+    RangerBasePlugin plugin = pluginsByCatalog.get(catalogName);
+    if (plugin == null) {
       return new ArrayList<>(backendDbNames);
+    }
+    if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+      LOG.warn("Filtering out all {} database(s) for catalog '{}' because impersonation context is missing",
+          backendDbNames.size(), catalogName);
+      if (metrics != null) {
+        metrics.recordRangerFilteredObjects(catalogName, "database", backendDbNames.size());
+      }
+      return List.of();
     }
     List<String> visible = new ArrayList<>(backendDbNames.size());
     int filtered = 0;
@@ -205,15 +225,20 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
 
   @Override
   public boolean isTableAllowed(String catalogName, String backendDbName, String tableName, ImpersonationContext impersonation) {
-    if (catalogName == null || backendDbName == null || tableName == null) {
-      return true;
+    if (closed || catalogName == null) {
+      return false;
     }
     RangerBasePlugin plugin = pluginsByCatalog.get(catalogName);
     if (plugin == null) {
       return true;
     }
+    if (backendDbName == null || backendDbName.isBlank() || tableName == null || tableName.isBlank()) {
+      return false;
+    }
     if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
-      return true;
+      LOG.warn("Denying Ranger table check for catalog '{}' db='{}' table='{}' because impersonation context is missing",
+          catalogName, backendDbName, tableName);
+      return false;
     }
 
     long startNanos = System.nanoTime();
@@ -262,9 +287,20 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
     if (tableNames == null || tableNames.isEmpty()) {
       return List.of();
     }
-    RangerBasePlugin plugin = catalogName == null ? null : pluginsByCatalog.get(catalogName);
-    if (plugin == null || impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+    if (closed || catalogName == null) {
+      return List.of();
+    }
+    RangerBasePlugin plugin = pluginsByCatalog.get(catalogName);
+    if (plugin == null) {
       return new ArrayList<>(tableNames);
+    }
+    if (impersonation == null || impersonation.userName() == null || impersonation.userName().isBlank()) {
+      LOG.warn("Filtering out all {} table(s) for catalog '{}' db='{}' because impersonation context is missing",
+          tableNames.size(), catalogName, backendDbName);
+      if (metrics != null) {
+        metrics.recordRangerFilteredObjects(catalogName, "table", tableNames.size());
+      }
+      return List.of();
     }
     List<String> visible = new ArrayList<>(tableNames.size());
     int filtered = 0;
@@ -286,34 +322,40 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
   }
 
   private RangerAccessResult evaluateAccessWithRetry(RangerBasePlugin plugin, RangerAccessRequest request) {
-    try {
-      return evaluateAccess(plugin, request);
-    } catch (ConcurrentModificationException e) {
-      LOG.warn("ConcurrentModificationException in Ranger SDK during access check for user '{}', retrying once",
-          request.getUser(), e);
+    for (int attempt = 0; attempt <= MAX_CME_RETRIES; attempt++) {
       try {
-        Thread.yield();
         return evaluateAccess(plugin, request);
+      } catch (ConcurrentModificationException e) {
+        if (attempt < MAX_CME_RETRIES) {
+          LOG.warn("ConcurrentModificationException in Ranger SDK during access check for user '{}', retrying ({}/{})",
+              request.getUser(), attempt + 1, MAX_CME_RETRIES, e);
+          Thread.yield();
+        } else {
+          LOG.error("Persistent ConcurrentModificationException in Ranger SDK during access check for user '{}' "
+                  + "after {} retries; denying access (fail-closed)",
+              request.getUser(), MAX_CME_RETRIES, e);
+          return createFallbackDeniedResult(request);
+        }
+      } catch (Error error) {
+        throw error;
       } catch (Throwable t) {
-        LOG.warn("Failed Ranger access check after retry for user '{}', falling back to allowed",
+        LOG.error("Unexpected error in Ranger SDK during access check for user '{}'; denying access (fail-closed)",
             request.getUser(), t);
-        return createFallbackAllowedResult(request);
+        return createFallbackDeniedResult(request);
       }
-    } catch (Throwable t) {
-      LOG.warn("Unexpected error in Ranger SDK during access check for user '{}', falling back to allowed",
-          request.getUser(), t);
-      return createFallbackAllowedResult(request);
     }
+    return createFallbackDeniedResult(request);
   }
 
-  private static RangerAccessResult createFallbackAllowedResult(RangerAccessRequest request) {
+  private static RangerAccessResult createFallbackDeniedResult(RangerAccessRequest request) {
     RangerAccessResult result = new RangerAccessResult(0, "hms-proxy", null, request);
-    result.setIsAllowed(true);
+    result.setIsAllowed(false);
     return result;
   }
 
   @Override
   public void close() {
+    closed = true;
     for (RangerBasePlugin plugin : pluginsByCatalog.values()) {
       try {
         plugin.cleanup();
@@ -321,7 +363,6 @@ public class RangerMetadataAuthorizer implements MetadataAuthorizer {
         LOG.warn("Error cleaning up RangerBasePlugin for service '{}'", plugin.getServiceName(), e);
       }
     }
-    pluginsByCatalog.clear();
   }
 
   private static RangerAccessRequestImpl createAccessRequest(

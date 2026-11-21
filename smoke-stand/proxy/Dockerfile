@@ -3,7 +3,11 @@ FROM eclipse-temurin:17-jre
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends krb5-user netcat-openbsd \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -f sales \
+    && groupadd -f finance \
+    && useradd -M -N -G sales charlie \
+    && useradd -M -N -G finance david
 
 WORKDIR /opt/hms-proxy
 

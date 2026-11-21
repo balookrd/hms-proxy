@@ -381,6 +381,8 @@ public final class ProxyConfigLoader {
       "security.client-keytab",
       "security.outbound-keytab",
       "security.impersonation-enabled",
+      "security.token-store-admin-principals",
+      "security.front-door-max-memory-tokens",
       "security.group-disk-cache.enabled",
       "security.group-disk-cache.path",
       "security.group-disk-cache.entry-ttl-seconds",

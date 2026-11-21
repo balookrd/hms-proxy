@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import java.lang.reflect.Method;
 import java.util.Optional;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -63,8 +64,9 @@ final class DropTableHandler implements SpecialCaseHandler, AutoCloseable {
     support.validateCatalogAccess(namespace.backend(), method.getName(), namespace.backendDbName());
     Object[] routedArgs = support.federationLayer.internalizeDbStringArguments(args, namespace);
 
+    boolean deleteData = args.length >= 3 && Boolean.TRUE.equals(args[2]);
     Optional<ExternalTableDropPurger.PurgeRequest> purgeRequest = Optional.empty();
-    if (externalTableDropPurger.enabledFor(namespace.backend())) {
+    if (deleteData && externalTableDropPurger.enabledFor(namespace.backend())) {
       purgeRequest = prepareDropPurgeRequest(namespace, routedArgs);
     }
 
@@ -97,7 +99,11 @@ final class DropTableHandler implements SpecialCaseHandler, AutoCloseable {
           "get_table",
           new Class<?>[] {String.class, String.class},
           new Object[] {backendDbName, tableName});
-      return externalTableDropPurger.prepare(namespace.backend(), existingTable);
+      ImpersonationContext impersonation = null;
+      if (namespace.backend().impersonationEnabled() && support.impersonationResolver != null) {
+        impersonation = support.impersonationResolver.resolve().orElse(null);
+      }
+      return externalTableDropPurger.prepare(namespace.backend(), existingTable, impersonation);
     } catch (Throwable throwable) {
       LOG.warn(
           "requestId={} unable to prepare external-table purge for catalog '{}' db='{}' table='{}': {}",

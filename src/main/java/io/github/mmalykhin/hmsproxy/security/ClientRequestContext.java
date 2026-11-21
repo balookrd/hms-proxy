@@ -11,6 +11,8 @@ import org.apache.thrift.transport.TTransport;
 public final class ClientRequestContext {
   private static final ThreadLocal<String> REMOTE_ADDRESS = new ThreadLocal<>();
   private static final ThreadLocal<String> REMOTE_USER = new ThreadLocal<>();
+  private static final ThreadLocal<String> AUTHENTICATED_USER = new ThreadLocal<>();
+  private static final ThreadLocal<String> AUTH_MECHANISM = new ThreadLocal<>();
   private static final ThreadLocal<TTransport> CURRENT_TRANSPORT = new ThreadLocal<>();
   private static final Map<TTransport, ImpersonationContext> CONNECTION_UGI =
       Collections.synchronizedMap(new WeakHashMap<>());
@@ -152,6 +154,50 @@ public final class ClientRequestContext {
       REMOTE_USER.remove();
     } else {
       REMOTE_USER.set(remoteUser);
+    }
+  }
+
+  public static Optional<String> authenticatedUser() {
+    return Optional.ofNullable(AUTHENTICATED_USER.get());
+  }
+
+  public static String setAuthenticatedUser(String authenticatedUser) {
+    String previous = AUTHENTICATED_USER.get();
+    if (authenticatedUser == null) {
+      AUTHENTICATED_USER.remove();
+    } else {
+      AUTHENTICATED_USER.set(authenticatedUser);
+    }
+    return previous;
+  }
+
+  public static void restoreAuthenticatedUser(String authenticatedUser) {
+    if (authenticatedUser == null) {
+      AUTHENTICATED_USER.remove();
+    } else {
+      AUTHENTICATED_USER.set(authenticatedUser);
+    }
+  }
+
+  public static Optional<String> authMechanism() {
+    return Optional.ofNullable(AUTH_MECHANISM.get());
+  }
+
+  public static String setAuthMechanism(String authMechanism) {
+    String previous = AUTH_MECHANISM.get();
+    if (authMechanism == null) {
+      AUTH_MECHANISM.remove();
+    } else {
+      AUTH_MECHANISM.set(authMechanism);
+    }
+    return previous;
+  }
+
+  public static void restoreAuthMechanism(String authMechanism) {
+    if (authMechanism == null) {
+      AUTH_MECHANISM.remove();
+    } else {
+      AUTH_MECHANISM.set(authMechanism);
     }
   }
 }

@@ -92,6 +92,13 @@ public final class ProxyConfigLogger {
       sb.append("  Client Keytab: ").append(security.clientKeytab()).append("\n");
     }
     sb.append("  Impersonation: ").append(security.impersonationEnabled()).append("\n");
+    if (!security.tokenStoreAdminPrincipals().isEmpty()) {
+      sb.append("  Token Store Admin Principals: ")
+          .append(String.join(", ", new java.util.TreeSet<>(security.tokenStoreAdminPrincipals()))).append("\n");
+    }
+    sb.append("  Front-Door Max Memory Tokens: ")
+        .append(security.frontDoorMaxMemoryTokens() == 0 ? "unlimited" : security.frontDoorMaxMemoryTokens())
+        .append("\n");
     if (security.groupDiskCache().enabled()) {
       sb.append("  Group Disk Cache: enabled, path=").append(security.groupDiskCache().path())
           .append(", entryTtl=").append(security.groupDiskCache().entryTtlSeconds()).append("s")

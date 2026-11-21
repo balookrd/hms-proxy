@@ -119,7 +119,7 @@ mvn -o -q -Dtest=CapabilityMatrixDocSyncTest -Dcapabilities.updateReadme=true te
 | Клиенты Hortonworks, вызывающие HDP-only thrift методы-обёртки (request wrappers) | `HORTONWORKS_*` с standalone jar | `APACHE_3_1_3` | `NONE` или `KERBEROS` | HDP-only passthrough методы вроде `add_write_notification_log` | Явно отклоняется, если target backend не даёт совместимый Hortonworks runtime. |
 | Нагрузки HiveServer2 / Beeline SQL через несколько каталогов | `APACHE_3_1_3` или `HORTONWORKS_*` | смешанные бэкенды Apache + Hortonworks | `NONE` или `KERBEROS` | read, DDL/DML, namespace rewrite, optional view rewrite | Поддерживается, пока маршрутизация может однозначно определить целевой каталог. |
 | Клиенты HiveServer2 / прямые клиенты HMS, использующие методы жизненного цикла транзакций и блокировок (txn/lock) без пространства имён в полезной нагрузке | любой | смешанные бэкенды Apache + Hortonworks | `NONE` или `KERBEROS` | `open_txns`, `commit_txn`, `abort_txn`, `check_lock`, `unlock`, `heartbeat` | Degraded: перенаправляются в `routing.default-catalog`; допустимые non-ACID `SELECT`, `NO_TXN` DDL и блокировки не-транзакционной записи (`INSERT`/`UPDATE`/`DELETE`) всё же могут синтетически обслуживаться на каталогах, отличных от default, но в остальном данный контур следует рассматривать как single-catalog control plane, пока не проведена отдельная валидация. |
-| Клиенты HiveServer2 / HMS с Kerberos, которым требуется передача идентификатора конечного пользователя (end-user identity) на бэкенд | любой | любой | `KERBEROS` с optional impersonation | front-door SASL, local delegation-token issuance, backend Hadoop proxy-user, delegation tokens и `set_ugi()` имперсонация | Поддерживается, если правильно настроены правила proxy-user и разрешения имперсонации на бэкенде. |
+| Клиенты HiveServer2 / HMS с Kerberos, которым требуется передача идентификатора конечного пользователя (end-user identity) на бэкенд | любой | любой | `KERBEROS` с optional impersonation | front-door SASL (`GSSAPI` обязателен для выпуска и продления delegation tokens), local delegation-token issuance (admin RPC хранилища ограничены `security.token-store-admin-principals`), backend Hadoop proxy-user, delegation tokens и `set_ugi()` на незащищённых бэкендах (под Kerberos `set_ugi()` не подменяет личность) | Поддерживается, если правильно настроены правила proxy-user и разрешения имперсонации на бэкенде. |
 | Клиенты, пытающиеся выполнять операции изменения без явного владения пространством имён (explicit namespace ownership) или динамически управлять реестром каталогов | любой | любой | `NONE` или `KERBEROS` | policy-guarded ambiguous mutations, `create_catalog`, `drop_catalog` | Безопасно отклоняется на уровне архитектуры (by design), чтобы сохранить детерминированную маршрутизацию (deterministic routing), явное владение пространствами имён и предотвратить скрытую рассинхронизацию записей (silent split-brain writes). |
 | HiveServer2 / HMS клиенты с end-user impersonation или Kerberos identity, запрашивающие метаданные | любой | любой | `NONE` или `KERBEROS` | чтение метаданных (`get_all_databases`, `get_databases`, `get_database`, `get_all_tables`, `get_tables`, `get_tables_ext`, `get_table`, `get_table_req`, `get_table_meta`), общий глобальный кэш метаданных для всех пользователей, вычисление политик Ranger отдельно по каталогам | Метаданные кэшируются один раз для всех пользователей при `shared-across-users=true`, а встроенные плагины Apache Ranger фильтруют списки баз данных и таблиц индивидуально для каждого пользователя без лишних backend RPC. |
 <!-- END GENERATED: capability-matrix -->
@@ -1138,12 +1138,16 @@ federation.external-table-drop-purge.mode=BEST_EFFORT
 catalog.catalog2.conf.hms.proxy.external-table-drop-purge.allowed-prefixes=hdfs://ns-catalog2/tmp/,hdfs://ns-catalog2/data/external/
 ```
 
-Сейчас этот хук работает только для `drop_table` и `drop_table_with_environment_context`,
-только для backend runtime `APACHE_3_1_3`, только если таблица уже `EXTERNAL_TABLE` с
-`external.table.purge=true`, и только если квалифицированный `LOCATION` попадает в allowlist.
-Удаление данных происходит только после успешного удаления метаданных в backend metastore;
-ошибка purge логируется и не откатывает metadata delete. Allowlist лучше держать узким, потому
-что подходящие пути удаляются рекурсивно через Hadoop `FileSystem`.
+Сейчас этот хук работает только для `drop_table` и `drop_table_with_environment_context` с
+`deleteData=true` (без `PURGE` / при `deleteData=false` данные не трогаются), только для backend
+runtime `APACHE_3_1_3`, только если таблица уже `EXTERNAL_TABLE` с `external.table.purge=true`, и
+только если квалифицированный и разрешённый (`resolvePath`, с учётом symlink'ов) `LOCATION` является
+строгим потомком (не самим корнем) префикса из allowlist без `..`-переходов и с совместимой
+схемой/authority URI. При включённой имперсонации на бэкенде удаление выполняется от имени
+вызывающего пользователя (`createProxyUser` в Kerberos-режиме), а не только сервисного принципала.
+Удаление данных происходит только после успешного удаления метаданных в backend metastore; ошибка
+purge логируется и не откатывает metadata delete. Allowlist лучше держать узким, потому что
+подходящие пути удаляются рекурсивно через Hadoop `FileSystem`.
 
 Рекурсивное удаление выполняется в небольшом фоновом пуле (потоки с именами
 `hms-proxy-drop-purge-*`), поэтому `drop_table` отвечает сразу после удаления метаданных и не
@@ -1491,7 +1495,18 @@ security.client-keytab=/etc/security/keytabs/hms-proxy-client.keytab
 
 Когда Kerberos включён на фронте, delegation-token методы
 (`get_delegation_token`, `renew_delegation_token`, `cancel_delegation_token`)
-обслуживаются локально самим proxy.
+обслуживаются локально самим proxy. По модели классического Hive Metastore выпуск
+(`get_delegation_token`) и продление (`renew_delegation_token`) требуют SASL-аутентификации
+`GSSAPI` (перевыпуск или продление по уже выданному токену `DIGEST-MD5` запрещены). При
+использовании in-memory хранилища (`MemoryTokenStore`) количество активных токенов ограничено
+параметром `security.front-door-max-memory-tokens` (по умолчанию `10000`, `0` отключает лимит).
+
+Восемь административных RPC хранилища токенов (`add_token`, `remove_token`, `get_token`,
+`get_all_token_identifiers`, `add_master_key`, `update_master_key`, `remove_master_key`,
+`get_master_keys`) по умолчанию отключены для всех клиентов. Разрешить их для конкретных
+Kerberos-принципалов (требуется `GSSAPI`-аутентификация) можно через
+`security.token-store-admin-principals` (список через запятую; рекомендуется указывать полные
+принципалы `user@REALM` или `service/host@REALM`).
 
 ### Front-door proxy-user rules для delegation-token issuance
 
@@ -1685,9 +1700,14 @@ Kerberos-принципалом (`security.client-principal` с keytab) и ве�
 На незащищённых бэкендах или в режиме fallback при инициализации сессии по-прежнему отправляется
 `set_ugi(user, groups)` (`TUGIBasedProcessor`).
 
-Кроме того, когда клиент (HiveServer2, Spark и др.) вызывает `set_ugi(user, groups)` на listener прокси,
-прокси привязывает указанную пользовательскую идентичность к клиентскому соединению (транспорту). Все
-последующие операции этого соединения обслуживаются от имени конечного пользователя.
+Как и в классическом Hive Metastore:
+
+- При `security.mode=KERBEROS` вызов `set_ugi(user, groups)` **не меняет** привязанного к соединению
+  пользователя и **не принимает** клиентские группы (эффективный пользователь всегда берётся из
+  SASL `GSSAPI` или delegation token `DIGEST-MD5`, а группы резолвятся только на сервере). Трафик
+  сервисного принципала проверяется как по короткому имени, так и по Kerberos realm.
+- При `security.mode=NONE` (`SIMPLE`) `set_ugi(user, groups)` сохраняет поведение `TUGIBasedProcessor`
+  и привязывает указанную личность к клиентскому соединению.
 
 Это требует:
 
@@ -1937,8 +1957,9 @@ catalog.catalog2.ranger.service-name=c2_hive_service
 
      Записи старше `entry-ttl-seconds` не удаляются: на них работает serve-stale fallback. Поэтому размер кэша ограничивает число пользователей — `max-entries` (дефолт `50000`). При переполнении вытесняется пользователь, чьи группы обновлялись раньше всех, а на старте с диска загружаются самые свежие записи. Под `SIMPLE`-аутентификацией клиент сам называет себя через `set_ugi`, так что без потолка кэш (и файл на диске) рос бы от любого потока выдуманных имён.
 
-5. Защита от ConcurrentModificationException при обновлении политик Ranger:
-   - Фоновое обновление политик в потоке `PolicyRefresher` Ranger SDK 2.5.0 способно конкурировать с клиентскими потоками оценки прав доступа. В `hms-proxy` вызовы оценки прав защищены механизмом `evaluateAccessWithRetry`: при возникновении `ConcurrentModificationException` выполняется yield потока и однократный повтор проверки, а при сохранении ошибки — безопасный fail-open fallback для чтения с фиксацией в логе.
+5. Защита от `ConcurrentModificationException` и модель fail-closed в Apache Ranger:
+   - Фоновое обновление политик в потоке `PolicyRefresher` Ranger SDK 2.5.0 способно конкурировать с клиентскими потоками оценки прав доступа. В `hms-proxy` вызовы оценки прав защищены механизмом `evaluateAccessWithRetry`: при `ConcurrentModificationException` выполняется yield потока и до 2 повторных попыток (всего 3 попытки). Если ошибка сохраняется, возникает любое другое исключение Ranger SDK, отсутствует `ImpersonationContext` вызывающего или авторайзер уже закрыт, срабатывает строгий режим **fail-closed** (`denied`) с фиксацией ошибки в логе. Обход Ranger разрешён только для сервисных принципалов того же Kerberos realm (либо совпадающих при `SIMPLE` без realm).
+   - Проверки Ranger и правил `ExposurePolicy` выполняются не только на базовых `get_database`/`get_table*`, но и на альтернативных read-RPC: статистике (`get_table_statistics_req`, `get_partitions_statistics_req`, `get_aggr_stats_for`), ограничениях (`get_primary_keys`, `get_foreign_keys` с проверкой обеих таблиц, `get_unique_constraints`, `get_not_null_constraints`, `get_default_constraints`, `get_check_constraints`, `get_all_table_constraints`), write ID и ACID/MV read-RPC (`get_valid_write_ids`, `get_max_allocated_table_write_id`, `get_materialization_invalidation_info`, `getAllMaterializedViewObjectsForRewriting`), а также `get_partitions_by_expr`, `get_partition_values` и `isPartitionMarkedForEvent`.
 
 6. Совместимость со старыми версиями Ranger 1.x / HDP 3.1.0 (`ranger.roles.enabled`):
    - В Ranger 1.x отсутствует REST-эндпоинт загрузки ролей (`/service/roles/download/`), что приводит к спаму сообщений об ошибках HTTP 404. Параметр `ranger.roles.enabled=false` (или per-catalog `catalog.<name>.ranger.roles.enabled=false`) полностью отключает опрос ролей через `NoOpRolesRangerAdminClient`.

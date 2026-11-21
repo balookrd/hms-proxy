@@ -5,7 +5,7 @@ public final class PrincipalUtil {
 
   public static String shortUserName(String principalOrUser) {
     if (principalOrUser == null || principalOrUser.isBlank()) {
-      return principalOrUser;
+      return null;
     }
     int slash = principalOrUser.indexOf('/');
     int at = principalOrUser.indexOf('@');
@@ -16,6 +16,19 @@ public final class PrincipalUtil {
     if (at >= 0) {
       end = Math.min(end, at);
     }
-    return principalOrUser.substring(0, end);
+    String shortName = principalOrUser.substring(0, end).trim();
+    return shortName.isEmpty() ? null : shortName;
+  }
+
+  public static String realm(String principalOrUser) {
+    if (principalOrUser == null || principalOrUser.isBlank()) {
+      return null;
+    }
+    int at = principalOrUser.indexOf('@');
+    if (at < 0 || at + 1 >= principalOrUser.length()) {
+      return null;
+    }
+    String realm = principalOrUser.substring(at + 1).trim();
+    return realm.isEmpty() ? null : realm;
   }
 }

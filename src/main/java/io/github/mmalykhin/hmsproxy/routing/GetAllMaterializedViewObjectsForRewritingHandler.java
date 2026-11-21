@@ -37,9 +37,8 @@ final class GetAllMaterializedViewObjectsForRewritingHandler implements SpecialC
         CatalogRouter.ResolvedNamespace namespace =
             support.router.resolveCatalog(support.config.defaultCatalog(), dbName);
         String tableName = RoutingSupport.extractTableName(table);
-        if (!support.federationLayer.isDatabaseExposed(namespace)
-            || (tableName != null && !support.federationLayer.isTableExposed(namespace, tableName))) {
-          support.recordFilteredObject(METHOD_NAME, namespace.catalogName(), "table");
+        if (!support.isDatabaseAccessible(METHOD_NAME, namespace)
+            || (tableName != null && !support.isTableAccessible(METHOD_NAME, namespace, tableName))) {
           continue;
         }
         externalized.add(support.federationLayer.externalizeResult(table, namespace));

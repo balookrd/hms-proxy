@@ -1,6 +1,8 @@
 package io.github.mmalykhin.hmsproxy.config.security;
 
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 import io.github.mmalykhin.hmsproxy.config.ConfigParsing;
 import io.github.mmalykhin.hmsproxy.config.PropertyReader;
@@ -70,6 +72,13 @@ public final class SecurityConfigParser {
         groupDiskCachePersistOnShutdown,
         groupDiskCacheMaxEntries);
 
+    String rawTokenAdmins = reader.getOrNull("security.token-store-admin-principals");
+    Set<String> tokenStoreAdminPrincipals = rawTokenAdmins == null
+        ? Set.of()
+        : new LinkedHashSet<>(java.util.Arrays.asList(PropertyReader.splitCsv(rawTokenAdmins)));
+    int frontDoorMaxMemoryTokens = reader.getNonNegativeInt(
+        "security.front-door-max-memory-tokens", SecurityConfig.DEFAULT_FRONT_DOOR_MAX_MEMORY_TOKENS);
+
     return new SecurityConfig(
         securityMode,
         serverPrincipal,
@@ -78,7 +87,9 @@ public final class SecurityConfigParser {
         clientKeytab,
         impersonationEnabled,
         frontDoorConf,
-        groupDiskCache);
+        groupDiskCache,
+        tokenStoreAdminPrincipals,
+        frontDoorMaxMemoryTokens);
   }
 
   /** Hive-owned key, so it keeps Hive's lenient {@code Boolean.parseBoolean} semantics. */

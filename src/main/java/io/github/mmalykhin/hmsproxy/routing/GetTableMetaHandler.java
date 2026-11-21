@@ -28,7 +28,10 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
       return List.of();
     }
 
-    ImpersonationContext impersonation = support.currentImpersonation();
+    boolean bypassAuthorizer = support.isServicePrincipalBypass();
+    ImpersonationContext impersonation = bypassAuthorizer
+        ? null
+        : support.resolveImpersonationOrThrowMeta(method.getName());
 
     CatalogRouter.ResolvedNamespace resolved = support.router.resolvePattern(dbPattern).orElse(null);
     if (resolved != null) {
@@ -36,19 +39,7 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults = (List<TableMeta>) support.invokeDirect(
           resolved.backend(), method, new Object[]{resolved.backendDbName(), tablePattern, tableTypes});
-      return support.filterExposed(
-          method.getName(),
-          resolved.catalogName(),
-          "table",
-          backendResults,
-          result -> support.metadataAuthorizer.isTableAllowed(
-              resolved.catalogName(), result.getDbName(), result.getTableName(), impersonation)
-              && support.federationLayer.isTableExposed(
-                  resolved.catalogName(), result.getDbName(), result.getTableName()),
-          result -> NamespaceTranslator.externalizeTableMeta(
-              result,
-              support.router.resolveCatalog(resolved.catalogName(), result.getDbName()),
-              support.federationLayer.preserveBackendCatalogName()));
+      return filterTableMetas(method.getName(), resolved.catalogName(), backendResults, bypassAuthorizer, impersonation);
     }
 
     if (!support.router.canMatchRemoteCatalogs(dbPattern)) {
@@ -60,19 +51,8 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
       @SuppressWarnings("unchecked")
       List<TableMeta> backendResults = (List<TableMeta>) support.invokeDirect(
           defaultBackend, method, new Object[]{dbPattern, tablePattern, tableTypes});
-      return support.filterExposed(
-          method.getName(),
-          defaultNamespace.catalogName(),
-          "table",
-          backendResults,
-          result -> support.metadataAuthorizer.isTableAllowed(
-              defaultNamespace.catalogName(), result.getDbName(), result.getTableName(), impersonation)
-              && support.federationLayer.isTableExposed(
-                  defaultNamespace.catalogName(), result.getDbName(), result.getTableName()),
-          result -> NamespaceTranslator.externalizeTableMeta(
-              result,
-              support.router.resolveCatalog(defaultNamespace.catalogName(), result.getDbName()),
-              support.federationLayer.preserveBackendCatalogName()));
+      return filterTableMetas(
+          method.getName(), defaultNamespace.catalogName(), backendResults, bypassAuthorizer, impersonation);
     }
 
     RequestContext.currentObservation().recordFanout();
@@ -92,23 +72,34 @@ final class GetTableMetaHandler implements SpecialCaseHandler {
           return result;
         })) {
       String catalogName = fanoutResult.backend().name();
-      results.addAll(support.filterExposed(
-          method.getName(),
-          catalogName,
-          "table",
-          fanoutResult.value(),
-          result -> support.metadataAuthorizer.isTableAllowed(
-              catalogName, result.getDbName(), result.getTableName(), impersonation)
-              && support.federationLayer.isTableExposed(catalogName, result.getDbName(), result.getTableName()),
-          result -> NamespaceTranslator.externalizeTableMeta(
-              result,
-              support.router.resolveCatalog(catalogName, result.getDbName()),
-              support.federationLayer.preserveBackendCatalogName())));
+      results.addAll(filterTableMetas(
+          method.getName(), catalogName, fanoutResult.value(), bypassAuthorizer, impersonation));
     }
     String normalizedDbPattern = support.router.normalizeDatabasePattern(dbPattern);
     if (!"*".equals(normalizedDbPattern) && !".*".equals(normalizedDbPattern)) {
       results.removeIf(meta -> !CatalogRouter.matchesHivePattern(meta.getDbName(), normalizedDbPattern));
     }
     return results;
+  }
+
+  private List<TableMeta> filterTableMetas(
+      String methodName,
+      String catalogName,
+      List<TableMeta> backendResults,
+      boolean bypassAuthorizer,
+      ImpersonationContext impersonation
+  ) {
+    return support.filterExposed(
+        methodName,
+        catalogName,
+        "table",
+        backendResults,
+        result -> (bypassAuthorizer || support.metadataAuthorizer.isTableAllowed(
+            catalogName, result.getDbName(), result.getTableName(), impersonation))
+            && support.federationLayer.isTableExposed(catalogName, result.getDbName(), result.getTableName()),
+        result -> NamespaceTranslator.externalizeTableMeta(
+            result,
+            support.router.resolveCatalog(catalogName, result.getDbName()),
+            support.federationLayer.preserveBackendCatalogName()));
   }
 }

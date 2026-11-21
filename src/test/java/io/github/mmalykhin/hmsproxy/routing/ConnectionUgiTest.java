@@ -53,9 +53,9 @@ public class ConnectionUgiTest {
       Assert.assertEquals("iabunakov", connUgi.get().userName());
       Assert.assertEquals(List.of("hadoop"), connUgi.get().groupNames());
 
-      // 3. ImpersonationResolver resolves this connection UGI even if service principal is configured
+      // 3. In SIMPLE/NONE mode ImpersonationResolver resolves this connection UGI
       SecurityConfig security = new SecurityConfig(
-          SecurityMode.KERBEROS,
+          SecurityMode.NONE,
           "hive/_HOST@EXAMPLE.COM",
           "hive/_HOST@EXAMPLE.COM",
           "/etc/security/keytabs/hive.keytab",
@@ -175,6 +175,113 @@ public class ConnectionUgiTest {
       });
     } finally {
       ClientRequestContext.restoreCurrentTransport(prevTransport);
+      ClientRequestContext.restoreRemoteUser(prevUser);
+      ClientRequestContext.setConnectionUgi(transport, null);
+    }
+  }
+
+  @Test
+  public void setUgiUnderKerberosDoesNotOverrideAuthenticatedIdentityOrGroups() throws Throwable {
+    TTransport transport = new TMemoryBuffer(1024);
+    String prevUser = ClientRequestContext.remoteUser().orElse(null);
+    String prevAuthUser = ClientRequestContext.authenticatedUser().orElse(null);
+    TTransport prevTransport = ClientRequestContext.setCurrentTransport(transport);
+    try {
+      SecurityConfig security = new SecurityConfig(
+          SecurityMode.KERBEROS,
+          "hive/proxy@EXAMPLE.COM",
+          "hive/proxy@EXAMPLE.COM",
+          "/etc/security/keytabs/hive.keytab",
+          "/etc/security/keytabs/hive.keytab",
+          true,
+          Map.of()
+      );
+      CatalogConfig catalog = new CatalogConfig(
+          "hdp",
+          "desc",
+          "file:///desc",
+          true,
+          CatalogAccessMode.READ_WRITE,
+          List.of(),
+          null,
+          null,
+          Map.of("hive.metastore.uris", "thrift://localhost:9083")
+      );
+      ProxyConfig config = ProxyConfig.builder()
+          .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+          .security(security)
+          .defaultCatalog("hdp")
+          .catalogs(Map.of("hdp", catalog))
+          .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+          .build();
+
+      Method setUgiMethod = ThriftHiveMetastore.Iface.class.getMethod("set_ugi", String.class, List.class);
+      ImpersonationResolver resolver = new ImpersonationResolver(config);
+      RoutingSupport support = new RoutingSupport(config, null, null, null, null, resolver, null, null, null);
+      SetUgiHandler handler = new SetUgiHandler(
+          support,
+          new NamespaceFallback() {
+            @Override
+            public Object invokeGlobal(Method method, Object[] args) {
+              return List.of();
+            }
+
+            @Override
+            public Object routeByNamespaceOrFail(Method method, Object[] args) {
+              return null;
+            }
+          });
+
+      org.apache.hadoop.security.UserGroupInformation aliceUgi =
+          org.apache.hadoop.security.UserGroupInformation.createUserForTesting("alice", new String[]{"sales_grp"});
+
+      aliceUgi.doAs((java.security.PrivilegedExceptionAction<Void>) () -> {
+        try {
+          ClientRequestContext.setAuthenticatedUser("alice@EXAMPLE.COM");
+          ClientRequestContext.setRemoteUser("alice@EXAMPLE.COM");
+
+          @SuppressWarnings("unchecked")
+          List<String> returnedGroups = (List<String>) handler.handle(
+              setUgiMethod, new Object[]{"admin", List.of("supergroup", "wheel")});
+
+          Assert.assertEquals("set_ugi under Kerberos must return server groups of authenticated user",
+              List.of("sales_grp"), returnedGroups);
+          Assert.assertTrue("set_ugi under Kerberos must not bind connectionUgi",
+              ClientRequestContext.connectionUgi(transport).isEmpty());
+
+          Optional<ImpersonationContext> resolved = resolver.resolve();
+          Assert.assertTrue(resolved.isPresent());
+          Assert.assertEquals("alice", resolved.get().userName());
+          Assert.assertEquals(List.of("sales_grp"), resolved.get().groupNames());
+          return null;
+        } catch (Throwable t) {
+          if (t instanceof Exception e) {
+            throw e;
+          }
+          throw new RuntimeException(t);
+        }
+      });
+
+      // Even if connectionUgi was populated elsewhere, Kerberos processor wrapper must ignore it.
+      ClientRequestContext.setConnectionUgi(transport, new ImpersonationContext("admin", List.of("supergroup")));
+      java.util.concurrent.atomic.AtomicReference<String> seenUser = new java.util.concurrent.atomic.AtomicReference<>();
+      org.apache.thrift.protocol.TProtocol protocol = new org.apache.thrift.protocol.TBinaryProtocol(transport);
+      org.apache.thrift.TProcessor wrapped = io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity
+          .wrapWithClientRequestContext(
+              (in, out) -> {
+                seenUser.set(ClientRequestContext.remoteUser().orElse(null));
+                return true;
+              },
+              p -> p,
+              () -> "127.0.0.1",
+              () -> "alice@EXAMPLE.COM",
+              () -> "GSSAPI",
+              false);
+      wrapped.process(protocol, protocol);
+      Assert.assertEquals("alice@EXAMPLE.COM", seenUser.get());
+    } finally {
+      ClientRequestContext.restoreCurrentTransport(prevTransport);
+      ClientRequestContext.restoreAuthenticatedUser(prevAuthUser);
       ClientRequestContext.restoreRemoteUser(prevUser);
       ClientRequestContext.setConnectionUgi(transport, null);
     }

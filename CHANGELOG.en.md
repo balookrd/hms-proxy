@@ -8,6 +8,21 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed (Security Hardening)
+
+- **Aligned `set_ugi` and service-principal verification with native Hive Metastore semantics**:
+  - Under `security.mode=KERBEROS`, `set_ugi(user, groups)` no longer overrides connection UGI or trusts client-supplied groups (`SetUgiHandler`, `FrontDoorSecurity`, `ImpersonationResolver`): the effective identity always comes from SASL (`GSSAPI` or `DIGEST-MD5`), and groups are resolved strictly server-side. `NONE`/`SIMPLE` mode preserves `TUGIBasedProcessor` behavior.
+  - Removed the `UserGroupInformation.getCurrentUser()` fallback under Kerberos when no SASL identity is present; added Kerberos realm checking in `RoutingMetaStoreProxy.isServicePrincipal` (blocking cross-realm principals such as `hive/evil@OTHER.REALM` from bypassing impersonation and Ranger); updated `PrincipalUtil.shortUserName` to return `null` on empty short names; separated `authenticatedUser` and `effectiveUser` in the JSON audit log.
+- **Locked down `LocalDelegationTokenStore` admin RPCs and bounded `MemoryTokenStore`**:
+  - All eight administrative token-store RPCs (`add_token`, `remove_token`, `get_token`, `get_all_token_identifiers`, `add_master_key`, `update_master_key`, `remove_master_key`, `get_master_keys`) are now denied by default and restricted to Kerberos `GSSAPI` callers matching `security.token-store-admin-principals`.
+  - `get_delegation_token` and `renew_delegation_token` now require `GSSAPI` authentication (re-issuing/renewing over `DIGEST-MD5` is refused), `FrontDoorSecurity.close()` closes `localTokenStore`, and `MemoryTokenStore` active entries are capped by `security.front-door-max-memory-tokens` (default `10000`, `0` disables the limit).
+- **Strict fail-closed `RangerMetadataAuthorizer` and closed alternative read-RPC bypasses**:
+  - Switched `RangerMetadataAuthorizer` to **fail-closed**: `ConcurrentModificationException` is retried up to 2 times (3 total attempts) before denying access; any other SDK exception, missing `ImpersonationContext`, or post-`close()` call denies access; `pluginsByCatalog` is now immutable with a `volatile boolean closed` guard. Impersonation resolution failures in `RoutingSupport` and `GetTableMetaHandler` no longer degrade silently to `null`; Ranger bypass is scoped strictly to same-realm service principals.
+  - Enforced Ranger and `ExposurePolicy` authorization across `TableStatisticsReqHandler` (`get_table_statistics_req`, `get_partitions_statistics_req`), `TableConstraintsHandler` (including both sides of `get_foreign_keys` and `get_all_table_constraints`), `GetMaxAllocatedTableWriteIdHandler` (preserving `MetaException` per Hive IDL), `GetAllMaterializedViewObjectsForRewritingHandler`, `PartitionOps` (`isPartitionMarkedForEvent`), and `RoutingHandler.validateReadExposure` (`get_valid_write_ids`, `get_partitions_by_expr`, `get_partition_values`, `get_aggr_stats_for`, `get_materialization_invalidation_info` including `CreationMetadata.tablesUsed`).
+- **Hardened Thrift external-table drop purge (`FileSystemExternalTableDropPurger`, `DropTableHandler`, `PathPrefixAllowlist`)**:
+  - Purge now runs only when `deleteData=true` (`args[2]`), executes under caller impersonation (`createProxyUser` when enabled, closing only temporary proxy UGI filesystems via `FileSystem.closeAllForUGI`), validates URI scheme/authority lexically before calling `FileSystem.get(...)`, qualifies allowlist prefixes, and blocks allowlist roots, `..`/`%2e` traversal segments, and symlink escapes (`resolvePath` / `toRealPath`).
+- **Smoke stand (`smoke-stand/proxy/Dockerfile`)**: added UNIX users `charlie` (`sales` group) and `david` (`finance` group) so kerberized Ranger group policy smoke tests exercise genuine server-side group resolution.
+
 ### Added
 
 - **Grafana panels and an example alert for the session check metrics**: the Backend Operations row of the dashboard gains the panels `Backend Calls Not Replayed by Method / Phase` (`hms_proxy_backend_calls_not_replayed_total`) and `Backend Session Liveness Checks by Pool / Outcome` (`hms_proxy_backend_session_validations_total`); the impersonation session evictions panel description now covers the `stale_idle` and `stale_probe` reasons. README carries an example alert, `HmsProxyBackendCallNotReplayed`.

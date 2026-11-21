@@ -17,6 +17,9 @@ final class PartitionOps {
         "get_partition_names_ps", "get_partitions_by_filter", "get_part_specs_by_filter",
         "get_num_partitions_by_filter", "get_partitions_by_names",
         "get_table_column_statistics", "get_partition_column_statistics");
+    r.op("isPartitionMarkedForEvent", o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.DB_FIRST_STRING_ARG0)
+        .expose(TableExposureMode.TABLE_ARG1));
 
     // Writes and bookkeeping.
     r.op("append_partition", o -> o.ns(NamespaceStrategy.DB_FIRST_STRING_ARG0).trace());
@@ -27,7 +30,7 @@ final class PartitionOps {
         "append_partition_by_name_with_environment_context",
         "drop_partition", "drop_partition_with_environment_context",
         "drop_partition_by_name", "drop_partition_by_name_with_environment_context",
-        "markPartitionForEvent", "isPartitionMarkedForEvent",
+        "markPartitionForEvent",
         "delete_partition_column_statistics", "delete_table_column_statistics");
     r.op("get_partitions_statistics_req", o -> o.cls(HmsOperationClass.METADATA_READ)
         .ns(NamespaceStrategy.EXTRACT_FROM_ARGS).trace());

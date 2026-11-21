@@ -3,6 +3,8 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.catalog.NamespaceStrategy;
+import io.github.mmalykhin.hmsproxy.config.catalog.TableExposureMode;
 import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.config.operation.OperationMetadata;
 import io.github.mmalykhin.hmsproxy.config.routing.DefaultBackendRoutingPolicy;
@@ -629,6 +631,63 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (tableName != null) {
       support.validateExposedTableAccess(method, namespace, tableName);
     }
+    if (operation.tableExposureMode() == TableExposureMode.NONE
+        && operation.namespaceStrategy() == NamespaceStrategy.EXTRACT_FROM_ARGS
+        && args != null
+        && args.length > 0
+        && args[0] != null) {
+      validateExtractedReadTargets(method, namespace, args[0]);
+    }
+  }
+
+  private void validateExtractedReadTargets(
+      Method method,
+      CatalogRouter.ResolvedNamespace namespace,
+      Object arg0
+  ) throws TException {
+    String methodName = method.getName();
+    if ("get_valid_write_ids".equals(methodName)) {
+      List<String> fullNames = NamespaceTranslator.readFullTableNamesProperty(arg0);
+      if (fullNames != null) {
+        for (String fullName : fullNames) {
+          validateFullTableReference(method, null, fullName);
+        }
+      }
+      return;
+    }
+    String extractedTable = RoutingSupport.extractTableName(arg0);
+    if (extractedTable != null) {
+      support.validateExposedTableAccess(method, namespace, extractedTable);
+    }
+    if ("get_materialization_invalidation_info".equals(methodName)) {
+      Object tablesUsed = ThriftReflectionCache.invokeGetter(arg0, "getTablesUsed");
+      if (tablesUsed instanceof java.util.Collection<?> collection) {
+        String catName = ThriftReflectionCache.readString(arg0, "getCatName", "getCatalogName");
+        for (Object item : collection) {
+          if (item instanceof String fullName) {
+            validateFullTableReference(method, catName, fullName);
+          }
+        }
+      }
+    }
+  }
+
+  private void validateFullTableReference(Method method, String catName, String fullTableName) throws TException {
+    if (fullTableName == null || fullTableName.isBlank()) {
+      return;
+    }
+    int dot = fullTableName.lastIndexOf('.');
+    if (dot <= 0 || dot + 1 >= fullTableName.length()) {
+      return;
+    }
+    String rawDb = fullTableName.substring(0, dot).trim();
+    String tableName = fullTableName.substring(dot + 1).trim();
+    if (rawDb.isEmpty() || tableName.isEmpty()) {
+      return;
+    }
+    CatalogRouter.ResolvedNamespace targetNs = support.resolveRequestNamespace(catName, rawDb);
+    support.validateExposedDatabaseAccess(method, targetNs);
+    support.validateExposedTableAccess(method, targetNs, tableName);
   }
 
   private Object filterReadResult(String methodName, CatalogRouter.ResolvedNamespace namespace, Object result)
@@ -649,23 +708,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     if (!(result instanceof List<?> names)) {
       return result;
     }
-    ImpersonationContext impersonation = support.currentImpersonation();
-    List<String> filtered = new ArrayList<>(names.size());
-    for (Object candidate : names) {
-      if (!(candidate instanceof String tableName)) {
-        continue;
-      }
-      if (!support.metadataAuthorizer.isTableAllowed(namespace.catalogName(), namespace.backendDbName(), tableName, impersonation)) {
-        support.recordFilteredObject(methodName, namespace.catalogName(), "table");
-        continue;
-      }
-      if (!support.federationLayer.isTableExposed(namespace, tableName)) {
-        support.recordFilteredObject(methodName, namespace.catalogName(), "table");
-        continue;
-      }
-      filtered.add(tableName);
-    }
-    return filtered;
+    return support.filterTableNameList(methodName, namespace, names);
   }
 
   private static String extractExplicitTableReadName(

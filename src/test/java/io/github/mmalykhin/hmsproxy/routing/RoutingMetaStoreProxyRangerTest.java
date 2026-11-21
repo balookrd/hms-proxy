@@ -43,9 +43,25 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.hadoop.hive.metastore.api.CreationMetadata;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.ForeignKeysRequest;
+import org.apache.hadoop.hive.metastore.api.ForeignKeysResponse;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsRequest;
+import org.apache.hadoop.hive.metastore.api.GetValidWriteIdsResponse;
+import org.apache.hadoop.hive.metastore.api.Materialization;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.PartitionEventType;
+import org.apache.hadoop.hive.metastore.api.PartitionValuesRequest;
+import org.apache.hadoop.hive.metastore.api.PartitionValuesResponse;
+import org.apache.hadoop.hive.metastore.api.PartitionsByExprRequest;
+import org.apache.hadoop.hive.metastore.api.PartitionsByExprResult;
+import org.apache.hadoop.hive.metastore.api.PartitionsStatsRequest;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableStatsRequest;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.ranger.plugin.model.RangerPolicy;
 import org.apache.ranger.plugin.model.RangerServiceDef;
@@ -490,6 +506,351 @@ public class RoutingMetaStoreProxyRangerTest {
     }
 
     customAuthorizer.close();
+  }
+
+  @Test
+  public void testServicePrincipalBypassFailClosedAndAlternativeReadRpcEnforcement() throws Throwable {
+    CatalogRangerConfig cat1Ranger = new CatalogRangerConfig(
+        true, null, "c1_hive_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false, false, false);
+    RangerConfig ranger = new RangerConfig(
+        true, cat1Ranger, Map.of("catalog1", cat1Ranger));
+
+    CatalogConfig catalog1Config = new CatalogConfig(
+        "catalog1", "c1", null, true, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_0_78, null,
+        Map.of("hive.metastore.uris", "thrift://one"), 5000L, 10, 60000L, 10, 10, 60000L, cat1Ranger);
+
+    ProxyConfig config = new ProxyConfig(
+        new ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        new SecurityConfig(SecurityMode.KERBEROS, "hive/proxy@SMOKE.LOCAL", "/tmp/k.keytab", null, null, true, Map.of()),
+        ".",
+        "catalog1",
+        Map.of("catalog1", catalog1Config),
+        new BackendConfig(Map.of()),
+        new CompatibilityConfig(FrontendProfile.APACHE_3_1_3, null, null, false),
+        new FederationConfig(false, ViewTextRewriteMode.DISABLED, false),
+        new TransactionalDdlGuardConfig(TransactionalDdlGuardMode.DISABLED, List.of()),
+        new ManagementConfig(false, "127.0.0.1", 10083),
+        null,
+        SyntheticReadLockStoreConfig.inMemory(),
+        RateLimitConfig.disabled(),
+        new LatencyRoutingConfig(
+            new BackendStatePollingConfig(false, 10_000, 5_000L),
+            new AdaptiveTimeoutConfig(false, 2_000L, 1_000L, 10_000L, 4.0d, 0.2d),
+            new CircuitBreakerConfig(false, 1, 200L),
+            new HedgedReadConfig(false, 1, 30_000L),
+            DegradedRoutingPolicy.STRICT,
+            new DatabaseListCacheConfig(60_000L, 100, true),
+            new DatabaseMetadataCacheConfig(60_000L, 100, true)),
+        IcebergPointerGuardConfig.defaults(),
+        List.of(),
+        ranger
+    );
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        catalog1Config,
+        new ApacheBackendAdapter(),
+        newBackendRuntime(
+            config,
+            catalog1Config,
+            newSession((proxy, method, args) -> {
+              if ("get_database".equals(method.getName())) {
+                Database db = new Database();
+                db.setName((String) args[0]);
+                return db;
+              }
+              if ("get_table".equals(method.getName())) {
+                Table t = new Table();
+                t.setDbName((String) args[0]);
+                t.setTableName((String) args[1]);
+                return t;
+              }
+              if ("get_primary_keys".equals(method.getName())) {
+                return new PrimaryKeysResponse(List.of());
+              }
+              if ("get_foreign_keys".equals(method.getName())) {
+                return new ForeignKeysResponse(List.of());
+              }
+              if ("get_partitions_by_expr".equals(method.getName())) {
+                return new PartitionsByExprResult(List.of(), false);
+              }
+              if ("get_partition_values".equals(method.getName())) {
+                return new PartitionValuesResponse(List.of());
+              }
+              if ("get_valid_write_ids".equals(method.getName())) {
+                return new GetValidWriteIdsResponse(List.of());
+              }
+              if ("get_materialization_invalidation_info".equals(method.getName())) {
+                return new Materialization();
+              }
+              if ("isPartitionMarkedForEvent".equals(method.getName())) {
+                return Boolean.FALSE;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+
+    ServicePolicies servicePolicies = buildServicePolicies("c1_hive_svc");
+    MetadataAuthorizer customAuthorizer = new RangerMetadataAuthorizer(ranger, config.catalogs()) {
+      @Override
+      protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig config) {
+        RangerBasePlugin plugin = super.createPlugin(catalogName, config);
+        plugin.setPolicies(servicePolicies);
+        return plugin;
+      }
+    };
+
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    DatabaseListCache listCache = new DatabaseListCache(config.latencyRouting().databaseListCache());
+    DatabaseMetadataCache metaCache = new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), listCache);
+    RequestRateLimiter rateLimiter = new RequestRateLimiter(config, observability.metrics());
+    AdmissionGate admissionGate = new AdmissionGate(new BackendRoutingController(config, router, observability), rateLimiter);
+    BackendCallDispatcher dispatcher = new BackendCallDispatcher(
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        admissionGate,
+        observability,
+        new FanoutExecutor(new BackendRoutingController(config, router, observability), router, admissionGate));
+
+    RoutingHandler routingHandler = new RoutingHandler(
+        config,
+        router,
+        federationLayer,
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        observability,
+        dispatcher,
+        new ImpersonationResolver(config),
+        listCache,
+        metaCache,
+        null,
+        customAuthorizer);
+
+    String prevAuthUser = ClientRequestContext.authenticatedUser().orElse(null);
+    String prevRemoteUser = ClientRequestContext.remoteUser().orElse(null);
+    try {
+      Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+
+      // 1. Missing authenticated user under Kerberos fails closed.
+      ClientRequestContext.setAuthenticatedUser(null);
+      ClientRequestContext.setRemoteUser(null);
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(null, getDbMethod, new Object[]{"sales"}));
+
+      // 2. Same-realm service principal bypasses Ranger.
+      ClientRequestContext.setAuthenticatedUser("hive/hs2@SMOKE.LOCAL");
+      Database mvDb = (Database) routingHandler.invoke(null, getDbMethod, new Object[]{"sales"});
+      Assert.assertEquals("sales", mvDb.getName());
+
+      // 3. Cross-realm service principal does NOT bypass Ranger and is denied.
+      ClientRequestContext.setAuthenticatedUser("hive/evil@OTHER.REALM");
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(null, getDbMethod, new Object[]{"sales"}));
+
+      // 4. Bob (allowed only finance.reports) cannot bypass Ranger via alternative read RPCs (C3).
+      ClientRequestContext.setAuthenticatedUser("bob@SMOKE.LOCAL");
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class
+              .getMethod("get_table_statistics_req", Object.class),
+          new Object[]{new TableStatsRequest("sales", "orders", List.of("id"))}));
+
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class
+              .getMethod("get_partitions_statistics_req", Object.class),
+          new Object[]{new PartitionsStatsRequest("sales", "orders", List.of("id"), List.of())}));
+
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_primary_keys", PrimaryKeysRequest.class),
+          new Object[]{new PrimaryKeysRequest("sales", "orders")}));
+
+      ForeignKeysRequest fkCrossDb = new ForeignKeysRequest("sales", "orders", "finance", "reports");
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_foreign_keys", ForeignKeysRequest.class),
+          new Object[]{fkCrossDb}));
+
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class
+              .getMethod("get_all_table_constraints", Object.class),
+          new Object[]{new PrimaryKeysRequest("sales", "orders")}));
+
+      org.apache.hadoop.hive.metastore.api.LockRequest dummyWriteIdReq = new org.apache.hadoop.hive.metastore.api.LockRequest();
+      Object maxWriteIdReq = new TableStatsRequest("sales", "orders", List.of());
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class
+              .getMethod("get_max_allocated_table_write_id", Object.class),
+          new Object[]{maxWriteIdReq}));
+
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod(
+              "isPartitionMarkedForEvent", String.class, String.class, Map.class, PartitionEventType.class),
+          new Object[]{"sales", "orders", Map.of("p", "1"), PartitionEventType.LOAD_DONE}));
+
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_valid_write_ids", GetValidWriteIdsRequest.class),
+          new Object[]{new GetValidWriteIdsRequest(List.of("finance.reports", "sales.orders"), "1:1::")}));
+
+      // Alice (allowed sales.orders & sales.customers, forbidden sales.secret_reports):
+      ClientRequestContext.setAuthenticatedUser("alice@SMOKE.LOCAL");
+
+      PartitionsByExprRequest exprReq = new PartitionsByExprRequest("sales", "secret_reports", java.nio.ByteBuffer.allocate(0));
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_partitions_by_expr", PartitionsByExprRequest.class),
+          new Object[]{exprReq}));
+
+      PartitionValuesRequest pvalReq = new PartitionValuesRequest("sales", "secret_reports", List.of());
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_partition_values", PartitionValuesRequest.class),
+          new Object[]{pvalReq}));
+
+      PartitionsStatsRequest aggrReq = new PartitionsStatsRequest("sales", "secret_reports", List.of("id"), List.of());
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_aggr_stats_for", PartitionsStatsRequest.class),
+          new Object[]{aggrReq}));
+
+      CreationMetadata cmForbiddenUsed = new CreationMetadata();
+      cmForbiddenUsed.setDbName("sales");
+      cmForbiddenUsed.setTblName("orders");
+      cmForbiddenUsed.setTablesUsed(java.util.Set.of("sales.secret_reports"));
+      Assert.assertThrows(MetaException.class, () -> routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod(
+              "get_materialization_invalidation_info", CreationMetadata.class, String.class),
+          new Object[]{cmForbiddenUsed, "1:1::"}));
+
+      // Positive check for authorized target on Alice
+      PartitionValuesRequest allowedPval = new PartitionValuesRequest("sales", "orders", List.of());
+      PartitionValuesResponse allowedResp = (PartitionValuesResponse) routingHandler.invoke(
+          null,
+          ThriftHiveMetastore.Iface.class.getMethod("get_partition_values", PartitionValuesRequest.class),
+          new Object[]{allowedPval});
+      Assert.assertNotNull(allowedResp);
+    } finally {
+      ClientRequestContext.restoreAuthenticatedUser(prevAuthUser);
+      ClientRequestContext.restoreRemoteUser(prevRemoteUser);
+      customAuthorizer.close();
+    }
+  }
+
+  @Test
+  public void testGetAllMaterializedViewObjectsForRewritingFilteredByRanger() throws Throwable {
+    org.junit.Assume.assumeTrue(java.nio.file.Files.isReadable(HDP_6150_JAR));
+
+    CatalogRangerConfig cat1Ranger = new CatalogRangerConfig(
+        true, null, "c1_hive_svc", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false, false, false);
+    RangerConfig ranger = new RangerConfig(
+        true, cat1Ranger, Map.of("catalog1", cat1Ranger));
+
+    CatalogConfig catalog1Config = new CatalogConfig(
+        "catalog1", "c1", null, true, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(),
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
+        Map.of("hive.metastore.uris", "thrift://one"), 5000L, 10, 60000L, 10, 10, 60000L, cat1Ranger);
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(
+            SecurityMode.KERBEROS, "hive/proxy@SMOKE.LOCAL", "/tmp/k.keytab", null, null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalog1Config))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .ranger(ranger)
+        .build();
+
+    CatalogBackend hdpBackend = newIsolatedHortonworksBackend(
+        config,
+        catalog1Config,
+        HDP_6150_JAR,
+        MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1,
+        (proxy, method, args) -> {
+          if ("get_all_materialized_view_objects_for_rewriting".equals(method.getName())) {
+            ClassLoader cl = proxy.getClass().getClassLoader();
+            Class<?> tblClass = Class.forName("org.apache.hadoop.hive.metastore.api.Table", true, cl);
+            Object allowedMv = tblClass.getConstructor().newInstance();
+            tblClass.getMethod("setDbName", String.class).invoke(allowedMv, "finance");
+            tblClass.getMethod("setTableName", String.class).invoke(allowedMv, "reports");
+            Object forbiddenMv = tblClass.getConstructor().newInstance();
+            tblClass.getMethod("setDbName", String.class).invoke(forbiddenMv, "sales");
+            tblClass.getMethod("setTableName", String.class).invoke(forbiddenMv, "secret_reports");
+            return List.of(allowedMv, forbiddenMv);
+          }
+          if ("getVersion".equals(method.getName())) {
+            return "3.1.0.3.1.5.6150-1";
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", hdpBackend);
+    ProxyObservability observability = new ProxyObservability(config);
+    CatalogRouter router = new CatalogRouter(config, backends);
+
+    ServicePolicies servicePolicies = buildServicePolicies("c1_hive_svc");
+    MetadataAuthorizer customAuthorizer = new RangerMetadataAuthorizer(ranger, config.catalogs()) {
+      @Override
+      protected RangerBasePlugin createPlugin(String catalogName, CatalogRangerConfig cfg) {
+        RangerBasePlugin plugin = super.createPlugin(catalogName, cfg);
+        plugin.setPolicies(servicePolicies);
+        return plugin;
+      }
+    };
+
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    DatabaseListCache listCache = new DatabaseListCache(config.latencyRouting().databaseListCache());
+    DatabaseMetadataCache metaCache = new DatabaseMetadataCache(config.latencyRouting().databaseMetadataCache(), listCache);
+    RequestRateLimiter rateLimiter = new RequestRateLimiter(config, observability.metrics());
+    AdmissionGate admissionGate = new AdmissionGate(new BackendRoutingController(config, router, observability), rateLimiter);
+    BackendCallDispatcher dispatcher = new BackendCallDispatcher(
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        admissionGate,
+        observability,
+        new FanoutExecutor(new BackendRoutingController(config, router, observability), router, admissionGate));
+
+    RoutingHandler routingHandler = new RoutingHandler(
+        config,
+        router,
+        federationLayer,
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null),
+        observability,
+        dispatcher,
+        new ImpersonationResolver(config),
+        listCache,
+        metaCache,
+        null,
+        customAuthorizer);
+
+    String prevAuthUser = ClientRequestContext.authenticatedUser().orElse(null);
+    String prevRemoteUser = ClientRequestContext.remoteUser().orElse(null);
+    try {
+      ClientRequestContext.setAuthenticatedUser("bob@SMOKE.LOCAL");
+      @SuppressWarnings("unchecked")
+      List<Object> mvs = (List<Object>) routingHandler.invoke(
+          null,
+          io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class
+              .getMethod("getAllMaterializedViewObjectsForRewriting"),
+          new Object[0]);
+      Assert.assertEquals(1, mvs.size());
+      Object mv = mvs.get(0);
+      Assert.assertEquals("reports", mv.getClass().getMethod("getTableName").invoke(mv));
+    } finally {
+      ClientRequestContext.restoreAuthenticatedUser(prevAuthUser);
+      ClientRequestContext.restoreRemoteUser(prevRemoteUser);
+      customAuthorizer.close();
+    }
   }
 
   private static Object invokeAs(

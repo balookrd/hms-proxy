@@ -46,6 +46,7 @@ import org.junit.Test;
 public class ImpersonationResolverTest {
 
   private ImpersonationResolver resolver;
+  private ImpersonationResolver simpleResolver;
   private TTransport transport;
 
   @Before
@@ -54,9 +55,20 @@ public class ImpersonationResolverTest {
         true, "http://localhost:6080", "hive", "hive", "hms-proxy", null, 30000L, 5000, 5000, null, null, null, false);
     RangerConfig ranger = new RangerConfig(true, rangerConfig, Map.of());
 
-    ProxyConfig config = new ProxyConfig(
-        new ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+    resolver = new ImpersonationResolver(buildConfig(
         new SecurityConfig(SecurityMode.KERBEROS, "hive/proxy@REALM", "/tmp/k.keytab", null, null, true, Map.of()),
+        ranger));
+    simpleResolver = new ImpersonationResolver(buildConfig(
+        new SecurityConfig(SecurityMode.NONE, null, null, null, null, true, Map.of()),
+        ranger));
+    transport = new TMemoryBuffer(1024);
+    ClientRequestContext.setCurrentTransport(transport);
+  }
+
+  private static ProxyConfig buildConfig(SecurityConfig security, RangerConfig ranger) {
+    return new ProxyConfig(
+        new ServerConfig("test", "127.0.0.1", 9083, 1, 4),
+        security,
         ".",
         "default",
         Map.of(),
@@ -80,16 +92,13 @@ public class ImpersonationResolverTest {
         List.of(),
         ranger
     );
-
-    resolver = new ImpersonationResolver(config);
-    transport = new TMemoryBuffer(1024);
-    ClientRequestContext.setCurrentTransport(transport);
   }
 
   @After
   public void tearDown() {
     ClientRequestContext.setConnectionUgi(transport, null);
     ClientRequestContext.restoreCurrentTransport(null);
+    ClientRequestContext.restoreAuthenticatedUser(null);
     ClientRequestContext.restoreRemoteUser(null);
   }
 
@@ -109,14 +118,13 @@ public class ImpersonationResolverTest {
   }
 
   @Test
-  public void testResolveFromEmptyConnectionUgiResolvesGroups() throws Exception {
+  public void testResolveFromEmptyConnectionUgiResolvesGroupsInSimpleMode() throws Exception {
     UserGroupInformation bobUgi =
         UserGroupInformation.createUserForTesting("bob", new String[]{"finance_grp"});
 
     bobUgi.doAs((PrivilegedExceptionAction<Void>) () -> {
-      // Simulate set_ugi called with empty groups
       ClientRequestContext.setConnectionUgi(transport, new ImpersonationContext("bob", List.of()));
-      Optional<ImpersonationContext> ctx = resolver.resolve();
+      Optional<ImpersonationContext> ctx = simpleResolver.resolve();
       Assert.assertTrue(ctx.isPresent());
       Assert.assertEquals("bob", ctx.get().userName());
       Assert.assertEquals(List.of("finance_grp"), ctx.get().groupNames());
@@ -125,19 +133,56 @@ public class ImpersonationResolverTest {
   }
 
   @Test
-  public void testResolveFromNonEmptyConnectionUgiPreservesProvidedGroups() throws Exception {
+  public void testResolveFromNonEmptyConnectionUgiPreservesProvidedGroupsInSimpleMode() throws Exception {
     ClientRequestContext.setConnectionUgi(transport, new ImpersonationContext("charlie", List.of("custom_group")));
-    Optional<ImpersonationContext> ctx = resolver.resolve();
+    Optional<ImpersonationContext> ctx = simpleResolver.resolve();
     Assert.assertTrue(ctx.isPresent());
     Assert.assertEquals("charlie", ctx.get().userName());
     Assert.assertEquals(List.of("custom_group"), ctx.get().groupNames());
   }
 
   @Test
-  public void testResolveServicePrincipalReturnsEmpty() throws Exception {
-    ClientRequestContext.setRemoteUser("hive/proxy@REALM");
+  public void testKerberosIgnoresConnectionUgiOverride() throws Exception {
+    UserGroupInformation aliceUgi =
+        UserGroupInformation.createUserForTesting("alice", new String[]{"sales_grp"});
+
+    aliceUgi.doAs((PrivilegedExceptionAction<Void>) () -> {
+      ClientRequestContext.setAuthenticatedUser("alice@REALM");
+      ClientRequestContext.setConnectionUgi(transport, new ImpersonationContext("admin", List.of("supergroup")));
+      Optional<ImpersonationContext> ctx = resolver.resolve();
+      Assert.assertTrue(ctx.isPresent());
+      Assert.assertEquals("alice", ctx.get().userName());
+      Assert.assertEquals(List.of("sales_grp"), ctx.get().groupNames());
+      return null;
+    });
+  }
+
+  @Test
+  public void testKerberosWithoutAuthenticatedUserReturnsEmptyInsteadOfProcessUgi() throws Exception {
+    UserGroupInformation hiveUgi = UserGroupInformation.createRemoteUser("alice");
+    hiveUgi.doAs((PrivilegedExceptionAction<Void>) () -> {
+      ClientRequestContext.setConnectionUgi(transport, new ImpersonationContext("admin", List.of("supergroup")));
+      Optional<ImpersonationContext> ctx = resolver.resolve();
+      Assert.assertFalse(ctx.isPresent());
+      return null;
+    });
+  }
+
+  @Test
+  public void testResolveServicePrincipalSameRealmReturnsEmptyAndSetsBypass() throws Exception {
+    ClientRequestContext.setAuthenticatedUser("hive/hs2@REALM");
+    Assert.assertTrue(resolver.isAuthenticatedServicePrincipal());
     Optional<ImpersonationContext> ctx = resolver.resolve();
     Assert.assertFalse(ctx.isPresent());
+  }
+
+  @Test
+  public void testCrossRealmServicePrincipalIsNotBypassed() throws Exception {
+    ClientRequestContext.setAuthenticatedUser("hive/evil@OTHER.REALM");
+    Assert.assertFalse(resolver.isAuthenticatedServicePrincipal());
+    Optional<ImpersonationContext> ctx = resolver.resolve();
+    Assert.assertTrue(ctx.isPresent());
+    Assert.assertEquals("hive", ctx.get().userName());
   }
 
   @Test

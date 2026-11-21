@@ -447,13 +447,13 @@ capabilities:
       ru: "`KERBEROS` с optional impersonation"
     method_families:
       en:
-        - front-door SASL
-        - local delegation-token issuance
-        - backend Hadoop proxy-user, delegation tokens, and `set_ugi()` impersonation
+        - front-door SASL (`GSSAPI` required for delegation-token issuance/renewal)
+        - local delegation-token issuance (token-store admin RPCs gated by `security.token-store-admin-principals`)
+        - backend Hadoop proxy-user, delegation tokens, and `set_ugi()` impersonation on unsecure backends (`set_ugi()` cannot override identity under Kerberos)
       ru:
-        - front-door SASL
-        - local delegation-token issuance
-        - backend Hadoop proxy-user, delegation tokens и `set_ugi()` имперсонация
+        - front-door SASL (`GSSAPI` обязателен для выпуска и продления delegation tokens)
+        - local delegation-token issuance (admin RPC хранилища ограничены `security.token-store-admin-principals`)
+        - backend Hadoop proxy-user, delegation tokens и `set_ugi()` на незащищённых бэкендах (под Kerberos `set_ugi()` не подменяет личность)
     expected_result:
       en: >-
         Supported when proxy-user rules and backend impersonation permissions
