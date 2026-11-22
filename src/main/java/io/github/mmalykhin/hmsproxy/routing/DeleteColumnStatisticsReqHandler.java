@@ -1,17 +1,14 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.lang.reflect.Method;
 import java.util.List;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
-  private static final Method DELETE_TABLE_COL_STATS = findMethod("delete_table_column_statistics",
-      String.class, String.class, String.class);
-  private static final Method DELETE_PART_COL_STATS = findMethod("delete_partition_column_statistics",
-      String.class, String.class, String.class, String.class);
+  private static final Method DELETE_TABLE_COL_STATS = RequestObjectRouting.findIfaceMethod(
+      "delete_table_column_statistics", String.class, String.class, String.class);
+  private static final Method DELETE_PART_COL_STATS = RequestObjectRouting.findIfaceMethod(
+      "delete_partition_column_statistics", String.class, String.class, String.class, String.class);
 
   private final RoutingSupport support;
 
@@ -22,23 +19,16 @@ final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "getCat_name", "getCatName", "getCatalogName");
-    String dbName = ThriftReflectionCache.readString(request, "getDb_name", "getDbName");
-    if (dbName == null) {
-      throw new MetaException("delete_column_statistics_req requires a target database");
-    }
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "delete_column_statistics_req", request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
+    String catName = resolved.catName();
+    String dbName = resolved.dbName();
+    String tblName = resolved.tableName();
 
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("delete_column_statistics_req", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "delete_column_statistics_req", namespace.backendDbName());
-
-    String tblName = RoutingSupport.extractTableName(request);
-    Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
-    if (routedRequest == request) {
-      routedRequest = ThriftReflectionCache.deepCopy(request);
-    }
+    Object internalized = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
+    Object routedRequest = internalized == request ? ThriftReflectionCache.deepCopy(request) : internalized;
     ThriftReflectionCache.invokeStringSetter(routedRequest, "setDb_name", namespace.backendDbName());
     if (catName != null) {
       String internalizedCat = NamespaceTranslator.internalCatalogName(
@@ -47,16 +37,12 @@ final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
       ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName", internalizedCat);
     }
 
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "delete_column_statistics_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, routedRequest, namespace.backendDbName());
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "delete_column_statistics_req",
+        routedRequest,
+        () -> fallbackToLegacy(backend, routedRequest, namespace.backendDbName()));
     if (tblName != null) {
       support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
     }
@@ -94,13 +80,5 @@ final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
       }
     }
     return allSuccess;
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("ThriftHiveMetastore.Iface missing method " + name, e);
-    }
   }
 }

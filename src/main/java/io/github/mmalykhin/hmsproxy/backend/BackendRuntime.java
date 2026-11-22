@@ -2,9 +2,7 @@ package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.lang.reflect.Method;
@@ -184,31 +182,16 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   public Object invokeShared(Method method, Object[] args) throws Throwable {
-    return invokeOnPool(new SessionCall() {
-      @Override
-      public Object apply(BackendInvocationSession session) throws Throwable {
-        return session.invoke(method, args);
-      }
-    }, method.getName(), false);
+    return invokeOnPool(session -> session.invoke(method, args), method.getName(), false);
   }
 
   public Object invokeSharedByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
-    return invokeOnPool(new SessionCall() {
-      @Override
-      public Object apply(BackendInvocationSession session) throws Throwable {
-        return session.invokeByName(methodName, parameterTypes, args);
-      }
-    }, methodName, false);
+    return invokeOnPool(session -> session.invokeByName(methodName, parameterTypes, args), methodName, false);
   }
 
   private Object invokeSharedDuringDrain(String methodName, Class<?>[] parameterTypes, Object[] args)
       throws Throwable {
-    return invokeOnPool(new SessionCall() {
-      @Override
-      public Object apply(BackendInvocationSession session) throws Throwable {
-        return session.invokeByName(methodName, parameterTypes, args);
-      }
-    }, methodName, true);
+    return invokeOnPool(session -> session.invokeByName(methodName, parameterTypes, args), methodName, true);
   }
 
   public String reconnectShared(BackendAdapter adapter) throws MetaException {
@@ -518,61 +501,63 @@ public final class BackendRuntime implements AutoCloseable {
         new ThreadPoolExecutor.AbortPolicy());
   }
 
-  private Object invokeOnPool(SessionCall call, String label, boolean allowDuringDrain) throws Throwable {
-    boolean replayable = HmsOperationPolicy.replayableAfterLostReply(label);
-    BackendInvocationSession session = replayable ? borrow(allowDuringDrain) : borrowValidated(allowDuringDrain);
-    try {
-      Object result = call.apply(session);
-      release(session);
-      session = null;
-      return result;
-    } catch (Throwable cause) {
-      if (!ThriftFailureClassifier.isTransportFailure(cause)) {
-        // A protocol desync poisons the connection, but the call must not be replayed.
-        if (ThriftFailureClassifier.isProtocolDesync(cause)) {
-          discard(session);
-        } else {
-          release(session);
-        }
-        session = null;
-        throw cause;
+  private Object invokeOnPool(SessionPoolExecutor.SessionCall call, String label, boolean allowDuringDrain)
+      throws Throwable {
+    return SessionPoolExecutor.invoke(sharedPoolAdapter(allowDuringDrain), label, call);
+  }
+
+  private SessionPoolExecutor.PoolAdapter sharedPoolAdapter(boolean allowDuringDrain) {
+    return new SessionPoolExecutor.PoolAdapter() {
+      @Override
+      public String catalogName() {
+        return catalogConfig.name();
       }
-      discard(session);
-      session = null;
-      if (!ThriftFailureClassifier.isReadTimeout(cause)) {
-        closeIdleSessions();
+
+      @Override
+      public String poolKind() {
+        return "shared";
       }
-      if (!ThriftFailureClassifier.isSafeToReplay(cause, replayable)) {
-        if (metrics != null) {
-          metrics.recordBackendCallNotReplayed(
-              catalogConfig.name(), label, ThriftFailureClassifier.transportFailurePhase(cause));
-        }
-        LOG.warn("Backend catalog '{}' transport failed in method {}; the backend may already have applied it,"
-                + " discarding session without replaying the call", catalogConfig.name(), label, cause);
-        throw cause;
+
+      @Override
+      public String callContextDescription() {
+        return "";
       }
-      LOG.warn("Backend catalog '{}' transport failed in method {}, discarding session and retrying once",
-          catalogConfig.name(), label, cause);
-      BackendInvocationSession retry = borrow(allowDuringDrain);
-      try {
-        Object result = call.apply(retry);
-        release(retry);
-        retry = null;
-        return result;
-      } catch (Throwable retryCause) {
-        if (ThriftFailureClassifier.isTransportFailure(retryCause)
-            || ThriftFailureClassifier.isProtocolDesync(retryCause)) {
-          discard(retry);
-        } else {
-          release(retry);
-        }
-        throw retryCause;
+
+      @Override
+      public PrometheusMetrics metrics() {
+        return metrics;
       }
-    } finally {
-      if (session != null) {
-        release(session);
+
+      @Override
+      public long sessionValidateAfterIdleMs() {
+        return catalogConfig.sessionValidateAfterIdleMs();
       }
-    }
+
+      @Override
+      public boolean isReplayBlocked() {
+        return false;
+      }
+
+      @Override
+      public BackendInvocationSession borrow() throws MetaException {
+        return BackendRuntime.this.borrow(allowDuringDrain);
+      }
+
+      @Override
+      public void release(BackendInvocationSession session) {
+        BackendRuntime.this.release(session);
+      }
+
+      @Override
+      public void discard(BackendInvocationSession session, String reason) {
+        BackendRuntime.this.discard(session, reason);
+      }
+
+      @Override
+      public void closeIdleSessions() {
+        BackendRuntime.this.closeIdleSessions();
+      }
+    };
   }
 
   private BackendInvocationSession borrow() throws MetaException {
@@ -651,47 +636,6 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   /**
-   * Borrow for a call that cannot be replayed. A session idle past the threshold is probed first:
-   * a connection the backend dropped while it sat in the pool fails the probe, not the write, and
-   * the write then goes out once on a fresh session.
-   */
-  private BackendInvocationSession borrowValidated(boolean allowDuringDrain) throws MetaException {
-    BackendInvocationSession session = borrow(allowDuringDrain);
-    long thresholdMs = catalogConfig.sessionValidateAfterIdleMs();
-    if (thresholdMs <= 0L || session.idleMs() <= thresholdMs) {
-      return session;
-    }
-    try {
-      session.probe();
-    } catch (Throwable probeFailure) {
-      if (probeFailure instanceof Error error) {
-        discard(session);
-        throw error;
-      }
-      if (ThriftFailureClassifier.isTransportFailure(probeFailure)
-          || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
-        LOG.info("Backend catalog '{}' shared session idle for {} ms failed the liveness probe ({}),"
-            + " replacing it", catalogConfig.name(), session.idleMs(), probeFailure.toString());
-        recordValidation("stale");
-        discard(session);
-        if (!ThriftFailureClassifier.isReadTimeout(probeFailure)) {
-          closeIdleSessions();
-        }
-        return borrow(allowDuringDrain);
-      }
-      // Any other answer came from a live backend over this very connection.
-    }
-    recordValidation("alive");
-    return session;
-  }
-
-  private void recordValidation(String outcome) {
-    if (metrics != null) {
-      metrics.recordBackendSessionValidation(catalogConfig.name(), "shared", outcome);
-    }
-  }
-
-  /**
    * Closes every idle session after one of them turned out dead: the backend drops its connections
    * together, so the rest of the pool is most likely dead too and a retry must not land on it.
    */
@@ -740,11 +684,11 @@ public final class BackendRuntime implements AutoCloseable {
     }
   }
 
-  private void discard(BackendInvocationSession session) {
+  private void discard(BackendInvocationSession session, String reason) {
     synchronized (lifecycleLock) {
       leasedSessions--;
     }
-    CatalogBackend.closeQuietly(session, "shared backend metastore session (transport failure)");
+    CatalogBackend.closeQuietly(session, "shared backend metastore session (" + reason + ")");
     permits.release();
     closeClassLoaderIfQuiesced();
   }
@@ -816,11 +760,6 @@ public final class BackendRuntime implements AutoCloseable {
     } catch (IOException e) {
       LOG.warn("Ignoring failure while closing isolated backend classloader for catalog '{}'", catalogName, e);
     }
-  }
-
-  @FunctionalInterface
-  private interface SessionCall {
-    Object apply(BackendInvocationSession session) throws Throwable;
   }
 
   public interface SessionFactory {

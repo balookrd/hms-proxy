@@ -8,6 +8,20 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Изменено (Архитектурный рефакторинг — Волна 4)
+
+- **Разрыв циклов зависимостей между пакетами и контроль архитектуры**:
+  - `ImpersonationContext` перенесён из `backend` в пакет `security` (удалена циклическая зависимость `security ↔ backend`).
+  - `KerberosHealthProbe` перенесён из `observability` в пакет `security` (удалена циклическая зависимость `observability ↔ security`).
+  - В `MetastoreThriftServer` удалена прямая зависимость от `frontend.FrontendProcessorFactory`: конструктор принимает готовый `TProcessor`, инъекция выполняется на уровне сборки приложения (`HmsProxyApplication`, `AdditionalFrontendThriftServers`), что разрывает цикл `security ↔ frontend`.
+  - Добавлен архитектурный unit-тест `PackageDependencyAcyclicityTest`, проверяющий отсутствие сильно связных компонент (SCC) среди базовых пакетов (`util`, `thriftbridge`, `config`, `observability`, `security`, `compatibility`, `backend`, `frontend`) и запрещённых зависимостей (`security → backend`, `security → frontend`, `observability → security`).
+- **Унификация пулов сессий бэкенда (`backend`)**:
+  - Общий цикл заимствования, валидации, адаптивной ретрай-повторки, подсчёта открытых сессий и метрик вынесен в package-private `SessionPoolExecutor` (`BackendRuntime` и `CatalogBackend.ImpersonationClient`).
+  - Исправлена утечка семафора параллелизма и счётчика активных сессий `impersonationActiveSessions` в `CatalogBackend.ImpersonationClient`, возникавшая при выбросе `Error` во время проверки `probe()` на заимствованной сессии (покрыто тестом `ImpersonationClientPoolTest.borrowValidatedPropagatesErrorAndReleasesImpersonationPermit`).
+- **Унификация `*_req` хендлеров маршрутизации (`routing`)**:
+  - Общая логика извлечения/интернализации `catName`/`dbName`/`tblName`, проверки доступа к экспортируемым БД и вызова методов с fallback при `NoSuchMethodException`/`TApplicationException` вынесена в `RequestObjectRouting` и применена во всех 14 request-object хендлерах (`GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByFilterReqHandler`, `GetPartitionsByNamesReqHandler`, `GetTableReqHandler`, `GetTablesReqHandler`, `TableStatisticsReqHandler`, `GetMaxAllocatedTableWriteIdHandler`, `AddPartitionsReqHandler`, `AlterPartitionsReqHandler`, `TruncateTableReqHandler`, `DeleteColumnStatisticsReqHandler`, `AddWriteNotificationLogHandler`, `CreateTableReqHandler`).
+  - Дополнительно в `GetPartitionsByNamesReqHandler` добавлена поддержка поля `catName`, а в `GetMaxAllocatedTableWriteIdHandler` — защита от мутации входящего запроса на месте через `ThriftReflectionCache.deepCopy`.
+
 ### Исправлено и изменено (Политика мутаций, Маршрутизация, View SQL, Пулы бэкендов и Iceberg REST — Волна 3B)
 
 - **Fail-closed классификация RPC и канонизация имён (`config/operation`)**:

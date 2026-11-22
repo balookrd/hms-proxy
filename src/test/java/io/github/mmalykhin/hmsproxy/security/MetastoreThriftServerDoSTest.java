@@ -9,6 +9,7 @@ import io.github.mmalykhin.hmsproxy.config.security.SecurityMode;
 import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
 import io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig;
+import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import java.lang.reflect.Proxy;
 import java.net.ServerSocket;
 import java.util.List;
@@ -51,7 +52,8 @@ public class MetastoreThriftServerDoSTest {
         .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
         .build();
 
-    MetastoreThriftServer server = new MetastoreThriftServer(config, handler, null);
+    MetastoreThriftServer server =
+        new MetastoreThriftServer(config, FrontendProcessorFactory.create(config, handler), null);
     Thread serverThread = new Thread(server::serve, "thrift-dos-test-server");
     serverThread.setDaemon(true);
     serverThread.start();

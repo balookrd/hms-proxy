@@ -8,6 +8,20 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed (Architectural Refactoring — Wave 4)
+
+- **Package dependency cycle removal & architectural enforcement**:
+  - Moved `ImpersonationContext` from `backend` to `security` to break the `security ↔ backend` package cycle.
+  - Moved `KerberosHealthProbe` from `observability` to `security` to break the `observability ↔ security` package cycle.
+  - Removed `frontend.FrontendProcessorFactory` dependency from `MetastoreThriftServer`: the constructor now accepts a `TProcessor` injected at assembly time (`HmsProxyApplication`, `AdditionalFrontendThriftServers`), breaking the `security ↔ frontend` package cycle.
+  - Added `PackageDependencyAcyclicityTest` to enforce zero strongly connected components across core packages (`util`, `thriftbridge`, `config`, `observability`, `security`, `compatibility`, `backend`, `frontend`) and forbid `security → backend`, `security → frontend`, and `observability → security` edges.
+- **Backend session pool unification (`backend`)**:
+  - Extracted shared session borrow/validation/retry/accounting logic for `BackendRuntime` and `CatalogBackend.ImpersonationClient` into package-private `SessionPoolExecutor`.
+  - Fixed an impersonation concurrency permit and `impersonationActiveSessions` counter leak in `CatalogBackend.ImpersonationClient` when `probe()` throws an `Error` on a borrowed session (covered by `ImpersonationClientPoolTest.borrowValidatedPropagatesErrorAndReleasesImpersonationPermit`).
+- **Request-object (`*_req`) routing handler unification (`routing`)**:
+  - Extracted common `catName`/`dbName`/`tblName` extraction, namespace translation, database access checks, and unsupported-method fallback handling into `RequestObjectRouting`, migrating all 14 `*_req` handlers (`GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByFilterReqHandler`, `GetPartitionsByNamesReqHandler`, `GetTableReqHandler`, `GetTablesReqHandler`, `TableStatisticsReqHandler`, `GetMaxAllocatedTableWriteIdHandler`, `AddPartitionsReqHandler`, `AlterPartitionsReqHandler`, `TruncateTableReqHandler`, `DeleteColumnStatisticsReqHandler`, `AddWriteNotificationLogHandler`, `CreateTableReqHandler`).
+  - Added `catName` translation support to `GetPartitionsByNamesReqHandler` and `ThriftReflectionCache.deepCopy` protection in `GetMaxAllocatedTableWriteIdHandler`.
+
 ### Fixed & Changed (Mutation Policy, Routing, View SQL, Backend Pools, and Iceberg REST — Wave 3B)
 
 - **Fail-closed RPC classification and name canonicalization (`config/operation`)**:

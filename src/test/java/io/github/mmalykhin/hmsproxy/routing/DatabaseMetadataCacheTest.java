@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.routing.DatabaseMetadataCacheConfig;
 import java.util.ArrayList;
 import java.util.HashMap;

@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import java.lang.reflect.Method;
 import java.util.List;

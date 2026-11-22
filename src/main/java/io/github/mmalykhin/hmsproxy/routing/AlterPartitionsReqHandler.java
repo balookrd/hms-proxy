@@ -1,18 +1,18 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class AlterPartitionsReqHandler implements SpecialCaseHandler {
-  private static final Method ALTER_PARTS = findMethod("alter_partitions", String.class, String.class, List.class);
-  private static final Method ALTER_PARTS_WITH_ENV = findMethod("alter_partitions_with_environment_context",
+  private static final Method ALTER_PARTS = RequestObjectRouting.findIfaceMethod(
+      "alter_partitions", String.class, String.class, List.class);
+  private static final Method ALTER_PARTS_WITH_ENV = RequestObjectRouting.findIfaceMethod(
+      "alter_partitions_with_environment_context",
       String.class, String.class, List.class, EnvironmentContext.class);
 
   private final RoutingSupport support;
@@ -28,17 +28,11 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String reqCatName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
-    String dbName = NamespaceTranslator.extractDbName(request);
-    if (dbName == null) {
-      throw new MetaException("alter_partitions_req requires a target database");
-    }
-
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(reqCatName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("alter_partitions_req", reqCatName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "alter_partitions_req", namespace.backendDbName());
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "alter_partitions_req", request);
+    String dbName = resolved.dbName();
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
 
     Long writeId = (Long) ThriftReflectionCache.invokeGetter(request, "getWriteId");
     if (writeId != null && writeId > 0 && !namespace.catalogName().equals(support.config.defaultCatalog())) {
@@ -79,16 +73,12 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
     if (externalTableLocationRewriter != null) {
       externalTableLocationRewriter.rewriteObjectArguments(new Object[]{routedRequest}, namespace, "alter_partitions_req");
     }
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "alter_partitions_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, routedRequest);
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "alter_partitions_req",
+        routedRequest,
+        () -> fallbackToLegacy(backend, routedRequest));
     String tableName = RoutingSupport.extractTableName(routedRequest);
     if (tableName != null) {
       support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
@@ -113,13 +103,5 @@ final class AlterPartitionsReqHandler implements SpecialCaseHandler {
       support.invokeDirect(backend, ALTER_PARTS, new Object[]{db, tbl, apachePartitions});
     }
     return null;
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("ThriftHiveMetastore.Iface missing method " + name, e);
-    }
   }
 }

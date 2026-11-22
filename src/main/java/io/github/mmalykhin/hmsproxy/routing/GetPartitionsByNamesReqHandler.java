@@ -1,16 +1,13 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class GetPartitionsByNamesReqHandler implements SpecialCaseHandler {
-  private static final Method GET_PARTITIONS_BY_NAMES = findMethod("get_partitions_by_names",
-      String.class, String.class, List.class);
+  private static final Method GET_PARTITIONS_BY_NAMES = RequestObjectRouting.findIfaceMethod(
+      "get_partitions_by_names", String.class, String.class, List.class);
 
   private final RoutingSupport support;
 
@@ -21,30 +18,18 @@ final class GetPartitionsByNamesReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String dbName = ThriftReflectionCache.readString(request, "getDb_name", "getDbName", "db_name", "dbName");
-    String tblName = ThriftReflectionCache.readString(request, "getTbl_name", "getTblName", "tbl_name", "tblName");
-    if (dbName == null) {
-      throw new MetaException("get_partitions_by_names_req requires a target database");
-    }
-
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit(method.getName(), dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateExposedDatabaseAccess(method.getName(), namespace);
-    support.validateExposedTableAccess(method.getName(), namespace, tblName);
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveReadByMethodName(support, method.getName(), request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
 
     Object routedRequest = support.federationLayer.internalizeArgument(request, namespace);
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "get_partitions_by_names_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, routedRequest);
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "get_partitions_by_names_req",
+        routedRequest,
+        () -> fallbackToLegacy(backend, routedRequest));
     return support.federationLayer.externalizeResult(result, namespace);
   }
 
@@ -68,13 +53,5 @@ final class GetPartitionsByNamesReqHandler implements SpecialCaseHandler {
     Object convertedPartitions = ThriftValueConverter.convertDynamicValue(partitions, cl);
     responseClass.getMethod("setPartitions", List.class).invoke(response, convertedPartitions);
     return response;
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("Missing expected Iface method: " + name, e);
-    }
   }
 }

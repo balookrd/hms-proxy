@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;

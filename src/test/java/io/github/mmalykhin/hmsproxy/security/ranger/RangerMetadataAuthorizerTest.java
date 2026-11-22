@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.security.ranger;
 
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
 import io.github.mmalykhin.hmsproxy.config.security.CatalogRangerConfig;
 import io.github.mmalykhin.hmsproxy.config.security.RangerConfig;

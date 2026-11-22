@@ -1,4 +1,4 @@
-package io.github.mmalykhin.hmsproxy.backend;
+package io.github.mmalykhin.hmsproxy.security;
 
 import java.util.List;
 

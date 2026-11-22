@@ -1,7 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
@@ -16,18 +15,11 @@ final class GetMaxAllocatedTableWriteIdHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
-    String dbName = (String) ThriftReflectionCache.invokeGetter(request, "getDbName");
-    if (dbName == null) {
-      throw new MetaException("get_max_allocated_table_write_id requires a target database");
-    }
-    String tblName = ThriftReflectionCache.readString(request, "getTableName", "getTblName");
-
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("get_max_allocated_table_write_id", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "get_max_allocated_table_write_id", namespace.backendDbName());
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "get_max_allocated_table_write_id", request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
+    String tblName = resolved.tableName();
     try {
       support.validateExposedDatabaseAccess(method, namespace);
       if (tblName != null && !tblName.isBlank()) {
@@ -38,16 +30,15 @@ final class GetMaxAllocatedTableWriteIdHandler implements SpecialCaseHandler {
       throw new MetaException(e.getMessage());
     }
 
-    ThriftReflectionCache.invokeStringSetter(request, "setDbName", namespace.backendDbName());
+    Object routedRequest = ThriftReflectionCache.deepCopy(request);
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setDbName", namespace.backendDbName());
 
-    try {
-      return support.invokeBackendNamed(backend, "get_max_allocated_table_write_id", request);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        return fallbackToLegacy(request);
-      }
-      throw cause;
-    }
+    return RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "get_max_allocated_table_write_id",
+        routedRequest,
+        () -> fallbackToLegacy(routedRequest));
   }
 
   private Object fallbackToLegacy(Object request) throws Throwable {

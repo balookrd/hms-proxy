@@ -15,9 +15,9 @@ final class GetTableReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "catName", "getCatName");
-    String dbName = ThriftReflectionCache.readString(request, "dbName", "getDbName");
-    String tblName = ThriftReflectionCache.readString(request, "tblName", "getTblName");
+    String catName = RequestObjectRouting.readCatalogName(request);
+    String dbName = RequestObjectRouting.readDbName(request);
+    String tblName = RequestObjectRouting.readTableName(request);
 
     if (HivePlaceholderNamespace.isPlaceholderTable(dbName, tblName)) {
       throw HivePlaceholderNamespace.newNoSuchObjectException(catName, dbName, tblName);
@@ -26,7 +26,7 @@ final class GetTableReqHandler implements SpecialCaseHandler {
       throw SparkPlaceholderNamespace.newNoSuchTableException(catName, dbName, tblName);
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     if (HivePlaceholderNamespace.isPlaceholderTable(namespace.backendDbName(), tblName)) {
       throw HivePlaceholderNamespace.newNoSuchObjectException(namespace.catalogName(), dbName, tblName);
     }

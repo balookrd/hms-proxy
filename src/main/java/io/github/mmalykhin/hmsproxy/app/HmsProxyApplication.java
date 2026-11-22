@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLoader;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfigLogger;
 import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
+import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.federation.FederationLayer;
@@ -88,7 +89,8 @@ public final class HmsProxyApplication {
                      catalog -> router.requireBackend(catalog).hiveConf())
                  : null;
              RestCatalogServer restServer = RestCatalogServer.open(config, restServices, observability.metrics())) {
-        MetastoreThriftServer server = new MetastoreThriftServer(config, proxy, frontDoorSecurity);
+        MetastoreThriftServer server =
+            new MetastoreThriftServer(config, FrontendProcessorFactory.create(config, proxy), frontDoorSecurity);
         installShutdownHook(server, teardownComplete, config.server().shutdownTimeoutSeconds());
         LOG.info("Starting HMS proxy '{}' on {}:{}", config.server().name(),
             config.server().bindHost(), config.server().port());

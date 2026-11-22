@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config;
 
+import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.lang.reflect.Proxy;
 import java.net.InetSocketAddress;
@@ -112,8 +113,9 @@ public class MetastoreThriftServerTest {
   @Test
   public void stopDoesNotWaitForIdleClientConnections() throws Exception {
     int port = freePort();
+    ProxyConfig config = configForPort(port);
     MetastoreThriftServer server = new MetastoreThriftServer(
-        configForPort(port), metaConfHandler(null), null);
+        config, FrontendProcessorFactory.create(config, metaConfHandler(null)), null);
     Thread listener = startServing(server, "stop-with-idle-client");
     Assert.assertTrue(awaitAccepting(port));
 
@@ -140,11 +142,14 @@ public class MetastoreThriftServerTest {
     int port = freePort();
     CountDownLatch requestStarted = new CountDownLatch(1);
     CountDownLatch releaseRequest = new CountDownLatch(1);
+    ProxyConfig config = configForPort(port);
     MetastoreThriftServer server = new MetastoreThriftServer(
-        configForPort(port), metaConfHandler(() -> {
+        config,
+        FrontendProcessorFactory.create(config, metaConfHandler(() -> {
           requestStarted.countDown();
           releaseRequest.await();
-        }), null);
+        })),
+        null);
     Thread listener = startServing(server, "stop-with-in-flight-request");
     Assert.assertTrue(awaitAccepting(port));
 
@@ -201,7 +206,8 @@ public class MetastoreThriftServerTest {
   }
 
   private static MetastoreThriftServer newServer(int port) throws Exception {
-    return new MetastoreThriftServer(configForPort(port), noopHandler(), null);
+    ProxyConfig config = configForPort(port);
+    return new MetastoreThriftServer(config, FrontendProcessorFactory.create(config, noopHandler()), null);
   }
 
   private static Thread startServing(MetastoreThriftServer server, String name) {

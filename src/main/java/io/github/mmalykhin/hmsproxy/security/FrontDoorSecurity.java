@@ -312,7 +312,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
       String previousAuthMechanism = ClientRequestContext.setAuthMechanism(authMechanism);
       String effectiveUser = allowConnectionUgiOverride
           ? ClientRequestContext.connectionUgi(transport)
-              .map(io.github.mmalykhin.hmsproxy.backend.ImpersonationContext::userName)
+              .map(ImpersonationContext::userName)
               .orElse(authenticatedUser)
           : authenticatedUser;
       String previousRemoteUser = ClientRequestContext.setRemoteUser(effectiveUser);

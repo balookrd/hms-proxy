@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.security.ranger;
 
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import java.util.ArrayList;
 import java.util.List;
 

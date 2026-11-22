@@ -1,12 +1,11 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
-import io.github.mmalykhin.hmsproxy.config.operation.HmsOperationPolicy;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import io.github.mmalykhin.hmsproxy.security.ProcessKerberosConfiguration;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.util.TimeoutValueParser;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -632,6 +631,58 @@ public final class CatalogBackend implements AutoCloseable {
     private volatile boolean evicted;
     volatile long lastUsedMs = System.currentTimeMillis();
 
+    private final SessionPoolExecutor.PoolAdapter poolAdapter = new SessionPoolExecutor.PoolAdapter() {
+      @Override
+      public String catalogName() {
+        return config.name();
+      }
+
+      @Override
+      public String poolKind() {
+        return "impersonation";
+      }
+
+      @Override
+      public String callContextDescription() {
+        return " for impersonated user '" + userName + "'";
+      }
+
+      @Override
+      public PrometheusMetrics metrics() {
+        return metrics;
+      }
+
+      @Override
+      public long sessionValidateAfterIdleMs() {
+        return config.sessionValidateAfterIdleMs();
+      }
+
+      @Override
+      public boolean isReplayBlocked() {
+        return evicted;
+      }
+
+      @Override
+      public BackendInvocationSession borrow() throws MetaException {
+        return ImpersonationClient.this.borrow();
+      }
+
+      @Override
+      public void release(BackendInvocationSession session) {
+        ImpersonationClient.this.release(session);
+      }
+
+      @Override
+      public void discard(BackendInvocationSession session, String reason) {
+        ImpersonationClient.this.discard(session, reason);
+      }
+
+      @Override
+      public void closeIdleSessions() {
+        ImpersonationClient.this.closeStaleIdleSessions();
+      }
+    };
+
     // Opens no session: the first borrow() creates one under a held permit, the same way the shared
     // pool does. Keeping connect/Kerberos/set_ugi out of the constructor keeps it off the catalog monitor.
     private ImpersonationClient(String userName, List<String> groupNames) {
@@ -675,67 +726,9 @@ public final class CatalogBackend implements AutoCloseable {
           session -> session.invokeByName(methodName, parameterTypes, args));
     }
 
-    private Object invokeOnPool(String label, SessionCall call) throws Throwable {
+    private Object invokeOnPool(String label, SessionPoolExecutor.SessionCall call) throws Throwable {
       lastUsedMs = System.currentTimeMillis();
-      boolean replayable = HmsOperationPolicy.replayableAfterLostReply(label);
-      BackendInvocationSession session = replayable ? borrow() : borrowValidated();
-      try {
-        Object result = call.apply(session);
-        release(session);
-        session = null;
-        return result;
-      } catch (Throwable cause) {
-        if (!ThriftFailureClassifier.isTransportFailure(cause) || evicted) {
-          if (session != null) {
-            // A protocol desync poisons the connection, but the call must not be replayed.
-            if (ThriftFailureClassifier.isProtocolDesync(cause)) {
-              discard(session, "protocol_desync");
-            } else {
-              release(session);
-            }
-            session = null;
-          }
-          throw cause;
-        }
-        discard(session, "transport_failure");
-        session = null;
-        if (!ThriftFailureClassifier.isReadTimeout(cause)) {
-          closeStaleIdleSessions();
-        }
-        if (!ThriftFailureClassifier.isSafeToReplay(cause, replayable)) {
-          if (metrics != null) {
-            metrics.recordBackendCallNotReplayed(
-                config.name(), label, ThriftFailureClassifier.transportFailurePhase(cause));
-          }
-          LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}; the backend may"
-                  + " already have applied it, not replaying the call", config.name(), userName, label, cause);
-          throw cause;
-        }
-        LOG.warn("Backend catalog '{}' transport failed for impersonated user '{}' in method {}, retrying once",
-            config.name(), userName, label, cause);
-        BackendInvocationSession retry = borrow();
-        try {
-          Object result = call.apply(retry);
-          release(retry);
-          retry = null;
-          return result;
-        } catch (Throwable retryError) {
-          if (retry != null) {
-            if (ThriftFailureClassifier.isTransportFailure(retryError)) {
-              discard(retry, "transport_failure");
-            } else if (ThriftFailureClassifier.isProtocolDesync(retryError)) {
-              discard(retry, "protocol_desync");
-            } else {
-              release(retry);
-            }
-          }
-          throw retryError;
-        }
-      } finally {
-        if (session != null) {
-          release(session);
-        }
-      }
+      return SessionPoolExecutor.invoke(poolAdapter, label, call);
     }
 
     // An eviction (TTL, capacity, adaptive-timeout reconnect) can retire this client after a caller
@@ -797,46 +790,6 @@ public final class CatalogBackend implements AutoCloseable {
                 + config.name() + "'");
         me.initCause(t);
         throw me;
-      }
-    }
-
-    /**
-     * Borrow for a call that cannot be replayed. A session idle past the threshold is probed first:
-     * a connection the backend dropped while it sat in the pool fails the probe, not the write, and
-     * the write then goes out once on a fresh session.
-     */
-    private BackendInvocationSession borrowValidated() throws MetaException {
-      BackendInvocationSession session = borrow();
-      long thresholdMs = config.sessionValidateAfterIdleMs();
-      if (thresholdMs <= 0L || session.idleMs() <= thresholdMs) {
-        return session;
-      }
-      try {
-        session.probe();
-      } catch (Throwable probeFailure) {
-        if (probeFailure instanceof Error error) {
-          throw error;
-        }
-        if (ThriftFailureClassifier.isTransportFailure(probeFailure)
-            || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
-          LOG.info("Backend catalog '{}' session of impersonated user '{}' idle for {} ms failed the liveness"
-              + " probe ({}), replacing it", config.name(), userName, session.idleMs(), probeFailure.toString());
-          recordValidation("stale");
-          discard(session, "stale_probe");
-          if (!ThriftFailureClassifier.isReadTimeout(probeFailure)) {
-            closeStaleIdleSessions();
-          }
-          return borrow();
-        }
-        // Any other answer came from a live backend over this very connection.
-      }
-      recordValidation("alive");
-      return session;
-    }
-
-    private void recordValidation(String outcome) {
-      if (metrics != null) {
-        metrics.recordBackendSessionValidation(config.name(), "impersonation", outcome);
       }
     }
 
@@ -992,10 +945,5 @@ public final class CatalogBackend implements AutoCloseable {
       this.session = session;
       this.releasedAtMs = releasedAtMs;
     }
-  }
-
-  @FunctionalInterface
-  private interface SessionCall {
-    Object apply(BackendInvocationSession session) throws Throwable;
   }
 }

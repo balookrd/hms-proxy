@@ -14,13 +14,12 @@ final class AddWriteNotificationLogHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
-    String dbName = ThriftReflectionCache.readString(request, "getDb", "getDbName");
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("add_write_notification_log", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "add_write_notification_log", namespace.backendDbName());
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "add_write_notification_log", request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
+    String catName = resolved.catName();
+    String dbName = resolved.dbName();
     if (!backend.runtimeProfile().isHortonworks() && !backend.runtimeProfile().isHive4()) {
       throw new MetaException(
           "add_write_notification_log requires a Hortonworks or Hive 4 backend runtime for catalog '"

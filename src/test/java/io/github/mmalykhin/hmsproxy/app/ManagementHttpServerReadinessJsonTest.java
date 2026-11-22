@@ -1,6 +1,6 @@
 package io.github.mmalykhin.hmsproxy.app;
 
-import io.github.mmalykhin.hmsproxy.observability.KerberosHealthProbe;
+import io.github.mmalykhin.hmsproxy.security.KerberosHealthProbe;
 import org.junit.Assert;
 import org.junit.Test;
 

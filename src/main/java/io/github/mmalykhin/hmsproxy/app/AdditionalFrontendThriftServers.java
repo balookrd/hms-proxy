@@ -4,6 +4,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.compatibility.CompatibilityConfig;
 import io.github.mmalykhin.hmsproxy.config.listener.AdditionalFrontendConfig;
 import io.github.mmalykhin.hmsproxy.config.server.ServerConfig;
+import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import io.github.mmalykhin.hmsproxy.security.MetastoreThriftServer;
 import java.util.ArrayList;
@@ -43,7 +44,8 @@ public final class AdditionalFrontendThriftServers implements AutoCloseable {
     try {
       for (AdditionalFrontendConfig extra : extras) {
         ProxyConfig shadow = shadowConfig(config, extra);
-        MetastoreThriftServer server = new MetastoreThriftServer(shadow, handler, frontDoorSecurity);
+        MetastoreThriftServer server = new MetastoreThriftServer(
+            shadow, FrontendProcessorFactory.create(shadow, handler), frontDoorSecurity);
         Thread thread = new Thread(server::serve, "hms-proxy-fe-" + extra.name());
         // Daemon on purpose: the primary listener runs on the main thread, so an additional
         // listener must never be the reason a JVM whose startup failed keeps running with its

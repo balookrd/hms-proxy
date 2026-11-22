@@ -4,11 +4,9 @@ import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class GetPartitionReqHandler implements SpecialCaseHandler {
-  private static final Method GET_PARTITION = findMethod("get_partition",
+  private static final Method GET_PARTITION = RequestObjectRouting.findIfaceMethod("get_partition",
       String.class, String.class, List.class);
 
   private final RoutingSupport support;
@@ -20,19 +18,10 @@ final class GetPartitionReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "catName", "getCatName");
-    String dbName = ThriftReflectionCache.readString(request, "dbName", "getDbName");
-    String tblName = ThriftReflectionCache.readString(request, "tblName", "getTblName");
-    if (dbName == null) {
-      throw new MetaException("get_partition_req requires a target database");
-    }
-
-    CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateExposedDatabaseAccess(method.getName(), namespace);
-    support.validateExposedTableAccess(method.getName(), namespace, tblName);
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveReadByMethodName(support, method.getName(), request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
 
     Object routedRequest = support.federationLayer.internalizeArgument(request, namespace);
     Object result;
@@ -62,13 +51,5 @@ final class GetPartitionReqHandler implements SpecialCaseHandler {
     Object convertedPartition = ThriftValueConverter.convertValue(partition, partitionClass, cl);
     responseClass.getMethod("setPartition", partitionClass).invoke(response, convertedPartition);
     return response;
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("Missing expected Iface method: " + name, e);
-    }
   }
 }

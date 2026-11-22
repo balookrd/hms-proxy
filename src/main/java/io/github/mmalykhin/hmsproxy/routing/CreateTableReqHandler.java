@@ -1,7 +1,6 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -11,15 +10,16 @@ import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class CreateTableReqHandler implements SpecialCaseHandler {
-  private static final Method CREATE_TABLE = findMethod("create_table", Table.class);
-  private static final Method CREATE_TABLE_WITH_ENV = findMethod("create_table_with_environment_context",
-      Table.class, EnvironmentContext.class);
-  private static final Method CREATE_TABLE_WITH_CONSTRAINTS = findMethod("create_table_with_constraints",
+  private static final Method CREATE_TABLE = RequestObjectRouting.findIfaceMethod("create_table", Table.class);
+  private static final Method CREATE_TABLE_WITH_ENV = RequestObjectRouting.findIfaceMethod(
+      "create_table_with_environment_context", Table.class, EnvironmentContext.class);
+  private static final Method CREATE_TABLE_WITH_CONSTRAINTS = RequestObjectRouting.findIfaceMethod(
+      "create_table_with_constraints",
       Table.class, List.class, List.class, List.class, List.class, List.class, List.class);
-  private static final Method ALTER_TABLE_WITH_ENV = findMethod("alter_table_with_environment_context",
+  private static final Method ALTER_TABLE_WITH_ENV = RequestObjectRouting.findIfaceMethod(
+      "alter_table_with_environment_context",
       String.class, String.class, Table.class, EnvironmentContext.class);
 
   private record ValidatedFk(CatalogRouter.ResolvedNamespace pkNamespace, String fkCat, String pkDb) {
@@ -52,19 +52,16 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       throw new MetaException("create_table_req requires a table");
     }
     String dbName = (String) ThriftReflectionCache.invokeGetter(rawTable, "getDbName");
-    if (dbName == null) {
-      throw new MetaException("create_table_req requires a target database");
-    }
     String tableName = (String) ThriftReflectionCache.invokeGetter(rawTable, "getTableName");
     String catName = ThriftReflectionCache.readString(rawTable, "getCatName", "getCatalogName");
     if (catName == null) {
-      catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
+      catName = RequestObjectRouting.readCatalogName(request);
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("create_table_req", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolve(support, "create_table_req", request, catName, dbName, tableName);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
     support.validateCatalogAccess(backend, "create_table_req", namespace.backendDbName());
 
     if (!namespace.catalogName().equals(support.config.defaultCatalog())) {
@@ -101,16 +98,12 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       }
     }
 
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "create_table_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, routedRequest);
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "create_table_req",
+        routedRequest,
+        () -> fallbackToLegacy(backend, routedRequest));
 
     if (tableName != null) {
       if (icebergTablePointerGuard != null) {
@@ -352,14 +345,6 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       return (List<T>) ThriftValueConverter.convertDynamicValue(value, CreateTableReqHandler.class.getClassLoader());
     } catch (Exception e) {
       return List.of();
-    }
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("ThriftHiveMetastore.Iface missing method " + name, e);
     }
   }
 }

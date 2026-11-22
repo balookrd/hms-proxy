@@ -2,12 +2,11 @@ package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
-import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import java.net.BindException;
 import java.net.InetSocketAddress;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
@@ -34,12 +33,12 @@ public final class MetastoreThriftServer {
 
   public MetastoreThriftServer(
       ProxyConfig config,
-      ThriftHiveMetastore.Iface handler,
+      TProcessor rawProcessor,
       FrontDoorSecurity frontDoorSecurity
   ) throws Exception {
+    Objects.requireNonNull(rawProcessor, "rawProcessor");
     this.listenerName = config.server().name();
     FrontendProfile listenerProfile = config.compatibility().frontendProfile();
-    TProcessor rawProcessor = FrontendProcessorFactory.create(config, handler);
     TProcessor processor = (in, out) -> {
       FrontendProfile previousProfile = ClientRequestContext.setFrontendProfile(listenerProfile);
       try {

@@ -1,14 +1,13 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class TruncateTableReqHandler implements SpecialCaseHandler {
-  private static final Method TRUNCATE_TABLE = findMethod("truncate_table", String.class, String.class, List.class);
+  private static final Method TRUNCATE_TABLE =
+      RequestObjectRouting.findIfaceMethod("truncate_table", String.class, String.class, List.class);
 
   private final RoutingSupport support;
 
@@ -19,17 +18,10 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
-    String dbName = NamespaceTranslator.extractDbName(request);
-    if (dbName == null) {
-      throw new MetaException("truncate_table_req requires a target database");
-    }
-
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("truncate_table_req", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "truncate_table_req", namespace.backendDbName());
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "truncate_table_req", request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
 
     Long writeId = (Long) ThriftReflectionCache.invokeGetter(request, "getWriteId");
     if (writeId != null && writeId > 0 && !namespace.catalogName().equals(support.config.defaultCatalog())) {
@@ -40,16 +32,12 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
 
     String tblName = ThriftReflectionCache.readString(request, "getTableName");
     Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "truncate_table_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, routedRequest);
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "truncate_table_req",
+        routedRequest,
+        () -> fallbackToLegacy(backend, routedRequest));
     if (tblName != null) {
       support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tblName);
     }
@@ -64,13 +52,5 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
     List<String> partNamesList = (List<String>) partNames;
     support.invokeDirect(backend, TRUNCATE_TABLE, new Object[]{db, tbl, partNamesList});
     return null;
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("ThriftHiveMetastore.Iface missing method " + name, e);
-    }
   }
 }

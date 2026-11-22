@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
@@ -1350,5 +1351,137 @@ public class ImpersonationClientPoolTest {
         1,
         4,
         sessionIdleTtlMs);
+  }
+
+  @Test
+  public void borrowValidatedPropagatesErrorAndReleasesImpersonationPermit() throws Throwable {
+    AtomicInteger impersonationOpens = new AtomicInteger();
+    AtomicInteger impersonationCloses = new AtomicInteger();
+    AtomicInteger createTableCalls = new AtomicInteger();
+    java.util.concurrent.atomic.AtomicBoolean failProbe = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        return makeSession(null);
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        int index = impersonationOpens.incrementAndGet();
+        ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+            ThriftHiveMetastore.Iface.class.getClassLoader(),
+            new Class<?>[] {ThriftHiveMetastore.Iface.class},
+            (proxy, method, args) -> {
+              if ("getStatus".equals(method.getName())) {
+                if (index == 1 && failProbe.get()) {
+                  throw new AssertionError("impersonation probe error");
+                }
+                return null;
+              }
+              if ("create_table".equals(method.getName())) {
+                createTableCalls.incrementAndGet();
+                return null;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            });
+        try {
+          Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+              org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+              ThriftHiveMetastore.Iface.class,
+              IsolatedMetastoreClient.class);
+          ctor.setAccessible(true);
+          BackendInvocationSession session = ctor.newInstance(null, thriftClient, null);
+          session.runAfterClose(impersonationCloses::incrementAndGet);
+          return session;
+        } catch (Exception e) {
+          MetaException me = new MetaException("session ctor failed");
+          me.initCause(e);
+          throw me;
+        }
+      }
+    };
+
+    CatalogConfig catalogConfig = new CatalogConfig(
+        "catalog1",
+        "c1",
+        "file:///c1",
+        true,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        List.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://one"),
+        200L,
+        128,
+        0L,
+        1,
+        1,
+        0L,
+        null,
+        null,
+        true,
+        0,
+        10_000L,
+        null,
+        false,
+        false,
+        1L);
+    PrometheusMetrics metrics = new PrometheusMetrics();
+    BackendRuntime runtime = BackendRuntime.open(
+        config(catalogConfig), catalogConfig, new HiveConf(), false, MetastoreRuntimeProfile.APACHE_3_1_3, factory, metrics);
+    CatalogBackend backend = newBackend(catalogConfig, runtime, metrics);
+
+    try {
+      ImpersonationContext ctx = new ImpersonationContext("alice", List.of("g1"));
+      backend.invokeRawByName("getStatus", new Class<?>[0], new Object[0], ctx);
+      Thread.sleep(5L);
+      failProbe.set(true);
+
+      AssertionError error = Assert.assertThrows(
+          AssertionError.class,
+          () -> backend.invokeRawByName(
+              "create_table",
+              new Class<?>[] {org.apache.hadoop.hive.metastore.api.Table.class},
+              new Object[] {new org.apache.hadoop.hive.metastore.api.Table()},
+              ctx));
+      Assert.assertEquals("impersonation probe error", error.getMessage());
+      Assert.assertEquals(1, impersonationCloses.get());
+      Assert.assertEquals(0, createTableCalls.get());
+
+      failProbe.set(false);
+      // Pool max size is 1: if the permit was not released on Error, this call would time out.
+      backend.invokeRawByName(
+          "create_table",
+          new Class<?>[] {org.apache.hadoop.hive.metastore.api.Table.class},
+          new Object[] {new org.apache.hadoop.hive.metastore.api.Table()},
+          ctx);
+      Assert.assertEquals(2, impersonationOpens.get());
+      Assert.assertEquals(1, createTableCalls.get());
+      Assert.assertTrue(
+          metrics.render(),
+          metrics.render().contains("hms_proxy_impersonation_pool_sessions{catalog=\"catalog1\",state=\"active\"} 0"));
+    } finally {
+      backend.close();
+    }
+    Assert.assertEquals(2, impersonationCloses.get());
   }
 }

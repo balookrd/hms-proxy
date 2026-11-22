@@ -2,7 +2,7 @@ package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.BackendAdapter;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.compatibility.MetastoreCompatibility;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;

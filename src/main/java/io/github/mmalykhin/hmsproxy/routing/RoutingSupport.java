@@ -18,7 +18,7 @@ import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.security.ranger.MetadataAuthorizer;
 import io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer;
 

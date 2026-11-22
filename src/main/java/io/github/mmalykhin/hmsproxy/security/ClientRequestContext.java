@@ -1,6 +1,5 @@
 package io.github.mmalykhin.hmsproxy.security;
 
-import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import java.util.Collections;
 import java.util.Map;

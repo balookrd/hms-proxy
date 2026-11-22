@@ -1,4 +1,6 @@
-package io.github.mmalykhin.hmsproxy.observability;
+package io.github.mmalykhin.hmsproxy.security;
+
+import io.github.mmalykhin.hmsproxy.observability.BackendKerberosLoginTracker;
 
 import java.io.IOException;
 import java.lang.reflect.Method;

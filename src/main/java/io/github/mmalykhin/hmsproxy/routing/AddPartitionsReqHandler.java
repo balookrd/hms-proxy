@@ -1,15 +1,13 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
-import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.AddPartitionsRequest;
-import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
 
 final class AddPartitionsReqHandler implements SpecialCaseHandler {
-  private static final Method ADD_PARTITIONS_REQ = findMethod("add_partitions_req", AddPartitionsRequest.class);
+  private static final Method ADD_PARTITIONS_REQ =
+      RequestObjectRouting.findIfaceMethod("add_partitions_req", AddPartitionsRequest.class);
 
   private final RoutingSupport support;
 
@@ -24,47 +22,30 @@ final class AddPartitionsReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
-    String dbName = NamespaceTranslator.extractDbName(request);
-    if (dbName == null) {
-      throw new MetaException("add_partitions_req requires a target database");
-    }
-
-    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("add_partitions_req", catName, dbName, namespace);
-    CatalogBackend backend = namespace.backend();
-    support.validateCatalogAccess(backend, "add_partitions_req", namespace.backendDbName());
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolveWrite(support, "add_partitions_req", request);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
+    CatalogBackend backend = resolved.backend();
 
     Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
     ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (externalTableLocationRewriter != null) {
       externalTableLocationRewriter.rewriteObjectArguments(new Object[]{routedRequest}, namespace, "add_partitions_req");
     }
-    Object result;
-    try {
-      result = support.invokeBackendNamed(backend, "add_partitions_req", routedRequest);
-    } catch (Throwable cause) {
-      if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        AddPartitionsRequest apacheReq =
-            (AddPartitionsRequest) ThriftValueConverter.convertTBase(routedRequest, AddPartitionsRequest.class);
-        result = support.invokeDirect(backend, ADD_PARTITIONS_REQ, new Object[]{apacheReq});
-      } else {
-        throw cause;
-      }
-    }
+    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
+        support,
+        backend,
+        "add_partitions_req",
+        routedRequest,
+        () -> {
+          AddPartitionsRequest apacheReq =
+              (AddPartitionsRequest) ThriftValueConverter.convertTBase(routedRequest, AddPartitionsRequest.class);
+          return support.invokeDirect(backend, ADD_PARTITIONS_REQ, new Object[]{apacheReq});
+        });
     String tableName = RoutingSupport.extractTableName(routedRequest);
     if (tableName != null) {
       support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), tableName);
     }
     return support.federationLayer.externalizeResult(result, namespace);
-  }
-
-  private static Method findMethod(String name, Class<?>... parameterTypes) {
-    try {
-      return ThriftHiveMetastore.Iface.class.getMethod(name, parameterTypes);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("ThriftHiveMetastore.Iface missing method " + name, e);
-    }
   }
 }

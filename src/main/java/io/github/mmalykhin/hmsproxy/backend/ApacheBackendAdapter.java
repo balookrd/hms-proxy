@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 
 public final class ApacheBackendAdapter extends AbstractBackendAdapter {

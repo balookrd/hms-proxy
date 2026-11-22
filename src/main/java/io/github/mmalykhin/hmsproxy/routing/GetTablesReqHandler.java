@@ -15,20 +15,20 @@ final class GetTablesReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String catName = ThriftReflectionCache.readString(request, "catName", "getCatName");
-    String dbName = ThriftReflectionCache.readString(request, "dbName", "getDbName");
+    String catName = RequestObjectRouting.readCatalogName(request);
+    String dbName = RequestObjectRouting.readDbName(request);
 
     if (HivePlaceholderNamespace.isPlaceholderDbName(dbName) || SparkPlaceholderNamespace.isSparkReservedDbName(dbName)) {
       return new GetTablesResult(new java.util.ArrayList<>());
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.federationLayer.resolveRequestNamespace(catName, dbName);
-    RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit(method.getName(), catName, dbName, namespace);
+    RequestObjectRouting.ResolvedRequest resolved =
+        RequestObjectRouting.resolve(support, method.getName(), request, catName, dbName, null);
+    CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
     if (!support.isDatabaseAccessible(method.getName(), namespace)) {
       return new GetTablesResult(new java.util.ArrayList<>());
     }
-    CatalogBackend backend = namespace.backend();
+    CatalogBackend backend = resolved.backend();
 
     Object result;
     if (backend.runtimeProfile().isHive4() && !(request instanceof GetTablesRequest)) {
