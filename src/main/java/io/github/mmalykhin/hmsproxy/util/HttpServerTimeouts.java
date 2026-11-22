@@ -17,7 +17,7 @@ public final class HttpServerTimeouts {
 
   public static void installDefaultsIfUnset() {
     setIfAbsent(MAX_REQ_TIME_PROP, "30");
-    setIfAbsent(MAX_RSP_TIME_PROP, "60");
+    setIfAbsent(MAX_RSP_TIME_PROP, "300");
     setIfAbsent(MAX_CONNECTIONS_PROP, "256");
     setIfAbsent(MAX_IDLE_CONNECTIONS_PROP, "64");
     setIfAbsent(NODELAY_PROP, "true");
