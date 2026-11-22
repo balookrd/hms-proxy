@@ -62,7 +62,7 @@ final class RefreshPrivilegesHandler implements SpecialCaseHandler {
     }
     if (catalogConfig.accessMode() == CatalogAccessMode.READ_WRITE_DB_WHITELIST) {
       String normalized = backendDbName != null ? backendDbName.trim() : null;
-      return normalized == null || normalized.isEmpty() || !catalogConfig.writeDbWhitelist().contains(normalized);
+      return normalized == null || normalized.isEmpty() || !catalogConfig.isWriteDbWhitelisted(normalized);
     }
     return false;
   }

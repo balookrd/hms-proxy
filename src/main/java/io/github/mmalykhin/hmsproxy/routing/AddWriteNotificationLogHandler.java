@@ -14,10 +14,11 @@ final class AddWriteNotificationLogHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String dbName = ThriftReflectionCache.readString(request, "getDb");
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
+    String dbName = ThriftReflectionCache.readString(request, "getDb", "getDbName");
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("add_write_notification_log", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("add_write_notification_log", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "add_write_notification_log", namespace.backendDbName());
     if (!backend.runtimeProfile().isHortonworks() && !backend.runtimeProfile().isHive4()) {
@@ -28,6 +29,13 @@ final class AddWriteNotificationLogHandler implements SpecialCaseHandler {
     }
     Object routedRequest = ThriftReflectionCache.deepCopy(request);
     ThriftReflectionCache.invokeStringSetter(routedRequest, "setDb", namespace.backendDbName());
+    if (catName != null) {
+      ThriftReflectionCache.invokeStringSetter(
+          routedRequest,
+          "setCatName",
+          NamespaceTranslator.internalCatalogName(
+              catName, dbName, namespace, support.federationLayer.preserveBackendCatalogName()));
+    }
     return support.invokeBackendNamed(backend, "add_write_notification_log", routedRequest);
   }
 }

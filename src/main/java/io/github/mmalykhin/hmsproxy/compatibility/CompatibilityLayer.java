@@ -1,7 +1,9 @@
 package io.github.mmalykhin.hmsproxy.compatibility;
 
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.security.ClientRequestContext;
 import io.github.mmalykhin.hmsproxy.security.FrontDoorSecurity;
 import java.util.Map;
 import java.util.Optional;
@@ -16,11 +18,15 @@ public final class CompatibilityLayer {
   }
 
   public String frontendVersion() {
-    return config.compatibility().frontendProfile().metastoreVersion();
+    return activeFrontendProfile().metastoreVersion();
   }
 
   public MetastoreRuntimeProfile frontendRuntimeProfile() {
-    return config.compatibility().frontendProfile().runtimeProfile();
+    return activeFrontendProfile().runtimeProfile();
+  }
+
+  private FrontendProfile activeFrontendProfile() {
+    return ClientRequestContext.frontendProfile().orElse(config.compatibility().frontendProfile());
   }
 
   public Object handleLocalMethod(String methodName, Object[] args) throws Exception {

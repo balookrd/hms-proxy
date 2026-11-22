@@ -75,7 +75,8 @@ final class HmsMethodNameHeuristics {
         return true;
       }
     }
-    return false;
+    // Fail-closed: unknown RPCs default to mutating so unrecognized operations cannot bypass write guards or replay rules.
+    return true;
   }
 
   static NamespaceStrategy deriveNamespaceStrategy(

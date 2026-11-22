@@ -78,6 +78,9 @@ public final class ThriftFailureClassifier {
     if (!(unwrap(cause) instanceof TTransportException transport)) {
       return false;
     }
+    if (hasConnectTimeoutMessage(transport)) {
+      return false;
+    }
     if (transport.getType() == TTransportException.TIMED_OUT) {
       return true;
     }
@@ -87,8 +90,26 @@ public final class ThriftFailureClassifier {
         return true;
       }
       String message = current.getMessage();
-      if (message != null && (message.contains("SocketTimeoutException") || message.contains("timed out"))) {
-        return true;
+      if (message != null) {
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("read timed out") || message.contains("SocketTimeoutException")) {
+          return true;
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
+  }
+
+  private static boolean hasConnectTimeoutMessage(Throwable root) {
+    Throwable current = root;
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      String message = current.getMessage();
+      if (message != null) {
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("connect timed out") || lower.contains("connection timed out")) {
+          return true;
+        }
       }
       current = current.getCause();
     }

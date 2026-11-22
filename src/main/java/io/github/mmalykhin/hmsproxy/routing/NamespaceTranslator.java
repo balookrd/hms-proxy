@@ -1,7 +1,9 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -12,6 +14,7 @@ import org.apache.thrift.TBase;
 import org.apache.thrift.TFieldIdEnum;
 
 public final class NamespaceTranslator {
+  private static final int MAX_COMPATIBILITY_PREFIX_DEPTH = 32;
 
   private NamespaceTranslator() {}
 
@@ -99,6 +102,96 @@ public final class NamespaceTranslator {
 
   public static String extractDbName(Object value) {
     return extractDbName(value, Collections.newSetFromMap(new IdentityHashMap<>()));
+  }
+
+  public static List<String> extractDbNames(Object value) {
+    Set<String> dbNames = new LinkedHashSet<>();
+    collectDbNames(value, Collections.newSetFromMap(new IdentityHashMap<>()), dbNames);
+    return dbNames.isEmpty() ? List.of() : List.copyOf(dbNames);
+  }
+
+  private static void collectDbNames(Object value, Set<Object> seen, Set<String> out) {
+    if (value == null || isScalar(value)) {
+      return;
+    }
+    if (value instanceof Database database) {
+      String dbName = blankToNull(database.getName());
+      if (dbName != null) {
+        out.add(dbName);
+      }
+      return;
+    }
+    if (value instanceof List<?> list) {
+      for (Object element : list) {
+        collectDbNames(element, seen, out);
+      }
+      return;
+    }
+    if (value instanceof Map<?, ?> map) {
+      for (Object element : map.values()) {
+        collectDbNames(element, seen, out);
+      }
+      return;
+    }
+    String directDbName = readDbNameProperty(value);
+    if (directDbName != null) {
+      out.add(directDbName);
+    }
+    String fullTableName = readFullTableNameProperty(value);
+    if (fullTableName != null) {
+      String extracted = extractDbNameFromFullTableName(fullTableName);
+      if (extracted != null) {
+        out.add(extracted);
+      }
+    }
+    List<String> fullTableNames = readFullTableNamesProperty(value);
+    if (fullTableNames != null) {
+      for (String candidate : fullTableNames) {
+        String extracted = extractDbNameFromFullTableName(candidate);
+        if (extracted != null) {
+          out.add(extracted);
+        }
+      }
+    }
+    if (value instanceof TBase<?, ?> thriftValue) {
+      if (!seen.add(thriftValue)) {
+        return;
+      }
+      for (TFieldIdEnum fieldId : ThriftReflectionCache.fieldIds(thriftValue)) {
+        Object fieldValue = ThriftReflectionCache.getField(thriftValue, fieldId);
+        collectDbNamesFromField(fieldId, fieldValue, out);
+        collectDbNames(fieldValue, seen, out);
+      }
+    }
+  }
+
+  private static void collectDbNamesFromField(TFieldIdEnum fieldId, Object fieldValue, Set<String> out) {
+    if (fieldValue == null) {
+      return;
+    }
+    String fieldName = fieldId.getFieldName();
+    if (fieldValue instanceof String stringValue) {
+      if (looksLikeDbNameField(fieldName)) {
+        String dbName = blankToNull(stringValue);
+        if (dbName != null) {
+          out.add(dbName);
+        }
+      } else if (looksLikeFullTableNameField(fieldName)) {
+        String dbName = extractDbNameFromFullTableName(stringValue);
+        if (dbName != null) {
+          out.add(dbName);
+        }
+      }
+    } else if (fieldValue instanceof List<?> listValue && looksLikeFullTableNamesField(fieldName)) {
+      for (Object element : listValue) {
+        if (element instanceof String stringValue) {
+          String extracted = extractDbNameFromFullTableName(stringValue);
+          if (extracted != null) {
+            out.add(extracted);
+          }
+        }
+      }
+    }
   }
 
   private static String extractDbName(Object value, Set<Object> seen) {
@@ -230,21 +323,26 @@ public final class NamespaceTranslator {
   }
 
   private static String normalizeCompatibilityDbName(String dbName) {
-    if (dbName == null || dbName.isBlank()) {
-      return dbName;
-    }
-    int hash = dbName.indexOf('#');
-    if (dbName.startsWith("@") && hash > 1) {
-      if (hash + 1 < dbName.length()) {
-        String remainder = dbName.substring(hash + 1);
-        if (remainder.equals("!")) {
-          return "";
-        }
-        return normalizeCompatibilityDbName(remainder);
+    String current = dbName;
+    for (int depth = 0; depth < MAX_COMPATIBILITY_PREFIX_DEPTH; depth++) {
+      if (current == null || current.isBlank()) {
+        return current;
       }
-      return "";
+      int hash = current.indexOf('#');
+      if (current.startsWith("@") && hash > 1) {
+        if (hash + 1 < current.length()) {
+          String remainder = current.substring(hash + 1);
+          if (remainder.equals("!")) {
+            return "";
+          }
+          current = remainder;
+          continue;
+        }
+        return "";
+      }
+      return current;
     }
-    return dbName;
+    return current;
   }
 
   static boolean looksLikeDbNameField(String fieldName) {

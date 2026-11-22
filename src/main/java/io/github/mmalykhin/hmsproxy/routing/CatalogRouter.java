@@ -17,7 +17,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig;
@@ -224,43 +223,52 @@ public final class CatalogRouter implements AutoCloseable {
     return backends.containsKey(catalog) ? catalog : null;
   }
 
-  private String normalizeExternalDbName(String dbName) {
-    if (dbName == null || dbName.isBlank()) {
-      return dbName;
-    }
-    int hash = dbName.indexOf('#');
-    if (dbName.startsWith("@") && hash > 1) {
-      if (hash + 1 < dbName.length()) {
-        String remainder = dbName.substring(hash + 1);
-        if (remainder.equals("!")) {
-          return "";
-        }
-        return normalizeExternalDbName(remainder);
-      }
-      return "";
-    }
-    for (CatalogPrefix candidate : patternPrefixes) {
-      if (dbName.startsWith(candidate.prefix())) {
-        String canonicalPrefix = candidate.catalogName() + config.catalogDbSeparator();
-        if (!candidate.prefix().equals(canonicalPrefix)) {
-          return canonicalPrefix + dbName.substring(candidate.prefix().length());
-        }
-        return dbName;
-      }
-    }
+  private static final int MAX_EXTERNAL_NAME_DEPTH = 32;
 
-    int dot = dbName.indexOf('.');
-    if (dot > 0) {
-      String remainder = dbName.substring(dot + 1);
-      if (looksLikeExternalDbName(remainder)) {
-        return normalizeExternalDbName(remainder);
+  private String normalizeExternalDbName(String dbName) {
+    String current = dbName;
+    for (int depth = 0; depth < MAX_EXTERNAL_NAME_DEPTH; depth++) {
+      if (current == null || current.isBlank()) {
+        return current;
       }
-      String prefixedCatalog = dbName.substring(0, dot);
-      if (prefixedCatalog.equalsIgnoreCase("hive") || prefixedCatalog.equalsIgnoreCase("spark_catalog")) {
-        return normalizeExternalDbName(remainder);
+      int hash = current.indexOf('#');
+      if (current.startsWith("@") && hash > 1) {
+        if (hash + 1 < current.length()) {
+          String remainder = current.substring(hash + 1);
+          if (remainder.equals("!")) {
+            return "";
+          }
+          current = remainder;
+          continue;
+        }
+        return "";
       }
+      for (CatalogPrefix candidate : patternPrefixes) {
+        if (current.startsWith(candidate.prefix())) {
+          String canonicalPrefix = candidate.catalogName() + config.catalogDbSeparator();
+          if (!candidate.prefix().equals(canonicalPrefix)) {
+            return canonicalPrefix + current.substring(candidate.prefix().length());
+          }
+          return current;
+        }
+      }
+
+      int dot = current.indexOf('.');
+      if (dot > 0) {
+        String remainder = current.substring(dot + 1);
+        if (looksLikeExternalDbName(remainder)) {
+          current = remainder;
+          continue;
+        }
+        String prefixedCatalog = current.substring(0, dot);
+        if (prefixedCatalog.equalsIgnoreCase("hive") || prefixedCatalog.equalsIgnoreCase("spark_catalog")) {
+          current = remainder;
+          continue;
+        }
+      }
+      return current;
     }
-    return dbName;
+    return current;
   }
 
   public String normalizeDatabasePattern(String dbPattern) {
@@ -450,6 +458,9 @@ public final class CatalogRouter implements AutoCloseable {
     return Optional.empty();
   }
 
+  private static final int PATTERN_ANY_SEQ = -1;
+  private static final int PATTERN_ANY_CHAR = -2;
+
   public static boolean matchesHivePattern(String value, String hivePattern) {
     if (hivePattern == null || hivePattern.isBlank() || "*".equals(hivePattern) || ".*".equals(hivePattern)) {
       return true;
@@ -457,36 +468,66 @@ public final class CatalogRouter implements AutoCloseable {
     if (value == null) {
       return false;
     }
-    Pattern compiled = compileHivePattern(hivePattern);
-    return compiled.matcher(value).matches();
-  }
-
-  static Pattern compileHivePattern(String hivePattern) {
     String[] branches = hivePattern.trim().split("\\|");
-    StringBuilder regex = new StringBuilder("(?i)^(");
-    for (int b = 0; b < branches.length; b++) {
-      if (b > 0) {
-        regex.append("|");
-      }
-      String branch = branches[b];
-      for (int i = 0; i < branch.length(); i++) {
-        char c = branch.charAt(i);
-        if (c == '*' || c == '%') {
-          regex.append(".*");
-        } else if (c == '?') {
-          regex.append(".");
-        } else if (c == '.' && i + 1 < branch.length() && branch.charAt(i + 1) == '*') {
-          regex.append(".*");
-          i++;
-        } else if ("()[]{}+^$\\|".indexOf(c) >= 0) {
-          regex.append("\\").append(c);
-        } else {
-          regex.append(c);
-        }
+    for (String branch : branches) {
+      if (matchesHiveBranch(value, branch)) {
+        return true;
       }
     }
-    regex.append(")$");
-    return Pattern.compile(regex.toString());
+    return false;
+  }
+
+  private static boolean matchesHiveBranch(String value, String branch) {
+    int[] tokens = compileBranchTokens(branch);
+    int vi = 0;
+    int ti = 0;
+    int starTi = -1;
+    int starVi = 0;
+    int valueLen = value.length();
+    int tokenLen = tokens.length;
+    while (vi < valueLen) {
+      if (ti < tokenLen && (tokens[ti] == PATTERN_ANY_CHAR
+          || Character.toLowerCase(value.charAt(vi)) == tokens[ti])) {
+        vi++;
+        ti++;
+      } else if (ti < tokenLen && tokens[ti] == PATTERN_ANY_SEQ) {
+        starTi = ti++;
+        starVi = vi;
+      } else if (starTi != -1) {
+        ti = starTi + 1;
+        vi = ++starVi;
+      } else {
+        return false;
+      }
+    }
+    while (ti < tokenLen && tokens[ti] == PATTERN_ANY_SEQ) {
+      ti++;
+    }
+    return ti == tokenLen;
+  }
+
+  private static int[] compileBranchTokens(String branch) {
+    int[] buffer = new int[branch.length()];
+    int len = 0;
+    for (int i = 0; i < branch.length(); i++) {
+      char c = branch.charAt(i);
+      int token;
+      if (c == '*' || c == '%') {
+        token = PATTERN_ANY_SEQ;
+      } else if (c == '.' && i + 1 < branch.length() && branch.charAt(i + 1) == '*') {
+        token = PATTERN_ANY_SEQ;
+        i++;
+      } else if (c == '?' || c == '.') {
+        token = PATTERN_ANY_CHAR;
+      } else {
+        token = Character.toLowerCase(c);
+      }
+      if (token == PATTERN_ANY_SEQ && len > 0 && buffer[len - 1] == PATTERN_ANY_SEQ) {
+        continue;
+      }
+      buffer[len++] = token;
+    }
+    return java.util.Arrays.copyOf(buffer, len);
   }
 
   private boolean looksLikeExternalDbName(String dbName) {

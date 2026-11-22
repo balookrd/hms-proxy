@@ -244,136 +244,149 @@ public final class RoutingMetaStoreProxy implements InvocationHandler, Hortonwor
     }
   }
 
+  private static Method extensionMethod(String name, Class<?>... parameterTypes) {
+    try {
+      return HortonworksFrontendExtension.class.getMethod(name, parameterTypes);
+    } catch (NoSuchMethodException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  private static final class ExtensionMethods {
+    static final Method ADD_WRITE_NOTIFICATION_LOG = extensionMethod("addWriteNotificationLog", Object.class);
+    static final Method GET_TABLES_EXT = extensionMethod("getTablesExt", Object.class);
+    static final Method GET_ALL_MV_FOR_REWRITING = extensionMethod("getAllMaterializedViewObjectsForRewriting");
+    static final Method SET_AGGR_STATS_FOR = extensionMethod("set_aggr_stats_for", Object.class);
+    static final Method ALTER_TABLE_REQ = extensionMethod("alter_table_req", Object.class);
+    static final Method ALTER_PARTITIONS_REQ = extensionMethod("alter_partitions_req", Object.class);
+    static final Method TRUNCATE_TABLE_REQ = extensionMethod("truncate_table_req", Object.class);
+    static final Method RENAME_PARTITION_REQ = extensionMethod("rename_partition_req", Object.class);
+    static final Method GET_TABLE_STATISTICS_REQ = extensionMethod("get_table_statistics_req", Object.class);
+    static final Method GET_PARTITIONS_STATISTICS_REQ = extensionMethod("get_partitions_statistics_req", Object.class);
+    static final Method ADD_PARTITIONS_REQ = extensionMethod("add_partitions_req", Object.class);
+    static final Method ADD_WRITE_NOTIFICATION_LOG_IN_BATCH =
+        extensionMethod("add_write_notification_log_in_batch", Object.class);
+    static final Method GET_TABLE_REQ = extensionMethod("get_table_req", Object.class);
+    static final Method GET_PARTITION_REQ = extensionMethod("get_partition_req", Object.class);
+    static final Method GET_PARTITIONS_REQ = extensionMethod("get_partitions_req", Object.class);
+    static final Method GET_PARTITIONS_BY_NAMES_REQ = extensionMethod("get_partitions_by_names_req", Object.class);
+    static final Method GET_PARTITIONS_BY_FILTER_REQ = extensionMethod("get_partitions_by_filter_req", Object.class);
+    static final Method GET_TABLE_OBJECTS_BY_NAME_REQ = extensionMethod("get_table_objects_by_name_req", Object.class);
+    static final Method CREATE_TABLE_REQ = extensionMethod("create_table_req", Object.class);
+    static final Method DELETE_COLUMN_STATISTICS_REQ = extensionMethod("delete_column_statistics_req", Object.class);
+    static final Method GET_ALL_TABLE_CONSTRAINTS = extensionMethod("get_all_table_constraints", Object.class);
+    static final Method GET_MAX_ALLOCATED_TABLE_WRITE_ID =
+        extensionMethod("get_max_allocated_table_write_id", Object.class);
+  }
+
   @Override
   public Object addWriteNotificationLog(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("addWriteNotificationLog", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.ADD_WRITE_NOTIFICATION_LOG, new Object[]{request});
   }
 
   @Override
   public Object getTablesExt(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("getTablesExt", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_TABLES_EXT, new Object[]{request});
   }
 
   @Override
   public Object getAllMaterializedViewObjectsForRewriting() throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("getAllMaterializedViewObjectsForRewriting");
-    return invoke(null, method, new Object[0]);
+    return invoke(null, ExtensionMethods.GET_ALL_MV_FOR_REWRITING, new Object[0]);
   }
 
   @Override
   public Object set_aggr_stats_for(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("set_aggr_stats_for", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.SET_AGGR_STATS_FOR, new Object[]{request});
   }
 
   @Override
   public Object alter_table_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("alter_table_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.ALTER_TABLE_REQ, new Object[]{request});
   }
 
   @Override
   public Object alter_partitions_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("alter_partitions_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.ALTER_PARTITIONS_REQ, new Object[]{request});
   }
 
   @Override
   public Object truncate_table_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("truncate_table_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.TRUNCATE_TABLE_REQ, new Object[]{request});
   }
 
   @Override
   public Object rename_partition_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("rename_partition_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.RENAME_PARTITION_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_table_statistics_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_table_statistics_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_TABLE_STATISTICS_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_partitions_statistics_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_statistics_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_PARTITIONS_STATISTICS_REQ, new Object[]{request});
   }
 
   @Override
   public Object add_partitions_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("add_partitions_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.ADD_PARTITIONS_REQ, new Object[]{request});
   }
 
   @Override
   public Object add_write_notification_log_in_batch(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("add_write_notification_log_in_batch", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.ADD_WRITE_NOTIFICATION_LOG_IN_BATCH, new Object[]{request});
   }
 
   @Override
   public Object get_table_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_table_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_TABLE_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_partition_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_partition_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_PARTITION_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_partitions_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_PARTITIONS_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_partitions_by_names_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_by_names_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_PARTITIONS_BY_NAMES_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_partitions_by_filter_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_partitions_by_filter_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_PARTITIONS_BY_FILTER_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_table_objects_by_name_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_table_objects_by_name_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_TABLE_OBJECTS_BY_NAME_REQ, new Object[]{request});
   }
 
   @Override
   public Object create_table_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("create_table_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.CREATE_TABLE_REQ, new Object[]{request});
   }
 
   @Override
   public Object delete_column_statistics_req(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("delete_column_statistics_req", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.DELETE_COLUMN_STATISTICS_REQ, new Object[]{request});
   }
 
   @Override
   public Object get_all_table_constraints(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_all_table_constraints", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_ALL_TABLE_CONSTRAINTS, new Object[]{request});
   }
 
   @Override
   public Object get_max_allocated_table_write_id(Object request) throws Throwable {
-    Method method = HortonworksFrontendExtension.class.getMethod("get_max_allocated_table_write_id", Object.class);
-    return invoke(null, method, new Object[]{request});
+    return invoke(null, ExtensionMethods.GET_MAX_ALLOCATED_TABLE_WRITE_ID, new Object[]{request});
   }
 
   private void emitAuditLog(long requestId, RequestObservation observation, long elapsedMs) {

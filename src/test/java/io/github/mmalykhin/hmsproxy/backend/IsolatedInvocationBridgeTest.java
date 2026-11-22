@@ -197,6 +197,43 @@ public class IsolatedInvocationBridgeTest {
     Assert.assertEquals(List.of("dev", "analytics"), capturedGroups.get());
   }
 
+  public interface ListOverloadTarget {
+    String accept(List<String> items);
+  }
+
+  @Test
+  public void listParameterTypeDoesNotMatchMapParameterType() throws Throwable {
+    ListOverloadTarget delegate = items -> "ok:" + items.size();
+    IsolatedInvocationBridge bridge = new IsolatedInvocationBridge(
+        IsolatedInvocationBridgeTest.class.getClassLoader(),
+        delegate,
+        ListOverloadTarget.class);
+
+    Assert.assertThrows(
+        NoSuchMethodException.class,
+        () -> bridge.invokeByName("accept", new Class<?>[] {java.util.Map.class}, new Object[] {java.util.Map.of()}));
+    Assert.assertEquals(
+        "ok:2",
+        bridge.invokeByName("accept", new Class<?>[] {java.util.ArrayList.class}, new Object[] {List.of("a", "b")}));
+  }
+
+  @Test
+  public void thriftMethodCacheKeysUseTypeNamesInsteadOfClassReferences() throws Exception {
+    java.lang.reflect.Method resolved = ThriftMethodCache.lookup(
+        ListOverloadTarget.class,
+        "accept",
+        new Class<?>[] {List.class},
+        () -> ListOverloadTarget.class.getMethod("accept", List.class));
+    Assert.assertEquals("accept", resolved.getName());
+    for (Class<?> declaredClass : ThriftMethodCache.class.getDeclaredClasses()) {
+      if (declaredClass.getSimpleName().equals("MethodKey")) {
+        for (java.lang.reflect.RecordComponent rc : declaredClass.getRecordComponents()) {
+          Assert.assertNotSame(Class[].class, rc.getType());
+        }
+      }
+    }
+  }
+
   private static BridgeBundle createBridge(InvocationHandler invocationHandler) throws Exception {
     ClassLoader classLoader = new MetastoreApiClassLoader(
         new java.net.URL[] {HDP_JAR.toUri().toURL()},

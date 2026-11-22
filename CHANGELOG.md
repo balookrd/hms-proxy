@@ -8,6 +8,28 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Исправлено и изменено (Политика мутаций, Маршрутизация, View SQL, Пулы бэкендов и Iceberg REST — Волна 3B)
+
+- **Fail-closed классификация RPC и канонизация имён (`config/operation`)**:
+  - `HmsMethodNameHeuristics.deriveMutation` переведён в fail-closed: неизвестные методы по умолчанию считаются мутирующими (`true`), а не read-only.
+  - В `HmsOperationPolicy` (`describe`, `replayableAfterLostReply`) добавлен fallback-поиск через `HmsMethodNames.canonicalize` (`camelCase` → `snake_case`); явно размечены как `.nonMutating()` introspection/FB303 RPC (`getName`, `getVersion`, `aliveSince`, `getStatus`, `get_catalogs`, `get_catalog`, `get_config_value`, `partition_name_*`), `isPartitionMarkedForEvent`, Hive 4 read `fetch_partition_names_req`, запросы ролей/привилегий и read-методы (`validate_resource_plan`, `find_columns_with_stats`, `find_package`, `translate_table_dryrun`), а `flushCache` размечен как `.mutating()`.
+- **Безопасность маршрутизации, ReDoS-защита и `catName`/`*_req` (`routing`, `federation`)**:
+  - В `NamespaceTranslator` и `CatalogRouter` рекурсивный разбор префиксов заменён на итеративный с порогом глубины (`32`); в `CatalogRouter` удалён `java.util.regex.Pattern` и внедрён линейный ReDoS-безопасный матчер Hive-шаблонов (`*`, `|`).
+  - `FederationLayer.findNamespaceInArgs` проверяет согласованность каталогов по всем элементам аргумента через `NamespaceTranslator.extractDbNames`.
+  - В `CatalogConfig.isWriteDbWhitelisted` (и в `CatalogAccessModeGuard`, `RefreshPrivilegesHandler`) сравнение имён баз из `catalog.<name>.write-db-whitelist` стало регистронезависимым.
+  - Обработчики `*_req` и batch RPC (`AddWriteNotificationLogBatchHandler`, `AddWriteNotificationLogHandler`, `DeleteColumnStatisticsReqHandler`, `TruncateTableReqHandler`, `AddPartitionsReqHandler`, `AlterPartitionsReqHandler`, `RenamePartitionHandler`, `SetAggrStatsForHandler`, `CreateTableReqHandler`, `AlterTableHandler`) теперь маршрутизируются с учётом `catName`/`cat_name`/`catalog` без мутации исходного объекта запроса; `add_write_notification_log_in_batch` поэлементно валидирует каталог и права по `requestList` (сохраняя обязательное поле `catalog` в Hive 4), а `create_table_req` — внешние ключи `fk.pktable_db`/`fk.catName` без преждевременного снятия префикса.
+  - В `SparkPlaceholderNamespace` удалена грубая проверка `message.contains("/")`, скрывавшая ошибки по партициям со слэшами (оставлены `://` и файловые path-паттерны).
+- **View SQL и CTE-парсер (`federation`)**:
+  - `ViewDefinitionCompatibility` ограничивает `numParts <= 16` и экранирует обратными кавычками (backticks) внешние имена БД со спецсимволами.
+  - `SqlReferenceScanner.findCteNames` переведён на итеративный разбор с поддержкой `WITH RECURSIVE`, `AS MATERIALIZED`, `AS NOT MATERIALIZED` и вложенных `WITH`.
+- **Пулы бэкендов, кэш outbound Kerberos UGI и изолированный рантайм (`backend`, `thriftbridge`, `frontend`, `security`)**:
+  - Вынесен общий `OutboundKerberosUgiCache` с `checkTGTAndReloginFromKeytab()` и перелогином из keytab; в `IsolatedMetastoreClient` добавлен per-classloader кэш UGI через `ClassValue`.
+  - В `BackendRuntime` и `CatalogBackend` read timeout на `probe()` заменяет только текущую сессию без закрытия всего idle-пула, `Error` пробрасывается с освобождением permit (`discard`), а в `BackendRuntime.close()` введён режим `draining`: новые внешние вызовы отклоняются сразу, тогда как уже поставленные отмены delegation token (`cancel_delegation_token`) доезжают до конца.
+  - Исправлены классификация `"connect timed out"` / `"connection timed out"` в `ThriftFailureClassifier.isReadTimeout`, раздельный перевод `List`/`Map` в `IsolatedInvocationBridge`, хранение имён типов вместо `Class<?>` в `ThriftMethodCache.MethodKey`, child-first `getResource`/`getResources` в `MetastoreApiClassLoader`, делегация 8 `*_req`/Hive 4 RPC в `HortonworksFrontendBridge`, кэширование `ExtensionMethods` в `RoutingMetaStoreProxy`, передача per-listener `FrontendProfile` через `ClientRequestContext` (включая `Snapshot` для fanout) и очистка `clearThreadLocalMetaConf()` в `finally`.
+- **Iceberg REST (`restcatalog`)**:
+  - `RestCatalogServer` отдаёт ответы на HTTP `HEAD` без тела с корректным `Content-Length`; `IcebergHttpHandler` очищает `clearThreadLocalMetaConf()` в `finally`.
+  - В `GuardedFileIO`, `RoutingHiveCatalog`, `IcebergRestService` и `IcebergRestServices` добавлен `PrivilegedRunner`, выполняющий операции FileIO через `UserGroupInformation.doAs` (с `OutboundKerberosUgiCache`) при `security.mode=KERBEROS`.
+
 ### Исправлено (Стабильность, Безопасность и Эксплуатация — Волна 3A)
 
 - **Hardening `RangerMetadataAuthorizer` и `GroupDiskCache`**:

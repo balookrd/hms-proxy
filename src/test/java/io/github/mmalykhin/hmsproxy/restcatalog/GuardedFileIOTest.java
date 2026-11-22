@@ -278,6 +278,54 @@ public class GuardedFileIOTest {
     }
   }
 
+  @Test
+  public void executesFileOperationsThroughConfiguredPrivilegedRunner() {
+    Configuration hdfsConf = new Configuration(false);
+    hdfsConf.set("fs.defaultFS", "file:///");
+    RestFileIoPathGuard guard = new RestFileIoPathGuard(hdfsConf, List.of("file:///tmp/"), List.of());
+
+    java.util.concurrent.atomic.AtomicInteger runnerInvocations =
+        new java.util.concurrent.atomic.AtomicInteger();
+    GuardedFileIO.PrivilegedRunner countingRunner = new GuardedFileIO.PrivilegedRunner() {
+      @Override
+      public <T> T run(java.util.function.Supplier<T> action) {
+        runnerInvocations.incrementAndGet();
+        return action.get();
+      }
+    };
+
+    FileIO rawIo = new FileIO() {
+      @Override
+      public InputFile newInputFile(String path) {
+        return org.apache.iceberg.Files.localInput("/tmp/example-nonexistent.json");
+      }
+
+      @Override
+      public OutputFile newOutputFile(String path) {
+        return org.apache.iceberg.Files.localOutput("/tmp/example-out.json");
+      }
+
+      @Override
+      public void deleteFile(String path) {
+      }
+    };
+
+    GuardedFileIO io = new GuardedFileIO(
+        rawIo,
+        guard,
+        new IcebergPurgePolicy(RestCatalogPurgeMode.ALLOW, List.of()),
+        0L,
+        countingRunner);
+
+    InputFile in = io.newInputFile("file:///tmp/example-nonexistent.json");
+    in.exists();
+    OutputFile out = io.newOutputFile("file:///tmp/example-out.json");
+    out.toInputFile().exists();
+    io.deleteFile("file:///tmp/example-out.json");
+
+    Assert.assertEquals(6, runnerInvocations.get());
+  }
+
   private static FileIO failOnDelegateCall() {
     return new FileIO() {
       @Override

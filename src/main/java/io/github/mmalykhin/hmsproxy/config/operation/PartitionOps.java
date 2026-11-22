@@ -19,7 +19,11 @@ final class PartitionOps {
         "get_table_column_statistics", "get_partition_column_statistics");
     r.op("isPartitionMarkedForEvent", o -> o.cls(HmsOperationClass.METADATA_READ)
         .ns(NamespaceStrategy.DB_FIRST_STRING_ARG0)
-        .expose(TableExposureMode.TABLE_ARG1));
+        .expose(TableExposureMode.TABLE_ARG1)
+        .nonMutating());
+    r.op("fetch_partition_names_req", o -> o.cls(HmsOperationClass.METADATA_READ)
+        .ns(NamespaceStrategy.EXTRACT_FROM_ARGS)
+        .nonMutating());
 
     // Writes and bookkeeping.
     r.op("append_partition", o -> o.ns(NamespaceStrategy.DB_FIRST_STRING_ARG0).trace());

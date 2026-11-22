@@ -149,6 +149,50 @@ public class HmsOperationPolicyTest {
   }
 
   @Test
+  public void unknownMethodsFailClosedAsMutating() {
+    OperationMetadata unknown = HmsOperationPolicy.describe("frobnicate_tables");
+    Assert.assertTrue(unknown.mutating());
+    Assert.assertTrue(HmsOperationPolicy.describe("custom_unknown_rpc").mutating());
+    Assert.assertFalse(HmsOperationPolicy.replayableAfterLostReply("custom_unknown_rpc"));
+  }
+
+  @Test
+  public void camelCaseCompatibilityOpsResolveToRegisteredMetadata() {
+    OperationMetadata addLog = HmsOperationPolicy.describe("addWriteNotificationLog");
+    Assert.assertEquals(HmsOperationClass.COMPATIBILITY_ONLY_RPC, addLog.operationClass());
+    Assert.assertTrue(addLog.hdpAdapted());
+    Assert.assertTrue(addLog.mutating());
+    Assert.assertTrue(addLog.trace());
+
+    OperationMetadata tablesExt = HmsOperationPolicy.describe("getTablesExt");
+    Assert.assertEquals(HmsOperationClass.COMPATIBILITY_ONLY_RPC, tablesExt.operationClass());
+    Assert.assertTrue(tablesExt.hdpAdapted());
+    Assert.assertFalse(tablesExt.mutating());
+
+    OperationMetadata mv = HmsOperationPolicy.describe("getAllMaterializedViewObjectsForRewriting");
+    Assert.assertEquals(HmsOperationClass.COMPATIBILITY_ONLY_RPC, mv.operationClass());
+    Assert.assertTrue(mv.hdpAdapted());
+    Assert.assertFalse(mv.mutating());
+  }
+
+  @Test
+  public void knownNonPrefixedReadsStayNonMutating() {
+    for (String method : java.util.List.of(
+        "aliveSince",
+        "partition_name_has_valid_characters",
+        "partition_name_to_spec",
+        "partition_name_to_vals",
+        "isPartitionMarkedForEvent",
+        "validate_resource_plan",
+        "fetch_partition_names_req",
+        "find_columns_with_stats",
+        "find_package",
+        "translate_table_dryrun")) {
+      Assert.assertFalse(method, HmsOperationPolicy.describe(method).mutating());
+    }
+  }
+
+  @Test
   public void noMutatingMetastoreMethodIsReplayable() {
     for (Method method : ThriftHiveMetastore.Iface.class.getMethods()) {
       if (HmsOperationPolicy.describe(method.getName()).mutating()) {

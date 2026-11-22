@@ -564,6 +564,58 @@ public class FederationLayerTest {
     Assert.assertEquals("inrs_dds", routed.getParameters().get("view.catalogAndNamespace.part.1"));
   }
 
+  @Test
+  public void viewWithMoreThanSixteenNamespacePartsSkipsNumPartsRewrite() throws Exception {
+    ProxyConfig config = viewRewriteConfig(true);
+    FederationLayer layer = federationLayer(config);
+    CatalogRouter.ResolvedNamespace namespace = layer.resolveCatalog("catalog2", "dim");
+
+    Table view = viewTable("select * from dim.t1", "select * from `dim`.`t1`");
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("view.catalogAndNamespace.numParts", "17");
+    params.put("view.catalogAndNamespace.part.16", "dim");
+    view.setParameters(params);
+
+    Table routed = (Table) layer.externalizeResult(view, namespace);
+    Assert.assertEquals("dim", routed.getParameters().get("view.catalogAndNamespace.part.16"));
+  }
+
+  @Test
+  public void externalizeUnqualifiedViewQuotesExternalDbContainingSpecialCharacters() throws Exception {
+    ProxyConfig config = viewRewriteConfig(false);
+    FederationLayer layer = federationLayer(config);
+    CatalogRouter.ResolvedNamespace namespace = layer.resolveCatalog("catalog2", "sales-eu");
+
+    Table view = viewTable("select * from orders", "select * from `orders`");
+    view.setDbName("sales-eu");
+
+    Table routed = (Table) layer.externalizeResult(view, namespace);
+    Assert.assertEquals("select * from `catalog2__sales-eu`.orders", routed.getViewOriginalText());
+    Assert.assertEquals("select * from `catalog2__sales-eu`.`orders`", routed.getViewExpandedText());
+  }
+
+  @Test
+  public void rewriteViewHandlesWithRecursiveMaterializedAndNestedWith() throws Exception {
+    ProxyConfig config = viewRewriteConfig(false);
+    FederationLayer layer = federationLayer(config);
+    CatalogRouter.ResolvedNamespace namespace = layer.resolveCatalog("catalog2", "sales");
+
+    String sql = "WITH RECURSIVE cte1 AS MATERIALIZED (SELECT * FROM orders), "
+        + "cte2 AS NOT MATERIALIZED (WITH inner_cte AS (SELECT * FROM customers) "
+        + "SELECT * FROM inner_cte JOIN cte1 ON 1=1) "
+        + "SELECT * FROM cte2";
+    Table view = viewTable(sql, sql);
+    view.setDbName("sales");
+
+    Table routed = (Table) layer.externalizeResult(view, namespace);
+    String expected = "WITH RECURSIVE cte1 AS MATERIALIZED (SELECT * FROM catalog2__sales.orders), "
+        + "cte2 AS NOT MATERIALIZED (WITH inner_cte AS (SELECT * FROM catalog2__sales.customers) "
+        + "SELECT * FROM inner_cte JOIN cte1 ON 1=1) "
+        + "SELECT * FROM cte2";
+    Assert.assertEquals(expected, routed.getViewOriginalText());
+    Assert.assertEquals(expected, routed.getViewExpandedText());
+  }
+
   private static Table viewTable(String viewOriginalText, String viewExpandedText) {
     Table table = new Table();
     table.setTableType("VIRTUAL_VIEW");

@@ -27,6 +27,13 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
       return new AtomicBoolean(false);
     }
   };
+  private static final ClassValue<java.util.concurrent.ConcurrentMap<String, Object>> CHILD_UGI_CACHE =
+      new ClassValue<>() {
+        @Override
+        protected java.util.concurrent.ConcurrentMap<String, Object> computeValue(Class<?> type) {
+          return new java.util.concurrent.ConcurrentHashMap<>();
+        }
+      };
 
   private final Object client;
   private final IsolatedInvocationBridge bridge;
@@ -262,9 +269,7 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
               clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
     }
 
-    Method loginUserFromKeytabAndReturnUgi =
-        childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
-    Object childUgi = loginUserFromKeytabAndReturnUgi.invoke(null, principal, keytab);
+    Object childUgi = getOrLoginChildUgi(childUgiClass, principal, keytab);
     // The isolated runtime has its own UserGroupInformation class, so health probes track the
     // login subject, which stays a shared JDK type.
     BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(childUgi));
@@ -272,6 +277,31 @@ public final class IsolatedMetastoreClient implements AutoCloseable {
     return doAs.invoke(childUgi, (java.security.PrivilegedExceptionAction<Object>) () ->
         withContextClassLoader(classLoader, () ->
             clientClass.getConstructor(childConfigurationClass).newInstance(isolatedConf)));
+  }
+
+  private static Object getOrLoginChildUgi(Class<?> childUgiClass, String principal, String keytab)
+      throws Exception {
+    java.util.concurrent.ConcurrentMap<String, Object> cache = CHILD_UGI_CACHE.get(childUgiClass);
+    String cacheKey = principal + "\0" + keytab;
+    Object existing = cache.get(cacheKey);
+    if (existing != null) {
+      synchronized (existing) {
+        if (cache.get(cacheKey) == existing) {
+          try {
+            Method checkAndRelogin = childUgiClass.getMethod("checkTGTAndReloginFromKeytab");
+            checkAndRelogin.invoke(existing);
+            return existing;
+          } catch (Exception refreshFailure) {
+            cache.remove(cacheKey, existing);
+          }
+        }
+      }
+    }
+    Method loginUserFromKeytabAndReturnUgi =
+        childUgiClass.getMethod("loginUserFromKeytabAndReturnUGI", String.class, String.class);
+    Object fresh = loginUserFromKeytabAndReturnUgi.invoke(null, principal, keytab);
+    Object race = cache.putIfAbsent(cacheKey, fresh);
+    return race != null ? race : fresh;
   }
 
   @FunctionalInterface

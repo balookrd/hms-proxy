@@ -19,14 +19,15 @@ final class TruncateTableReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
+    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
     String dbName = NamespaceTranslator.extractDbName(request);
     if (dbName == null) {
       throw new MetaException("truncate_table_req requires a target database");
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("truncate_table_req", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("truncate_table_req", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "truncate_table_req", namespace.backendDbName());
 

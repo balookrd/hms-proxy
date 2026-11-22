@@ -134,11 +134,17 @@ public class SparkPlaceholderNamespaceTest {
         SparkPlaceholderNamespace.newNoSuchTableException("cat", "csv", "hdfs://path")));
     Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
         new NoSuchObjectException("Table hdfs://cluster/path not found")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        new NoSuchObjectException("Database /warehouse/ext not found")));
+    Assert.assertTrue(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        SparkPlaceholderNamespace.newNoSuchTableException("hive", "default", "/warehouse/data")));
 
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
         new NoSuchObjectException("Database real_db not found")));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
         new NoSuchObjectException("cat.db.my_table table not found")));
+    Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(
+        new NoSuchObjectException("Partition dt=2026/01/01 not found")));
     Assert.assertFalse(SparkPlaceholderNamespace.isSparkPlaceholderNoSuchObject(null));
   }
 

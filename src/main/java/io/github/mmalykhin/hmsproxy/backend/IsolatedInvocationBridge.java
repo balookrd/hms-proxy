@@ -129,8 +129,8 @@ public final class IsolatedInvocationBridge {
       if (candidate.getName().equals(requested.getName())) {
         continue;
       }
-      if ((candidate == List.class || candidate == Map.class)
-          && (requested == List.class || requested == Map.class)) {
+      if ((List.class.isAssignableFrom(candidate) && List.class.isAssignableFrom(requested))
+          || (Map.class.isAssignableFrom(candidate) && Map.class.isAssignableFrom(requested))) {
         continue;
       }
       if (candidate.isPrimitive() && wrapPrimitive(candidate) == requested) {

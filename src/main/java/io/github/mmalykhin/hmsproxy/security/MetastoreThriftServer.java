@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import io.github.mmalykhin.hmsproxy.frontend.FrontendProcessorFactory;
 import io.github.mmalykhin.hmsproxy.config.server.ClientSocketConfig;
 import java.net.BindException;
@@ -37,7 +38,17 @@ public final class MetastoreThriftServer {
       FrontDoorSecurity frontDoorSecurity
   ) throws Exception {
     this.listenerName = config.server().name();
-    TProcessor processor = FrontendProcessorFactory.create(config, handler);
+    FrontendProfile listenerProfile = config.compatibility().frontendProfile();
+    TProcessor rawProcessor = FrontendProcessorFactory.create(config, handler);
+    TProcessor processor = (in, out) -> {
+      FrontendProfile previousProfile = ClientRequestContext.setFrontendProfile(listenerProfile);
+      try {
+        return rawProcessor.process(in, out);
+      } finally {
+        ClientRequestContext.restoreFrontendProfile(previousProfile);
+        ClientRequestContext.clearThreadLocalMetaConf();
+      }
+    };
     ClientSocketConfig clientSocket = config.server().clientSocket();
     try {
       this.serverSocket = new FrontDoorServerSocket(

@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
 import io.github.mmalykhin.hmsproxy.observability.PrometheusMetrics;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
+import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -12,11 +13,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.Assume;
 import org.junit.Assert;
 import org.junit.Test;
@@ -1146,6 +1150,313 @@ public class BackendRuntimeTest {
     for (CloseRecorder r : recorders) {
       Assert.assertEquals("every opened session must be closed cleanly once", 1, r.closes());
     }
+  }
+
+  @Test
+  public void borrowValidatedPropagatesErrorAndReleasesPermit() throws Throwable {
+    CloseRecorder firstRecorder = new CloseRecorder();
+    CloseRecorder secondRecorder = new CloseRecorder();
+    AtomicInteger opens = new AtomicInteger();
+    AtomicBoolean failProbe = new AtomicBoolean(false);
+    AtomicInteger createTableCalls = new AtomicInteger();
+
+    ControlledSessionFactory factory = new ControlledSessionFactory(
+        () -> {
+          int index = opens.incrementAndGet();
+          CloseRecorder recorder = index == 1 ? firstRecorder : secondRecorder;
+          ThriftHiveMetastore.Iface client = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+              ThriftHiveMetastore.Iface.class.getClassLoader(),
+              new Class<?>[] {ThriftHiveMetastore.Iface.class},
+              (proxy, method, args) -> {
+                if ("getStatus".equals(method.getName())) {
+                  if (index == 1 && failProbe.get()) {
+                    throw new AssertionError("probe error");
+                  }
+                  return null;
+                }
+                if ("create_table".equals(method.getName())) {
+                  createTableCalls.incrementAndGet();
+                  return null;
+                }
+                throw new UnsupportedOperationException(method.getName());
+              });
+          return isolatedSession(recorder, client);
+        },
+        false,
+        2);
+
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        validatedPooledCatalogConfig(1, 1L),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+    try {
+      runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]);
+      Thread.sleep(5L);
+      failProbe.set(true);
+
+      AssertionError error = Assert.assertThrows(
+          AssertionError.class,
+          () -> runtime.invokeSharedByName(
+              "create_table", new Class<?>[] {Table.class}, new Object[] {new Table()}));
+      Assert.assertEquals("probe error", error.getMessage());
+      Assert.assertEquals("session failing probe with Error must be discarded", 1, firstRecorder.closes());
+      Assert.assertEquals(0, createTableCalls.get());
+
+      // Permit was released on Error discard so a replacement session can still be opened.
+      runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]);
+      Assert.assertEquals(2, opens.get());
+    } finally {
+      runtime.close();
+    }
+    Assert.assertEquals(1, secondRecorder.closes());
+  }
+
+  @Test
+  public void borrowValidatedReadTimeoutReplacesOnlyProbedSessionAndKeepsOtherIdleSessions() throws Throwable {
+    List<CloseRecorder> recorders = java.util.Collections.synchronizedList(new ArrayList<>());
+    AtomicReference<CloseRecorder> timedOutRecorder = new AtomicReference<>();
+    AtomicBoolean warmupComplete = new AtomicBoolean(false);
+    AtomicBoolean timeoutOnce = new AtomicBoolean(true);
+    CountDownLatch warmupEntered = new CountDownLatch(2);
+    CountDownLatch releaseWarmup = new CountDownLatch(1);
+    AtomicInteger createTableCalls = new AtomicInteger();
+
+    ControlledSessionFactory factory = new ControlledSessionFactory(
+        () -> {
+          CloseRecorder recorder = new CloseRecorder();
+          recorders.add(recorder);
+          ThriftHiveMetastore.Iface client = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+              ThriftHiveMetastore.Iface.class.getClassLoader(),
+              new Class<?>[] {ThriftHiveMetastore.Iface.class},
+              (proxy, method, args) -> {
+                if ("getStatus".equals(method.getName())) {
+                  if (!warmupComplete.get()) {
+                    warmupEntered.countDown();
+                    if (!releaseWarmup.await(10, TimeUnit.SECONDS)) {
+                      throw new IllegalStateException("warmup never released");
+                    }
+                    return null;
+                  }
+                  if (timeoutOnce.compareAndSet(true, false)) {
+                    timedOutRecorder.set(recorder);
+                    throw new TTransportException(new SocketTimeoutException("Read timed out"));
+                  }
+                  return null;
+                }
+                if ("create_table".equals(method.getName())) {
+                  createTableCalls.incrementAndGet();
+                  return null;
+                }
+                throw new UnsupportedOperationException(method.getName());
+              });
+          return isolatedSession(recorder, client);
+        },
+        false,
+        3);
+
+    BackendRuntime runtime = BackendRuntime.open(
+        config(),
+        validatedPooledCatalogConfig(2, 1L),
+        new HiveConf(),
+        false,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory);
+    try {
+      AtomicReference<Throwable> warmupFailure = new AtomicReference<>();
+      Runnable warmupCall = () -> {
+        try {
+          runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]);
+        } catch (Throwable t) {
+          warmupFailure.compareAndSet(null, t);
+        }
+      };
+      Thread t1 = new Thread(warmupCall, "warmup-1");
+      Thread t2 = new Thread(warmupCall, "warmup-2");
+      t1.start();
+      t2.start();
+      Assert.assertTrue("both sessions must open during warmup", warmupEntered.await(10, TimeUnit.SECONDS));
+      releaseWarmup.countDown();
+      t1.join(10_000L);
+      t2.join(10_000L);
+      Assert.assertNull(warmupFailure.get());
+      Assert.assertEquals(2, recorders.size());
+
+      warmupComplete.set(true);
+      Thread.sleep(5L);
+
+      runtime.invokeSharedByName(
+          "create_table", new Class<?>[] {Table.class}, new Object[] {new Table()});
+      Assert.assertEquals(1, createTableCalls.get());
+      Assert.assertEquals("no third session should open when another healthy idle session exists", 2, factory.opens.get());
+      CloseRecorder bad = timedOutRecorder.get();
+      Assert.assertNotNull(bad);
+      Assert.assertEquals("timed-out probed session must be closed", 1, bad.closes());
+      for (CloseRecorder recorder : recorders) {
+        if (recorder != bad) {
+          Assert.assertEquals("other idle session must stay alive on probe read timeout", 0, recorder.closes());
+        }
+      }
+    } finally {
+      runtime.close();
+    }
+  }
+
+  @Test
+  public void closeDrainsQueuedTokenCancellationsWhileRejectingNewExternalCalls() throws Exception {
+    List<String> cancelled = new java.util.concurrent.CopyOnWriteArrayList<>();
+    AtomicInteger tokenSeq = new AtomicInteger();
+    CountDownLatch firstCancelEntered = new CountDownLatch(1);
+    CountDownLatch allowFirstCancelFinish = new CountDownLatch(1);
+
+    BackendRuntime.SessionFactory factory = new BackendRuntime.SessionFactory() {
+      @Override
+      public BackendInvocationSession open(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile
+      ) throws MetaException {
+        try {
+          ThriftHiveMetastore.Iface thriftClient = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+              ThriftHiveMetastore.Iface.class.getClassLoader(),
+              new Class<?>[] {ThriftHiveMetastore.Iface.class},
+              (proxy, method, args) -> {
+                if ("getStatus".equals(method.getName())) {
+                  return null;
+                }
+                if ("get_delegation_token".equals(method.getName())) {
+                  return "token-" + tokenSeq.incrementAndGet();
+                }
+                if ("cancel_delegation_token".equals(method.getName())) {
+                  String token = (String) args[0];
+                  if ("token-1".equals(token)) {
+                    firstCancelEntered.countDown();
+                    if (!allowFirstCancelFinish.await(10, TimeUnit.SECONDS)) {
+                      throw new IllegalStateException("first token cancel was never released");
+                    }
+                  }
+                  cancelled.add(token);
+                  return null;
+                }
+                throw new UnsupportedOperationException(method.getName());
+              });
+          Constructor<BackendInvocationSession> ctor = BackendInvocationSession.class.getDeclaredConstructor(
+              org.apache.hadoop.hive.metastore.HiveMetaStoreClient.class,
+              ThriftHiveMetastore.Iface.class,
+              IsolatedMetastoreClient.class);
+          ctor.setAccessible(true);
+          return ctor.newInstance(null, thriftClient, null);
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+
+      @Override
+      public BackendInvocationSession openImpersonating(
+          ProxyConfig proxyConfig,
+          CatalogConfig catalogConfig,
+          HiveConf hiveConf,
+          boolean backendKerberosEnabled,
+          MetastoreRuntimeProfile runtimeProfile,
+          String userName,
+          List<String> groupNames
+      ) throws MetaException {
+        try {
+          return newSession();
+        } catch (Exception e) {
+          throw new MetaException(e.getMessage());
+        }
+      }
+    };
+
+    ProxyConfig proxyConfig = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(
+            SecurityMode.KERBEROS, "hive/proxy@EXAMPLE.COM", null, "/tmp/k.keytab", null, true, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of("catalog1", catalogConfig(null, null)))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+    BackendRuntime runtime = BackendRuntime.open(
+        proxyConfig,
+        catalogConfig(MetastoreRuntimeProfile.APACHE_3_1_3, null),
+        new HiveConf(),
+        true,
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        factory,
+        null);
+
+    BackendInvocationSession first = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user_1", List.of("users"));
+    BackendInvocationSession second = runtime.openImpersonationSession(
+        MetastoreRuntimeProfile.APACHE_3_1_3, "tech_user_2", List.of("users"));
+
+    first.close();
+    Assert.assertTrue("first token cancellation should begin executing", firstCancelEntered.await(10, TimeUnit.SECONDS));
+    second.close();
+
+    Thread closer = new Thread(runtime::close, "runtime-drain-closer");
+    closer.start();
+    try {
+      awaitUntil(() -> !runtime.hasActiveSession());
+
+      MetaException externalInvokeError = Assert.assertThrows(
+          MetaException.class,
+          () -> runtime.invokeSharedByName("getStatus", new Class<?>[0], new Object[0]));
+      Assert.assertTrue(externalInvokeError.getMessage(), externalInvokeError.getMessage().contains("closed"));
+
+      MetaException externalImpersonationError = Assert.assertThrows(
+          MetaException.class,
+          () -> runtime.openImpersonationSession(
+              MetastoreRuntimeProfile.APACHE_3_1_3, "alice", List.of("users")));
+      Assert.assertTrue(
+          externalImpersonationError.getMessage(), externalImpersonationError.getMessage().contains("closed"));
+    } finally {
+      allowFirstCancelFinish.countDown();
+      closer.join(10_000L);
+    }
+
+    Assert.assertEquals(List.of("token-1", "token-2"), cancelled);
+  }
+
+  private static CatalogConfig validatedPooledCatalogConfig(
+      int sharedSessionPoolSize,
+      long sessionValidateAfterIdleMs
+  ) {
+    return new CatalogConfig(
+        "catalog1",
+        "c1",
+        "file:///c1",
+        false,
+        CatalogAccessMode.READ_WRITE,
+        List.of(),
+        CatalogExposureMode.ALLOW_ALL,
+        List.of(),
+        Map.of(),
+        List.of(),
+        MetastoreRuntimeProfile.APACHE_3_1_3,
+        null,
+        Map.of("hive.metastore.uris", "thrift://one"),
+        200L,
+        128,
+        0L,
+        sharedSessionPoolSize,
+        4,
+        0L,
+        null,
+        null,
+        true,
+        0,
+        10_000L,
+        null,
+        false,
+        false,
+        sessionValidateAfterIdleMs);
   }
 
   private static ThriftHiveMetastore.Iface dummyStatusClient() {

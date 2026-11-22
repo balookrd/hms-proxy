@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +64,31 @@ public class RestCatalogServerTest {
       HttpResponse<String> response = request(server, "/v1/namespaces", "GET");
       Assert.assertEquals(404, response.statusCode());
       Assert.assertTrue(response.body().contains("\"code\":404"));
+    }
+  }
+
+  @Test
+  public void headRequestsSendContentLengthWithoutResponseBody() throws Exception {
+    ProxyConfig config = buildConfig(new RestCatalogConfig(
+        true, "127.0.0.1", 0, 1, 4, null, null, RestCatalogPurgeMode.ALLOW, List.of(), true));
+    try (RestCatalogServer server = RestCatalogServer.open(config, null, new PrometheusMetrics())) {
+      HttpResponse<String> configGet = request(server, "/v1/config", "GET");
+      HttpResponse<String> configHead = request(server, "/v1/config", "HEAD");
+      Assert.assertEquals(200, configHead.statusCode());
+      Assert.assertEquals("", configHead.body());
+      Assert.assertEquals(
+          String.valueOf(configGet.body().getBytes(StandardCharsets.UTF_8).length),
+          configHead.headers().firstValue("Content-Length").orElse(""));
+
+      HttpResponse<String> notFoundGet = request(server, "/v1/namespaces", "GET");
+      HttpResponse<String> notFoundHead = request(server, "/v1/namespaces", "HEAD");
+      Assert.assertEquals(404, notFoundHead.statusCode());
+      Assert.assertEquals("", notFoundHead.body());
+      String notFoundLength = notFoundHead.headers().firstValue("Content-Length").orElse("0");
+      Assert.assertEquals(
+          String.valueOf(notFoundGet.body().getBytes(StandardCharsets.UTF_8).length),
+          notFoundLength);
+      Assert.assertTrue(Integer.parseInt(notFoundLength) > 0);
     }
   }
 

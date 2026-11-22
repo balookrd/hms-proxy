@@ -129,6 +129,10 @@ public class ThriftFailureClassifierTest {
         new TTransportException(TTransportException.END_OF_FILE)));
     Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new TTransportException(
         TTransportException.UNKNOWN, new java.net.SocketException("Connection reset"))));
+    Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new TTransportException(
+        TTransportException.TIMED_OUT, new java.net.SocketTimeoutException("connect timed out"))));
+    Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new TTransportException(
+        TTransportException.UNKNOWN, "java.net.SocketTimeoutException: Connection timed out")));
     Assert.assertFalse(ThriftFailureClassifier.isReadTimeout(new MetaException("timed out")));
   }
 

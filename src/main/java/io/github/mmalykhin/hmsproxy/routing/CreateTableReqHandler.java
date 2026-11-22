@@ -3,7 +3,9 @@ package io.github.mmalykhin.hmsproxy.routing;
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
@@ -19,6 +21,9 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       Table.class, List.class, List.class, List.class, List.class, List.class, List.class);
   private static final Method ALTER_TABLE_WITH_ENV = findMethod("alter_table_with_environment_context",
       String.class, String.class, Table.class, EnvironmentContext.class);
+
+  private record ValidatedFk(CatalogRouter.ResolvedNamespace pkNamespace, String fkCat, String pkDb) {
+  }
 
   private final RoutingSupport support;
   private final IcebergTablePointerGuard icebergTablePointerGuard;
@@ -51,10 +56,14 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       throw new MetaException("create_table_req requires a target database");
     }
     String tableName = (String) ThriftReflectionCache.invokeGetter(rawTable, "getTableName");
+    String catName = ThriftReflectionCache.readString(rawTable, "getCatName", "getCatalogName");
+    if (catName == null) {
+      catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
+    }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("create_table_req", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("create_table_req", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "create_table_req", namespace.backendDbName());
 
@@ -70,11 +79,23 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
       }
     }
 
-    internalizeCreateTableRequest(request, namespace);
+    List<ValidatedFk> validatedFks =
+        validateForeignKeys(ThriftReflectionCache.invokeGetter(request, "getForeignKeys"), namespace);
+
+    Object routedRequest = ThriftReflectionCache.deepCopy(request);
+    Object routedTable = ThriftReflectionCache.invokeGetter(routedRequest, "getTable");
+    if (routedTable != null) {
+      Object internalizedTable =
+          support.federationLayer.internalizeObjectArguments(new Object[]{routedTable}, namespace)[0];
+      if (internalizedTable != routedTable) {
+        invokeSetter(routedRequest, "setTable", internalizedTable);
+      }
+    }
+    internalizeCreateTableRequest(routedRequest, namespace, catName, dbName, validatedFks);
 
     ExternalTableLocationRewriter externalTableLocationRewriter = support.externalTableLocationRewriter();
     if (externalTableLocationRewriter != null) {
-      Object tableObj = ThriftReflectionCache.invokeGetter(request, "getTable");
+      Object tableObj = ThriftReflectionCache.invokeGetter(routedRequest, "getTable");
       if (tableObj != null) {
         externalTableLocationRewriter.rewriteObjectArguments(new Object[]{tableObj}, namespace, "create_table_req");
       }
@@ -82,10 +103,10 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
 
     Object result;
     try {
-      result = support.invokeBackendNamed(backend, "create_table_req", request);
+      result = support.invokeBackendNamed(backend, "create_table_req", routedRequest);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, request);
+        result = fallbackToLegacy(backend, routedRequest);
       } else {
         throw cause;
       }
@@ -101,46 +122,168 @@ final class CreateTableReqHandler implements SpecialCaseHandler {
     return result;
   }
 
-  private void internalizeCreateTableRequest(Object request, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
+  private List<ValidatedFk> validateForeignKeys(
+      Object fksObj,
+      CatalogRouter.ResolvedNamespace namespace
+  ) throws MetaException {
+    List<ValidatedFk> validated = new ArrayList<>();
+    if (!(fksObj instanceof List<?> list)) {
+      return validated;
+    }
+    for (Object fk : list) {
+      if (fk == null) {
+        validated.add(null);
+        continue;
+      }
+      String fkCat = ThriftReflectionCache.readString(fk, "getCatName", "getCatalogName");
+      String pkDb = ThriftReflectionCache.readString(fk, "getPktable_db");
+      if (pkDb != null && !pkDb.isBlank()) {
+        CatalogRouter.ResolvedNamespace pkNamespace = support.resolveRequestNamespace(fkCat, pkDb);
+        if (!pkNamespace.catalogName().equals(namespace.catalogName())) {
+          throw new MetaException("Cannot create foreign key across different catalogs: FK catalog '"
+              + namespace.catalogName() + "' and PK catalog '" + pkNamespace.catalogName() + "'");
+        }
+        validated.add(new ValidatedFk(pkNamespace, fkCat, pkDb));
+      } else {
+        validated.add(new ValidatedFk(null, fkCat, null));
+      }
+    }
+    return validated;
+  }
+
+  private void internalizeCreateTableRequest(
+      Object request,
+      CatalogRouter.ResolvedNamespace namespace,
+      String catName,
+      String dbName,
+      List<ValidatedFk> validatedFks
+  ) {
     String backendDbName = namespace.backendDbName();
+    boolean preserveBackendCatalogName = support.federationLayer.preserveBackendCatalogName();
+    if (catName != null) {
+      ThriftReflectionCache.invokeStringSetter(
+          request,
+          "setCatName",
+          NamespaceTranslator.internalCatalogName(catName, dbName, namespace, preserveBackendCatalogName));
+    }
     Object rawTable = ThriftReflectionCache.invokeGetter(request, "getTable");
     if (rawTable != null) {
       ThriftReflectionCache.invokeStringSetter(rawTable, "setDbName", backendDbName);
+      if (catName != null) {
+        ThriftReflectionCache.invokeStringSetter(
+            rawTable,
+            "setCatName",
+            NamespaceTranslator.internalCatalogName(catName, dbName, namespace, preserveBackendCatalogName));
+      }
     }
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getPrimaryKeys"), "setTable_db", backendDbName);
-    internalizeForeignKeys(ThriftReflectionCache.invokeGetter(request, "getForeignKeys"), namespace);
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getUniqueConstraints"), "setTable_db", backendDbName);
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getNotNullConstraints"), "setTable_db", backendDbName);
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getDefaultConstraints"), "setTable_db", backendDbName);
-    internalizeConstraintList(ThriftReflectionCache.invokeGetter(request, "getCheckConstraints"), "setTable_db", backendDbName);
+    internalizeConstraintList(
+        ThriftReflectionCache.invokeGetter(request, "getPrimaryKeys"),
+        "setTable_db",
+        namespace,
+        dbName,
+        preserveBackendCatalogName);
+    internalizeForeignKeys(
+        ThriftReflectionCache.invokeGetter(request, "getForeignKeys"),
+        namespace,
+        dbName,
+        preserveBackendCatalogName,
+        validatedFks);
+    internalizeConstraintList(
+        ThriftReflectionCache.invokeGetter(request, "getUniqueConstraints"),
+        "setTable_db",
+        namespace,
+        dbName,
+        preserveBackendCatalogName);
+    internalizeConstraintList(
+        ThriftReflectionCache.invokeGetter(request, "getNotNullConstraints"),
+        "setTable_db",
+        namespace,
+        dbName,
+        preserveBackendCatalogName);
+    internalizeConstraintList(
+        ThriftReflectionCache.invokeGetter(request, "getDefaultConstraints"),
+        "setTable_db",
+        namespace,
+        dbName,
+        preserveBackendCatalogName);
+    internalizeConstraintList(
+        ThriftReflectionCache.invokeGetter(request, "getCheckConstraints"),
+        "setTable_db",
+        namespace,
+        dbName,
+        preserveBackendCatalogName);
   }
 
-  private void internalizeForeignKeys(Object fksObj, CatalogRouter.ResolvedNamespace namespace) throws MetaException {
-    if (fksObj instanceof List<?> list) {
-      for (Object fk : list) {
-        if (fk != null) {
-          ThriftReflectionCache.invokeStringSetter(fk, "setFktable_db", namespace.backendDbName());
-          String pkDb = ThriftReflectionCache.readString(fk, "getPktable_db");
-          if (pkDb != null && !pkDb.isBlank()) {
-            CatalogRouter.ResolvedNamespace pkNamespace = support.router.resolveDatabase(pkDb);
-            if (!pkNamespace.catalogName().equals(namespace.catalogName())) {
-              throw new MetaException("Cannot create foreign key across different catalogs: FK catalog '"
-                  + namespace.catalogName() + "' and PK catalog '" + pkNamespace.catalogName() + "'");
-            }
-            ThriftReflectionCache.invokeStringSetter(fk, "setPktable_db", pkNamespace.backendDbName());
+  private void internalizeForeignKeys(
+      Object fksObj,
+      CatalogRouter.ResolvedNamespace namespace,
+      String dbName,
+      boolean preserveBackendCatalogName,
+      List<ValidatedFk> validatedFks
+  ) {
+    if (!(fksObj instanceof List<?> list)) {
+      return;
+    }
+    for (int i = 0; i < list.size(); i++) {
+      Object fk = list.get(i);
+      if (fk == null) {
+        continue;
+      }
+      ValidatedFk validated = i < validatedFks.size() ? validatedFks.get(i) : null;
+      ThriftReflectionCache.invokeStringSetter(fk, "setFktable_db", namespace.backendDbName());
+      if (validated != null && validated.pkNamespace() != null) {
+        ThriftReflectionCache.invokeStringSetter(fk, "setPktable_db", validated.pkNamespace().backendDbName());
+      }
+      String fkCat = validated != null && validated.fkCat() != null
+          ? validated.fkCat()
+          : ThriftReflectionCache.readString(fk, "getCatName", "getCatalogName");
+      if (fkCat != null) {
+        CatalogRouter.ResolvedNamespace catNamespace =
+            (validated != null && validated.pkNamespace() != null) ? validated.pkNamespace() : namespace;
+        String targetDb = (validated != null && validated.pkDb() != null) ? validated.pkDb() : dbName;
+        ThriftReflectionCache.invokeStringSetter(
+            fk,
+            "setCatName",
+            NamespaceTranslator.internalCatalogName(fkCat, targetDb, catNamespace, preserveBackendCatalogName));
+      }
+    }
+  }
+
+  private void internalizeConstraintList(
+      Object listObj,
+      String setterName,
+      CatalogRouter.ResolvedNamespace namespace,
+      String dbName,
+      boolean preserveBackendCatalogName
+  ) {
+    if (listObj instanceof List<?> list) {
+      for (Object item : list) {
+        if (item != null) {
+          ThriftReflectionCache.invokeStringSetter(item, setterName, namespace.backendDbName());
+          String itemCat = ThriftReflectionCache.readString(item, "getCatName", "getCatalogName");
+          if (itemCat != null) {
+            ThriftReflectionCache.invokeStringSetter(
+                item,
+                "setCatName",
+                NamespaceTranslator.internalCatalogName(itemCat, dbName, namespace, preserveBackendCatalogName));
           }
         }
       }
     }
   }
 
-  private void internalizeConstraintList(Object listObj, String setterName, String backendDbName) {
-    if (listObj instanceof List<?> list) {
-      for (Object item : list) {
-        if (item != null) {
-          ThriftReflectionCache.invokeStringSetter(item, setterName, backendDbName);
-        }
-      }
+  private static void invokeSetter(Object target, String setterName, Object value) {
+    if (target == null || value == null) {
+      return;
+    }
+    try {
+      Method setter = target.getClass().getMethod(setterName, value.getClass());
+      setter.invoke(target, value);
+    } catch (NoSuchMethodException ignored) {
+      // Request wrapper doesn't declare a matching setter for the internalized table object
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalStateException(
+          "Unable to invoke " + setterName + " on " + target.getClass().getName(), e);
     }
   }
 

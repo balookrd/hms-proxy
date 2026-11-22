@@ -142,56 +142,84 @@ final class SqlReferenceScanner {
 
   private static Set<String> findCteNames(List<Token> tokens) {
     Set<String> cteNames = new HashSet<>();
-    int i = 0;
-    while (i < tokens.size()) {
-      Token t = tokens.get(i);
-      if (t.kind == Kind.IDENTIFIER && "WITH".equalsIgnoreCase(t.text)) {
-        i++;
-        while (i < tokens.size()) {
-          Token nameToken = tokens.get(i);
-          if (nameToken.kind != Kind.IDENTIFIER && nameToken.kind != Kind.QUOTED_IDENTIFIER) {
-            break;
-          }
-          String cteName = new Part(nameToken.text, nameToken.start, nameToken.end).unquoted();
+    List<int[]> pendingRanges = new ArrayList<>();
+    pendingRanges.add(new int[]{0, tokens.size()});
+    while (!pendingRanges.isEmpty()) {
+      int[] range = pendingRanges.remove(pendingRanges.size() - 1);
+      int i = range[0];
+      int end = range[1];
+      while (i < end) {
+        Token t = tokens.get(i);
+        if (t.kind == Kind.IDENTIFIER && "WITH".equalsIgnoreCase(t.text)) {
           i++;
-          if (i < tokens.size() && tokens.get(i).kind == Kind.OPEN_PAREN) {
-            int depth = 1;
+          if (isKeyword(tokens, i, end, "RECURSIVE")) {
             i++;
-            while (i < tokens.size() && depth > 0) {
-              if (tokens.get(i).kind == Kind.OPEN_PAREN) {
-                depth++;
-              } else if (tokens.get(i).kind == Kind.CLOSE_PAREN) {
-                depth--;
-              }
-              i++;
-            }
           }
-          if (i < tokens.size() && tokens.get(i).kind == Kind.IDENTIFIER && "AS".equalsIgnoreCase(tokens.get(i).text)) {
-            cteNames.add(cteName.toUpperCase(Locale.ROOT));
+          while (i < end) {
+            Token nameToken = tokens.get(i);
+            if (nameToken.kind != Kind.IDENTIFIER && nameToken.kind != Kind.QUOTED_IDENTIFIER) {
+              break;
+            }
+            String cteName = new Part(nameToken.text, nameToken.start, nameToken.end).unquoted();
             i++;
-            if (i < tokens.size() && tokens.get(i).kind == Kind.OPEN_PAREN) {
-              int depth = 1;
+            if (i < end && tokens.get(i).kind == Kind.OPEN_PAREN) {
+              i = findMatchingCloseParen(tokens, i, end) + 1;
+            }
+            if (isKeyword(tokens, i, end, "AS")) {
+              cteNames.add(cteName.toUpperCase(Locale.ROOT));
               i++;
-              while (i < tokens.size() && depth > 0) {
-                if (tokens.get(i).kind == Kind.OPEN_PAREN) {
-                  depth++;
-                } else if (tokens.get(i).kind == Kind.CLOSE_PAREN) {
-                  depth--;
-                }
+              if (isKeyword(tokens, i, end, "NOT") && isKeyword(tokens, i + 1, end, "MATERIALIZED")) {
+                i += 2;
+              } else if (isKeyword(tokens, i, end, "MATERIALIZED")) {
                 i++;
               }
+              if (i < end && tokens.get(i).kind == Kind.OPEN_PAREN) {
+                int bodyStart = i + 1;
+                int closeIdx = findMatchingCloseParen(tokens, i, end);
+                int bodyEnd = Math.min(closeIdx, end);
+                if (bodyStart < bodyEnd) {
+                  pendingRanges.add(new int[]{bodyStart, bodyEnd});
+                }
+                i = closeIdx + 1;
+              }
+              if (i < end && tokens.get(i).kind == Kind.COMMA) {
+                i++;
+                continue;
+              }
             }
-            if (i < tokens.size() && tokens.get(i).kind == Kind.COMMA) {
-              i++;
-              continue;
-            }
+            break;
           }
-          break;
+        } else {
+          i++;
+        }
+      }
+    }
+    return cteNames;
+  }
+
+  private static boolean isKeyword(List<Token> tokens, int index, int end, String keyword) {
+    if (index >= end) {
+      return false;
+    }
+    Token token = tokens.get(index);
+    return token.kind == Kind.IDENTIFIER && keyword.equalsIgnoreCase(token.text);
+  }
+
+  private static int findMatchingCloseParen(List<Token> tokens, int openParenIndex, int end) {
+    int depth = 1;
+    int i = openParenIndex + 1;
+    while (i < end && depth > 0) {
+      if (tokens.get(i).kind == Kind.OPEN_PAREN) {
+        depth++;
+      } else if (tokens.get(i).kind == Kind.CLOSE_PAREN) {
+        depth--;
+        if (depth == 0) {
+          return i;
         }
       }
       i++;
     }
-    return cteNames;
+    return end;
   }
 
   private static int collectChain(List<Token> tokens, int index, List<Part> chain) {

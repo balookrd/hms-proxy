@@ -173,6 +173,22 @@ public final class HortonworksFrontendBridge {
               throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
             }
           }
+          case "get_table_req" ->
+              invokeExtension(HortonworksFrontendExtension::get_table_req, args, method.getReturnType());
+          case "get_partition_req" ->
+              invokeExtension(HortonworksFrontendExtension::get_partition_req, args, method.getReturnType());
+          case "get_partitions_req" ->
+              invokeExtension(HortonworksFrontendExtension::get_partitions_req, args, method.getReturnType());
+          case "get_partitions_by_filter_req" ->
+              invokeExtension(HortonworksFrontendExtension::get_partitions_by_filter_req, args, method.getReturnType());
+          case "delete_column_statistics_req" ->
+              invokeExtension(HortonworksFrontendExtension::delete_column_statistics_req, args, method.getReturnType());
+          case "get_all_table_constraints" ->
+              invokeExtension(HortonworksFrontendExtension::get_all_table_constraints, args, method.getReturnType());
+          case "get_max_allocated_table_write_id" ->
+              invokeExtension(HortonworksFrontendExtension::get_max_allocated_table_write_id, args, method.getReturnType());
+          case "add_write_notification_log_in_batch" -> invokeExtension(
+              HortonworksFrontendExtension::add_write_notification_log_in_batch, args, method.getReturnType());
           default -> {}
         }
       }
@@ -197,6 +213,20 @@ public final class HortonworksFrontendBridge {
         return convertResult(result, method.getReturnType());
       } catch (InvocationTargetException e) {
         throw ThriftValueConverter.convertThrowable(e.getCause(), hdpClassLoader);
+      }
+    }
+
+    @FunctionalInterface
+    private interface ExtensionCall {
+      Object invoke(HortonworksFrontendExtension target, Object request) throws Throwable;
+    }
+
+    private Object invokeExtension(ExtensionCall call, Object[] args, Class<?> returnType) throws Throwable {
+      try {
+        Object result = call.invoke(extension, args == null || args.length == 0 ? null : args[0]);
+        return convertResult(result, returnType);
+      } catch (Throwable t) {
+        throw ThriftValueConverter.convertThrowable(t, hdpClassLoader);
       }
     }
 

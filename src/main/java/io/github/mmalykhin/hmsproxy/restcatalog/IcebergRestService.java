@@ -147,6 +147,32 @@ public final class IcebergRestService implements AutoCloseable {
       List<String> fileIoAllowedPrefixes,
       long maxMetadataFileBytes,
       List<java.net.URI> federatedReadFsUris) {
+    this(
+        catalogName,
+        delegate,
+        translationOrNull,
+        defaultCatalogName,
+        catalogForExternalDb,
+        hadoopConf,
+        purgePolicy,
+        fileIoAllowedPrefixes,
+        maxMetadataFileBytes,
+        federatedReadFsUris,
+        GuardedFileIO.DIRECT_RUNNER);
+  }
+
+  IcebergRestService(
+      String catalogName,
+      ThriftHiveMetastore.Iface delegate,
+      CatalogNameTranslation translationOrNull,
+      String defaultCatalogName,
+      Function<String, String> catalogForExternalDb,
+      Configuration hadoopConf,
+      IcebergPurgePolicy purgePolicy,
+      List<String> fileIoAllowedPrefixes,
+      long maxMetadataFileBytes,
+      List<java.net.URI> federatedReadFsUris,
+      GuardedFileIO.PrivilegedRunner privilegedRunner) {
     this.catalogName = Objects.requireNonNull(catalogName, "catalogName");
     Objects.requireNonNull(delegate, "delegate");
     Objects.requireNonNull(defaultCatalogName, "defaultCatalogName");
@@ -161,7 +187,7 @@ public final class IcebergRestService implements AutoCloseable {
     // namenode's service principal is only known through the catalog's own conf.
     this.catalog = new RoutingHiveCatalog(
         client, hadoopConf, purgePolicy, fileIoAllowedPrefixes, maxMetadataFileBytes,
-        federatedReadFsUris);
+        federatedReadFsUris, privilegedRunner);
     this.catalog.initialize(catalogName, Map.of(CatalogProperties.URI, UNUSED_URI));
     this.adapter = new RESTCatalogAdapter(catalog);
     // A name-translated (non-default) service only ever exposes its own databases, so its own

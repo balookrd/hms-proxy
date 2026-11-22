@@ -41,6 +41,7 @@ final class AlterTableHandler implements SpecialCaseHandler {
     String methodName = method.getName();
     boolean isReq = "alter_table_req".equals(methodName);
 
+    String sourceCat = null;
     String sourceDb;
     String sourceTable;
     Object rawTable;
@@ -52,6 +53,7 @@ final class AlterTableHandler implements SpecialCaseHandler {
         throw new MetaException("alter_table_req requires a non-null request argument");
       }
       request = args[0];
+      sourceCat = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
       sourceDb = NamespaceTranslator.extractDbName(request);
       if (sourceDb == null) {
         throw new MetaException("alter_table_req requires a target database");
@@ -71,6 +73,10 @@ final class AlterTableHandler implements SpecialCaseHandler {
       rawTable = args[2];
     }
 
+    String targetCat = rawTable != null ? ThriftReflectionCache.readString(rawTable, "getCatName", "getCatalogName") : null;
+    if (targetCat == null) {
+      targetCat = sourceCat;
+    }
     String targetDb = rawTable != null ? ThriftReflectionCache.readString(rawTable, "getDbName") : null;
     if (targetDb == null || targetDb.isBlank()) {
       targetDb = sourceDb;
@@ -80,8 +86,8 @@ final class AlterTableHandler implements SpecialCaseHandler {
       targetTable = sourceTable;
     }
 
-    CatalogRouter.ResolvedNamespace sourceNamespace = support.router.resolveDatabase(sourceDb);
-    CatalogRouter.ResolvedNamespace targetNamespace = support.router.resolveDatabase(targetDb);
+    CatalogRouter.ResolvedNamespace sourceNamespace = support.resolveRequestNamespace(sourceCat, sourceDb);
+    CatalogRouter.ResolvedNamespace targetNamespace = support.resolveRequestNamespace(targetCat, targetDb);
 
     if (!sourceNamespace.catalogName().equals(targetNamespace.catalogName())) {
       throw new MetaException("Cannot rename/move table across different catalogs: source catalog '"
@@ -89,7 +95,7 @@ final class AlterTableHandler implements SpecialCaseHandler {
     }
 
     RequestContext.currentObservation().recordNamespace(sourceNamespace);
-    support.recordDefaultCatalogRouteIfImplicit(methodName, sourceDb, sourceNamespace);
+    support.recordDefaultCatalogRouteIfImplicit(methodName, sourceCat, sourceDb, sourceNamespace);
     CatalogBackend backend = sourceNamespace.backend();
     support.validateCatalogAccess(backend, methodName, sourceNamespace.backendDbName());
     if (!sourceNamespace.backendDbName().equalsIgnoreCase(targetNamespace.backendDbName())) {
@@ -123,7 +129,7 @@ final class AlterTableHandler implements SpecialCaseHandler {
     if (isReq) {
       Object routedRequest = ThriftReflectionCache.deepCopy(request);
       ThriftReflectionCache.invokeStringSetter(routedRequest, "setDbName", sourceNamespace.backendDbName());
-      String catName = ThriftReflectionCache.readString(request, "getCatName");
+      String catName = sourceCat;
       if (catName != null) {
         ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName",
             NamespaceTranslator.internalCatalogName(catName, sourceDb, sourceNamespace,

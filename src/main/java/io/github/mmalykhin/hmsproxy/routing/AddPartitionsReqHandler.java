@@ -24,14 +24,15 @@ final class AddPartitionsReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
+    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
     String dbName = NamespaceTranslator.extractDbName(request);
     if (dbName == null) {
       throw new MetaException("add_partitions_req requires a target database");
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("add_partitions_req", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("add_partitions_req", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "add_partitions_req", namespace.backendDbName());
 

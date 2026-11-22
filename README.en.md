@@ -1306,7 +1306,9 @@ with the other two modes; both contradictions fail the proxy at startup rather
 than being ignored. When `security.mode=KERBEROS` and `rest-catalog` is enabled,
 `rest-catalog.kerberos.principal` and `rest-catalog.kerberos.keytab` are mandatory
 (fail-closed), and listener bind conflicts are checked against `server`, `management`,
-and `additional-frontends`.
+and `additional-frontends`. When `security.mode=KERBEROS` and outbound Kerberos credentials
+are configured, Iceberg `GuardedFileIO` operations execute under `UserGroupInformation.doAs`
+using the shared cached TGT with automatic keytab relogin (`OutboundKerberosUgiCache`).
 
 A request body is parsed into memory whole, one per worker thread, so its size (including drained
 bodies on `GET`/`HEAD`/`DELETE`) is capped by `rest-catalog.max-request-body-bytes` (default
@@ -1904,7 +1906,7 @@ Supported modes:
 - `READ_WRITE`: default behavior
 - `READ_ONLY`: only read RPCs are allowed for that catalog
 - `READ_WRITE_DB_WHITELIST`: writes are allowed only when the resolved backend database is listed in
-  `catalog.<name>.write-db-whitelist`
+  `catalog.<name>.write-db-whitelist` (matched case-insensitively)
 
 `access-mode` and `write-db-whitelist` must be configured together. A whitelist under any other
 access mode, or `READ_WRITE_DB_WHITELIST` without a whitelist, is a startup error rather than a

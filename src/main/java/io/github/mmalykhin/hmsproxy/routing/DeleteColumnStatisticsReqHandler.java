@@ -22,26 +22,37 @@ final class DeleteColumnStatisticsReqHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    String dbName = (String) ThriftReflectionCache.invokeGetter(request, "getDb_name");
+    String catName = ThriftReflectionCache.readString(request, "getCat_name", "getCatName", "getCatalogName");
+    String dbName = ThriftReflectionCache.readString(request, "getDb_name", "getDbName");
     if (dbName == null) {
       throw new MetaException("delete_column_statistics_req requires a target database");
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("delete_column_statistics_req", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("delete_column_statistics_req", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "delete_column_statistics_req", namespace.backendDbName());
 
     String tblName = RoutingSupport.extractTableName(request);
-    ThriftReflectionCache.invokeStringSetter(request, "setDb_name", namespace.backendDbName());
+    Object routedRequest = support.federationLayer.internalizeObjectArguments(new Object[]{request}, namespace)[0];
+    if (routedRequest == request) {
+      routedRequest = ThriftReflectionCache.deepCopy(request);
+    }
+    ThriftReflectionCache.invokeStringSetter(routedRequest, "setDb_name", namespace.backendDbName());
+    if (catName != null) {
+      String internalizedCat = NamespaceTranslator.internalCatalogName(
+          catName, dbName, namespace, support.federationLayer.preserveBackendCatalogName());
+      ThriftReflectionCache.invokeStringSetter(routedRequest, "setCat_name", internalizedCat);
+      ThriftReflectionCache.invokeStringSetter(routedRequest, "setCatName", internalizedCat);
+    }
 
     Object result;
     try {
-      result = support.invokeBackendNamed(backend, "delete_column_statistics_req", request);
+      result = support.invokeBackendNamed(backend, "delete_column_statistics_req", routedRequest);
     } catch (Throwable cause) {
       if (ThriftFailureClassifier.isUnsupportedMethod(cause)) {
-        result = fallbackToLegacy(backend, request, namespace.backendDbName());
+        result = fallbackToLegacy(backend, routedRequest, namespace.backendDbName());
       } else {
         throw cause;
       }

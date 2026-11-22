@@ -814,13 +814,18 @@ public final class CatalogBackend implements AutoCloseable {
       try {
         session.probe();
       } catch (Throwable probeFailure) {
+        if (probeFailure instanceof Error error) {
+          throw error;
+        }
         if (ThriftFailureClassifier.isTransportFailure(probeFailure)
             || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
           LOG.info("Backend catalog '{}' session of impersonated user '{}' idle for {} ms failed the liveness"
               + " probe ({}), replacing it", config.name(), userName, session.idleMs(), probeFailure.toString());
           recordValidation("stale");
           discard(session, "stale_probe");
-          closeStaleIdleSessions();
+          if (!ThriftFailureClassifier.isReadTimeout(probeFailure)) {
+            closeStaleIdleSessions();
+          }
           return borrow();
         }
         // Any other answer came from a live backend over this very connection.

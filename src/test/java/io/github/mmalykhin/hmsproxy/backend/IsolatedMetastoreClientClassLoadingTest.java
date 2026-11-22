@@ -128,6 +128,50 @@ public class IsolatedMetastoreClientClassLoadingTest {
     Assert.assertEquals(implClass, resolved);
   }
 
+  @Test
+  public void childFirstResourceLookupPrefersIsolatedJarOverParentLoader() throws Exception {
+    java.nio.file.Path parentJar = Files.createTempFile("parent-cf-", ".jar");
+    java.nio.file.Path childJar = Files.createTempFile("child-cf-", ".jar");
+    String resourceName = "org/apache/hadoop/hive/test-child-first.txt";
+    try {
+      try (java.util.jar.JarOutputStream jos =
+               new java.util.jar.JarOutputStream(Files.newOutputStream(parentJar))) {
+        jos.putNextEntry(new java.util.jar.JarEntry(resourceName));
+        jos.write("parent".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jos.closeEntry();
+      }
+      try (java.util.jar.JarOutputStream jos =
+               new java.util.jar.JarOutputStream(Files.newOutputStream(childJar))) {
+        jos.putNextEntry(new java.util.jar.JarEntry(resourceName));
+        jos.write("child".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jos.closeEntry();
+      }
+
+      try (java.net.URLClassLoader parentLoader = new java.net.URLClassLoader(
+               new java.net.URL[] {parentJar.toUri().toURL()},
+               IsolatedMetastoreClientClassLoadingTest.class.getClassLoader());
+           MetastoreApiClassLoader childLoader = new MetastoreApiClassLoader(
+               new java.net.URL[] {childJar.toUri().toURL()},
+               parentLoader)) {
+        java.net.URL resolved = childLoader.getResource(resourceName);
+        Assert.assertNotNull(resolved);
+        Assert.assertTrue(resolved.toString().contains(childJar.getFileName().toString()));
+
+        java.util.List<String> urls = new java.util.ArrayList<>();
+        java.util.Enumeration<java.net.URL> all = childLoader.getResources(resourceName);
+        while (all.hasMoreElements()) {
+          urls.add(all.nextElement().toString());
+        }
+        Assert.assertEquals(2, urls.size());
+        Assert.assertTrue(urls.get(0).contains(childJar.getFileName().toString()));
+        Assert.assertTrue(urls.get(1).contains(parentJar.getFileName().toString()));
+      }
+    } finally {
+      Files.deleteIfExists(parentJar);
+      Files.deleteIfExists(childJar);
+    }
+  }
+
   /** Stand-in for a metastore client loaded by the isolated classloader: closed reflectively. */
   public static final class CloseRecordingClient {
     private int closes;

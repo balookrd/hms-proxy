@@ -550,6 +550,33 @@ public class NamespaceTranslatorTest {
     Assert.assertEquals("3", routed.getParameters().get("numFiles"));
   }
 
+  @Test
+  public void extractDbNamesCollectsAllDistinctDatabasesFromLists() {
+    Partition first = new Partition();
+    first.setDbName("catalog1__sales");
+    first.setTableName("events");
+    Partition second = new Partition();
+    second.setDbName("catalog2__finance");
+    second.setTableName("ledger");
+
+    Assert.assertEquals(
+        List.of("catalog1__sales", "catalog2__finance"),
+        NamespaceTranslator.extractDbNames(List.of(first, second)));
+
+    GetValidWriteIdsRequest req = new GetValidWriteIdsRequest(
+        List.of("catalog1__sales.events", "catalog2__finance.ledger"),
+        "1:1::");
+    Assert.assertEquals(
+        List.of("catalog1__sales", "catalog2__finance"),
+        NamespaceTranslator.extractDbNames(req));
+  }
+
+  @Test
+  public void deeplyNestedCompatibilityPrefixesDoNotOverflowStack() {
+    String deeplyNested = "@hive#".repeat(10_000) + "catalog1__sales";
+    Assert.assertFalse(NamespaceTranslator.matchesExternalDatabaseAlias(deeplyNested, "catalog1__sales"));
+  }
+
   private static Table table(String dbName, String tableName, String tableType, String location) {
     Table table = new Table();
     table.setDbName(dbName);

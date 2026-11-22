@@ -137,7 +137,13 @@ final class SparkPlaceholderNamespace {
         return true;
       }
     }
-    return message.contains("://") || message.contains("/");
+    return message.contains("://")
+        || message.startsWith("/")
+        || message.contains(" /")
+        || message.contains("./")
+        || message.contains("`/")
+        || message.contains("\"/")
+        || message.contains("'/");
   }
 
   static NoSuchObjectException newNoSuchDatabaseException(String dbName) {

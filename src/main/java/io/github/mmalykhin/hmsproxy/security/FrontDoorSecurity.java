@@ -319,6 +319,7 @@ public final class FrontDoorSecurity implements AutoCloseable {
       try {
         return processor.process(in, out);
       } finally {
+        ClientRequestContext.clearThreadLocalMetaConf();
         ClientRequestContext.restoreRemoteAddress(previousRemoteAddress);
         ClientRequestContext.restoreRemoteUser(previousRemoteUser);
         ClientRequestContext.restoreAuthMechanism(previousAuthMechanism);

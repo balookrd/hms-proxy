@@ -24,10 +24,11 @@ final class ServiceGlobalOps {
         "get_all_resource_plans",
         "get_runtime_stats");
 
-    // Role/privilege queries are classed but do not need a backend override.
-    r.all(o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_READ),
+    // Role/privilege queries and namespaceless Hive 3/4 read checks.
+    r.all(o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_READ).nonMutating(),
         "get_role_names", "list_privileges", "get_principals_in_role",
-        "get_role_grants_for_principal", "get_privilege_set");
+        "get_role_grants_for_principal", "get_privilege_set",
+        "validate_resource_plan", "find_columns_with_stats", "find_package", "translate_table_dryrun");
 
     r.all(o -> o.cls(HmsOperationClass.SERVICE_GLOBAL_WRITE),
         "setMetaConf", "create_role", "drop_role", "grant_role", "revoke_role");

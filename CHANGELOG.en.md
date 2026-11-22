@@ -8,6 +8,28 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed & Changed (Mutation Policy, Routing, View SQL, Backend Pools, and Iceberg REST — Wave 3B)
+
+- **Fail-closed RPC classification and name canonicalization (`config/operation`)**:
+  - `HmsMethodNameHeuristics.deriveMutation` is now fail-closed: unknown methods default to mutating (`true`) instead of read-only.
+  - Added `HmsMethodNames.canonicalize` (`camelCase` → `snake_case`) lookup in `HmsOperationPolicy` (`describe`, `replayableAfterLostReply`), explicitly annotated introspection/FB303 RPCs (`getName`, `getVersion`, `aliveSince`, `getStatus`, `get_catalogs`, `get_catalog`, `get_config_value`, `partition_name_*`), `isPartitionMarkedForEvent`, Hive 4 read `fetch_partition_names_req`, role/privilege queries, and reads (`validate_resource_plan`, `find_columns_with_stats`, `find_package`, `translate_table_dryrun`) as `.nonMutating()`, and marked `flushCache` as `.mutating()`.
+- **Routing safety, ReDoS prevention, and `catName`/`*_req` handling (`routing`, `federation`)**:
+  - Replaced recursive prefix stripping in `NamespaceTranslator` and `CatalogRouter` with iterative bounds (`32`), and replaced `java.util.regex.Pattern` in `CatalogRouter` with a linear-time ReDoS-safe Hive pattern matcher (`*`, `|`).
+  - `FederationLayer.findNamespaceInArgs` validates catalog consistency across all extracted names from `NamespaceTranslator.extractDbNames`.
+  - Made `catalog.<name>.write-db-whitelist` matching case-insensitive via `CatalogConfig.isWriteDbWhitelisted` (`CatalogAccessModeGuard`, `RefreshPrivilegesHandler`).
+  - Updated `*_req` and batch handlers (`AddWriteNotificationLogBatchHandler`, `AddWriteNotificationLogHandler`, `DeleteColumnStatisticsReqHandler`, `TruncateTableReqHandler`, `AddPartitionsReqHandler`, `AlterPartitionsReqHandler`, `RenamePartitionHandler`, `SetAggrStatsForHandler`, `CreateTableReqHandler`, `AlterTableHandler`) to route via `resolveRequestNamespace(catName, dbName)` (`catName`/`cat_name`/`catalog`) without mutating caller requests; `add_write_notification_log_in_batch` validates every `requestList` entry (while preserving Hive 4's required `catalog` field) and `create_table_req` validates `fk.pktable_db`/`fk.catName` prior to table internalization.
+  - Removed the overly broad `message.contains("/")` check in `SparkPlaceholderNamespace` that masked real partition `NoSuchObjectException`s containing `/`, keeping `://` and file-path patterns.
+- **View SQL and CTE scanning (`federation`)**:
+  - `ViewDefinitionCompatibility` bounds `numParts <= 16` when reading Spark view properties and backtick-quotes external DB names with non-identifier characters.
+  - `SqlReferenceScanner.findCteNames` now uses an iterative scan supporting `WITH RECURSIVE`, `AS MATERIALIZED`, `AS NOT MATERIALIZED`, and nested `WITH` clauses.
+- **Backend pools, outbound Kerberos UGI cache, and isolated runtime (`backend`, `thriftbridge`, `frontend`, `security`)**:
+  - Added shared `OutboundKerberosUgiCache` with `checkTGTAndReloginFromKeytab()` and keytab re-login fallback (`BackendInvocationSession`, `restcatalog`); added `ClassValue`-backed child-loader UGI caching in `IsolatedMetastoreClient`.
+  - In `BackendRuntime` and `CatalogBackend`, a read timeout on `probe()` discards only the probed session without draining the remaining idle pool, `Error` on `probe()` is rethrown after discarding the session/permit, and `BackendRuntime.close()` transitions through a `draining` state so new external borrows/sessions fail immediately while queued `cancel_delegation_token` tasks finish via the pool.
+  - Excluded `"connect timed out"` / `"connection timed out"` from `ThriftFailureClassifier.isReadTimeout`; separated `List` vs `Map` element conversion in `IsolatedInvocationBridge`; changed `ThriftMethodCache.MethodKey` to key on parameter type names (`String[]`) rather than `Class<?>[]`; implemented child-first `getResource`/`getResources` in `MetastoreApiClassLoader`; wired 8 missing RPC delegations in `HortonworksFrontendBridge`; cached `ExtensionMethods` in `RoutingMetaStoreProxy`; propagated per-listener `FrontendProfile` through `ClientRequestContext` (including `Snapshot` for fanout) and ensured `clearThreadLocalMetaConf()` runs in `finally`.
+- **Iceberg REST (`restcatalog`)**:
+  - `RestCatalogServer` serves HTTP `HEAD` responses with `Content-Length` and no response body; `IcebergHttpHandler` calls `clearThreadLocalMetaConf()` in `finally`.
+  - Added `PrivilegedRunner` across `GuardedFileIO`, `RoutingHiveCatalog`, `IcebergRestService`, and `IcebergRestServices` to execute FileIO calls via `UserGroupInformation.doAs` (backed by `OutboundKerberosUgiCache`) when `security.mode=KERBEROS`.
+
 ### Fixed & Changed (Stability, Security, Lifecycle, and Metrics — Wave 3A)
 
 - **`RangerMetadataAuthorizer` and `GroupDiskCache` hardening**:

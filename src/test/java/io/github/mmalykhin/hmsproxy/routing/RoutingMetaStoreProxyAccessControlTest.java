@@ -173,6 +173,37 @@ public class RoutingMetaStoreProxyAccessControlTest {
   }
 
   @Test
+  public void whitelistCatalogMatchesDatabaseNamesCaseInsensitively() throws Throwable {
+    AtomicInteger backendCalls = new AtomicInteger();
+    AtomicReference<Table> capturedTable = new AtomicReference<>();
+    RoutingMetaStoreProxy handler = accessModeHandler(
+        CatalogAccessMode.READ_WRITE_DB_WHITELIST,
+        List.of("Sales"),
+        backendCalls,
+        capturedTable);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("create_table", Table.class);
+
+    Table upper = table("catalog1__SALES", "events_upper", Map.of());
+    upper.setTableType("MANAGED_TABLE");
+    handler.invoke(null, method, new Object[] {upper});
+    Assert.assertEquals(1, backendCalls.get());
+    Assert.assertEquals("SALES", capturedTable.get().getDbName());
+
+    Table lower = table("catalog1__sales", "events_lower", Map.of());
+    lower.setTableType("MANAGED_TABLE");
+    handler.invoke(null, method, new Object[] {lower});
+    Assert.assertEquals(2, backendCalls.get());
+    Assert.assertEquals("sales", capturedTable.get().getDbName());
+
+    Table blocked = table("catalog1__FINANCE", "events_blocked", Map.of());
+    blocked.setTableType("MANAGED_TABLE");
+    MetaException error = Assert.assertThrows(
+        MetaException.class, () -> handler.invoke(null, method, new Object[] {blocked}));
+    Assert.assertTrue(error.getMessage().contains("not allowed"));
+    Assert.assertEquals(2, backendCalls.get());
+  }
+
+  @Test
   public void transactionalDdlGuardDecidesPerRequestWhenAThreadServesSeveralClients() throws Throwable {
     AtomicInteger backendCalls = new AtomicInteger();
     RoutingMetaStoreProxy handler = guardedHandler(backendCalls, new AtomicReference<>(), "10.20.0.0/16");

@@ -41,6 +41,7 @@ public final class RoutingHiveCatalog extends HiveCatalog {
   private final IcebergPurgePolicy purgePolicy;
   private final RestFileIoPathGuard pathGuard;
   private final long maxMetadataFileBytes;
+  private final GuardedFileIO.PrivilegedRunner privilegedRunner;
   private FileIO rawFileIO;
 
   public RoutingHiveCatalog(
@@ -71,6 +72,25 @@ public final class RoutingHiveCatalog extends HiveCatalog {
       long maxMetadataFileBytes,
       List<URI> federatedReadFsUris
   ) {
+    this(
+        client,
+        conf,
+        purgePolicy,
+        fileIoAllowedPrefixes,
+        maxMetadataFileBytes,
+        federatedReadFsUris,
+        GuardedFileIO.DIRECT_RUNNER);
+  }
+
+  RoutingHiveCatalog(
+      IMetaStoreClient client,
+      Configuration conf,
+      IcebergPurgePolicy purgePolicy,
+      List<String> fileIoAllowedPrefixes,
+      long maxMetadataFileBytes,
+      List<URI> federatedReadFsUris,
+      GuardedFileIO.PrivilegedRunner privilegedRunner
+  ) {
     this.client = Objects.requireNonNull(client, "client");
     this.purgePolicy = Objects.requireNonNull(purgePolicy, "purgePolicy");
     Configuration nonNullConf = Objects.requireNonNull(conf, "conf");
@@ -78,6 +98,7 @@ public final class RoutingHiveCatalog extends HiveCatalog {
     this.pathGuard = new RestFileIoPathGuard(
         nonNullConf, fileIoAllowedPrefixes, federatedReadFsUris);
     this.maxMetadataFileBytes = maxMetadataFileBytes;
+    this.privilegedRunner = privilegedRunner == null ? GuardedFileIO.DIRECT_RUNNER : privilegedRunner;
   }
 
   RestFileIoPathGuard pathGuard() {
@@ -113,9 +134,13 @@ public final class RoutingHiveCatalog extends HiveCatalog {
     }
     boolean dropped = super.dropTable(identifier, false);
     if (dropped && lastMetadata != null) {
+      TableMetadata metadataForPurge = lastMetadata;
       FileIO baseIo = rawFileIO != null ? rawFileIO : ops.io();
-      CatalogUtil.dropTableData(
-          purgePolicy.guard(baseIo, pathGuard, identifier.toString()), lastMetadata);
+      FileIO purgeIo = purgePolicy.guard(baseIo, pathGuard, identifier.toString());
+      privilegedRunner.run(() -> {
+        CatalogUtil.dropTableData(purgeIo, metadataForPurge);
+        return null;
+      });
     }
     return dropped;
   }
@@ -174,7 +199,9 @@ public final class RoutingHiveCatalog extends HiveCatalog {
         return;
       }
       this.rawFileIO = delegate;
-      fileIoField.set(this, new GuardedFileIO(delegate, pathGuard, purgePolicy, maxMetadataFileBytes));
+      fileIoField.set(
+          this,
+          new GuardedFileIO(delegate, pathGuard, purgePolicy, maxMetadataFileBytes, privilegedRunner));
     } catch (NoSuchFieldException | IllegalAccessException e) {
       throw new IllegalStateException(
           "Failed to inject GuardedFileIO into HiveCatalog; Iceberg version may be incompatible",

@@ -108,6 +108,7 @@ final class IcebergHttpHandler implements HttpHandler {
       // recordRestRequest ever threw, an ordering with the restore last would leak
       // remoteAddress/remoteUser into whatever request that pool thread serves next.
       try {
+        ClientRequestContext.clearThreadLocalMetaConf();
         ClientRequestContext.restoreRemoteAddress(previousAddress);
       } finally {
         ClientRequestContext.restoreRemoteUser(previousUser);

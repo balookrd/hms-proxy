@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.security;
 
 import io.github.mmalykhin.hmsproxy.backend.ImpersonationContext;
+import io.github.mmalykhin.hmsproxy.config.server.FrontendProfile;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
@@ -14,6 +15,7 @@ public final class ClientRequestContext {
   private static final ThreadLocal<String> AUTHENTICATED_USER = new ThreadLocal<>();
   private static final ThreadLocal<String> AUTH_MECHANISM = new ThreadLocal<>();
   private static final ThreadLocal<TTransport> CURRENT_TRANSPORT = new ThreadLocal<>();
+  private static final ThreadLocal<FrontendProfile> FRONTEND_PROFILE = new ThreadLocal<>();
   private static final Map<TTransport, ImpersonationContext> CONNECTION_UGI =
       Collections.synchronizedMap(new WeakHashMap<>());
   private static final Map<TTransport, Map<String, String>> CONNECTION_META_CONF =
@@ -28,6 +30,28 @@ public final class ClientRequestContext {
 
   public static Optional<String> remoteUser() {
     return Optional.ofNullable(REMOTE_USER.get());
+  }
+
+  public static Optional<FrontendProfile> frontendProfile() {
+    return Optional.ofNullable(FRONTEND_PROFILE.get());
+  }
+
+  public static FrontendProfile setFrontendProfile(FrontendProfile profile) {
+    FrontendProfile previous = FRONTEND_PROFILE.get();
+    if (profile == null) {
+      FRONTEND_PROFILE.remove();
+    } else {
+      FRONTEND_PROFILE.set(profile);
+    }
+    return previous;
+  }
+
+  public static void restoreFrontendProfile(FrontendProfile previous) {
+    if (previous == null) {
+      FRONTEND_PROFILE.remove();
+    } else {
+      FRONTEND_PROFILE.set(previous);
+    }
   }
 
   public static Optional<TTransport> currentTransport() {
@@ -207,6 +231,7 @@ public final class ClientRequestContext {
       String authenticatedUser,
       String authMechanism,
       TTransport currentTransport,
+      FrontendProfile frontendProfile,
       Map<String, String> threadLocalMetaConf
   ) {
   }
@@ -220,6 +245,7 @@ public final class ClientRequestContext {
         AUTHENTICATED_USER.get(),
         AUTH_MECHANISM.get(),
         CURRENT_TRANSPORT.get(),
+        FRONTEND_PROFILE.get(),
         metaCopy);
   }
 
@@ -240,6 +266,7 @@ public final class ClientRequestContext {
       AUTHENTICATED_USER.remove();
       AUTH_MECHANISM.remove();
       CURRENT_TRANSPORT.remove();
+      FRONTEND_PROFILE.remove();
       THREAD_LOCAL_META_CONF.remove();
       return;
     }
@@ -248,6 +275,7 @@ public final class ClientRequestContext {
     restoreAuthenticatedUser(snapshot.authenticatedUser());
     restoreAuthMechanism(snapshot.authMechanism());
     restoreCurrentTransport(snapshot.currentTransport());
+    restoreFrontendProfile(snapshot.frontendProfile());
     if (snapshot.threadLocalMetaConf() == null || snapshot.threadLocalMetaConf().isEmpty()) {
       THREAD_LOCAL_META_CONF.remove();
     } else {

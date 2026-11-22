@@ -731,6 +731,38 @@ public class HortonworksFrontendBridgeTest {
     Assert.assertEquals("id", parentPk.getColumn_name());
   }
 
+  @Test
+  public void getTableReqDelegatesThroughHortonworksFrontendExtension() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+    AtomicReference<String> invokedExtensionMethod = new AtomicReference<>();
+
+    ThriftHiveMetastore.Iface handler = proxyHandler((proxy, method, args) -> {
+      if ("get_table_req".equals(method.getName())) {
+        invokedExtensionMethod.set(method.getName());
+        org.apache.hadoop.hive.metastore.api.Table tbl = new org.apache.hadoop.hive.metastore.api.Table();
+        tbl.setDbName("sales");
+        tbl.setTableName("events");
+        return new org.apache.hadoop.hive.metastore.api.GetTableResult(tbl);
+      }
+      throw new UnsupportedOperationException(method.getName());
+    }, io.github.mmalykhin.hmsproxy.frontend.HortonworksFrontendExtension.class);
+
+    HortonworksFrontendBridge.BridgeBundle bridge =
+        HortonworksFrontendBridge.createBridge(
+            config(FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR),
+            handler);
+    Class<?> requestClass = bridge.classLoader().loadClass("org.apache.hadoop.hive.metastore.api.GetTableRequest");
+    Object request = requestClass.getConstructor(String.class, String.class).newInstance("sales", "events");
+    Method method = bridge.ifaceClass().getMethod("get_table_req", requestClass);
+
+    Object result = method.invoke(bridge.handlerProxy(), request);
+
+    Assert.assertEquals("get_table_req", invokedExtensionMethod.get());
+    Assert.assertNotNull(result);
+    Object returnedTable = result.getClass().getMethod("getTable").invoke(result);
+    Assert.assertEquals("events", returnedTable.getClass().getMethod("getTableName").invoke(returnedTable));
+  }
+
   private static ProxyConfig config(FrontendProfile frontendProfile, Path jar) {
     return ProxyConfig.builder()
         .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))

@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
 import io.github.mmalykhin.hmsproxy.observability.BackendKerberosLoginTracker;
 import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
 import io.github.mmalykhin.hmsproxy.security.LoginSubjects;
+import io.github.mmalykhin.hmsproxy.security.OutboundKerberosUgiCache;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import io.github.mmalykhin.hmsproxy.util.PrincipalUtil;
 import java.lang.reflect.Field;
@@ -459,7 +460,7 @@ public final class BackendInvocationSession implements AutoCloseable {
     // The process-wide UGI configuration is installed once at startup (FrontDoorSecurity.open or
     // CatalogBackend.open); replacing it here would race with in-flight SASL handshakes.
     try {
-      UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab);
+      UserGroupInformation ugi = OutboundKerberosUgiCache.getOrLogin(principal, keytab);
       BackendKerberosLoginTracker.processWide().record(principal, LoginSubjects.of(ugi));
       return ugi.doAs((PrivilegedExceptionAction<HiveMetaStoreClient>) () -> new HiveMetaStoreClient(conf));
     } catch (Exception e) {

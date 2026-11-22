@@ -1,12 +1,19 @@
 package io.github.mmalykhin.hmsproxy.backend;
 
 import io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile;
+import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 public final class MetastoreApiClassLoader extends URLClassLoader {
   private static final String[] CHILD_FIRST_PREFIXES = {
@@ -32,6 +39,7 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
   private static final String COMPANION_STORAGE_API_JAR = "hive-storage-api-4.1.0.jar";
 
   private final String[] childFirstPrefixes;
+  private final String[] childFirstResourcePrefixes;
 
   // Without this the child-first path below would serialize every isolated-runtime class load on
   // this loader's monitor; warmup pulls hundreds of thrift classes from concurrent requests.
@@ -49,6 +57,10 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
     System.arraycopy(CHILD_FIRST_PREFIXES, 0, prefixes, 0, CHILD_FIRST_PREFIXES.length);
     System.arraycopy(extraChildFirstPrefixes, 0, prefixes, CHILD_FIRST_PREFIXES.length, extraChildFirstPrefixes.length);
     this.childFirstPrefixes = prefixes;
+    this.childFirstResourcePrefixes = new String[prefixes.length];
+    for (int i = 0; i < prefixes.length; i++) {
+      this.childFirstResourcePrefixes[i] = prefixes[i].replace('.', '/');
+    }
   }
 
   /**
@@ -123,6 +135,35 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
   }
 
   private static final String SHUTDOWN_HOOK_MANAGER_CLASS = "org.apache.hadoop.util.ShutdownHookManager";
+  private static final String SHUTDOWN_HOOK_MANAGER_RESOURCE = "org/apache/hadoop/util/ShutdownHookManager";
+
+  @Override
+  public URL getResource(String name) {
+    if (isChildFirstResource(name)) {
+      URL local = findResource(name);
+      if (local != null) {
+        return local;
+      }
+      ClassLoader parent = getParent();
+      return parent != null ? parent.getResource(name) : null;
+    }
+    return super.getResource(name);
+  }
+
+  @Override
+  public Enumeration<URL> getResources(String name) throws IOException {
+    if (!isChildFirstResource(name)) {
+      return super.getResources(name);
+    }
+    List<URL> ordered = new ArrayList<>();
+    Set<String> seen = new HashSet<>();
+    addUniqueUrls(findResources(name), ordered, seen);
+    ClassLoader parent = getParent();
+    if (parent != null) {
+      addUniqueUrls(parent.getResources(name), ordered, seen);
+    }
+    return Collections.enumeration(ordered);
+  }
 
   private boolean isChildFirst(String name) {
     // ShutdownHookManager registers a JVM shutdown hook in Runtime and starts a non-reclaimed
@@ -136,6 +177,29 @@ public final class MetastoreApiClassLoader extends URLClassLoader {
       }
     }
     return false;
+  }
+
+  private boolean isChildFirstResource(String name) {
+    if (name == null
+        || name.equals(SHUTDOWN_HOOK_MANAGER_RESOURCE + ".class")
+        || name.startsWith(SHUTDOWN_HOOK_MANAGER_RESOURCE + "$")) {
+      return false;
+    }
+    for (String prefix : childFirstResourcePrefixes) {
+      if (name.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static void addUniqueUrls(Enumeration<URL> source, List<URL> target, Set<String> seen) {
+    while (source.hasMoreElements()) {
+      URL url = source.nextElement();
+      if (seen.add(url.toExternalForm())) {
+        target.add(url);
+      }
+    }
   }
 
   private static void addCodeSourceUrl(LinkedHashSet<URL> urls, Class<?> type) {

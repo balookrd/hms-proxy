@@ -1,17 +1,23 @@
 package io.github.mmalykhin.hmsproxy.restcatalog;
 
 import io.github.mmalykhin.hmsproxy.config.ProxyConfig;
+import io.github.mmalykhin.hmsproxy.security.KerberosPrincipalUtil;
+import io.github.mmalykhin.hmsproxy.security.OutboundKerberosUgiCache;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
+import java.security.PrivilegedAction;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.iceberg.hadoop.ConfigProperties;
 
 /**
@@ -73,6 +79,7 @@ public final class IcebergRestServices implements AutoCloseable {
     Map<String, IcebergRestService> services = new LinkedHashMap<>();
     IcebergPurgePolicy purgePolicy = new IcebergPurgePolicy(
         config.restCatalog().purgeMode(), config.restCatalog().purgeAllowedPrefixes());
+    GuardedFileIO.PrivilegedRunner fileIoRunner = fileIoRunner(config);
     for (String catalog : config.catalogNames()) {
       CatalogNameTranslation translation = catalog.equals(config.defaultCatalog())
           ? null
@@ -91,9 +98,38 @@ public final class IcebergRestServices implements AutoCloseable {
               purgePolicy,
               config.restCatalog().fileIoAllowedPrefixes(),
               config.restCatalog().maxMetadataFileBytes(),
-              federatedReadFsUris));
+              federatedReadFsUris,
+              fileIoRunner));
     }
     return new IcebergRestServices(services, config.defaultCatalog());
+  }
+
+  private static GuardedFileIO.PrivilegedRunner fileIoRunner(ProxyConfig config) {
+    if (config.security() == null
+        || !config.security().kerberosEnabled()
+        || !hasNonBlank(config.security().outboundPrincipal())
+        || !hasNonBlank(config.security().outboundKeytab())) {
+      return GuardedFileIO.DIRECT_RUNNER;
+    }
+    String principal = KerberosPrincipalUtil.resolveForLocalHost(config.security().outboundPrincipal());
+    String keytab = config.security().outboundKeytab();
+    return new GuardedFileIO.PrivilegedRunner() {
+      @Override
+      public <T> T run(Supplier<T> action) {
+        try {
+          UserGroupInformation ugi = OutboundKerberosUgiCache.getOrLogin(principal, keytab);
+          return ugi.doAs((PrivilegedAction<T>) action::get);
+        } catch (IOException e) {
+          throw new UncheckedIOException(
+              "Failed to execute Iceberg REST FileIO operation under Kerberos principal " + principal,
+              e);
+        }
+      }
+    };
+  }
+
+  private static boolean hasNonBlank(String value) {
+    return value != null && !value.isBlank();
   }
 
   private static List<URI> collectFederatedReadFsUris(

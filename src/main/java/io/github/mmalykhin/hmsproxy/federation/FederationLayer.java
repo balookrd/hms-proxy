@@ -106,8 +106,7 @@ public final class FederationLayer implements FederationOperations {
   public CatalogRouter.ResolvedNamespace findNamespaceInArgs(Object[] args) throws MetaException {
     CatalogRouter.ResolvedNamespace resolvedCandidate = null;
     for (Object argument : args) {
-      String extractedDbName = NamespaceTranslator.extractDbName(argument);
-      if (extractedDbName != null) {
+      for (String extractedDbName : NamespaceTranslator.extractDbNames(argument)) {
         CatalogRouter.ResolvedNamespace candidate = resolveDatabase(extractedDbName);
         if (resolvedCandidate == null || sameNamespace(resolvedCandidate, candidate)) {
           resolvedCandidate = candidate;

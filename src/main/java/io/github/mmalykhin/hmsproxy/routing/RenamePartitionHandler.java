@@ -34,6 +34,7 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
     boolean isReq = "rename_partition_req".equals(methodName);
 
     Object request = isReq ? (args != null && args.length > 0 ? args[0] : null) : null;
+    String reqCatName = null;
     String dbName;
     String tableName;
     Object rawNewPart;
@@ -44,6 +45,7 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
       if (request == null) {
         throw new MetaException("rename_partition_req requires a request body");
       }
+      reqCatName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
       dbName = (String) ThriftReflectionCache.invokeGetter(request, "getDbName");
       if (dbName == null) {
         dbName = NamespaceTranslator.extractDbName(request);
@@ -71,9 +73,11 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
       throw new MetaException(methodName + " requires a target database");
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = isReq
+        ? support.resolveRequestNamespace(reqCatName, dbName)
+        : support.router.resolveDatabase(dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit(methodName, dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit(methodName, reqCatName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, methodName, namespace.backendDbName());
 
@@ -88,7 +92,7 @@ final class RenamePartitionHandler implements SpecialCaseHandler {
     if (isReq) {
       Object routedRequest = ThriftReflectionCache.deepCopy(request);
       ThriftReflectionCache.invokeStringSetter(routedRequest, "setDbName", namespace.backendDbName());
-      String catName = ThriftReflectionCache.readString(request, "getCatName");
+      String catName = reqCatName;
       String backendCatName = catName == null ? null
           : NamespaceTranslator.internalCatalogName(catName, dbName, namespace,
               support.federationLayer.preserveBackendCatalogName());

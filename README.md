@@ -1258,7 +1258,9 @@ rest-catalog.max-metadata-file-bytes=67108864
 а не игнорируются. При `security.mode=KERBEROS` и включённом `rest-catalog` наличие
 `rest-catalog.kerberos.principal` и `rest-catalog.kerberos.keytab` обязательно
 (fail-closed), а биндинг listener'а проверяется на конфликт портов со всеми прочими
-listener'ами (`server`, `management`, `additional-frontends`).
+listener'ами (`server`, `management`, `additional-frontends`). Операции Iceberg `GuardedFileIO`
+при включённом `security.mode=KERBEROS` и настроенном outbound keytab выполняются через
+`UserGroupInformation.doAs` с общим кэшем и автоматическим обновлением TGT (`OutboundKerberosUgiCache`).
 
 Тело запроса разбирается в память целиком, по одному на рабочий поток, поэтому его размер (как на
 POST/PUT, так и при дренировании тела на `GET`/`HEAD`/`DELETE`) ограничен
@@ -1784,7 +1786,7 @@ catalog.catalog1.expose-table-patterns.sales=orders_.*,events
 - `READ_WRITE`: поведение по умолчанию
 - `READ_ONLY`: для каталога разрешены только read RPC
 - `READ_WRITE_DB_WHITELIST`: write RPC разрешены только для баз из
-  `catalog.<name>.write-db-whitelist`
+  `catalog.<name>.write-db-whitelist` (сравнение имён баз регистронезависимое)
 
 `access-mode` и `write-db-whitelist` задаются только вместе. Whitelist при любом другом
 access-mode, как и `READ_WRITE_DB_WHITELIST` без whitelist, — ошибка старта, а не каталог, который

@@ -46,6 +46,7 @@ public final class BackendRuntime implements AutoCloseable {
   private final ThreadPoolExecutor tokenCancelExecutor;
   private final Object lifecycleLock = new Object();
   private volatile MetastoreRuntimeProfile activeProfile;
+  private volatile boolean draining;
   private volatile boolean closed;
   private int leasedSessions;
   private int activeExternalSessions;
@@ -178,7 +179,7 @@ public final class BackendRuntime implements AutoCloseable {
 
   public boolean hasActiveSession() {
     synchronized (lifecycleLock) {
-      return !closed && (!pool.isEmpty() || leasedSessions > 0);
+      return !closed && !draining && (!pool.isEmpty() || leasedSessions > 0);
     }
   }
 
@@ -188,7 +189,7 @@ public final class BackendRuntime implements AutoCloseable {
       public Object apply(BackendInvocationSession session) throws Throwable {
         return session.invoke(method, args);
       }
-    }, method.getName());
+    }, method.getName(), false);
   }
 
   public Object invokeSharedByName(String methodName, Class<?>[] parameterTypes, Object[] args) throws Throwable {
@@ -197,7 +198,17 @@ public final class BackendRuntime implements AutoCloseable {
       public Object apply(BackendInvocationSession session) throws Throwable {
         return session.invokeByName(methodName, parameterTypes, args);
       }
-    }, methodName);
+    }, methodName, false);
+  }
+
+  private Object invokeSharedDuringDrain(String methodName, Class<?>[] parameterTypes, Object[] args)
+      throws Throwable {
+    return invokeOnPool(new SessionCall() {
+      @Override
+      public Object apply(BackendInvocationSession session) throws Throwable {
+        return session.invokeByName(methodName, parameterTypes, args);
+      }
+    }, methodName, true);
   }
 
   public String reconnectShared(BackendAdapter adapter) throws MetaException {
@@ -242,7 +253,7 @@ public final class BackendRuntime implements AutoCloseable {
       synchronized (lifecycleLock) {
         leasedSessions--;
         openedLeased = false;
-        wasClosed = closed;
+        wasClosed = closed || draining;
         if (!wasClosed) {
           offered = pool.offer(fresh);
         }
@@ -368,7 +379,7 @@ public final class BackendRuntime implements AutoCloseable {
       return;
     }
     try {
-      invokeSharedByName("cancel_delegation_token", new Class<?>[] {String.class}, new Object[] {token});
+      invokeSharedDuringDrain("cancel_delegation_token", new Class<?>[] {String.class}, new Object[] {token});
       recordDelegationTokenCancel("cancelled");
       LOG.debug("Cancelled backend delegation token for user '{}' in catalog '{}'", userName, catalogConfig.name());
     } catch (Throwable t) {
@@ -419,7 +430,7 @@ public final class BackendRuntime implements AutoCloseable {
     session.runAfterClose(this::releaseExternalSessionSlot);
     boolean wasClosed;
     synchronized (lifecycleLock) {
-      wasClosed = closed;
+      wasClosed = closed || draining;
     }
     if (wasClosed) {
       CatalogBackend.closeQuietly(session, description);
@@ -430,8 +441,14 @@ public final class BackendRuntime implements AutoCloseable {
 
   @Override
   public void close() {
-    // Before the runtime is marked closed: impersonation sessions are closed ahead of this runtime,
-    // and the cancellations they queued still need the shared pool.
+    synchronized (lifecycleLock) {
+      if (closed || draining) {
+        return;
+      }
+      draining = true;
+    }
+    // External borrows and sessions are already rejected via draining, while queued token
+    // cancellations can still use the shared pool until closed = true.
     drainTokenCancellations();
     synchronized (lifecycleLock) {
       if (closed) {
@@ -501,9 +518,9 @@ public final class BackendRuntime implements AutoCloseable {
         new ThreadPoolExecutor.AbortPolicy());
   }
 
-  private Object invokeOnPool(SessionCall call, String label) throws Throwable {
+  private Object invokeOnPool(SessionCall call, String label, boolean allowDuringDrain) throws Throwable {
     boolean replayable = HmsOperationPolicy.replayableAfterLostReply(label);
-    BackendInvocationSession session = replayable ? borrow() : borrowValidated();
+    BackendInvocationSession session = replayable ? borrow(allowDuringDrain) : borrowValidated(allowDuringDrain);
     try {
       Object result = call.apply(session);
       release(session);
@@ -536,7 +553,7 @@ public final class BackendRuntime implements AutoCloseable {
       }
       LOG.warn("Backend catalog '{}' transport failed in method {}, discarding session and retrying once",
           catalogConfig.name(), label, cause);
-      BackendInvocationSession retry = borrow();
+      BackendInvocationSession retry = borrow(allowDuringDrain);
       try {
         Object result = call.apply(retry);
         release(retry);
@@ -559,7 +576,11 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private BackendInvocationSession borrow() throws MetaException {
-    ensureOpen();
+    return borrow(false);
+  }
+
+  private BackendInvocationSession borrow(boolean allowDuringDrain) throws MetaException {
+    ensureAcceptingCalls(allowDuringDrain);
     long timeoutMs = catalogConfig.latencyBudgetMs() > 0L
         ? catalogConfig.latencyBudgetMs()
         : DEFAULT_BORROW_TIMEOUT_MS;
@@ -585,10 +606,10 @@ public final class BackendRuntime implements AutoCloseable {
     }
     BackendInvocationSession pooled = pool.poll();
     if (pooled != null) {
-      return leaseOrReject(pooled);
+      return leaseOrReject(pooled, allowDuringDrain);
     }
     synchronized (lifecycleLock) {
-      if (closed) {
+      if (closed || (!allowDuringDrain && draining)) {
         permits.release();
         throw closedException();
       }
@@ -615,7 +636,7 @@ public final class BackendRuntime implements AutoCloseable {
     }
     boolean wasClosed;
     synchronized (lifecycleLock) {
-      wasClosed = closed;
+      wasClosed = closed || (!allowDuringDrain && draining);
       if (wasClosed) {
         leasedSessions--;
       }
@@ -634,8 +655,8 @@ public final class BackendRuntime implements AutoCloseable {
    * a connection the backend dropped while it sat in the pool fails the probe, not the write, and
    * the write then goes out once on a fresh session.
    */
-  private BackendInvocationSession borrowValidated() throws MetaException {
-    BackendInvocationSession session = borrow();
+  private BackendInvocationSession borrowValidated(boolean allowDuringDrain) throws MetaException {
+    BackendInvocationSession session = borrow(allowDuringDrain);
     long thresholdMs = catalogConfig.sessionValidateAfterIdleMs();
     if (thresholdMs <= 0L || session.idleMs() <= thresholdMs) {
       return session;
@@ -643,14 +664,20 @@ public final class BackendRuntime implements AutoCloseable {
     try {
       session.probe();
     } catch (Throwable probeFailure) {
+      if (probeFailure instanceof Error error) {
+        discard(session);
+        throw error;
+      }
       if (ThriftFailureClassifier.isTransportFailure(probeFailure)
           || ThriftFailureClassifier.isProtocolDesync(probeFailure)) {
         LOG.info("Backend catalog '{}' shared session idle for {} ms failed the liveness probe ({}),"
             + " replacing it", catalogConfig.name(), session.idleMs(), probeFailure.toString());
         recordValidation("stale");
         discard(session);
-        closeIdleSessions();
-        return borrow();
+        if (!ThriftFailureClassifier.isReadTimeout(probeFailure)) {
+          closeIdleSessions();
+        }
+        return borrow(allowDuringDrain);
       }
       // Any other answer came from a live backend over this very connection.
     }
@@ -677,9 +704,12 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   /** Registers an in-flight session, or closes it when the runtime was closed concurrently. */
-  private BackendInvocationSession leaseOrReject(BackendInvocationSession session) throws MetaException {
+  private BackendInvocationSession leaseOrReject(
+      BackendInvocationSession session,
+      boolean allowDuringDrain
+  ) throws MetaException {
     synchronized (lifecycleLock) {
-      if (!closed) {
+      if (!closed && (allowDuringDrain || !draining)) {
         leasedSessions++;
         return session;
       }
@@ -720,7 +750,11 @@ public final class BackendRuntime implements AutoCloseable {
   }
 
   private void ensureOpen() throws MetaException {
-    if (closed) {
+    ensureAcceptingCalls(false);
+  }
+
+  private void ensureAcceptingCalls(boolean allowDuringDrain) throws MetaException {
+    if (closed || (!allowDuringDrain && draining)) {
       throw closedException();
     }
   }

@@ -20,6 +20,8 @@ final class ThriftMethodCache {
         }
       };
 
+  private static final String[] EMPTY_TYPE_NAMES = new String[0];
+
   private ThriftMethodCache() {}
 
   static Method lookup(
@@ -29,14 +31,25 @@ final class ThriftMethodCache {
       MethodResolver resolver
   ) throws NoSuchMethodException {
     ConcurrentMap<MethodKey, Method> cache = CACHE.get(ifaceClass);
-    Method cached = cache.get(new MethodKey(methodName, parameterTypes));
+    MethodKey key = new MethodKey(methodName, toTypeNames(parameterTypes));
+    Method cached = cache.get(key);
     if (cached != null) {
       return cached;
     }
     Method resolved = resolver.resolve();
-    // Copy the caller-owned parameter array before it becomes part of a cache key.
-    cache.putIfAbsent(new MethodKey(methodName, parameterTypes.clone()), resolved);
+    cache.putIfAbsent(key, resolved);
     return resolved;
+  }
+
+  private static String[] toTypeNames(Class<?>[] parameterTypes) {
+    if (parameterTypes == null || parameterTypes.length == 0) {
+      return EMPTY_TYPE_NAMES;
+    }
+    String[] names = new String[parameterTypes.length];
+    for (int i = 0; i < parameterTypes.length; i++) {
+      names[i] = parameterTypes[i].getName();
+    }
+    return names;
   }
 
   @FunctionalInterface
@@ -44,7 +57,7 @@ final class ThriftMethodCache {
     Method resolve() throws NoSuchMethodException;
   }
 
-  private record MethodKey(String name, Class<?>[] parameterTypes) {
+  private record MethodKey(String name, String[] parameterTypeNames) {
     @Override
     public boolean equals(Object other) {
       if (this == other) {
@@ -53,12 +66,12 @@ final class ThriftMethodCache {
       if (!(other instanceof MethodKey that)) {
         return false;
       }
-      return name.equals(that.name) && Arrays.equals(parameterTypes, that.parameterTypes);
+      return name.equals(that.name) && Arrays.equals(parameterTypeNames, that.parameterTypeNames);
     }
 
     @Override
     public int hashCode() {
-      return 31 * name.hashCode() + Arrays.hashCode(parameterTypes);
+      return 31 * name.hashCode() + Arrays.hashCode(parameterTypeNames);
     }
   }
 }

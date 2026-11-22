@@ -164,7 +164,7 @@ final class ViewDefinitionCompatibility {
     if (numPartsStr != null) {
       try {
         int numParts = Integer.parseInt(numPartsStr.trim());
-        if (numParts > 0) {
+        if (numParts > 0 && numParts <= 16) {
           // Only the trailing part names the database/namespace; earlier parts carry catalog names
           // such as "spark_catalog" that must stay untouched.
           String partKey = "view.catalogAndNamespace.part." + (numParts - 1);
@@ -222,10 +222,12 @@ final class ViewDefinitionCompatibility {
         if (externalDb == null || externalDb.isBlank()) {
           return null;
         }
-        String replacementText = tablePart.quoted()
-            ? '`' + externalDb.replace("`", "``") + "`.`" + tablePart.unquoted().replace("`", "``") + '`'
-            : externalDb + "." + tablePart.unquoted();
-        return new Replacement(tablePart.start(), tablePart.end(), replacementText);
+        String tableUnquoted = tablePart.unquoted();
+        boolean quoteDb = tablePart.quoted() || needsBackticks(externalDb);
+        boolean quoteTable = tablePart.quoted() || needsBackticks(tableUnquoted);
+        String formattedDb = quoteDb ? '`' + externalDb.replace("`", "``") + '`' : externalDb;
+        String formattedTable = quoteTable ? '`' + tableUnquoted.replace("`", "``") + '`' : tableUnquoted;
+        return new Replacement(tablePart.start(), tablePart.end(), formattedDb + "." + formattedTable);
       }
       return null;
     }
@@ -353,8 +355,30 @@ final class ViewDefinitionCompatibility {
   }
 
   private static Replacement replacementFor(Part from, Part to, String replacement, boolean quoted) {
-    String text = quoted ? '`' + replacement.replace("`", "``") + '`' : replacement;
+    boolean useBackticks = quoted || needsBackticks(replacement);
+    String text = useBackticks ? '`' + replacement.replace("`", "``") + '`' : replacement;
     return new Replacement(from.start(), to.end(), text);
+  }
+
+  private static boolean needsBackticks(String identifier) {
+    if (identifier == null || identifier.isEmpty()) {
+      return true;
+    }
+    char first = identifier.charAt(0);
+    if (!isAsciiIdentifierStart(first)) {
+      return true;
+    }
+    for (int i = 1; i < identifier.length(); i++) {
+      char c = identifier.charAt(i);
+      if (!isAsciiIdentifierStart(c) && (c < '0' || c > '9')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean isAsciiIdentifierStart(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
   }
 
   private String backendCatalogName(CatalogRouter.ResolvedNamespace namespace) {

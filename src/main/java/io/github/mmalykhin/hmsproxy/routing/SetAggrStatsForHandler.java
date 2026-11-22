@@ -17,6 +17,7 @@ final class SetAggrStatsForHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
+    String catName = extractCatName(request);
     String dbName = NamespaceTranslator.extractDbName(request);
     if (dbName == null) {
       Object colStats = ThriftReflectionCache.invokeGetter(request, "getColStats");
@@ -34,9 +35,9 @@ final class SetAggrStatsForHandler implements SpecialCaseHandler {
       return result;
     }
 
-    CatalogRouter.ResolvedNamespace namespace = support.router.resolveDatabase(dbName);
+    CatalogRouter.ResolvedNamespace namespace = support.resolveRequestNamespace(catName, dbName);
     RequestContext.currentObservation().recordNamespace(namespace);
-    support.recordDefaultCatalogRouteIfImplicit("set_aggr_stats_for", dbName, namespace);
+    support.recordDefaultCatalogRouteIfImplicit("set_aggr_stats_for", catName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
     support.validateCatalogAccess(backend, "set_aggr_stats_for", namespace.backendDbName());
 
@@ -49,6 +50,29 @@ final class SetAggrStatsForHandler implements SpecialCaseHandler {
       support.invalidateTable(namespace.catalogName(), namespace.backendDbName(), requestTable);
     }
     return result;
+  }
+
+  private static String extractCatName(Object request) {
+    String catName = ThriftReflectionCache.readString(request, "getCatName", "getCatalogName");
+    if (catName != null) {
+      return catName;
+    }
+    Object colStats = ThriftReflectionCache.invokeGetter(request, "getColStats");
+    if (colStats instanceof Iterable<?> items) {
+      for (Object stat : items) {
+        if (stat == null) {
+          continue;
+        }
+        Object statsDesc = ThriftReflectionCache.invokeGetter(stat, "getStatsDesc");
+        if (statsDesc != null) {
+          String descCat = ThriftReflectionCache.readString(statsDesc, "getCatName", "getCatalogName");
+          if (descCat != null) {
+            return descCat;
+          }
+        }
+      }
+    }
+    return null;
   }
 
   private void invalidateColStats(Object colStats, CatalogRouter.ResolvedNamespace fixedNamespace) {
@@ -76,7 +100,8 @@ final class SetAggrStatsForHandler implements SpecialCaseHandler {
         String statDb = statsDesc != null ? NamespaceTranslator.extractDbName(statsDesc) : null;
         if (statDb != null) {
           try {
-            CatalogRouter.ResolvedNamespace resolved = support.router.resolveDatabase(statDb);
+            String statCat = ThriftReflectionCache.readString(statsDesc, "getCatName", "getCatalogName");
+            CatalogRouter.ResolvedNamespace resolved = support.resolveRequestNamespace(statCat, statDb);
             catalogName = resolved.catalogName();
             backendDbName = resolved.backendDbName();
           } catch (Exception ignored) {

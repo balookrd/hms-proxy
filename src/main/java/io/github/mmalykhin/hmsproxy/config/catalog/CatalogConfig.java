@@ -504,6 +504,20 @@ public record CatalogConfig(
         DEFAULT_MERGE_WITH_DEFAULT);
   }
 
+  /** Returns {@code true} when {@code dbName} matches {@code writeDbWhitelist} case-insensitively. */
+  public boolean isWriteDbWhitelisted(String dbName) {
+    if (dbName == null || dbName.isBlank()) {
+      return false;
+    }
+    String normalized = dbName.trim();
+    for (String allowed : writeDbWhitelist) {
+      if (allowed != null && allowed.equalsIgnoreCase(normalized)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** The catalog the backend metastore treats as its own default, as its clients resolve it. */
   public String backendDefaultCatalogName() {
     if (hiveConf != null) {

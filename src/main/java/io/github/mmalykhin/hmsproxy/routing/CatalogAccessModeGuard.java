@@ -34,7 +34,7 @@ final class CatalogAccessModeGuard {
                   + catalogConfig.name()
                   + ".write-db-whitelist; operation '" + methodName + "' does not carry a database name");
         }
-        if (!catalogConfig.writeDbWhitelist().contains(normalizedDbName)) {
+        if (!catalogConfig.isWriteDbWhitelisted(normalizedDbName)) {
           throw new MetaException(
               "Catalog '" + catalogConfig.name() + "' allows writes only for whitelisted databases; database '"
                   + normalizedDbName

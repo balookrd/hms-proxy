@@ -214,4 +214,22 @@ public class CatalogRouterPatternTest {
     Assert.assertFalse(router.canMatchRemoteCatalogs("catalog1__*"));
     Assert.assertFalse(router.canMatchRemoteCatalogs("catalog1..*"));
   }
+
+  @Test(timeout = 2000)
+  public void matchesHivePatternDoesNotBacktrackOnPathologicalWildcards() {
+    String longInput = "a".repeat(200);
+    String pathologicalWildcard = "*a".repeat(60) + "b";
+    String pathologicalDotStar = ".*a".repeat(60) + "b";
+    Assert.assertFalse(CatalogRouter.matchesHivePattern(longInput, pathologicalWildcard));
+    Assert.assertFalse(CatalogRouter.matchesHivePattern(longInput, pathologicalDotStar));
+    Assert.assertTrue(CatalogRouter.matchesHivePattern(longInput + "b", pathologicalWildcard));
+  }
+
+  @Test
+  public void normalizeDatabasePatternHandlesDeeplyNestedCompatibilityFramingIteratively() {
+    CatalogRouter router = router();
+    String deepPattern = "@hive#".repeat(5_000) + "catalog2__sales";
+    String result = router.normalizeDatabasePattern(deepPattern);
+    Assert.assertNotNull(result);
+  }
 }

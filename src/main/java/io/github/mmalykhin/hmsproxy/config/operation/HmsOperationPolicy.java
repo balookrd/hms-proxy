@@ -31,10 +31,12 @@ public final class HmsOperationPolicy {
    */
   public static boolean replayableAfterLostReply(String methodName) {
     String normalized = HmsMethodNameHeuristics.normalizeMethod(methodName);
-    if (NON_REPLAYABLE_NON_MUTATING.contains(normalized)) {
+    String canonical = HmsMethodNames.canonicalize(normalized);
+    if (NON_REPLAYABLE_NON_MUTATING.contains(normalized)
+        || NON_REPLAYABLE_NON_MUTATING.contains(canonical)) {
       return false;
     }
-    OperationMetadata registered = REGISTRY.get(normalized);
+    OperationMetadata registered = lookupRegistered(normalized, canonical);
     if (registered != null) {
       return !registered.mutating();
     }
@@ -43,11 +45,17 @@ public final class HmsOperationPolicy {
 
   public static OperationMetadata describe(String methodName) {
     String normalized = HmsMethodNameHeuristics.normalizeMethod(methodName);
-    OperationMetadata registered = REGISTRY.get(normalized);
+    String canonical = HmsMethodNames.canonicalize(normalized);
+    OperationMetadata registered = lookupRegistered(normalized, canonical);
     if (registered != null) {
       return registered;
     }
     return DERIVED_CACHE.computeIfAbsent(normalized, HmsOperationPolicy::deriveOnly);
+  }
+
+  private static OperationMetadata lookupRegistered(String normalized, String canonical) {
+    OperationMetadata registered = REGISTRY.get(normalized);
+    return registered != null ? registered : REGISTRY.get(canonical);
   }
 
   private static OperationMetadata deriveOnly(String methodName) {

@@ -120,6 +120,118 @@ public class AdditionalFrontendThriftServersTest {
     }
   }
 
+  @Test
+  public void compatibilityLayerUsesActiveListenerFrontendProfileFromRequestContext() {
+    ProxyConfig config = buildConfig(List.of());
+    io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer compatibilityLayer =
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null);
+
+    Assert.assertEquals(FrontendProfile.APACHE_3_1_3.metastoreVersion(), compatibilityLayer.frontendVersion());
+
+    FrontendProfile previous = io.github.mmalykhin.hmsproxy.security.ClientRequestContext
+        .setFrontendProfile(FrontendProfile.APACHE_4_1_0);
+    try {
+      Assert.assertEquals(FrontendProfile.APACHE_4_1_0.metastoreVersion(), compatibilityLayer.frontendVersion());
+      Assert.assertEquals(
+          io.github.mmalykhin.hmsproxy.config.server.MetastoreRuntimeProfile.APACHE_4_1_0,
+          compatibilityLayer.frontendRuntimeProfile());
+    } finally {
+      io.github.mmalykhin.hmsproxy.security.ClientRequestContext.restoreFrontendProfile(previous);
+    }
+    Assert.assertEquals(FrontendProfile.APACHE_3_1_3.metastoreVersion(), compatibilityLayer.frontendVersion());
+  }
+
+  @Test
+  public void additionalListenerSetsFrontendProfileAndClearsThreadLocalMetaConf() throws Exception {
+    java.nio.file.Path hdpJar = java.nio.file.Path.of(
+        "hive-metastore", "hive-standalone-metastore-3.1.0.3.1.0.0-78.jar");
+    org.junit.Assume.assumeTrue(java.nio.file.Files.isReadable(hdpJar));
+
+    int port = freePort();
+    List<AdditionalFrontendConfig> extras = List.of(new AdditionalFrontendConfig(
+        "hdp",
+        "127.0.0.1",
+        port,
+        1,
+        1,
+        FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78,
+        hdpJar.toString()));
+    ProxyConfig config = buildConfig(extras);
+    io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer compatibilityLayer =
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null);
+
+    java.util.concurrent.atomic.AtomicReference<FrontendProfile> observedProfile =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    java.util.concurrent.atomic.AtomicReference<String> observedVersion =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    java.util.concurrent.atomic.AtomicReference<String> leakedThreadLocalMetaConf =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    List<String> observedConnectionMetaConf = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    ThriftHiveMetastore.Iface handler = (ThriftHiveMetastore.Iface) Proxy.newProxyInstance(
+        ThriftHiveMetastore.Iface.class.getClassLoader(),
+        new Class<?>[] {ThriftHiveMetastore.Iface.class},
+        (proxy, method, args) -> {
+          if (method.getDeclaringClass() == Object.class) {
+            return method.invoke(proxy, args);
+          }
+          if ("set_ugi".equals(method.getName())) {
+            return List.of();
+          }
+          if ("setMetaConf".equals(method.getName())) {
+            io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setSessionMetaConf(
+                (String) args[0], (String) args[1]);
+            org.apache.thrift.transport.TTransport previousTransport =
+                io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setCurrentTransport(null);
+            try {
+              io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setSessionMetaConf(
+                  "thread.local.leak.key", "leaked");
+            } finally {
+              io.github.mmalykhin.hmsproxy.security.ClientRequestContext.restoreCurrentTransport(previousTransport);
+            }
+            return null;
+          }
+          if ("get_databases".equals(method.getName()) || "get_all_databases".equals(method.getName())) {
+            observedProfile.set(
+                io.github.mmalykhin.hmsproxy.security.ClientRequestContext.frontendProfile().orElse(null));
+            observedVersion.set(compatibilityLayer.frontendVersion());
+            observedConnectionMetaConf.add(
+                io.github.mmalykhin.hmsproxy.security.ClientRequestContext.sessionMetaConf("hive.metastore.try.direct.sql")
+                    .orElse(null));
+            org.apache.thrift.transport.TTransport previousTransport =
+                io.github.mmalykhin.hmsproxy.security.ClientRequestContext.setCurrentTransport(null);
+            try {
+              leakedThreadLocalMetaConf.set(
+                  io.github.mmalykhin.hmsproxy.security.ClientRequestContext.sessionMetaConf("thread.local.leak.key")
+                      .orElse(null));
+            } finally {
+              io.github.mmalykhin.hmsproxy.security.ClientRequestContext.restoreCurrentTransport(previousTransport);
+            }
+            return List.of("default");
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    try (AdditionalFrontendThriftServers ignored = AdditionalFrontendThriftServers.open(config, handler, null)) {
+      Assert.assertTrue(tcpConnect("127.0.0.1", port));
+      org.apache.hadoop.hive.conf.HiveConf conf = new org.apache.hadoop.hive.conf.HiveConf();
+      conf.setVar(org.apache.hadoop.hive.conf.HiveConf.ConfVars.METASTOREURIS, "thrift://127.0.0.1:" + port);
+      try (org.apache.hadoop.hive.metastore.HiveMetaStoreClient client1 =
+               new org.apache.hadoop.hive.metastore.HiveMetaStoreClient(conf)) {
+        client1.setMetaConf("hive.metastore.try.direct.sql", "false");
+        Assert.assertEquals(List.of("default"), client1.getAllDatabases());
+      }
+      try (org.apache.hadoop.hive.metastore.HiveMetaStoreClient client2 =
+               new org.apache.hadoop.hive.metastore.HiveMetaStoreClient(conf)) {
+        Assert.assertEquals(List.of("default"), client2.getAllDatabases());
+      }
+    }
+    Assert.assertEquals(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78, observedProfile.get());
+    Assert.assertEquals(FrontendProfile.HORTONWORKS_3_1_0_3_1_0_78.metastoreVersion(), observedVersion.get());
+    Assert.assertNull("thread-local MetaConf must be cleared at end of request", leakedThreadLocalMetaConf.get());
+    Assert.assertEquals(java.util.Arrays.asList("false", null), observedConnectionMetaConf);
+  }
+
   private static List<Thread> listenerThreads(String namePrefix) {
     return Thread.getAllStackTraces().keySet().stream()
         .filter(Thread::isAlive)

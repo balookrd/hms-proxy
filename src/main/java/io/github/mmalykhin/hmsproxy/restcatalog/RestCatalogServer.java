@@ -149,6 +149,12 @@ public final class RestCatalogServer implements AutoCloseable {
   private static void respond(HttpExchange exchange, int status, String contentType, String body) throws IOException {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", contentType);
+    if ("HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+      exchange.getResponseHeaders().set("Content-Length", String.valueOf(bytes.length));
+      exchange.sendResponseHeaders(status, -1);
+      exchange.close();
+      return;
+    }
     exchange.sendResponseHeaders(status, bytes.length);
     try (OutputStream output = exchange.getResponseBody()) {
       output.write(bytes);

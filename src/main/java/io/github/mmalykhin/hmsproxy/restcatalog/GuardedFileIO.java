@@ -31,10 +31,18 @@ final class GuardedFileIO implements FileIO {
   private static final int MAX_TRACKED_CREATED_PATHS = 64;
   private static final ThreadLocal<Set<String>> CREATED_IN_REQUEST = new ThreadLocal<>();
 
+  @FunctionalInterface
+  interface PrivilegedRunner {
+    <T> T run(java.util.function.Supplier<T> action);
+  }
+
+  static final PrivilegedRunner DIRECT_RUNNER = java.util.function.Supplier::get;
+
   private final FileIO delegate;
   private final RestFileIoPathGuard guard;
   private final IcebergPurgePolicy purgePolicy;
   private final long maxMetadataFileBytes;
+  private final PrivilegedRunner privilegedRunner;
 
   GuardedFileIO(
       FileIO delegate,
@@ -42,10 +50,21 @@ final class GuardedFileIO implements FileIO {
       IcebergPurgePolicy purgePolicy,
       long maxMetadataFileBytes
   ) {
+    this(delegate, guard, purgePolicy, maxMetadataFileBytes, DIRECT_RUNNER);
+  }
+
+  GuardedFileIO(
+      FileIO delegate,
+      RestFileIoPathGuard guard,
+      IcebergPurgePolicy purgePolicy,
+      long maxMetadataFileBytes,
+      PrivilegedRunner privilegedRunner
+  ) {
     this.delegate = Objects.requireNonNull(delegate, "delegate");
     this.guard = Objects.requireNonNull(guard, "guard");
     this.purgePolicy = Objects.requireNonNull(purgePolicy, "purgePolicy");
     this.maxMetadataFileBytes = maxMetadataFileBytes;
+    this.privilegedRunner = privilegedRunner == null ? DIRECT_RUNNER : privilegedRunner;
   }
 
   static void beginRequest() {
@@ -62,46 +81,52 @@ final class GuardedFileIO implements FileIO {
 
   @Override
   public InputFile newInputFile(String path) {
-    guard.validateBeforeReadAccess(path);
-    InputFile raw = delegate.newInputFile(path);
-    return wrapInputFile(raw);
+    return privilegedRunner.run(() -> {
+      guard.validateBeforeReadAccess(path);
+      return wrapInputFile(delegate.newInputFile(path));
+    });
   }
 
   @Override
   public InputFile newInputFile(String path, long length) {
-    guard.validateBeforeReadAccess(path);
-    if (maxMetadataFileBytes > 0L && length > maxMetadataFileBytes) {
-      throw new ValidationException(
-          "Metadata file length exceeds rest-catalog.max-metadata-file-bytes (%s)",
-          maxMetadataFileBytes);
-    }
-    InputFile raw = delegate.newInputFile(path, length);
-    return wrapInputFile(raw);
+    return privilegedRunner.run(() -> {
+      guard.validateBeforeReadAccess(path);
+      if (maxMetadataFileBytes > 0L && length > maxMetadataFileBytes) {
+        throw new ValidationException(
+            "Metadata file length exceeds rest-catalog.max-metadata-file-bytes (%s)",
+            maxMetadataFileBytes);
+      }
+      return wrapInputFile(delegate.newInputFile(path, length));
+    });
   }
 
   @Override
   public OutputFile newOutputFile(String path) {
-    String qualified = guard.qualifySafely(path);
-    guard.verifyNoSymlinkEscape(qualified, null);
-    trackCreated(qualified);
-    OutputFile raw = delegate.newOutputFile(path);
-    return new GuardedOutputFile(raw);
+    return privilegedRunner.run(() -> {
+      String qualified = guard.qualifySafely(path);
+      guard.verifyNoSymlinkEscape(qualified, null);
+      trackCreated(qualified);
+      return new GuardedOutputFile(delegate.newOutputFile(path));
+    });
   }
 
   @Override
   public void deleteFile(String path) {
-    String qualified = guard.qualifySafely(path);
-    if (consumeCreated(qualified)) {
-      guard.verifyNoSymlinkEscape(qualified, null);
+    privilegedRunner.run(() -> {
+      String qualified = guard.qualifySafely(path);
+      if (consumeCreated(qualified)) {
+        guard.verifyNoSymlinkEscape(qualified, null);
+        delegate.deleteFile(path);
+        return null;
+      }
+      String refusal = purgePolicy.authorizeRuntimeDelete(qualified, guard);
+      if (refusal != null) {
+        LOG.warn("Refused FileIO deletion of '{}': {}", qualified, refusal);
+        throw new ForbiddenException("%s", refusal);
+      }
       delegate.deleteFile(path);
-      return;
-    }
-    String refusal = purgePolicy.authorizeRuntimeDelete(qualified, guard);
-    if (refusal != null) {
-      LOG.warn("Refused FileIO deletion of '{}': {}", qualified, refusal);
-      throw new ForbiddenException("%s", refusal);
-    }
-    delegate.deleteFile(path);
+      return null;
+    });
   }
 
   @Override
@@ -130,7 +155,9 @@ final class GuardedFileIO implements FileIO {
   }
 
   private InputFile wrapInputFile(InputFile raw) {
-    return maxMetadataFileBytes > 0L ? new BoundedInputFile(raw, maxMetadataFileBytes) : raw;
+    return (maxMetadataFileBytes > 0L || privilegedRunner != DIRECT_RUNNER)
+        ? new GuardedInputFile(raw, maxMetadataFileBytes, privilegedRunner)
+        : raw;
   }
 
   private static void trackCreated(String qualifiedPath) {
@@ -154,12 +181,12 @@ final class GuardedFileIO implements FileIO {
 
     @Override
     public PositionOutputStream create() {
-      return raw.create();
+      return privilegedRunner.run(raw::create);
     }
 
     @Override
     public PositionOutputStream createOrOverwrite() {
-      return raw.createOrOverwrite();
+      return privilegedRunner.run(raw::createOrOverwrite);
     }
 
     @Override
@@ -169,32 +196,39 @@ final class GuardedFileIO implements FileIO {
 
     @Override
     public InputFile toInputFile() {
-      return wrapInputFile(raw.toInputFile());
+      return privilegedRunner.run(() -> wrapInputFile(raw.toInputFile()));
     }
   }
 
-  private static final class BoundedInputFile implements InputFile {
+  private static final class GuardedInputFile implements InputFile {
     private final InputFile raw;
     private final long maxBytes;
+    private final PrivilegedRunner privilegedRunner;
 
-    BoundedInputFile(InputFile raw, long maxBytes) {
+    GuardedInputFile(InputFile raw, long maxBytes, PrivilegedRunner privilegedRunner) {
       this.raw = raw;
       this.maxBytes = maxBytes;
+      this.privilegedRunner = privilegedRunner;
     }
 
     @Override
     public long getLength() {
-      return raw.getLength();
+      return privilegedRunner.run(raw::getLength);
     }
 
     @Override
     public SeekableInputStream newStream() {
-      long len = raw.getLength();
-      if (len > maxBytes) {
-        throw new ValidationException(
-            "File size exceeds rest-catalog.max-metadata-file-bytes (%s)", maxBytes);
-      }
-      return new BoundedSeekableInputStream(raw.newStream(), maxBytes);
+      return privilegedRunner.run(() -> {
+        if (maxBytes > 0L) {
+          long len = raw.getLength();
+          if (len > maxBytes) {
+            throw new ValidationException(
+                "File size exceeds rest-catalog.max-metadata-file-bytes (%s)", maxBytes);
+          }
+        }
+        SeekableInputStream stream = raw.newStream();
+        return maxBytes > 0L ? new BoundedSeekableInputStream(stream, maxBytes) : stream;
+      });
     }
 
     @Override
@@ -204,7 +238,7 @@ final class GuardedFileIO implements FileIO {
 
     @Override
     public boolean exists() {
-      return raw.exists();
+      return privilegedRunner.run(raw::exists);
     }
   }
 

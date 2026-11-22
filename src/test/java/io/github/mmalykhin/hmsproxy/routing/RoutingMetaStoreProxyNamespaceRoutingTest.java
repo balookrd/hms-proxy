@@ -3555,6 +3555,331 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     Assert.assertEquals(0, backendCalls.get());
   }
 
+  @Test
+  public void createTableReqRoutesByExplicitCatNameAndPreservesSameCatalogForeignKeyInNonDefaultCatalog()
+      throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+
+    AtomicReference<String> capturedTableDb = new AtomicReference<>();
+    AtomicReference<String> capturedTableCat = new AtomicReference<>();
+    AtomicReference<String> capturedFkDb = new AtomicReference<>();
+    AtomicReference<String> capturedPkDb = new AtomicReference<>();
+    AtomicReference<String> capturedFkCat = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend1 = newIsolatedHive4Backend(config, config.catalogs().get("catalog1"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          throw new AssertionError("catalog1 should not be invoked: " + method.getName());
+        });
+    CatalogBackend backend2 = newIsolatedHive4Backend(config, config.catalogs().get("catalog2"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("create_table_req".equals(method.getName())) {
+            Object req = args[0];
+            Object table = req.getClass().getMethod("getTable").invoke(req);
+            capturedTableDb.set((String) table.getClass().getMethod("getDbName").invoke(table));
+            capturedTableCat.set((String) table.getClass().getMethod("getCatName").invoke(table));
+            List<?> fks = (List<?>) req.getClass().getMethod("getForeignKeys").invoke(req);
+            if (fks != null && !fks.isEmpty()) {
+              Object fk = fks.get(0);
+              capturedFkDb.set((String) fk.getClass().getMethod("getFktable_db").invoke(fk));
+              capturedPkDb.set((String) fk.getClass().getMethod("getPktable_db").invoke(fk));
+              capturedFkCat.set((String) fk.getClass().getMethod("getCatName").invoke(fk));
+            }
+            return null;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> createReqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.CreateTableRequest");
+    Class<?> tableClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.Table");
+    Class<?> fkClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.SQLForeignKey");
+
+    Object tableObj = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setCatName", String.class).invoke(tableObj, "catalog2");
+    tableClass.getMethod("setDbName", String.class).invoke(tableObj, "sales");
+    tableClass.getMethod("setTableName", String.class).invoke(tableObj, "orders");
+
+    Object fkObj = fkClass.getConstructor().newInstance();
+    fkClass.getMethod("setCatName", String.class).invoke(fkObj, "catalog2");
+    fkClass.getMethod("setFktable_db", String.class).invoke(fkObj, "sales");
+    fkClass.getMethod("setFktable_name", String.class).invoke(fkObj, "orders");
+    fkClass.getMethod("setPktable_db", String.class).invoke(fkObj, "customers_db");
+    fkClass.getMethod("setPktable_name", String.class).invoke(fkObj, "customers");
+
+    Object createReq = createReqClass.getConstructor().newInstance();
+    createReqClass.getMethod("setTable", tableClass).invoke(createReq, tableObj);
+    createReqClass.getMethod("setForeignKeys", List.class).invoke(createReq, List.of(fkObj));
+
+    handler.create_table_req(createReq);
+
+    Assert.assertEquals("sales", capturedTableDb.get());
+    Assert.assertNull(capturedTableCat.get());
+    Assert.assertEquals("sales", capturedFkDb.get());
+    Assert.assertEquals("customers_db", capturedPkDb.get());
+    Assert.assertNull(capturedFkCat.get());
+    Assert.assertEquals("catalog2", tableClass.getMethod("getCatName").invoke(tableObj));
+    Assert.assertEquals("customers_db", fkClass.getMethod("getPktable_db").invoke(fkObj));
+
+    Object prefixedTable = tableClass.getConstructor().newInstance();
+    tableClass.getMethod("setDbName", String.class).invoke(prefixedTable, "catalog2__sales");
+    tableClass.getMethod("setTableName", String.class).invoke(prefixedTable, "orders_prefixed");
+    Object prefixedFk = fkClass.getConstructor().newInstance();
+    fkClass.getMethod("setFktable_db", String.class).invoke(prefixedFk, "catalog2__sales");
+    fkClass.getMethod("setFktable_name", String.class).invoke(prefixedFk, "orders_prefixed");
+    fkClass.getMethod("setPktable_db", String.class).invoke(prefixedFk, "catalog2__parent_db");
+    fkClass.getMethod("setPktable_name", String.class).invoke(prefixedFk, "parent");
+    Object prefixedReq = createReqClass.getConstructor().newInstance();
+    createReqClass.getMethod("setTable", tableClass).invoke(prefixedReq, prefixedTable);
+    createReqClass.getMethod("setForeignKeys", List.class).invoke(prefixedReq, List.of(prefixedFk));
+
+    handler.create_table_req(prefixedReq);
+    Assert.assertEquals("parent_db", capturedPkDb.get());
+
+    Object crossCatalogFk = fkClass.getConstructor().newInstance();
+    fkClass.getMethod("setFktable_db", String.class).invoke(crossCatalogFk, "sales");
+    fkClass.getMethod("setFktable_name", String.class).invoke(crossCatalogFk, "orders");
+    fkClass.getMethod("setPktable_db", String.class).invoke(crossCatalogFk, "catalog1__other");
+    Object crossCatalogReq = createReqClass.getConstructor().newInstance();
+    createReqClass.getMethod("setTable", tableClass).invoke(crossCatalogReq, tableObj);
+    createReqClass.getMethod("setForeignKeys", List.class).invoke(crossCatalogReq, List.of(crossCatalogFk));
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class, () -> handler.create_table_req(crossCatalogReq));
+    Assert.assertTrue(error.getMessage().contains("Cannot create foreign key across different catalogs"));
+  }
+
+  @Test
+  public void deleteColumnStatisticsReqRoutesByCatNameWithoutMutatingCallerRequest() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+
+    AtomicReference<String> capturedCat = new AtomicReference<>();
+    AtomicReference<String> capturedDb = new AtomicReference<>();
+    AtomicReference<String> capturedTbl = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend1 = newIsolatedHive4Backend(config, config.catalogs().get("catalog1"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          throw new AssertionError("catalog1 should not be invoked: " + method.getName());
+        });
+    CatalogBackend backend2 = newIsolatedHive4Backend(config, config.catalogs().get("catalog2"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("delete_column_statistics_req".equals(method.getName())) {
+            Object req = args[0];
+            capturedCat.set((String) req.getClass().getMethod("getCat_name").invoke(req));
+            capturedDb.set((String) req.getClass().getMethod("getDb_name").invoke(req));
+            capturedTbl.set((String) req.getClass().getMethod("getTbl_name").invoke(req));
+            return Boolean.TRUE;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> reqClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.DeleteColumnStatisticsRequest");
+    Object req = reqClass.getConstructor().newInstance();
+    reqClass.getMethod("setCat_name", String.class).invoke(req, "catalog2");
+    reqClass.getMethod("setDb_name", String.class).invoke(req, "sales");
+    reqClass.getMethod("setTbl_name", String.class).invoke(req, "events");
+    reqClass.getMethod("setCol_names", List.class).invoke(req, List.of("price"));
+
+    Object response = handler.delete_column_statistics_req(req);
+
+    Assert.assertEquals(Boolean.TRUE, response);
+    Assert.assertNull(capturedCat.get());
+    Assert.assertEquals("sales", capturedDb.get());
+    Assert.assertEquals("events", capturedTbl.get());
+    Assert.assertEquals("catalog2", reqClass.getMethod("getCat_name").invoke(req));
+    Assert.assertEquals("sales", reqClass.getMethod("getDb_name").invoke(req));
+  }
+
+  @Test
+  public void addWriteNotificationLogInBatchValidatesAndInternalizesEachRequestListItem() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+
+    AtomicInteger backend2Calls = new AtomicInteger();
+    AtomicReference<String> capturedBatchCatalog = new AtomicReference<>();
+    AtomicReference<String> capturedBatchDb = new AtomicReference<>();
+    AtomicReference<List<String>> capturedItemDbs = new AtomicReference<>();
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", MetastoreRuntimeProfile.APACHE_4_1_0, HIVE_4_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend1 = newIsolatedHive4Backend(config, config.catalogs().get("catalog1"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          throw new AssertionError("catalog1 should not be invoked: " + method.getName());
+        });
+    CatalogBackend backend2 = newIsolatedHive4Backend(config, config.catalogs().get("catalog2"), HIVE_4_JAR,
+        (proxy, method, args) -> {
+          if ("add_write_notification_log_in_batch".equals(method.getName())) {
+            backend2Calls.incrementAndGet();
+            Object req = args[0];
+            capturedBatchCatalog.set((String) req.getClass().getMethod("getCatalog").invoke(req));
+            capturedBatchDb.set((String) req.getClass().getMethod("getDb").invoke(req));
+            List<?> items = (List<?>) req.getClass().getMethod("getRequestList").invoke(req);
+            List<String> dbs = new ArrayList<>();
+            for (Object item : items) {
+              dbs.add((String) item.getClass().getMethod("getDb").invoke(item));
+            }
+            capturedItemDbs.set(dbs);
+            Class<?> respClass = req.getClass().getClassLoader()
+                .loadClass("org.apache.hadoop.hive.metastore.api.WriteNotificationLogBatchResponse");
+            return respClass.getConstructor().newInstance();
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> batchClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.WriteNotificationLogBatchRequest");
+    Class<?> itemClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.WriteNotificationLogRequest");
+    Class<?> insertDataClass = classLoader.loadClass("org.apache.hadoop.hive.metastore.api.InsertEventRequestData");
+
+    Object fileInfo1 = insertDataClass.getConstructor(List.class).newInstance(List.of("hdfs://two/db1/t1/part-0"));
+    Object item1 = itemClass.getConstructor().newInstance();
+    itemClass.getMethod("setTxnId", long.class).invoke(item1, 1L);
+    itemClass.getMethod("setWriteId", long.class).invoke(item1, 1L);
+    itemClass.getMethod("setDb", String.class).invoke(item1, "catalog2__db1");
+    itemClass.getMethod("setTable", String.class).invoke(item1, "t1");
+    itemClass.getMethod("setFileInfo", insertDataClass).invoke(item1, fileInfo1);
+
+    Object fileInfo2 = insertDataClass.getConstructor(List.class).newInstance(List.of("hdfs://two/db2/t2/part-0"));
+    Object item2 = itemClass.getConstructor().newInstance();
+    itemClass.getMethod("setTxnId", long.class).invoke(item2, 2L);
+    itemClass.getMethod("setWriteId", long.class).invoke(item2, 2L);
+    itemClass.getMethod("setDb", String.class).invoke(item2, "catalog2__db2");
+    itemClass.getMethod("setTable", String.class).invoke(item2, "t2");
+    itemClass.getMethod("setFileInfo", insertDataClass).invoke(item2, fileInfo2);
+
+    Object batch = batchClass.getConstructor().newInstance();
+    batchClass.getMethod("setCatalog", String.class).invoke(batch, "catalog2");
+    batchClass.getMethod("setDb", String.class).invoke(batch, "db1");
+    batchClass.getMethod("setTable", String.class).invoke(batch, "t1");
+    batchClass.getMethod("setRequestList", List.class).invoke(batch, List.of(item1, item2));
+
+    Object resp = handler.add_write_notification_log_in_batch(batch);
+    Assert.assertNotNull(resp);
+    Assert.assertEquals(1, backend2Calls.get());
+    Assert.assertEquals(CatalogConfig.DEFAULT_BACKEND_CATALOG_NAME, capturedBatchCatalog.get());
+    Assert.assertEquals("db1", capturedBatchDb.get());
+    Assert.assertEquals(List.of("db1", "db2"), capturedItemDbs.get());
+    Assert.assertEquals("catalog2", batchClass.getMethod("getCatalog").invoke(batch));
+    Assert.assertEquals("catalog2__db1", itemClass.getMethod("getDb").invoke(item1));
+    Assert.assertEquals("catalog2__db2", itemClass.getMethod("getDb").invoke(item2));
+
+    Object crossItem = itemClass.getConstructor().newInstance();
+    itemClass.getMethod("setTxnId", long.class).invoke(crossItem, 3L);
+    itemClass.getMethod("setWriteId", long.class).invoke(crossItem, 3L);
+    itemClass.getMethod("setDb", String.class).invoke(crossItem, "catalog1__db2");
+    itemClass.getMethod("setTable", String.class).invoke(crossItem, "t2");
+    itemClass.getMethod("setFileInfo", insertDataClass).invoke(crossItem, fileInfo2);
+    Object mixedBatch = batchClass.getConstructor().newInstance();
+    batchClass.getMethod("setDb", String.class).invoke(mixedBatch, "catalog2__db1");
+    batchClass.getMethod("setTable", String.class).invoke(mixedBatch, "t1");
+    batchClass.getMethod("setRequestList", List.class).invoke(mixedBatch, List.of(item1, crossItem));
+
+    MetaException error = Assert.assertThrows(
+        MetaException.class, () -> handler.add_write_notification_log_in_batch(mixedBatch));
+    Assert.assertTrue(error.getMessage().contains("across different catalogs"));
+    Assert.assertEquals(1, backend2Calls.get());
+  }
+
+  @Test
+  public void getValidWriteIdsRejectsCrossCatalogTablesInSingleRequest() throws Throwable {
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("catalog1")
+        .catalogs(Map.of(
+            "catalog1", catalogConfig("catalog1", "c1", null, null, Map.of("hive.metastore.uris", "thrift://one")),
+            "catalog2", catalogConfig("catalog2", "c2", null, null, Map.of("hive.metastore.uris", "thrift://two"))))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend backend1 = newBackend(
+        config,
+        config.catalogs().get("catalog1"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog1 should not be invoked");
+        })));
+    CatalogBackend backend2 = newBackend(
+        config,
+        config.catalogs().get("catalog2"),
+        new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((p, m, a) -> {
+          throw new AssertionError("catalog2 should not be invoked");
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    RoutingMetaStoreProxy handler = new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null);
+    Method method = ThriftHiveMetastore.Iface.class.getMethod("get_valid_write_ids", GetValidWriteIdsRequest.class);
+
+    GetValidWriteIdsRequest request = new GetValidWriteIdsRequest(
+        List.of("catalog1__sales.events", "catalog2__finance.orders"), "1:1::");
+    Assert.assertThrows(MetaException.class, () -> handler.invoke(null, method, new Object[] {request}));
+  }
+
   public static class TestRenamePartitionRequest {
     private String dbName;
     private String tableName;
