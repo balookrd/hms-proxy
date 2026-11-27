@@ -8,6 +8,13 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Исправлено
+
+- **Приоритет и изоляция слияния каталогов (`merge-with-default`) в `CatalogRouter` и `GetAllDatabasesHandler`**:
+  - Вместо плоской карты `dynamicMergedDatabases` известные базы каждого `merge-with-default`-каталога теперь хранятся раздельно (`mergedCatalogDatabases`), а выбор целевого каталога выполняется строго по порядку объявления в `catalogs=`. Ранее вызов `get_all_databases` / `get_databases` (`SHOW DATABASES`) перезаписывал одноимённые базы приоритетного каталога последним каталогом в списке.
+  - В `GetAllDatabasesHandler.updateMergedRoutingTable` добавлена защита от деградированного fanout: если `default-catalog` или более приоритетный `merge-with-default`-каталог не ответил в `fanoutResults`, таблицы маршрутизации менее приоритетных каталогов не обновляются, а скрытые через `expose-db-patterns` / `expose-mode` базы отфильтровываются до записи в роутер.
+  - В `CatalogRouter.probeDatabaseCatalog` при временной ошибке (`UNKNOWN`) со стороны `default-catalog` или более приоритетного `merge-with-default`-каталога результат последующего каталога не кэшируется в постоянную таблицу маршрутизации.
+
 ### Изменено (Архитектурный рефакторинг — Волна 4)
 
 - **Разрыв циклов зависимостей между пакетами и контроль архитектуры**:

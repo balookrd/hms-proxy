@@ -28,7 +28,8 @@ public final class CatalogRouter implements AutoCloseable {
   private volatile Map<String, String> unprefixedDatabases;
   private volatile Set<String> mergeWithDefaultCatalogs;
   private final Object defaultCatalogDatabasesLock = new Object();
-  private final ConcurrentHashMap<String, String> dynamicMergedDatabases = new ConcurrentHashMap<>();
+  private final Object mergedCatalogDatabasesLock = new Object();
+  private final ConcurrentHashMap<String, Set<String>> mergedCatalogDatabases = new ConcurrentHashMap<>();
   private volatile Set<String> defaultCatalogDatabases = Set.of();
   private final ConcurrentHashMap<String, Long> negativeResolutionCache = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, CompletableFuture<Optional<String>>>
@@ -141,7 +142,7 @@ public final class CatalogRouter implements AutoCloseable {
       if (defaultCatalogDatabases.contains(lowerDb)) {
         return resolveCatalog(config.defaultCatalog(), normalizedDbName);
       }
-      String mergedCat = dynamicMergedDatabases.get(lowerDb);
+      String mergedCat = findMergedCatalog(lowerDb);
       if (mergedCat != null && backends.containsKey(mergedCat)) {
         return resolveCatalog(mergedCat, normalizedDbName, normalizedDbName);
       }
@@ -179,7 +180,7 @@ public final class CatalogRouter implements AutoCloseable {
       }
       if (hasMergeWithDefaultCatalogs()) {
         if (!defaultCatalogDatabases.contains(lowerPattern)) {
-          String mergedCat = dynamicMergedDatabases.get(lowerPattern);
+          String mergedCat = findMergedCatalog(lowerPattern);
           if (mergedCat == null) {
             mergedCat = lookupDatabaseCatalogOnDemand(normalizedDbPattern);
           }
@@ -295,9 +296,11 @@ public final class CatalogRouter implements AutoCloseable {
         return true;
       }
     }
-    for (String mergedDb : dynamicMergedDatabases.keySet()) {
-      if (matchesHivePattern(mergedDb, normalized)) {
-        return true;
+    for (Set<String> mergedDbs : mergedCatalogDatabases.values()) {
+      for (String mergedDb : mergedDbs) {
+        if (matchesHivePattern(mergedDb, normalized)) {
+          return true;
+        }
       }
     }
     if (hasMergeWithDefaultCatalogs()) {
@@ -445,9 +448,12 @@ public final class CatalogRouter implements AutoCloseable {
       }
     }
 
-    for (Map.Entry<String, String> entry : dynamicMergedDatabases.entrySet()) {
-      if (entry.getValue().equals(catalogName) && matchesHivePattern(entry.getKey(), normalized)) {
-        return Optional.of(dbPattern != null && dbPattern.startsWith("@") ? normalized : (dbPattern == null || dbPattern.isBlank() ? "*" : dbPattern));
+    Set<String> mergedDbs = mergedCatalogDatabases.get(catalogName);
+    if (mergedDbs != null) {
+      for (String mergedDb : mergedDbs) {
+        if (matchesHivePattern(mergedDb, normalized)) {
+          return Optional.of(dbPattern != null && dbPattern.startsWith("@") ? normalized : (dbPattern == null || dbPattern.isBlank() ? "*" : dbPattern));
+        }
       }
     }
 
@@ -571,9 +577,9 @@ public final class CatalogRouter implements AutoCloseable {
       if (defaultCatalogDatabases.contains(lowerDb)) {
         return false;
       }
-      String mergedCat = dynamicMergedDatabases.get(lowerDb);
-      if (catalogName.equals(mergedCat)) {
-        return true;
+      String mergedCat = findMergedCatalog(lowerDb);
+      if (mergedCat != null) {
+        return catalogName.equals(mergedCat);
       }
       String resolved = lookupDatabaseCatalogOnDemand(dbName);
       return catalogName.equals(resolved) && !defaultCatalogDatabases.contains(lowerDb);
@@ -596,42 +602,59 @@ public final class CatalogRouter implements AutoCloseable {
     return catalogName != null && mergeWithDefaultCatalogs != null && mergeWithDefaultCatalogs.contains(catalogName);
   }
 
+  private String findMergedCatalog(String lowerDb) {
+    if (lowerDb == null || defaultCatalogDatabases.contains(lowerDb)) {
+      return null;
+    }
+    for (String catalogName : mergeWithDefaultCatalogs) {
+      Set<String> databases = mergedCatalogDatabases.get(catalogName);
+      if (databases != null && databases.contains(lowerDb)) {
+        return catalogName;
+      }
+    }
+    return null;
+  }
+
   public void updateDatabases(String catalogName, Collection<String> databases) {
     if (catalogName == null || databases == null) {
       return;
     }
+    Set<String> normalized = normalizeNonBlankLowercase(databases);
     if (catalogName.equals(config.defaultCatalog())) {
-      Set<String> newDefaultDbs = normalizeNonBlankLowercase(databases);
-      replaceDefaultCatalogDatabases(newDefaultDbs);
-      for (String defDb : newDefaultDbs) {
-        dynamicMergedDatabases.remove(defDb);
+      replaceDefaultCatalogDatabases(normalized);
+      for (String defDb : normalized) {
         negativeResolutionCache.remove(defDb);
       }
     } else if (isMergeWithDefaultCatalog(catalogName)) {
-      recordMergedRemoteDatabases(catalogName, databases);
+      replaceMergedCatalogDatabases(catalogName, normalized);
+      for (String db : normalized) {
+        negativeResolutionCache.remove(db);
+      }
     }
   }
 
   /**
    * Additively merges observed databases from a partial pattern query or user-scoped listing into
-   * the routing table without clearing known default-catalog databases that did not match.
+   * the routing table without clearing known default-catalog or merged-catalog databases that did not match.
    */
   public void mergeDatabases(String catalogName, Collection<String> databases) {
     if (catalogName == null || databases == null) {
       return;
     }
+    Set<String> observed = normalizeNonBlankLowercase(databases);
+    if (observed.isEmpty()) {
+      return;
+    }
     if (catalogName.equals(config.defaultCatalog())) {
-      Set<String> observed = normalizeNonBlankLowercase(databases);
-      if (observed.isEmpty()) {
-        return;
-      }
       addDefaultCatalogDatabases(observed);
       for (String defDb : observed) {
-        dynamicMergedDatabases.remove(defDb);
         negativeResolutionCache.remove(defDb);
       }
     } else if (isMergeWithDefaultCatalog(catalogName)) {
-      recordMergedRemoteDatabases(catalogName, databases);
+      addMergedCatalogDatabases(catalogName, observed);
+      for (String db : observed) {
+        negativeResolutionCache.remove(db);
+      }
     }
   }
 
@@ -643,11 +666,8 @@ public final class CatalogRouter implements AutoCloseable {
     negativeResolutionCache.remove(lower);
     if (catalogName.equals(config.defaultCatalog())) {
       addDefaultCatalogDatabase(lower);
-      dynamicMergedDatabases.remove(lower);
     } else if (isMergeWithDefaultCatalog(catalogName)) {
-      if (!defaultCatalogDatabases.contains(lower)) {
-        dynamicMergedDatabases.put(lower, catalogName);
-      }
+      addMergedCatalogDatabase(catalogName, lower);
     }
   }
 
@@ -660,23 +680,49 @@ public final class CatalogRouter implements AutoCloseable {
     if (catalogName.equals(config.defaultCatalog())) {
       removeDefaultCatalogDatabase(lower);
     } else if (isMergeWithDefaultCatalog(catalogName)) {
-      dynamicMergedDatabases.remove(lower);
+      removeMergedCatalogDatabase(catalogName, lower);
     }
   }
 
-  private void recordMergedRemoteDatabases(String catalogName, Collection<String> databases) {
-    Set<String> defaultDbs = defaultCatalogDatabases;
-    for (String db : databases) {
-      if (db == null || db.isBlank()) {
-        continue;
+  private void replaceMergedCatalogDatabases(String catalogName, Set<String> newDatabases) {
+    synchronized (mergedCatalogDatabasesLock) {
+      mergedCatalogDatabases.put(catalogName, Set.copyOf(newDatabases));
+    }
+  }
+
+  private void addMergedCatalogDatabase(String catalogName, String lower) {
+    synchronized (mergedCatalogDatabasesLock) {
+      Set<String> existing = mergedCatalogDatabases.get(catalogName);
+      if (existing != null && existing.contains(lower)) {
+        return;
       }
-      String lower = db.toLowerCase(Locale.ROOT);
-      negativeResolutionCache.remove(lower);
-      if (!defaultDbs.contains(lower)) {
-        dynamicMergedDatabases.put(lower, catalogName);
-      } else {
-        dynamicMergedDatabases.remove(lower);
+      Set<String> next = existing == null ? new HashSet<>() : new HashSet<>(existing);
+      next.add(lower);
+      mergedCatalogDatabases.put(catalogName, Set.copyOf(next));
+    }
+  }
+
+  private void addMergedCatalogDatabases(String catalogName, Set<String> added) {
+    synchronized (mergedCatalogDatabasesLock) {
+      Set<String> existing = mergedCatalogDatabases.get(catalogName);
+      if (existing != null && existing.containsAll(added)) {
+        return;
       }
+      Set<String> next = existing == null ? new HashSet<>() : new HashSet<>(existing);
+      next.addAll(added);
+      mergedCatalogDatabases.put(catalogName, Set.copyOf(next));
+    }
+  }
+
+  private void removeMergedCatalogDatabase(String catalogName, String lower) {
+    synchronized (mergedCatalogDatabasesLock) {
+      Set<String> existing = mergedCatalogDatabases.get(catalogName);
+      if (existing == null || !existing.contains(lower)) {
+        return;
+      }
+      Set<String> next = new HashSet<>(existing);
+      next.remove(lower);
+      mergedCatalogDatabases.put(catalogName, Set.copyOf(next));
     }
   }
 
@@ -767,19 +813,26 @@ public final class CatalogRouter implements AutoCloseable {
     DatabaseExistence onDefault = backendDatabaseExistence(defaultBackend(), dbName);
     if (onDefault == DatabaseExistence.PRESENT) {
       addDefaultCatalogDatabase(lower);
-      dynamicMergedDatabases.remove(lower);
       negativeResolutionCache.remove(lower);
       return config.defaultCatalog();
     }
 
+    boolean higherPriorityUnknown = onDefault == DatabaseExistence.UNKNOWN;
     boolean absentEverywhere = onDefault == DatabaseExistence.ABSENT;
     for (String remoteCatName : mergeWithDefaultCatalogs) {
       CatalogBackend remoteBackend = backends.get(remoteCatName);
       DatabaseExistence onRemote = backendDatabaseExistence(remoteBackend, dbName);
       if (onRemote == DatabaseExistence.PRESENT) {
-        dynamicMergedDatabases.put(lower, remoteCatName);
-        negativeResolutionCache.remove(lower);
+        if (!higherPriorityUnknown) {
+          addMergedCatalogDatabase(remoteCatName, lower);
+          negativeResolutionCache.remove(lower);
+        }
         return remoteCatName;
+      }
+      if (onRemote == DatabaseExistence.ABSENT) {
+        removeMergedCatalogDatabase(remoteCatName, lower);
+      } else {
+        higherPriorityUnknown = true;
       }
       absentEverywhere &= onRemote == DatabaseExistence.ABSENT;
     }
@@ -856,7 +909,7 @@ public final class CatalogRouter implements AutoCloseable {
     this.patternPrefixes = buildPatternPrefixes(newConfig, backends.keySet());
     this.unprefixedDatabases = buildUnprefixedDatabases(newConfig);
     this.mergeWithDefaultCatalogs = buildMergeWithDefaultCatalogs(newConfig);
-    this.dynamicMergedDatabases.clear();
+    this.mergedCatalogDatabases.clear();
     replaceDefaultCatalogDatabases(Set.of());
     this.negativeResolutionCache.clear();
   }
@@ -868,7 +921,7 @@ public final class CatalogRouter implements AutoCloseable {
     String lower = dbName.toLowerCase(Locale.ROOT);
     negativeResolutionCache.remove(lower);
     if (isMergeWithDefaultCatalog(catalogName)) {
-      dynamicMergedDatabases.remove(lower, catalogName);
+      removeMergedCatalogDatabase(catalogName, lower);
     }
   }
 
@@ -879,13 +932,13 @@ public final class CatalogRouter implements AutoCloseable {
     if (catalogName.equals(config.defaultCatalog())) {
       replaceDefaultCatalogDatabases(Set.of());
     } else {
-      dynamicMergedDatabases.entrySet().removeIf(entry -> catalogName.equals(entry.getValue()));
+      mergedCatalogDatabases.remove(catalogName);
     }
     negativeResolutionCache.clear();
   }
 
   synchronized void invalidateAllRoutingCaches() {
-    dynamicMergedDatabases.clear();
+    mergedCatalogDatabases.clear();
     replaceDefaultCatalogDatabases(Set.of());
     negativeResolutionCache.clear();
   }

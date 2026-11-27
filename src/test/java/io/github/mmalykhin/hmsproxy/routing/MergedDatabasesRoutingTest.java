@@ -868,4 +868,318 @@ public class MergedDatabasesRoutingTest {
       }
     });
   }
+
+  @Test
+  public void getAllDatabasesPreservesPriorityOrderAcrossMultipleMergedCatalogs() throws Throwable {
+    Map<String, CatalogConfig> catalogs = new LinkedHashMap<>();
+    catalogs.put("janus", new CatalogConfig(
+        "janus", "janus", "file:///janus", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), false, null, null,
+        Map.of("hive.metastore.uris", "thrift://janus")));
+    catalogs.put("hdp", new CatalogConfig(
+        "hdp", "hdp", "file:///hdp", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of("^(?!default$).*$"), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://hdp")));
+    catalogs.put("titanium", new CatalogConfig(
+        "titanium", "titanium", "file:///titanium", false, CatalogAccessMode.READ_ONLY, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of("^(?!default$).*$"), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://titanium")));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("janus")
+        .catalogs(catalogs)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .latencyRouting(new io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig(
+            null, null, null, null,
+            io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy.SAFE_FANOUT_READS))
+        .build();
+
+    AtomicReference<String> lastGetDbCatalog = new AtomicReference<>();
+    AtomicReference<String> lastGetTableCatalog = new AtomicReference<>();
+
+    CatalogBackend janus = newBackend(config, config.catalogs().get("janus"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("janus"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName()) || "get_databases".equals(method.getName())) {
+            return List.of("default", "janus_only");
+          }
+          if ("get_database".equals(method.getName())) {
+            String db = (String) args[0];
+            if ("default".equals(db) || "janus_only".equals(db)) {
+              lastGetDbCatalog.set("janus");
+              Database res = new Database();
+              res.setName(db);
+              res.setDescription("janus-" + db);
+              return res;
+            }
+            throw new NoSuchObjectException(db);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    CatalogBackend hdp = newBackend(config, config.catalogs().get("hdp"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("hdp"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName()) || "get_databases".equals(method.getName())) {
+            return List.of("default", "Beemetrics", "hdp_only");
+          }
+          if ("get_database".equals(method.getName())) {
+            String db = (String) args[0];
+            if ("default".equals(db) || "Beemetrics".equalsIgnoreCase(db) || "hdp_only".equals(db)) {
+              lastGetDbCatalog.set("hdp");
+              Database res = new Database();
+              res.setName(db);
+              res.setDescription("hdp-" + db);
+              return res;
+            }
+            throw new NoSuchObjectException(db);
+          }
+          if ("get_table".equals(method.getName())) {
+            lastGetTableCatalog.set("hdp");
+            Table tbl = new Table();
+            tbl.setDbName((String) args[0]);
+            tbl.setTableName((String) args[1]);
+            return tbl;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    CatalogBackend titanium = newBackend(config, config.catalogs().get("titanium"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("titanium"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName()) || "get_databases".equals(method.getName())) {
+            return List.of("default", "Beemetrics", "titanium_only");
+          }
+          if ("get_database".equals(method.getName())) {
+            String db = (String) args[0];
+            if ("default".equals(db) || "Beemetrics".equalsIgnoreCase(db) || "titanium_only".equals(db)) {
+              lastGetDbCatalog.set("titanium");
+              Database res = new Database();
+              res.setName(db);
+              res.setDescription("titanium-" + db);
+              return res;
+            }
+            throw new NoSuchObjectException(db);
+          }
+          if ("get_table".equals(method.getName())) {
+            lastGetTableCatalog.set("titanium");
+            Table tbl = new Table();
+            tbl.setDbName((String) args[0]);
+            tbl.setTableName((String) args[1]);
+            return tbl;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("janus", janus);
+    backends.put("hdp", hdp);
+    backends.put("titanium", titanium);
+
+    CatalogRouter router = new CatalogRouter(config, backends);
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, federationLayer, null, new ProxyObservability(config));
+
+    Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+    Method getTblMethod = ThriftHiveMetastore.Iface.class.getMethod("get_table", String.class, String.class);
+    Method getAllDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+    Method getDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_databases", String.class);
+
+    // 1. Before SHOW DATABASES: on-demand lookup resolves Beemetrics -> hdp
+    Database dbBefore = (Database) handler.invoke(null, getDbMethod, new Object[] {"Beemetrics"});
+    Assert.assertEquals("hdp-Beemetrics", dbBefore.getDescription());
+    Assert.assertEquals("hdp", lastGetDbCatalog.get());
+
+    // 2. SHOW DATABASES (get_all_databases): hdp must keep Beemetrics unprefixed, titanium gets prefix
+    @SuppressWarnings("unchecked")
+    List<String> allDbs = (List<String>) handler.invoke(null, getAllDbsMethod, new Object[0]);
+    Assert.assertTrue("Beemetrics from hdp must be unprefixed: " + allDbs, allDbs.contains("Beemetrics"));
+    Assert.assertTrue("Beemetrics from titanium must be prefixed: " + allDbs,
+        allDbs.contains("titanium__Beemetrics"));
+    Assert.assertFalse("Beemetrics from hdp must NOT be prefixed: " + allDbs,
+        allDbs.contains("hdp__Beemetrics"));
+
+    // 3. After SHOW DATABASES: Beemetrics MUST still route to hdp, NOT titanium!
+    lastGetDbCatalog.set(null);
+    lastGetTableCatalog.set(null);
+    Database dbAfterAll = (Database) handler.invoke(null, getDbMethod, new Object[] {"Beemetrics"});
+    Assert.assertEquals("hdp-Beemetrics", dbAfterAll.getDescription());
+    Assert.assertEquals("hdp", lastGetDbCatalog.get());
+    handler.invoke(null, getTblMethod, new Object[] {"Beemetrics", "events"});
+    Assert.assertEquals("hdp", lastGetTableCatalog.get());
+
+    // 4. Explicit get_databases("*"): still preserves priority order
+    handler.invoke(null, getDbsMethod, new Object[] {"*"});
+    lastGetTableCatalog.set(null);
+    handler.invoke(null, getTblMethod, new Object[] {"Beemetrics", "events"});
+    Assert.assertEquals("hdp", lastGetTableCatalog.get());
+
+    // 5. Explicit titanium__Beemetrics still routes to titanium
+    lastGetDbCatalog.set(null);
+    Database dbTitanium = (Database) handler.invoke(null, getDbMethod, new Object[] {"titanium__Beemetrics"});
+    Assert.assertEquals("titanium-Beemetrics", dbTitanium.getDescription());
+    Assert.assertEquals("titanium", lastGetDbCatalog.get());
+  }
+
+  @Test
+  public void onDemandProbeDoesNotCacheLowerPriorityCatalogWhenHigherPriorityFailed() throws Throwable {
+    Map<String, CatalogConfig> catalogs = new LinkedHashMap<>();
+    catalogs.put("janus", new CatalogConfig(
+        "janus", "janus", "file:///janus", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), false, null, null,
+        Map.of("hive.metastore.uris", "thrift://janus")));
+    catalogs.put("hdp", new CatalogConfig(
+        "hdp", "hdp", "file:///hdp", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://hdp")));
+    catalogs.put("titanium", new CatalogConfig(
+        "titanium", "titanium", "file:///titanium", false, CatalogAccessMode.READ_ONLY, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://titanium")));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("janus")
+        .catalogs(catalogs)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .latencyRouting(new io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig(
+            null, null, null, null,
+            io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy.SAFE_FANOUT_READS))
+        .build();
+
+    AtomicInteger hdpCalls = new AtomicInteger();
+    CatalogBackend janus = newBackend(config, config.catalogs().get("janus"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("janus"), newSession((proxy, method, args) -> {
+          if ("get_database".equals(method.getName())) {
+            throw new NoSuchObjectException((String) args[0]);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend hdp = newBackend(config, config.catalogs().get("hdp"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("hdp"), newSession((proxy, method, args) -> {
+          if ("get_database".equals(method.getName())) {
+            if (hdpCalls.incrementAndGet() == 1) {
+              throw new MetaException("Could not connect to meta store using any of the URIs provided");
+            }
+            Database db = new Database();
+            db.setName((String) args[0]);
+            return db;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend titanium = newBackend(config, config.catalogs().get("titanium"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("titanium"), newSession((proxy, method, args) -> {
+          if ("get_database".equals(method.getName())) {
+            Database db = new Database();
+            db.setName((String) args[0]);
+            return db;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("janus", janus);
+    backends.put("hdp", hdp);
+    backends.put("titanium", titanium);
+
+    CatalogRouter router = new CatalogRouter(config, backends);
+    // First call: hdp fails with transient MetaException -> must NOT permanently cache titanium
+    router.resolveDatabase("Beemetrics");
+    // Second call: hdp is healthy again -> must resolve to hdp!
+    CatalogRouter.ResolvedNamespace resolved = router.resolveDatabase("Beemetrics");
+    Assert.assertEquals("hdp", resolved.catalogName());
+  }
+
+  @Test
+  public void degradedFanoutDoesNotHijackDatabaseToLowerPriorityCatalog() throws Throwable {
+    Map<String, CatalogConfig> catalogs = new LinkedHashMap<>();
+    catalogs.put("janus", new CatalogConfig(
+        "janus", "janus", "file:///janus", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), false, null, null,
+        Map.of("hive.metastore.uris", "thrift://janus")));
+    catalogs.put("hdp", new CatalogConfig(
+        "hdp", "hdp", "file:///hdp", false, CatalogAccessMode.READ_WRITE, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://hdp")));
+    catalogs.put("titanium", new CatalogConfig(
+        "titanium", "titanium", "file:///titanium", false, CatalogAccessMode.READ_ONLY, List.of(),
+        CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true, null, null,
+        Map.of("hive.metastore.uris", "thrift://titanium")));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("janus")
+        .catalogs(catalogs)
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .latencyRouting(new io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig(
+            null, null, null, null,
+            io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy.SAFE_FANOUT_READS))
+        .build();
+
+    AtomicInteger hdpFanoutCalls = new AtomicInteger();
+    CatalogBackend janus = newBackend(config, config.catalogs().get("janus"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("janus"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName())) {
+            return List.of("default", "janus_only");
+          }
+          if ("get_database".equals(method.getName())) {
+            throw new NoSuchObjectException((String) args[0]);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend hdp = newBackend(config, config.catalogs().get("hdp"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("hdp"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName())) {
+            if (hdpFanoutCalls.incrementAndGet() == 1) {
+              throw new MetaException("hdp temporarily unavailable");
+            }
+            return List.of("default", "Beemetrics");
+          }
+          if ("get_database".equals(method.getName())) {
+            Database db = new Database();
+            db.setName((String) args[0]);
+            db.setDescription("hdp-" + args[0]);
+            return db;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend titanium = newBackend(config, config.catalogs().get("titanium"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("titanium"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName())) {
+            return List.of("default", "Beemetrics", "titanium_only");
+          }
+          if ("get_database".equals(method.getName())) {
+            Database db = new Database();
+            db.setName((String) args[0]);
+            db.setDescription("titanium-" + args[0]);
+            return db;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("janus", janus);
+    backends.put("hdp", hdp);
+    backends.put("titanium", titanium);
+
+    CatalogRouter router = new CatalogRouter(config, backends);
+    FederationLayer federationLayer = new FederationLayer(config, router);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, federationLayer, null, new ProxyObservability(config));
+
+    Method getAllDbsMethod = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+    Method getDbMethod = ThriftHiveMetastore.Iface.class.getMethod("get_database", String.class);
+
+    // 1. Degraded fanout: hdp fails during get_all_databases, titanium succeeds
+    handler.invoke(null, getAllDbsMethod, new Object[0]);
+
+    // 2. Subsequent get_database("Beemetrics") when hdp is healthy MUST resolve to hdp, not titanium
+    Database db = (Database) handler.invoke(null, getDbMethod, new Object[] {"Beemetrics"});
+    Assert.assertEquals("hdp-Beemetrics", db.getDescription());
+  }
 }

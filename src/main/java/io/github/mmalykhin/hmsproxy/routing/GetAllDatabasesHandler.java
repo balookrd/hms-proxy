@@ -1,8 +1,11 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
+import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 
 final class GetAllDatabasesHandler implements SpecialCaseHandler {
@@ -48,16 +51,50 @@ final class GetAllDatabasesHandler implements SpecialCaseHandler {
   ) throws MetaException {
     boolean replaceSnapshot = fullWildcardPattern && !isUserScopedListing(support);
     String defaultCatalog = support.router.defaultBackend().name();
+    Map<String, List<String>> resultsByCatalog = new HashMap<>();
     for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
-      if (fanoutResult.backend().name().equals(defaultCatalog)) {
-        applyDatabaseList(support.router, defaultCatalog, fanoutResult.value(), replaceSnapshot);
+      resultsByCatalog.put(fanoutResult.backend().name(), fanoutResult.value());
+    }
+    List<String> defaultDatabases = resultsByCatalog.get(defaultCatalog);
+    if (defaultDatabases == null) {
+      // Do not update merged catalogs when the default catalog did not respond in fanout;
+      // otherwise default-owned names could be routed to a lower-priority merged catalog.
+      return;
+    }
+    applyDatabaseList(support.router, defaultCatalog, defaultDatabases, replaceSnapshot);
+
+    // Process merged catalogs strictly in declared priority order and stop if a higher-priority
+    // merged catalog is missing from fanoutResults (degraded fanout), so lower-priority catalogs
+    // cannot hijack shared database names.
+    for (CatalogBackend backend : support.router.backends()) {
+      String catalogName = backend.name();
+      if (catalogName.equals(defaultCatalog) || !support.router.isMergeWithDefaultCatalog(catalogName)) {
+        continue;
+      }
+      List<String> catalogDatabases = resultsByCatalog.get(catalogName);
+      if (catalogDatabases == null) {
+        break;
+      }
+      List<String> exposed = filterExposedDatabases(support, catalogName, catalogDatabases);
+      applyDatabaseList(support.router, catalogName, exposed, replaceSnapshot);
+    }
+  }
+
+  private static List<String> filterExposedDatabases(
+      RoutingSupport support,
+      String catalogName,
+      List<String> databases
+  ) {
+    if (databases == null || databases.isEmpty()) {
+      return List.of();
+    }
+    List<String> exposed = new ArrayList<>(databases.size());
+    for (String db : databases) {
+      if (db != null && support.federationLayer.isDatabaseExposed(catalogName, db)) {
+        exposed.add(db);
       }
     }
-    for (FanoutExecutor.FanoutBackendResult<List<String>> fanoutResult : fanoutResults) {
-      if (!fanoutResult.backend().name().equals(defaultCatalog)) {
-        applyDatabaseList(support.router, fanoutResult.backend().name(), fanoutResult.value(), replaceSnapshot);
-      }
-    }
+    return exposed;
   }
 
   private static void applyDatabaseList(

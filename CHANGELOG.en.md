@@ -8,6 +8,13 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Merge-with-default catalog priority and isolation in `CatalogRouter` and `GetAllDatabasesHandler`**:
+  - Replaced the flat `dynamicMergedDatabases` map with per-catalog database sets (`mergedCatalogDatabases`), resolving unprefixed databases strictly in declared `catalogs=` priority order. Previously, `get_all_databases` / `get_databases` (`SHOW DATABASES`) overwrote shared database names from higher-priority merged catalogs with the last catalog in the list.
+  - Hardened `GetAllDatabasesHandler.updateMergedRoutingTable` against degraded fanout: when the default catalog or a higher-priority merged catalog is missing from `fanoutResults`, lower-priority merged catalogs are not updated, and databases hidden by `expose-db-patterns` / `expose-mode` are filtered out before updating the router.
+  - Updated `CatalogRouter.probeDatabaseCatalog` so a transient `UNKNOWN` response from the default catalog or a higher-priority merged catalog prevents caching a lower-priority catalog into the persistent routing table.
+
 ### Changed (Architectural Refactoring — Wave 4)
 
 - **Package dependency cycle removal & architectural enforcement**:
