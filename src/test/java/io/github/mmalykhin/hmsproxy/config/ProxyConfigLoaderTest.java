@@ -2679,4 +2679,29 @@ public class ProxyConfigLoaderTest {
       Files.deleteIfExists(file);
     }
   }
+
+  @Test
+  public void singleClusterZooKeeperConnectStringPopulatesAllZooKeeperSubsystems() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-shared-zk", ".properties");
+    try {
+      Files.writeString(file, String.join("\n",
+          "catalogs=catalog1",
+          "catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083",
+          "zookeeper.connect-string=zk1:2181,zk2:2181,zk3:2181",
+          "security.front-door-conf.hive.cluster.delegation.token.store.class="
+              + "org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore",
+          "synthetic-read-lock.store.mode=ZOOKEEPER",
+          "routing.cache.distributed-invalidation.mode=ZOOKEEPER"
+      ));
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.syntheticReadLockStore().zooKeeper().connectString());
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.latencyRouting().distributedCacheInvalidation().zooKeeper().connectString());
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.security().frontDoorConf().get("hive.cluster.delegation.token.store.zookeeper.connectString"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
 }

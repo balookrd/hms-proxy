@@ -17,6 +17,7 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Updated `GetAllDatabasesHandler` so background `DatabaseCacheRefresher` ticks (`effectiveImpersonation == null`) automatically refresh `CatalogRouter` routing tables for the default catalog and `merge-with-default` catalogs (filtering hidden databases via `filterExposedDatabases`).
   - Added `get_table_meta` fallback in `GetTablesExtHandler` (with access filtering and `ExtendedTableInfo` construction in the request classloader) for non-Hortonworks backends (such as `APACHE_3_1_3`), and switched `GetMaxAllocatedTableWriteIdHandler` from write to read namespace resolution to support `READ_ONLY` catalogs.
   - Excluded `ThriftFailureClassifier.isUnsupportedMethod` from backend failure metrics and admission gate failure accounting in `BackendCallDispatcher.performBackendCall`.
+  - Added a cluster-wide `zookeeper.connect-string` setting (`ConfigParsing.resolveZooKeeperConnectString`) that populates `SyntheticReadLockStoreConfigParser`, `LatencyRoutingConfigParser` (distributed cache invalidation), and `SecurityConfigParser` (`hive.cluster.delegation.token.store.zookeeper.connectString` in `frontDoorConf`) when subsystem-specific keys are omitted.
 
 ### Fixed
 

@@ -64,6 +64,20 @@
 - **`BackendCallDispatcher`**:
   - В блоке `catch (Throwable cause)` в `performBackendCall`: если `ThriftFailureClassifier.isUnsupportedMethod(cause)` — не вызываем `observability.metrics().recordBackendFailure(backend.name(), cause)` и `admissionGate.recordFailure(...)`, так как отсутствие метода в runtime-профиле бэкенда — это штатный сигнал для локального fallback'а хендлера, а не ошибка бэкенда.
 
+### 3.5. Единая настройка ZooKeeper на кластер (`zookeeper.connect-string`)
+- Чтобы не дублировать список хостов ZooKeeper трижды (`security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString`, `synthetic-read-lock.store.zookeeper.connect-string`, `routing.cache.distributed-invalidation.zookeeper.connect-string`), добавляем поддержку общего ключа `zookeeper.connect-string` (плюс взаимный fallback между тремя ключами):
+  - `ProxyConfigLoader` регистрирует `zookeeper.connect-string` в `STATIC_KNOWN_KEYS`.
+  - Вводится helper `ZooKeeperConnectStringResolver.resolve(PropertyReader reader, String primaryKey)`, который возвращает первое непустое значение из:
+    1. `primaryKey` (специфичный ключ компонента);
+    2. `zookeeper.connect-string` (единый ключ кластера);
+    3. `synthetic-read-lock.store.zookeeper.connect-string`;
+    4. `security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString`;
+    5. `security.front-door-conf.metastore.cluster.delegation.token.store.zookeeper.connectString`;
+    6. `security.front-door-conf.hive.zookeeper.quorum`;
+    7. `routing.cache.distributed-invalidation.zookeeper.connect-string`.
+  - В `SecurityConfigParser.parse`: если в `frontDoorConf` выбран `ZooKeeperTokenStore`, а `hive.cluster.delegation.token.store.zookeeper.connectString` (и его fallback-ключи) не задан, автоматически подставляется `ZooKeeperConnectStringResolver.resolve(reader, null)`.
+  - В `SyntheticReadLockStoreConfigParser.parse` и `LatencyRoutingConfigParser.parse`: `connectString` резолвится через `ZooKeeperConnectStringResolver.resolve(...)`.
+
 ## 4. Боевая конфигурация `hms-proxy.properties` для обеих площадок (`janus` и `hdp31`)
 
 Полный перечень рекомендуемых настроек для добавления в боевой `hms-proxy.properties`:

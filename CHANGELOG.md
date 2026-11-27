@@ -17,6 +17,7 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - В `GetAllDatabasesHandler` фоновое обновление `DatabaseCacheRefresher` (при `effectiveImpersonation == null`) теперь автоматически синхронизирует таблицу маршрутизации `CatalogRouter` для `default`-каталога и `merge-with-default`-каталогов (с фильтрацией через `filterExposedDatabases`).
   - В `GetTablesExtHandler` добавлен fallback через `get_table_meta` (с фильтрацией доступа и сборкой `ExtendedTableInfo` в classloader'е запроса) для не-Hortonworks бэкендов (например, `APACHE_3_1_3`), а в `GetMaxAllocatedTableWriteIdHandler` — read-разрешение вместо write-проверки для поддержки `READ_ONLY` каталогов.
   - В `BackendCallDispatcher.performBackendCall` исключения `ThriftFailureClassifier.isUnsupportedMethod` больше не инкрементируют метрики ошибок бэкенда и не влияют на circuit breaker / admission gate.
+  - Добавлена единая настройка `zookeeper.connect-string` (`ConfigParsing.resolveZooKeeperConnectString`), используемая по умолчанию для `SyntheticReadLockStoreConfigParser`, `LatencyRoutingConfigParser` (распределённая инвалидация кэша) и `SecurityConfigParser` (`hive.cluster.delegation.token.store.zookeeper.connectString` в `frontDoorConf`), если подсистемные ключи не заданы явно.
 
 ### Исправлено
 

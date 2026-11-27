@@ -649,7 +649,107 @@ Expected: `BUILD SUCCESS`.
 
 ---
 
-### Task 5: Полная проверка, обновление документации/changelog, Kerberos smoke-стенд и коммит
+### Task 5: Единая настройка `zookeeper.connect-string` для всех ZooKeeper-компонентов прокси
+
+**Files:**
+- Modify: `src/main/java/io/github/mmalykhin/hmsproxy/config/ConfigParsing.java`
+- Modify: `src/main/java/io/github/mmalykhin/hmsproxy/config/ProxyConfigLoader.java`
+- Modify: `src/main/java/io/github/mmalykhin/hmsproxy/config/security/SecurityConfigParser.java`
+- Modify: `src/main/java/io/github/mmalykhin/hmsproxy/config/syntheticlock/SyntheticReadLockStoreConfigParser.java`
+- Modify: `src/main/java/io/github/mmalykhin/hmsproxy/config/routing/LatencyRoutingConfigParser.java`
+- Test: `src/test/java/io/github/mmalykhin/hmsproxy/config/ProxyConfigLoaderTest.java`
+
+**Interfaces:**
+- Produces:
+  - `ConfigParsing.resolveZooKeeperConnectString(PropertyReader reader, String specificKey)`: возвращает `specificKey`, либо `zookeeper.connect-string`, либо любую из сконфигурированных ZK connect-string (`synthetic-read-lock.store.zookeeper.connect-string`, `routing.cache.distributed-invalidation.zookeeper.connect-string`, `security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString`, `security.front-door-conf.metastore.cluster.delegation.token.store.zookeeper.connectString`, `security.front-door-conf.hive.zookeeper.quorum`).
+
+- [ ] **Step 1: Написать падающий тест в `ProxyConfigLoaderTest`**
+
+В `src/test/java/io/github/mmalykhin/hmsproxy/config/ProxyConfigLoaderTest.java` добавить тест `singleClusterZooKeeperConnectStringPopulatesAllZooKeeperSubsystems`:
+
+```java
+  @Test
+  public void singleClusterZooKeeperConnectStringPopulatesAllZooKeeperSubsystems() throws Exception {
+    Path file = Files.createTempFile("hms-proxy-shared-zk", ".properties");
+    try {
+      Files.writeString(file, String.join("\n",
+          "catalogs=catalog1",
+          "catalog.catalog1.conf.hive.metastore.uris=thrift://hms1:9083",
+          "zookeeper.connect-string=zk1:2181,zk2:2181,zk3:2181",
+          "security.front-door-conf.hive.cluster.delegation.token.store.class="
+              + "org.apache.hadoop.hive.metastore.security.ZooKeeperTokenStore",
+          "synthetic-read-lock.store.mode=ZOOKEEPER",
+          "routing.cache.distributed-invalidation.mode=ZOOKEEPER"
+      ));
+      ProxyConfig config = ProxyConfigLoader.load(file);
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.syntheticReadLockStore().zooKeeper().connectString());
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.latencyRouting().distributedCacheInvalidation().zooKeeper().connectString());
+      Assert.assertEquals("zk1:2181,zk2:2181,zk3:2181",
+          config.security().frontDoorConf().get("hive.cluster.delegation.token.store.zookeeper.connectString"));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+```
+
+- [ ] **Step 2: Запустить тест и убедиться, что он падает**
+
+Run:
+```bash
+JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 mvn -o -Dtest=ProxyConfigLoaderTest#singleClusterZooKeeperConnectStringPopulatesAllZooKeeperSubsystems test
+```
+Expected: FAIL (`Unrecognized configuration property: 'zookeeper.connect-string'` / `Missing required configuration property: synthetic-read-lock.store.zookeeper.connect-string`).
+
+- [ ] **Step 3: Реализовать `ConfigParsing.resolveZooKeeperConnectString` и подключить во все три парсера**
+
+1. В `src/main/java/io/github/mmalykhin/hmsproxy/config/ConfigParsing.java` добавить метод:
+```java
+  private static final List<String> SHARED_ZOOKEEPER_CONNECT_STRING_KEYS = List.of(
+      "zookeeper.connect-string",
+      "synthetic-read-lock.store.zookeeper.connect-string",
+      "routing.cache.distributed-invalidation.zookeeper.connect-string",
+      "security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString",
+      "security.front-door-conf.metastore.cluster.delegation.token.store.zookeeper.connectString",
+      "security.front-door-conf.hive.zookeeper.quorum"
+  );
+
+  public static String resolveZooKeeperConnectString(PropertyReader reader, String specificKey) {
+    if (specificKey != null) {
+      String direct = reader.getOrNull(specificKey);
+      if (direct != null && !direct.isBlank()) {
+        return direct;
+      }
+    }
+    for (String candidateKey : SHARED_ZOOKEEPER_CONNECT_STRING_KEYS) {
+      String candidate = reader.getOrNull(candidateKey);
+      if (candidate != null && !candidate.isBlank()) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+```
+2. В `src/main/java/io/github/mmalykhin/hmsproxy/config/ProxyConfigLoader.java` добавить `"zookeeper.connect-string"` в `STATIC_KNOWN_KEYS`.
+3. В `src/main/java/io/github/mmalykhin/hmsproxy/config/syntheticlock/SyntheticReadLockStoreConfigParser.java`:
+   заменить `reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string")` на `ConfigParsing.resolveZooKeeperConnectString(reader, "synthetic-read-lock.store.zookeeper.connect-string")`.
+4. В `src/main/java/io/github/mmalykhin/hmsproxy/config/routing/LatencyRoutingConfigParser.java`:
+   заменить чтение `connectString` для `ZOOKEEPER` на `ConfigParsing.resolveZooKeeperConnectString(reader, "routing.cache.distributed-invalidation.zookeeper.connect-string")`.
+5. В `src/main/java/io/github/mmalykhin/hmsproxy/config/security/SecurityConfigParser.java`:
+   если `frontDoorConf` не содержит непустого `hive.cluster.delegation.token.store.zookeeper.connectString`, `metastore.cluster.delegation.token.store.zookeeper.connectString` или `hive.zookeeper.quorum`, а `ConfigParsing.resolveZooKeeperConnectString(reader, null)` вернул непустую строку, положить её в изменяемую копию `frontDoorConf` под ключом `"hive.cluster.delegation.token.store.zookeeper.connectString"`.
+
+- [ ] **Step 4: Запустить тест и убедиться, что он проходит**
+
+Run:
+```bash
+JAVA_HOME=/Users/mvmalykh/Library/Java/JavaVirtualMachines/liberica-17.0.20.1 mvn -o -Dtest=ProxyConfigLoaderTest test
+```
+Expected: `BUILD SUCCESS`.
+
+---
+
+### Task 6: Полная проверка, обновление документации/changelog, Kerberos smoke-стенд и коммит
 
 **Files:**
 - Modify: `CHANGELOG.md`

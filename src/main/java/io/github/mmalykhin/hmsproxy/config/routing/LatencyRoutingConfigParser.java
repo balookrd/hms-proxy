@@ -153,10 +153,8 @@ public final class LatencyRoutingConfigParser {
         parseDistributedCacheInvalidationMode(reader.getOrNull("routing.cache.distributed-invalidation.mode"));
     DistributedCacheInvalidationConfig distributedCacheInvalidation;
     if (invalidationMode == DistributedCacheInvalidationMode.ZOOKEEPER) {
-      String connectString = reader.getOrNull("routing.cache.distributed-invalidation.zookeeper.connect-string");
-      if (connectString == null || connectString.isBlank()) {
-        connectString = reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string");
-      }
+      String connectString = ConfigParsing.resolveZooKeeperConnectString(
+          reader, "routing.cache.distributed-invalidation.zookeeper.connect-string");
       if (connectString == null || connectString.isBlank()) {
         throw new IllegalArgumentException(
             "routing.cache.distributed-invalidation.zookeeper.connect-string must be set when "

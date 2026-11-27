@@ -1898,7 +1898,7 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 - Подавление эха: события содержат идентификатор `instance-id` ноды-источника, что исключает повторную обработку собственных событий.
 - Поведение при сетевом расщеплении (split-brain): при переходе соединения с ZooKeeper в состояние `LOST`, `SUSPENDED` или `RECONNECTED` экземпляр превентивно инвалидирует все локальные кэши метаданных, предотвращая выдачу рассинхронизированных данных клиентам.
 - Сборка мусора (Retention Sweep): фоновый поток периодически удаляет znode событий старше `event-retention-ms` (по умолчанию 5 минут).
-- Фоллбэк на строку подключения блокировок: при отсутствии `connect-string` в секции инвалидации используется адрес `synthetic-read-lock.store.zookeeper.connect-string`.
+- Фоллбэк на общую строку подключения ZooKeeper: при отсутствии `connect-string` в секции инвалидации (а также в `synthetic-read-lock.store.zookeeper.connect-string` и `security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString`) используется единый ключ `zookeeper.connect-string` либо адрес другой настроенной ZooKeeper-подсистемы.
 - Prometheus-метрики:
   - `hms_proxy_cache_invalidation_events_published_total{type="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_events_received_total{type="table|database|catalog|all"}`

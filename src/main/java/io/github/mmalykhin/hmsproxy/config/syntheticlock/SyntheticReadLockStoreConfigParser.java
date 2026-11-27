@@ -39,7 +39,8 @@ public final class SyntheticReadLockStoreConfigParser {
         SyntheticReadLockStoreConfig.DEFAULT_MAX_ACTIVE_LOCKS);
     SyntheticReadLockStoreZooKeeperConfig zk =
         new SyntheticReadLockStoreZooKeeperConfig(
-            reader.getOrNull("synthetic-read-lock.store.zookeeper.connect-string"),
+            ConfigParsing.resolveZooKeeperConnectString(
+                reader, "synthetic-read-lock.store.zookeeper.connect-string"),
             znode,
             connectionTimeoutMs,
             sessionTimeoutMs,

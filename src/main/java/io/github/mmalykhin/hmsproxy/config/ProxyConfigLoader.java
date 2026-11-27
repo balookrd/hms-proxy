@@ -414,6 +414,7 @@ public final class ProxyConfigLoader {
       "routing.cache.serve-stale-on-error",
       "routing.cache.stale-grace-period-ms",
       "routing.cache.distributed-invalidation.mode",
+      "zookeeper.connect-string",
       "routing.cache.distributed-invalidation.zookeeper.connect-string",
       "routing.cache.distributed-invalidation.zookeeper.znode",
       "routing.cache.distributed-invalidation.zookeeper.connection-timeout-ms",

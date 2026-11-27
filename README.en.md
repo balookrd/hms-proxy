@@ -2021,7 +2021,7 @@ routing.cache.distributed-invalidation.purge-interval-ms=60000
 - Echo suppression: Events include the publishing node's `instance-id`, so the originating replica ignores its own echoed events.
 - Behavior on split-brain / ZooKeeper outage: If the ZooKeeper connection enters `LOST`, `SUSPENDED`, or `RECONNECTED`, the proxy defensively flushes all local metadata caches to avoid serving divergent metadata.
 - Event retention sweep: A background cleaner periodically purges event znodes older than `event-retention-ms` (default 5 minutes).
-- Fallback connection string: If `connect-string` is omitted in the invalidation config, it automatically falls back to `synthetic-read-lock.store.zookeeper.connect-string`.
+- Shared ZooKeeper connection string fallback: If a subsystem-specific `connect-string` is omitted (`routing.cache.distributed-invalidation.zookeeper.connect-string`, `synthetic-read-lock.store.zookeeper.connect-string`, or `security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString`), it automatically falls back to the cluster-wide `zookeeper.connect-string` or any configured ZooKeeper subsystem connect string.
 - Prometheus metrics:
   - `hms_proxy_cache_invalidation_events_published_total{type="table|database|catalog|all"}`
   - `hms_proxy_cache_invalidation_events_received_total{type="table|database|catalog|all"}`

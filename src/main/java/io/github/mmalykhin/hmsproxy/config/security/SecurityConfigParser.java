@@ -1,5 +1,6 @@
 package io.github.mmalykhin.hmsproxy.config.security;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +35,16 @@ public final class SecurityConfigParser {
       clientKeytab = reader.getOrNull("security.outbound-keytab");
     }
     Map<String, String> frontDoorConf = reader.collectPrefixed("security.front-door-conf.");
+    if (isBlank(frontDoorConf.get("hive.cluster.delegation.token.store.zookeeper.connectString"))
+        && isBlank(frontDoorConf.get("metastore.cluster.delegation.token.store.zookeeper.connectString"))
+        && isBlank(frontDoorConf.get("hive.zookeeper.quorum"))) {
+      String sharedZk = ConfigParsing.resolveZooKeeperConnectString(reader, null);
+      if (!isBlank(sharedZk)) {
+        Map<String, String> enrichedFrontDoorConf = new LinkedHashMap<>(frontDoorConf);
+        enrichedFrontDoorConf.put("hive.cluster.delegation.token.store.zookeeper.connectString", sharedZk);
+        frontDoorConf = java.util.Collections.unmodifiableMap(enrichedFrontDoorConf);
+      }
+    }
 
     if (clientPrincipal == null && serverPrincipal != null) {
       clientPrincipal = serverPrincipal;
@@ -90,6 +101,10 @@ public final class SecurityConfigParser {
         groupDiskCache,
         tokenStoreAdminPrincipals,
         frontDoorMaxMemoryTokens);
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
   /** Hive-owned key, so it keeps Hive's lenient {@code Boolean.parseBoolean} semantics. */

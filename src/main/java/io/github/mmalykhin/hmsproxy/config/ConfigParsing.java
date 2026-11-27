@@ -3,6 +3,7 @@ package io.github.mmalykhin.hmsproxy.config;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -12,8 +13,32 @@ import java.util.stream.Collectors;
 public final class ConfigParsing {
   /** Bind hosts that accept connections on every local address, so they clash with any other host. */
   private static final Set<String> WILDCARD_BIND_HOSTS = Set.of("", "*", "0.0.0.0", "::", "[::]", "::0", "0:0:0:0:0:0:0:0");
+  private static final List<String> SHARED_ZOOKEEPER_CONNECT_STRING_KEYS = List.of(
+      "zookeeper.connect-string",
+      "synthetic-read-lock.store.zookeeper.connect-string",
+      "routing.cache.distributed-invalidation.zookeeper.connect-string",
+      "security.front-door-conf.hive.cluster.delegation.token.store.zookeeper.connectString",
+      "security.front-door-conf.metastore.cluster.delegation.token.store.zookeeper.connectString",
+      "security.front-door-conf.hive.zookeeper.quorum"
+  );
 
   private ConfigParsing() {
+  }
+
+  public static String resolveZooKeeperConnectString(PropertyReader reader, String specificKey) {
+    if (specificKey != null) {
+      String direct = reader.getOrNull(specificKey);
+      if (direct != null && !direct.isBlank()) {
+        return direct;
+      }
+    }
+    for (String candidateKey : SHARED_ZOOKEEPER_CONNECT_STRING_KEYS) {
+      String candidate = reader.getOrNull(candidateKey);
+      if (candidate != null && !candidate.isBlank()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   /**
