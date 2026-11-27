@@ -28,8 +28,22 @@ final class GetAllDatabasesHandler implements SpecialCaseHandler {
               backend.name(),
               null,
               impersonation,
-              (effectiveImpersonation, background) -> (List<String>) support.dispatcher.invokeDirect(
-                  backend, method, null, effectiveImpersonation, background ? -1L : requestId, false, false));
+              (effectiveImpersonation, background) -> {
+                @SuppressWarnings("unchecked")
+                List<String> loaded = (List<String>) support.dispatcher.invokeDirect(
+                    backend, method, null, effectiveImpersonation, background ? -1L : requestId, false, false);
+                if (background && effectiveImpersonation == null && loaded != null
+                    && support.router.hasMergeWithDefaultCatalogs()) {
+                  String catalogName = backend.name();
+                  if (catalogName.equals(support.router.defaultBackend().name())) {
+                    support.router.updateDatabases(catalogName, loaded);
+                  } else if (support.router.isMergeWithDefaultCatalog(catalogName)) {
+                    support.router.updateDatabases(
+                        catalogName, filterExposedDatabases(support, catalogName, loaded));
+                  }
+                }
+                return loaded;
+              });
           return result;
         });
 

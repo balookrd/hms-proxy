@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.security.PrivilegedExceptionAction;
 import org.apache.hadoop.hive.metastore.api.Database;
@@ -1181,5 +1182,97 @@ public class MergedDatabasesRoutingTest {
     // 2. Subsequent get_database("Beemetrics") when hdp is healthy MUST resolve to hdp, not titanium
     Database db = (Database) handler.invoke(null, getDbMethod, new Object[] {"Beemetrics"});
     Assert.assertEquals("hdp-Beemetrics", db.getDescription());
+  }
+
+  @Test
+  public void backgroundDatabaseListRefreshUpdatesMergedCatalogRoutingTable() throws Throwable {
+    AtomicLong clock = new AtomicLong(1_000_000L);
+    io.github.mmalykhin.hmsproxy.config.routing.DatabaseCacheBackgroundRefreshConfig refreshCfg =
+        new io.github.mmalykhin.hmsproxy.config.routing.DatabaseCacheBackgroundRefreshConfig(true, 10_000L, 3_600_000L);
+    ProxyConfig base = createConfig(true);
+    ProxyConfig config = ProxyConfig.builder()
+        .server(base.server())
+        .security(base.security())
+        .catalogDbSeparator(base.catalogDbSeparator())
+        .defaultCatalog(base.defaultCatalog())
+        .catalogs(base.catalogs())
+        .syntheticReadLockStore(base.syntheticReadLockStore())
+        .latencyRouting(new LatencyRoutingConfig(
+            null, null, null, null,
+            io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy.SAFE_FANOUT_READS,
+            new io.github.mmalykhin.hmsproxy.config.routing.DatabaseListCacheConfig(60_000L, 100, true, refreshCfg),
+            new io.github.mmalykhin.hmsproxy.config.routing.DatabaseMetadataCacheConfig(60_000L, 100, true, refreshCfg),
+            null, false, null, null, false, 0L,
+            io.github.mmalykhin.hmsproxy.config.routing.DistributedCacheInvalidationConfig.disabled(),
+            MergedDatabaseResolutionConfig.defaultConfig()))
+        .build();
+
+    AtomicReference<List<String>> cat2Dbs = new AtomicReference<>(List.of("remote_v1"));
+    AtomicInteger cat2GetDbCalls = new AtomicInteger();
+    CatalogBackend backend1 = newBackend(config, config.catalogs().get("catalog1"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog1"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName())) {
+            return List.of("default");
+          }
+          if ("get_database".equals(method.getName())) {
+            throw new NoSuchObjectException((String) args[0]);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+    CatalogBackend backend2 = newBackend(config, config.catalogs().get("catalog2"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("catalog2"), newSession((proxy, method, args) -> {
+          if ("get_all_databases".equals(method.getName())) {
+            return cat2Dbs.get();
+          }
+          if ("get_database".equals(method.getName())) {
+            cat2GetDbCalls.incrementAndGet();
+            Database db = new Database();
+            db.setName((String) args[0]);
+            return db;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("catalog1", backend1);
+    backends.put("catalog2", backend2);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    FederationLayer federation = new FederationLayer(config, router);
+    ProxyObservability observability = new ProxyObservability(config);
+    DatabaseListCache listCache = new DatabaseListCache(
+        config.latencyRouting().databaseListCache(), false, 0L, observability.metrics(), clock::get);
+    DatabaseMetadataCache metaCache = new DatabaseMetadataCache(
+        config.latencyRouting().databaseMetadataCache(), listCache, false, 0L, observability.metrics(), clock::get);
+    DatabaseCacheRefresher refresher = new DatabaseCacheRefresher(
+        listCache, metaCache, refreshCfg, refreshCfg, clock::get, false);
+    io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer compat =
+        new io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer(config, null);
+    BackendRoutingController brc = new BackendRoutingController(config, router, observability);
+    AdmissionGate gate = new AdmissionGate(brc, new RequestRateLimiter(config, observability.metrics()));
+    FanoutExecutor fanout = new FanoutExecutor(brc, router, gate);
+    BackendCallDispatcher dispatcher = new BackendCallDispatcher(compat, gate, observability, fanout, router);
+    RoutingHandler handler = new RoutingHandler(
+        config, router, federation, compat, observability, dispatcher, new ImpersonationResolver(config),
+        listCache, metaCache, new TableMetadataCache(config.latencyRouting().tableMetadataCache()),
+        new PartitionMetadataCache(config.latencyRouting().partitionMetadataCache()),
+        new FileSystemExternalTableDropPurger(config),
+        io.github.mmalykhin.hmsproxy.security.ranger.NoOpMetadataAuthorizer.INSTANCE,
+        new LocalCacheInvalidator(listCache, metaCache, null, null, router));
+
+    Method getAllDbs = ThriftHiveMetastore.Iface.class.getMethod("get_all_databases");
+    handler.invoke(null, getAllDbs, new Object[0]);
+
+    // New database remote_v2 appears in catalog2 and is picked up by background refresh
+    cat2Dbs.set(List.of("remote_v1", "remote_v2"));
+    clock.addAndGet(15_000L);
+    refresher.refreshTick();
+
+    // Resolving remote_v2 must immediately route to catalog2 without an on-demand get_database probe!
+    CatalogRouter.ResolvedNamespace ns = router.resolveDatabase("remote_v2");
+    Assert.assertEquals("catalog2", ns.catalogName());
+    Assert.assertEquals("Background refresh should have registered remote_v2 without on-demand probe",
+        0, cat2GetDbCalls.get());
+    brc.close();
+    handler.close();
   }
 }

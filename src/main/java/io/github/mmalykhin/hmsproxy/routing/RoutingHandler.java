@@ -489,7 +489,7 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     Object result;
     if (isPartitionReadMethod(methodName)) {
       ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
-      String querySig = encodeQuerySignature(methodName, routedArgs, 2);
+      String querySig = RoutingSupport.encodeQuerySignature(methodName, routedArgs, 2);
       result = support.partitionMetadataCache.get(
           namespace.catalogName(),
           namespace.backendDbName(),
@@ -505,90 +505,6 @@ final class RoutingHandler implements InvocationHandler, NamespaceFallback {
     }
     result = filterReadResult(method.getName(), namespace, result);
     return support.federationLayer.externalizeResult(result, namespace);
-  }
-
-  private static String encodeQuerySignature(String methodName, Object[] args, int fromIndex) {
-    StringBuilder out = new StringBuilder(64);
-    out.append(methodName.length()).append(':').append(methodName).append(':');
-    int count = args == null ? 0 : Math.max(0, args.length - fromIndex);
-    out.append(count).append('[');
-    if (args != null) {
-      for (int i = fromIndex; i < args.length; i++) {
-        if (i > fromIndex) {
-          out.append(',');
-        }
-        appendSignatureValue(out, args[i]);
-      }
-    }
-    return out.append(']').toString();
-  }
-
-  private static void appendSignatureValue(StringBuilder out, Object value) {
-    if (value == null) {
-      out.append("N;");
-      return;
-    }
-    if (value instanceof String str) {
-      out.append("S:").append(str.length()).append(':').append(str).append(';');
-      return;
-    }
-    if (value instanceof Boolean bool) {
-      out.append(bool ? "Z:1;" : "Z:0;");
-      return;
-    }
-    if (value instanceof Number num) {
-      out.append("Num:").append(num.getClass().getSimpleName()).append(':').append(num).append(';');
-      return;
-    }
-    if (value instanceof byte[] bytes) {
-      String encoded = java.util.Base64.getEncoder().encodeToString(bytes);
-      out.append("B:").append(encoded.length()).append(':').append(encoded).append(';');
-      return;
-    }
-    if (value instanceof Object[] array) {
-      out.append("A:").append(array.length).append('[');
-      for (int i = 0; i < array.length; i++) {
-        if (i > 0) {
-          out.append(',');
-        }
-        appendSignatureValue(out, array[i]);
-      }
-      out.append("];");
-      return;
-    }
-    if (value instanceof Iterable<?> iterable) {
-      String kind = value.getClass().getName();
-      out.append("C:").append(kind.length()).append(':').append(kind).append('[');
-      boolean first = true;
-      for (Object item : iterable) {
-        if (!first) {
-          out.append(',');
-        }
-        first = false;
-        appendSignatureValue(out, item);
-      }
-      out.append("];");
-      return;
-    }
-    if (value instanceof Map<?, ?> map) {
-      out.append("M:").append(map.size()).append('{');
-      boolean first = true;
-      for (Map.Entry<?, ?> entry : map.entrySet()) {
-        if (!first) {
-          out.append(',');
-        }
-        first = false;
-        appendSignatureValue(out, entry.getKey());
-        out.append('=');
-        appendSignatureValue(out, entry.getValue());
-      }
-      out.append("};");
-      return;
-    }
-    String typeName = value.getClass().getName();
-    String text = String.valueOf(value);
-    out.append("O:").append(typeName.length()).append(':').append(typeName)
-        .append(':').append(text.length()).append(':').append(text).append(';');
   }
 
   private static boolean isPartitionReadMethod(String methodName) {

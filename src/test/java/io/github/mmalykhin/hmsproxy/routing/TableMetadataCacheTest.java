@@ -313,4 +313,159 @@ public class TableMetadataCacheTest {
       pool.shutdownNow();
     }
   }
+
+  public static final class ForeignPartitionResponse {
+    private String state;
+
+    public ForeignPartitionResponse(String state) {
+      this.state = state;
+    }
+
+    public ForeignPartitionResponse deepCopy() {
+      return new ForeignPartitionResponse(this.state);
+    }
+
+    public String getState() {
+      return state;
+    }
+
+    public void setState(String state) {
+      this.state = state;
+    }
+  }
+
+  @Test
+  public void partitionCacheDeepCopiesReflectiveThriftObjectsAndLists() throws Throwable {
+    PartitionMetadataCache cache = new PartitionMetadataCache(
+        new io.github.mmalykhin.hmsproxy.config.routing.PartitionMetadataCacheConfig(60_000L, 100, true));
+    ImpersonationContext user = new ImpersonationContext("alice", List.of());
+    String sig = RoutingSupport.encodeQuerySignature("get_partitions_req", new Object[] {(short) -1}, 0);
+
+    ForeignPartitionResponse first = cache.get("hdp", "beemetrics", "events", sig, user,
+        () -> new ForeignPartitionResponse("original"));
+    first.setState("mutated");
+
+    ForeignPartitionResponse second = cache.get("hdp", "beemetrics", "events", sig, user,
+        () -> new ForeignPartitionResponse("reloaded"));
+    Assert.assertEquals("original", second.getState());
+  }
+
+  @Test
+  public void requestWrapperReadsUseTableAndPartitionCachesAndServeStaleOnOutage() throws Throwable {
+    io.github.mmalykhin.hmsproxy.config.ProxyConfig config =
+        io.github.mmalykhin.hmsproxy.config.ProxyConfig.builder()
+            .server(new io.github.mmalykhin.hmsproxy.config.server.ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+            .security(new io.github.mmalykhin.hmsproxy.config.security.SecurityConfig(
+                io.github.mmalykhin.hmsproxy.config.security.SecurityMode.NONE, null, null, null, null, false, java.util.Map.of()))
+            .catalogDbSeparator("__")
+            .defaultCatalog("janus")
+            .catalogs(java.util.Map.of(
+                "janus", new io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig(
+                    "janus", "janus", "file:///janus", false,
+                    io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode.READ_WRITE, List.of(),
+                    io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode.ALLOW_ALL, List.of(), java.util.Map.of(),
+                    List.of(), false, null, null, java.util.Map.of("hive.metastore.uris", "thrift://janus")),
+                "hdp", new io.github.mmalykhin.hmsproxy.config.catalog.CatalogConfig(
+                    "hdp", "hdp", "file:///hdp", false,
+                    io.github.mmalykhin.hmsproxy.config.catalog.CatalogAccessMode.READ_WRITE, List.of(),
+                    io.github.mmalykhin.hmsproxy.config.catalog.CatalogExposureMode.ALLOW_ALL, List.of(), java.util.Map.of(),
+                    List.of(), true, null, null, java.util.Map.of("hive.metastore.uris", "thrift://hdp"))))
+            .syntheticReadLockStore(
+                io.github.mmalykhin.hmsproxy.config.syntheticlock.SyntheticReadLockStoreConfig.inMemory())
+            .latencyRouting(new io.github.mmalykhin.hmsproxy.config.routing.LatencyRoutingConfig(
+                null, null, null, null,
+                io.github.mmalykhin.hmsproxy.config.routing.DegradedRoutingPolicy.SAFE_FANOUT_READS,
+                null, null, null, false,
+                new TableMetadataCacheConfig(60_000L, 1000, true),
+                new io.github.mmalykhin.hmsproxy.config.routing.PartitionMetadataCacheConfig(60_000L, 1000, true),
+                true, 300_000L,
+                io.github.mmalykhin.hmsproxy.config.routing.DistributedCacheInvalidationConfig.disabled(),
+                io.github.mmalykhin.hmsproxy.config.routing.MergedDatabaseResolutionConfig.defaultConfig()))
+            .build();
+
+    AtomicInteger hdpTableCalls = new AtomicInteger();
+    AtomicInteger hdpPartCalls = new AtomicInteger();
+    io.github.mmalykhin.hmsproxy.backend.CatalogBackend janus =
+        RoutingMetaStoreProxyTestSupport.newBackend(
+            config, config.catalogs().get("janus"),
+            new io.github.mmalykhin.hmsproxy.backend.ApacheBackendAdapter(),
+            RoutingMetaStoreProxyTestSupport.newBackendRuntime(
+                config, config.catalogs().get("janus"),
+                RoutingMetaStoreProxyTestSupport.newSession((proxy, method, args) -> {
+                  throw new org.apache.hadoop.hive.metastore.api.NoSuchObjectException("not in janus");
+                })));
+    io.github.mmalykhin.hmsproxy.backend.CatalogBackend hdp =
+        RoutingMetaStoreProxyTestSupport.newBackend(
+            config, config.catalogs().get("hdp"),
+            new io.github.mmalykhin.hmsproxy.backend.ApacheBackendAdapter(),
+            RoutingMetaStoreProxyTestSupport.newBackendRuntime(
+                config, config.catalogs().get("hdp"),
+                RoutingMetaStoreProxyTestSupport.newSession((proxy, method, args) -> {
+                  if ("get_database".equals(method.getName())) {
+                    org.apache.hadoop.hive.metastore.api.Database db =
+                        new org.apache.hadoop.hive.metastore.api.Database();
+                    db.setName((String) args[0]);
+                    return db;
+                  }
+                  if ("get_table_req".equals(method.getName())) {
+                    hdpTableCalls.incrementAndGet();
+                    Table t = new Table();
+                    t.setDbName("Beemetrics");
+                    t.setTableName("events");
+                    return new org.apache.hadoop.hive.metastore.api.GetTableResult(t);
+                  }
+                  if ("get_partitions_by_names".equals(method.getName())) {
+                    hdpPartCalls.incrementAndGet();
+                    org.apache.hadoop.hive.metastore.api.Partition p =
+                        new org.apache.hadoop.hive.metastore.api.Partition();
+                    p.setDbName("Beemetrics");
+                    p.setTableName("events");
+                    p.setValues(List.of("2026-11-27"));
+                    return List.of(p);
+                  }
+                  throw new UnsupportedOperationException(method.getName());
+                })));
+
+    java.util.LinkedHashMap<String, io.github.mmalykhin.hmsproxy.backend.CatalogBackend> backends =
+        new java.util.LinkedHashMap<>();
+    backends.put("janus", janus);
+    backends.put("hdp", hdp);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    router.updateDatabases("janus", List.of("default"));
+    router.updateDatabases("hdp", List.of("Beemetrics"));
+    io.github.mmalykhin.hmsproxy.federation.FederationLayer federation =
+        new io.github.mmalykhin.hmsproxy.federation.FederationLayer(config, router);
+    RoutingMetaStoreProxy proxy = new RoutingMetaStoreProxy(
+        config, router, federation, null, new io.github.mmalykhin.hmsproxy.observability.ProxyObservability(config));
+
+    org.apache.hadoop.hive.metastore.api.GetTableRequest tblReq =
+        new org.apache.hadoop.hive.metastore.api.GetTableRequest("Beemetrics", "events");
+    org.apache.hadoop.hive.metastore.api.GetTableResult r1 =
+        (org.apache.hadoop.hive.metastore.api.GetTableResult) proxy.get_table_req(tblReq);
+    org.apache.hadoop.hive.metastore.api.GetTableResult r2 =
+        (org.apache.hadoop.hive.metastore.api.GetTableResult) proxy.get_table_req(tblReq);
+    Assert.assertEquals("events", r1.getTable().getTableName());
+    Assert.assertEquals("events", r2.getTable().getTableName());
+    Assert.assertEquals("get_table_req must hit TableMetadataCache on second call", 1, hdpTableCalls.get());
+
+    org.junit.Assume.assumeTrue(java.nio.file.Files.isReadable(RoutingMetaStoreProxyTestSupport.HIVE_4_JAR));
+    ClassLoader hdpCl = new io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader(
+        io.github.mmalykhin.hmsproxy.backend.MetastoreApiClassLoader.buildIsolatedRuntimeUrls(
+            RoutingMetaStoreProxyTestSupport.HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> byNamesReqClass = hdpCl.loadClass("org.apache.hadoop.hive.metastore.api.GetPartitionsByNamesRequest");
+    Object partReq = byNamesReqClass.getConstructor().newInstance();
+    byNamesReqClass.getMethod("setDb_name", String.class).invoke(partReq, "Beemetrics");
+    byNamesReqClass.getMethod("setTbl_name", String.class).invoke(partReq, "events");
+    byNamesReqClass.getMethod("setNames", List.class).invoke(partReq, List.of("dt=2026-11-27"));
+
+    Object p1 = proxy.get_partitions_by_names_req(partReq);
+    Object p2 = proxy.get_partitions_by_names_req(partReq);
+    List<?> parts1 = (List<?>) p1.getClass().getMethod("getPartitions").invoke(p1);
+    List<?> parts2 = (List<?>) p2.getClass().getMethod("getPartitions").invoke(p2);
+    Assert.assertEquals(1, parts1.size());
+    Assert.assertEquals(1, parts2.size());
+    Assert.assertEquals("get_partitions_by_names_req must hit PartitionMetadataCache on second call",
+        1, hdpPartCalls.get());
+  }
 }

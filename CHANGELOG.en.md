@@ -8,6 +8,14 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added / Improved
+
+- **Metadata caching for `*_req` table/partition reads and `CatalogRouter` sync on background refresh (`routing`)**:
+  - Connected `GetTableReqHandler` to `TableMetadataCache` for non-ACID requests without `validWriteIdList` on non-Hive-4 backends (supporting `serve-stale-on-error` and DDL invalidation).
+  - Connected `GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByNamesReqHandler`, and `GetPartitionsByFilterReqHandler` to `PartitionMetadataCache` using deterministic query signatures (`RoutingSupport.encodeQuerySignature`, extracted from `RoutingHandler`), including `validWriteIdList`, `get_col_stats`, `processorCapabilities`, `withAuth`, and `userName`/`groupNames`.
+  - Extended `PartitionMetadataCache.deepCopy` via `ThriftReflectionCache.deepCopy` to support defensive copying of Thrift objects from isolated classloaders (Hortonworks / Hive 4).
+  - Updated `GetAllDatabasesHandler` so background `DatabaseCacheRefresher` ticks (`effectiveImpersonation == null`) automatically refresh `CatalogRouter` routing tables for the default catalog and `merge-with-default` catalogs (filtering hidden databases via `filterExposedDatabases`).
+
 ### Fixed
 
 - **Merge-with-default catalog priority and isolation in `CatalogRouter` and `GetAllDatabasesHandler`**:

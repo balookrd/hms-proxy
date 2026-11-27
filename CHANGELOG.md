@@ -8,6 +8,14 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## [Unreleased]
 
+### Добавлено / Улучшено
+
+- **Кэширование `*_req`-вызовов чтения таблиц и партиций и синхронизация `CatalogRouter` при фоновом рефреше (`routing`)**:
+  - `GetTableReqHandler` подключён к `TableMetadataCache` для не-ACID запросов без `validWriteIdList` на не-Hive-4 бэкендах (включая `serve-stale-on-error` и инвалидацию при DDL-мутациях).
+  - `GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByNamesReqHandler` и `GetPartitionsByFilterReqHandler` подключены к `PartitionMetadataCache` с детерминированной сигнатурой запроса (`RoutingSupport.encodeQuerySignature`, вынесенной из `RoutingHandler`), включая `validWriteIdList`, `get_col_stats`, `processorCapabilities`, `withAuth`, `userName`/`groupNames`.
+  - Расширен `PartitionMetadataCache.deepCopy` через `ThriftReflectionCache.deepCopy` для защитного копирования структур из изолированных classloader'ов (Hortonworks / Hive 4).
+  - В `GetAllDatabasesHandler` фоновое обновление `DatabaseCacheRefresher` (при `effectiveImpersonation == null`) теперь автоматически синхронизирует таблицу маршрутизации `CatalogRouter` для `default`-каталога и `merge-with-default`-каталогов (с фильтрацией через `filterExposedDatabases`).
+
 ### Исправлено
 
 - **Приоритет и изоляция слияния каталогов (`merge-with-default`) в `CatalogRouter` и `GetAllDatabasesHandler`**:

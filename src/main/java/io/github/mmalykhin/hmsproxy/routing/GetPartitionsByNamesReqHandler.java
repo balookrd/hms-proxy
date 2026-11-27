@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -24,12 +25,28 @@ final class GetPartitionsByNamesReqHandler implements SpecialCaseHandler {
     CatalogBackend backend = resolved.backend();
 
     Object routedRequest = support.federationLayer.internalizeArgument(request, namespace);
-    Object result = RequestObjectRouting.invokeWithUnsupportedFallback(
-        support,
-        backend,
-        "get_partitions_by_names_req",
-        routedRequest,
-        () -> fallbackToLegacy(backend, routedRequest));
+    ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+    String querySig = RoutingSupport.encodeQuerySignature(
+        method.getName(),
+        new Object[] {
+            ThriftReflectionCache.invokeGetter(routedRequest, "getNames"),
+            ThriftReflectionCache.invokeGetter(routedRequest, "isGet_col_stats"),
+            ThriftReflectionCache.invokeGetter(routedRequest, "getProcessorCapabilities"),
+            ThriftReflectionCache.readString(routedRequest, "getValidWriteIdList")
+        },
+        0);
+    Object result = support.partitionMetadataCache.get(
+        namespace.catalogName(),
+        namespace.backendDbName(),
+        resolved.tableName(),
+        querySig,
+        impersonation,
+        () -> RequestObjectRouting.invokeWithUnsupportedFallback(
+            support,
+            backend,
+            "get_partitions_by_names_req",
+            routedRequest,
+            () -> fallbackToLegacy(backend, routedRequest)));
     return support.federationLayer.externalizeResult(result, namespace);
   }
 

@@ -1,6 +1,7 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -24,12 +25,23 @@ final class GetPartitionReqHandler implements SpecialCaseHandler {
     CatalogBackend backend = resolved.backend();
 
     Object routedRequest = support.federationLayer.internalizeArgument(request, namespace);
-    Object result;
-    if (backend.runtimeProfile().isHive4()) {
-      result = support.invokeBackendNamed(backend, "get_partition_req", routedRequest);
-    } else {
-      result = fallbackToLegacy(backend, routedRequest);
-    }
+    ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+    String querySig = RoutingSupport.encodeQuerySignature(
+        method.getName(),
+        new Object[] {
+            ThriftReflectionCache.invokeGetter(routedRequest, "getPartVals"),
+            ThriftReflectionCache.readString(routedRequest, "getValidWriteIdList")
+        },
+        0);
+    Object result = support.partitionMetadataCache.get(
+        namespace.catalogName(),
+        namespace.backendDbName(),
+        resolved.tableName(),
+        querySig,
+        impersonation,
+        () -> backend.runtimeProfile().isHive4()
+            ? support.invokeBackendNamed(backend, "get_partition_req", routedRequest)
+            : fallbackToLegacy(backend, routedRequest));
     return support.federationLayer.externalizeResult(result, namespace);
   }
 

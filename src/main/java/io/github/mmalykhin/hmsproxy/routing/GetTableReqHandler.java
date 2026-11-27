@@ -1,9 +1,12 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftValueConverter;
 import java.lang.reflect.Method;
 import org.apache.hadoop.hive.metastore.api.GetTableRequest;
+import org.apache.hadoop.hive.metastore.api.GetTableResult;
+import org.apache.hadoop.hive.metastore.api.Table;
 
 final class GetTableReqHandler implements SpecialCaseHandler {
   private final RoutingSupport support;
@@ -39,6 +42,7 @@ final class GetTableReqHandler implements SpecialCaseHandler {
     support.validateExposedDatabaseAccess(method.getName(), namespace);
     support.validateExposedTableAccess(method.getName(), namespace, tblName);
 
+    String validWriteIdList = ThriftReflectionCache.readString(request, "getValidWriteIdList");
     Object result;
     if (backend.runtimeProfile().isHive4() && !(request instanceof GetTableRequest)) {
       Object routedRequest = support.federationLayer.internalizeArgument(request, namespace);
@@ -49,7 +53,21 @@ final class GetTableReqHandler implements SpecialCaseHandler {
           : (GetTableRequest) ThriftValueConverter.convertTBase(request, GetTableRequest.class);
       GetTableRequest routedRequest =
           (GetTableRequest) support.federationLayer.internalizeTableRequest(apacheReq, namespace);
-      result = support.invokeViaRequest(backend, routedRequest, method.getName());
+      if (!backend.runtimeProfile().isHive4() && (validWriteIdList == null || validWriteIdList.isBlank())) {
+        ImpersonationContext impersonation = support.impersonationResolver.resolve().orElse(null);
+        Table cachedTable = support.tableMetadataCache.get(
+            namespace.catalogName(),
+            namespace.backendDbName(),
+            tblName,
+            impersonation,
+            () -> {
+              Object res = support.invokeViaRequest(backend, routedRequest, method.getName());
+              return res instanceof GetTableResult tableResult ? tableResult.getTable() : null;
+            });
+        result = cachedTable == null ? new GetTableResult() : new GetTableResult(cachedTable);
+      } else {
+        result = support.invokeViaRequest(backend, routedRequest, method.getName());
+      }
     }
 
     result = support.filterSingleTableResult(method.getName(), namespace, result);

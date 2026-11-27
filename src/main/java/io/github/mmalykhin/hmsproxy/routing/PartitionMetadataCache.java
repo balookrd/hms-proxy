@@ -259,7 +259,7 @@ final class PartitionMetadataCache {
       }
       return copy;
     }
-    return value;
+    return ThriftReflectionCache.deepCopy(value);
   }
 
   @FunctionalInterface
