@@ -16,6 +16,10 @@
 3. **Холодный старт и фоновое обновление таблицы маршрутизации `merge-with-default` (`CatalogRouter`)**:
    - После старта `hms-proxy` (до первого `SHOW DATABASES`) таблица баз `mergedCatalogDatabases` в `CatalogRouter` пуста, из-за чего первые обращения к БД `hdp` вызывают синхронные on-demand пробы `get_database` через WAN.
    - Когда `DatabaseCacheRefresher` в фоне обновляет `get_all_databases` в `DatabaseListCache`, обновлённый список баз не передаётся в `CatalogRouter`.
+4. **Обратная симметрия на площадке `hdp31` (когда клиенты `HORTONWORKS_3_1_0_3_1_0_78` ходят в удалённые на 300 км каталоги `janus` и `titanium` с профилем `APACHE_3_1_3`)**:
+   - **`GetTablesExtHandler`**: сейчас при попадании HDP-метода `get_tables_ext` в каталог `APACHE_3_1_3` выбрасывает `MetaException("Hortonworks get_tables_ext requires a Hortonworks backend runtime")`. Для работы HDP-клиентов (HS2 / Beeline / Hue) с удалёнными каталогами `janus` и `titanium` необходим fallback через стандартный `get_table_meta(db, pattern, types)` с конструированием `List<ExtendedTableInfo>` в classloader'е запроса.
+   - **`GetMaxAllocatedTableWriteIdHandler`**: использует `RequestObjectRouting.resolveWrite` вместо чтения, что блокирует вызов на `READ_ONLY` каталогах (`titanium`), хотя HDP HS2 вызывает `get_max_allocated_table_write_id` при чтении/планировании запросов.
+   - **Ложный счётчик `hms_proxy_backend_failures_total` на неподдерживаемых методах в `BackendCallDispatcher`**: когда HDP-фронт вызывает на `APACHE_3_1_3`-бэкенде метод, отсутствующий в Apache 3.1.3 (`alter_table_req`, `create_table_req`, `get_max_allocated_table_write_id` и др.), `BackendInvocationSession` выбрасывает `NoSuchMethodException` до обращения в сеть, но `BackendCallDispatcher` записывает его в метрику `recordBackendFailure` перед тем, как хендлер выполнит штатный fallback. `ThriftFailureClassifier.isUnsupportedMethod(cause)` не должен учитываться как сбой бэкенда.
 
 ## 3. Архитектура изменений в коде
 
@@ -48,7 +52,19 @@
 - В `RoutingHandler` (или `DatabaseCacheRefresher`):
   - Добавляем метод `warmUpMergedRoutingTableBestEffort()`: если `router.hasMergeWithDefaultCatalogs()`, при старте `RoutingPipelineFactory.assemble` (или в фоновом потоке сразу после старта) пытается один раз загрузить `get_all_databases` через `GetAllDatabasesHandler` без имперсонации, перехватывая и логируя любые ошибки на `WARN` (чтобы недоступный `LENIENT` каталог `hdp` не блокировал старт).
 
-## 4. Боевая конфигурация `hms-proxy.properties` для 300-км линка до `hdp`
+### 3.4. Совместимость HDP 3.1 фронта с удалёнными `APACHE_3_1_3` каталогами (`janus`, `titanium`)
+- **`GetTablesExtHandler`**:
+  - Если `!backend.runtimeProfile().isHortonworks()`, вместо выброса `MetaException` выполняем fallback на стандартный метод `get_table_meta(namespace.backendDbName(), tablePattern, null)`:
+    - читаем `tablePattern` через `ThriftReflectionCache.readString(request, "getTableNamePattern", "getTablePattern")` (если `null` или пусто — `"*"`);
+    - вызываем `support.invokeDirect(backend, GET_TABLE_META, new Object[]{namespace.backendDbName(), tablePattern, null})`;
+    - фильтруем видимые таблицы через `support.isTableAccessible("get_tables_ext", namespace, meta.getTableName())`;
+    - для каждой `TableMeta` создаём экземпляр `org.apache.hadoop.hive.metastore.api.ExtendedTableInfo` в `request.getClass().getClassLoader()` (конструктор `ExtendedTableInfo(String tblName)`), заполняем доступные сеттеры (`setTblName` / `setTableType`, если присутствуют) и возвращаем список.
+- **`GetMaxAllocatedTableWriteIdHandler`**:
+  - Заменяем `RequestObjectRouting.resolveWrite` на `RequestObjectRouting.resolve(support, "get_max_allocated_table_write_id", request, catName, dbName, tblName)` (так как метод read-only и должен работать в том числе на `READ_ONLY` каталоге `titanium`).
+- **`BackendCallDispatcher`**:
+  - В блоке `catch (Throwable cause)` в `performBackendCall`: если `ThriftFailureClassifier.isUnsupportedMethod(cause)` — не вызываем `observability.metrics().recordBackendFailure(backend.name(), cause)` и `admissionGate.recordFailure(...)`, так как отсутствие метода в runtime-профиле бэкенда — это штатный сигнал для локального fallback'а хендлера, а не ошибка бэкенда.
+
+## 4. Боевая конфигурация `hms-proxy.properties` для обеих площадок (`janus` и `hdp31`)
 
 Полный перечень рекомендуемых настроек для добавления в боевой `hms-proxy.properties`:
 - `catalog.hdp.startup-mode=LENIENT`, `catalog.titanium.startup-mode=LENIENT`

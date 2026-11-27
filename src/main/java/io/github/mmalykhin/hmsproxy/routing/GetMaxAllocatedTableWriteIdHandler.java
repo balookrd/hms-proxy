@@ -15,8 +15,11 @@ final class GetMaxAllocatedTableWriteIdHandler implements SpecialCaseHandler {
   @Override
   public Object handle(Method method, Object[] args) throws Throwable {
     Object request = args[0];
-    RequestObjectRouting.ResolvedRequest resolved =
-        RequestObjectRouting.resolveWrite(support, "get_max_allocated_table_write_id", request);
+    String catName = RequestObjectRouting.readCatalogName(request);
+    String dbName = RequestObjectRouting.readDbName(request);
+    RequestObjectRouting.ResolvedRequest resolved = RequestObjectRouting.resolve(
+        support, "get_max_allocated_table_write_id", request, catName, dbName,
+        RequestObjectRouting.readTableName(request));
     CatalogRouter.ResolvedNamespace namespace = resolved.namespace();
     CatalogBackend backend = resolved.backend();
     String tblName = resolved.tableName();

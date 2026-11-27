@@ -1,10 +1,16 @@
 package io.github.mmalykhin.hmsproxy.routing;
 
 import io.github.mmalykhin.hmsproxy.backend.CatalogBackend;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import org.apache.hadoop.hive.metastore.api.MetaException;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
 
 final class GetTablesExtHandler implements SpecialCaseHandler {
+  private static final Method GET_TABLE_META = RequestObjectRouting.findIfaceMethod(
+      "get_table_meta", String.class, String.class, List.class);
+
   private final RoutingSupport support;
 
   GetTablesExtHandler(RoutingSupport support) {
@@ -20,15 +26,12 @@ final class GetTablesExtHandler implements SpecialCaseHandler {
     RequestContext.currentObservation().recordNamespace(namespace);
     support.recordDefaultCatalogRouteIfImplicit("get_tables_ext", catalogName, dbName, namespace);
     CatalogBackend backend = namespace.backend();
-    if (!backend.runtimeProfile().isHortonworks()) {
-      throw new MetaException(
-          "Hortonworks get_tables_ext requires a Hortonworks backend runtime for catalog '"
-              + backend.name()
-              + "'");
-    }
     support.validateCatalogAccess(backend, "get_tables_ext", namespace.backendDbName());
     if (!support.isDatabaseAccessible("get_tables_ext", namespace)) {
-      return new java.util.ArrayList<>();
+      return new ArrayList<>();
+    }
+    if (!backend.runtimeProfile().isHortonworks()) {
+      return fallbackToGetTableMeta(request, namespace, backend);
     }
     Object routedRequest = ThriftReflectionCache.deepCopy(request);
     ThriftReflectionCache.invokeStringSetter(routedRequest, "setDatabase", namespace.backendDbName());
@@ -40,5 +43,33 @@ final class GetTablesExtHandler implements SpecialCaseHandler {
         "get_tables_ext",
         namespace,
         support.invokeBackendNamed(backend, "get_tables_ext", routedRequest));
+  }
+
+  private List<Object> fallbackToGetTableMeta(
+      Object request,
+      CatalogRouter.ResolvedNamespace namespace,
+      CatalogBackend backend
+  ) throws Throwable {
+    String pattern = ThriftReflectionCache.readString(request, "getTablesPattern", "getPattern");
+    Object rawMetas = support.invokeDirect(
+        backend,
+        GET_TABLE_META,
+        new Object[] {namespace.backendDbName(), pattern == null ? "*" : pattern, null});
+    if (!(rawMetas instanceof List<?> metas) || metas.isEmpty()) {
+      return new ArrayList<>();
+    }
+    ClassLoader cl = request.getClass().getClassLoader();
+    Class<?> infoClass = Class.forName("org.apache.hadoop.hive.metastore.api.ExtendedTableInfo", true, cl);
+    Constructor<?> ctor = infoClass.getConstructor(String.class);
+    List<Object> result = new ArrayList<>(metas.size());
+    for (Object item : metas) {
+      String tableName = item instanceof TableMeta meta
+          ? meta.getTableName()
+          : RoutingSupport.extractTableName(item);
+      if (tableName != null && support.isTableAccessible("get_tables_ext", namespace, tableName)) {
+        result.add(ctor.newInstance(tableName));
+      }
+    }
+    return result;
   }
 }

@@ -3904,5 +3904,72 @@ public class RoutingMetaStoreProxyNamespaceRoutingTest {
     public String getCatName() { return catName; }
     public void setCatName(String catName) { this.catName = catName; }
   }
+
+  @Test
+  public void getTablesExtAndMaxAllocatedWriteIdFallbackOnReadOnlyApacheBackend() throws Throwable {
+    Assume.assumeTrue(Files.isReadable(HDP_6150_JAR));
+
+    ProxyConfig config = ProxyConfig.builder()
+        .server(new ServerConfig("test", "127.0.0.1", 9083, 1, 4))
+        .security(new SecurityConfig(SecurityMode.NONE, null, null, null, null, false, Map.of()))
+        .catalogDbSeparator("__")
+        .defaultCatalog("hdp")
+        .catalogs(Map.of(
+            "hdp", catalogConfig(
+                "hdp", "hdp", MetastoreRuntimeProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(),
+                Map.of("hive.metastore.uris", "thrift://hdp")),
+            "titanium", new CatalogConfig(
+                "titanium", "titanium", "file:///titanium", false, CatalogAccessMode.READ_ONLY, List.of(),
+                CatalogExposureMode.ALLOW_ALL, List.of(), Map.of(), List.of(), true,
+                MetastoreRuntimeProfile.APACHE_3_1_3, null,
+                Map.of("hive.metastore.uris", "thrift://titanium"))))
+        .compatibility(new CompatibilityConfig(
+            FrontendProfile.HORTONWORKS_3_1_0_3_1_5_6150_1, HDP_6150_JAR.toString(), HDP_6150_JAR.toString(), false))
+        .syntheticReadLockStore(SyntheticReadLockStoreConfig.inMemory())
+        .build();
+
+    CatalogBackend apacheBackend = newBackend(
+        config, config.catalogs().get("titanium"), new ApacheBackendAdapter(),
+        newBackendRuntime(config, config.catalogs().get("titanium"), newSession((proxy, method, args) -> {
+          if ("get_table_meta".equals(method.getName())) {
+            org.apache.hadoop.hive.metastore.api.TableMeta meta =
+                new org.apache.hadoop.hive.metastore.api.TableMeta("beemetrics", "events", "MANAGED_TABLE");
+            return List.of(meta);
+          }
+          throw new UnsupportedOperationException(method.getName());
+        })));
+
+    LinkedHashMap<String, CatalogBackend> backends = new LinkedHashMap<>();
+    backends.put("hdp", null);
+    backends.put("titanium", apacheBackend);
+    CatalogRouter router = new CatalogRouter(config, backends);
+    router.updateDatabases("hdp", List.of("default"));
+    router.updateDatabases("titanium", List.of("beemetrics"));
+    ProxyObservability observability = new ProxyObservability(config);
+    RoutingMetaStoreProxy handler =
+        new RoutingMetaStoreProxy(config, router, new FederationLayer(config, router), null, observability);
+
+    ClassLoader classLoader = new MetastoreApiClassLoader(
+        new java.net.URL[] {HDP_6150_JAR.toUri().toURL()},
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> extReqClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.GetTablesExtRequest", true, classLoader);
+    Object extReq = extReqClass.getConstructor(String.class, String.class, String.class, int.class)
+        .newInstance("hive", "beemetrics", "*", 1);
+
+    List<?> extResponse = (List<?>) handler.getTablesExt(extReq);
+    Assert.assertEquals(1, extResponse.size());
+
+    Assume.assumeTrue(Files.isReadable(HIVE_4_JAR));
+    ClassLoader hive4ClassLoader = new MetastoreApiClassLoader(
+        MetastoreApiClassLoader.buildIsolatedRuntimeUrls(HIVE_4_JAR),
+        RoutingMetaStoreProxyTestSupport.class.getClassLoader());
+    Class<?> maxWriteIdReqClass =
+        Class.forName("org.apache.hadoop.hive.metastore.api.MaxAllocatedTableWriteIdRequest", true, hive4ClassLoader);
+    Object maxWriteIdReq = maxWriteIdReqClass.getConstructor(String.class, String.class)
+        .newInstance("beemetrics", "events");
+    Object maxWriteIdResp = handler.get_max_allocated_table_write_id(maxWriteIdReq);
+    Assert.assertEquals(0L, maxWriteIdResp.getClass().getMethod("getMaxWriteId").invoke(maxWriteIdResp));
+  }
 }
 

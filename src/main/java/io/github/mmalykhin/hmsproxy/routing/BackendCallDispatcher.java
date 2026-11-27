@@ -5,6 +5,7 @@ import io.github.mmalykhin.hmsproxy.security.ImpersonationContext;
 import io.github.mmalykhin.hmsproxy.compatibility.CompatibilityLayer;
 import io.github.mmalykhin.hmsproxy.observability.ProxyObservability;
 import io.github.mmalykhin.hmsproxy.observability.ProxyRuntimeState;
+import io.github.mmalykhin.hmsproxy.thriftbridge.ThriftFailureClassifier;
 import io.github.mmalykhin.hmsproxy.util.DebugLogUtil;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -208,8 +209,10 @@ final class BackendCallDispatcher {
       return result;
     } catch (Throwable cause) {
       long elapsedMs = elapsedMillis(startedAt);
-      observability.metrics().recordBackendFailure(backend.name(), cause);
-      admissionGate.recordFailure(backend, cause, elapsedMs, admission.halfOpen());
+      if (!ThriftFailureClassifier.isUnsupportedMethod(cause)) {
+        observability.metrics().recordBackendFailure(backend.name(), cause);
+        admissionGate.recordFailure(backend, cause, elapsedMs, admission.halfOpen());
+      }
       if (allowShadowFallback && shouldFallbackToShadow(backend, methodName) && isOutageFailure(cause)) {
         CatalogBackend fallbackBackend = router.resolveFallbackBackend(backend.name()).orElse(null);
         if (fallbackBackend != null) {

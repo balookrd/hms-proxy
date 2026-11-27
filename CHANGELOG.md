@@ -15,6 +15,8 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md).
   - `GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByNamesReqHandler` и `GetPartitionsByFilterReqHandler` подключены к `PartitionMetadataCache` с детерминированной сигнатурой запроса (`RoutingSupport.encodeQuerySignature`, вынесенной из `RoutingHandler`), включая `validWriteIdList`, `get_col_stats`, `processorCapabilities`, `withAuth`, `userName`/`groupNames`.
   - Расширен `PartitionMetadataCache.deepCopy` через `ThriftReflectionCache.deepCopy` для защитного копирования структур из изолированных classloader'ов (Hortonworks / Hive 4).
   - В `GetAllDatabasesHandler` фоновое обновление `DatabaseCacheRefresher` (при `effectiveImpersonation == null`) теперь автоматически синхронизирует таблицу маршрутизации `CatalogRouter` для `default`-каталога и `merge-with-default`-каталогов (с фильтрацией через `filterExposedDatabases`).
+  - В `GetTablesExtHandler` добавлен fallback через `get_table_meta` (с фильтрацией доступа и сборкой `ExtendedTableInfo` в classloader'е запроса) для не-Hortonworks бэкендов (например, `APACHE_3_1_3`), а в `GetMaxAllocatedTableWriteIdHandler` — read-разрешение вместо write-проверки для поддержки `READ_ONLY` каталогов.
+  - В `BackendCallDispatcher.performBackendCall` исключения `ThriftFailureClassifier.isUnsupportedMethod` больше не инкрементируют метрики ошибок бэкенда и не влияют на circuit breaker / admission gate.
 
 ### Исправлено
 

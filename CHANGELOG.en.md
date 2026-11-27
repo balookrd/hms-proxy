@@ -15,6 +15,8 @@ For a Russian version, see [CHANGELOG.md](CHANGELOG.md).
   - Connected `GetPartitionReqHandler`, `GetPartitionsReqHandler`, `GetPartitionsByNamesReqHandler`, and `GetPartitionsByFilterReqHandler` to `PartitionMetadataCache` using deterministic query signatures (`RoutingSupport.encodeQuerySignature`, extracted from `RoutingHandler`), including `validWriteIdList`, `get_col_stats`, `processorCapabilities`, `withAuth`, and `userName`/`groupNames`.
   - Extended `PartitionMetadataCache.deepCopy` via `ThriftReflectionCache.deepCopy` to support defensive copying of Thrift objects from isolated classloaders (Hortonworks / Hive 4).
   - Updated `GetAllDatabasesHandler` so background `DatabaseCacheRefresher` ticks (`effectiveImpersonation == null`) automatically refresh `CatalogRouter` routing tables for the default catalog and `merge-with-default` catalogs (filtering hidden databases via `filterExposedDatabases`).
+  - Added `get_table_meta` fallback in `GetTablesExtHandler` (with access filtering and `ExtendedTableInfo` construction in the request classloader) for non-Hortonworks backends (such as `APACHE_3_1_3`), and switched `GetMaxAllocatedTableWriteIdHandler` from write to read namespace resolution to support `READ_ONLY` catalogs.
+  - Excluded `ThriftFailureClassifier.isUnsupportedMethod` from backend failure metrics and admission gate failure accounting in `BackendCallDispatcher.performBackendCall`.
 
 ### Fixed
 
